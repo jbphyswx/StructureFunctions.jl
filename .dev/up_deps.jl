@@ -8,9 +8,8 @@ dirs = (
     root,
     joinpath(root, "test"),
     joinpath(root, ".dev"),
-    joinpath(root, "perf"),
-    joinpath(root, "docs"),
-    joinpath(root, "integration_tests"),
+    # joinpath(root, "perf"),
+    # joinpath(root, "docs"),
 )
 
 cd(root) do
