@@ -32,17 +32,17 @@ struct TransverseStructureFunction <: AbstractStructureFunctionType end
 #     end
 # end
 
-struct StructureFunction{FT, BT<:Vector} <: AbstractStructureFunction where {FT<:Real}
+struct StructureFunction{FT, BT <: Vector} <: AbstractStructureFunction where {FT <: Real}
     order::Int
     distance::BT
     values::Vector{FT}
 
-    function StructureFunction(order, distance::Vector{<:Real}, values::Vector{FT}) where FT
+    function StructureFunction(order, distance::Vector{<:Real}, values::Vector{FT}) where {FT}
         @assert length(distance) == length(values)
         return new{FT, typeof(distance)}(order, distance, values)
     end
 
-    function StructureFunction(order, distance::Vector{Tuple{T,T}}, values::Vector{FT}) where FT where T<:Real
+    function StructureFunction(order, distance::Vector{Tuple{T, T}}, values::Vector{FT}) where {FT} where {T <: Real}
         @assert length(distance) == length(values)
         return new{FT, typeof(distance)}(order, distance, values)
     end

@@ -2,7 +2,7 @@
 
 julia_version = "1.9.3"
 manifest_format = "2.0"
-project_hash = "ca311cac0d4b2f1d6a814243e3cd7e84fcb27702"
+project_hash = "e0c011b12c2dd0c27d2617ddf53ad3966364df1b"
 
 [[deps.Adapt]]
 deps = ["LinearAlgebra", "Requires"]
@@ -207,10 +207,10 @@ uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
 version = "2022.10.11"
 
 [[deps.NaNStatistics]]
-deps = ["IfElse", "LoopVectorization", "PrecompileTools", "Static", "VectorizationBase"]
-git-tree-sha1 = "b284bdb397bda5fd3cca76a2fb9b2dba4eb74ce4"
+deps = ["IfElse", "LoopVectorization", "PrecompileTools", "Static"]
+git-tree-sha1 = "5ee772edf4bfb65eb50068d3682fae47552de81c"
 uuid = "b946abbf-3ea7-4610-9019-9858bfdeaf2d"
-version = "0.6.33"
+version = "0.6.32"
 
 [[deps.NetworkOptions]]
 uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
@@ -333,6 +333,12 @@ git-tree-sha1 = "1ff449ad350c9c4cbc756624d6f8a8c3ef56d3ed"
 uuid = "82ae8749-77ed-4fe6-ae5f-f523153014b0"
 version = "1.7.0"
 
+[[deps.StructureFunctions]]
+deps = ["Distances", "Distributed", "NaNStatistics", "ProgressMeter"]
+path = ".."
+uuid = "e93fee26-4d5e-49c1-899d-490508cfd19b"
+version = "0.1.0"
+
 [[deps.SuiteSparse]]
 deps = ["Libdl", "LinearAlgebra", "Serialization", "SparseArrays"]
 uuid = "4607b0f0-06f3-5cda-b6b1-a6196a1729e9"
@@ -351,6 +357,10 @@ version = "1.0.3"
 deps = ["ArgTools", "SHA"]
 uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
 version = "1.10.0"
+
+[[deps.Test]]
+deps = ["InteractiveUtils", "Logging", "Random", "Serialization"]
+uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [[deps.ThreadingUtilities]]
 deps = ["ManualMemory"]
@@ -372,9 +382,9 @@ uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 
 [[deps.VectorizationBase]]
 deps = ["ArrayInterface", "CPUSummary", "HostCPUFeatures", "IfElse", "LayoutPointers", "Libdl", "LinearAlgebra", "SIMDTypes", "Static", "StaticArrayInterface"]
-git-tree-sha1 = "b182207d4af54ac64cbc71797765068fdeff475d"
+git-tree-sha1 = "7209df901e6ed7489fe9b7aa3e46fb788e15db85"
 uuid = "3d5dd08c-fd9d-11e8-17fa-ed2836048c2f"
-version = "0.21.64"
+version = "0.21.65"
 
 [[deps.Zlib_jll]]
 deps = ["Libdl"]
