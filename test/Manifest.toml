@@ -335,7 +335,6 @@ version = "1.7.0"
 
 [[deps.StructureFunctions]]
 deps = ["Distances", "Distributed", "NaNStatistics", "ProgressMeter"]
-path = ".."
 uuid = "e93fee26-4d5e-49c1-899d-490508cfd19b"
 version = "0.1.0"
 
