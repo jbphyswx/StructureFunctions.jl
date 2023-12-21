@@ -11,3 +11,6 @@ ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 
 [compat]
 julia = "1.7"
+ProgressMeter = "1.7"
+NaNStatistics = "0.6"
+Distances = "0.10"
