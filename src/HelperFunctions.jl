@@ -20,7 +20,7 @@ function digitize(x::Vector, bins::Vector{<:Real})
     (see np.digitize and https://discourse.julialang.org/t/find-the-index-of-a-bin-where-a-value-between-two-bin-value/32080/2?u=jbphyswx )
     """
     digitize.(Ref(bins), x)
-end 
+end
 
 function digitize(x::Vector, bins::Tuple{<:Real})
     """
@@ -28,6 +28,6 @@ function digitize(x::Vector, bins::Tuple{<:Real})
     (see np.digitize and https://discourse.julialang.org/t/find-the-index-of-a-bin-where-a-value-between-two-bin-value/32080/2?u=jbphyswx )
     """
     digitize.(Ref(bins), x)
-end 
+end
 
 end
