@@ -40,3 +40,7 @@ test/Manifest.toml
 
 # Ignore pycache
 __pycache__
+
+# ipynb
+.ipynb_checkpoints/
+.ipynb*
