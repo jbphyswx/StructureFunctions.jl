@@ -20,6 +20,7 @@ ParallelCalculationsExt = ["Distributed"]
 
 [compat]
 Distances = "0.10"
+Requires = "1"
 julia = "1.9"
 
 [extras]
