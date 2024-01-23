@@ -1,7 +1,7 @@
 name = "StructureFunctions"
 uuid = "e93fee26-4d5e-49c1-899d-490508cfd19b"
 authors = ["Jordan Benjamin"]
-version = "0.1.0"
+version = "0.2.0"
 
 [deps]
 Distances = "b4f34e82-e78d-54a5-968a-f98e89d6e8f7"
