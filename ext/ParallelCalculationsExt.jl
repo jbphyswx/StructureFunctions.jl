@@ -13,7 +13,7 @@ using ProgressMeter: @showprogress
 # include("../src/Calculations.jl")
 # import ..StructureFunction # ideally
 import Distances # from JuliaStats
-import NaNStatistics # consider making this a strong dependency for easier use
+# import NaNStatistics # consider making this a strong dependency for easier use
 using StaticArrays
 using LinearAlgebra
 
