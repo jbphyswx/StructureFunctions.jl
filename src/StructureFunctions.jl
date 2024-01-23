@@ -6,7 +6,6 @@ abstract type AbstractStructureFunction end
 # using Distributed
 # @everywhere include("ParallelCalculations.jl") # this works w/ include("src/StructureFunctions.jl") but not w/ using StructureFunctions, and the former dumps directly into Main...
 # using NaNStatistics # consider making this a strong dependency for easier use, needed for parallel but I'm sure we'll need it once we work with real data...
-using Requires
 
 include("HelperFunctions.jl")
 include("StructureFunctionTypes.jl")
