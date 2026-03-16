@@ -9,7 +9,7 @@ using Base.Threads: Threads
 
 import ..HelperFunctions: HelperFunctions as HF
 
-export calculate_spectrum, DirectSumBackend, FINUFFTBackend, FFTBackend
+export calculate_spectrum, DirectSumBackend, FINUFFTBackend, FFTBackend, plot_spectrum, compare_spectra
 
 abstract type AbstractSpectralBackend end
 struct DirectSumBackend <: AbstractSpectralBackend end
@@ -17,24 +17,43 @@ struct FINUFFTBackend <: AbstractSpectralBackend end
 struct FFTBackend <: AbstractSpectralBackend end
 
 """
-    calculate_spectrum(x_vecs, u_vecs, ms; ...)
+    calculate_spectrum([backend], x_vecs::Tuple, u_vecs::Tuple, ms::Tuple; kwargs...)
 
-Calculate the Fourier coefficients of a non-uniformly sampled field `u_vecs` at coordinates `x_vecs`.
-`ms` is a tuple of the number of modes in each dimension.
-
-Returns:
-- `coeffs`: Array of Fourier coefficients.
-- `ks`: Tuple of wavenumber ranges.
+Calculate the power spectrum for one or more fields.
 """
 function calculate_spectrum(
-    x_vecs::Tuple{T1, Vararg{T1}},
-    u_vecs::Tuple{T2, Vararg{T2}},
-    ms::NTuple{D, Int};
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    ms::Tuple;
     backend::AbstractSpectralBackend = DirectSumBackend(),
-    iflag::Int = -1, # Standard FFT convention (e^-ikx)
-    eps::Real = 1e-6,
-) where {D, T1, T2}
-    return _calculate_spectrum(backend, x_vecs, u_vecs, ms, iflag, eps)
+    kwargs...
+)
+    return calculate_spectrum(backend, x_vecs, u_vecs, ms; kwargs...)
+end
+
+function calculate_spectrum(
+    backend::AbstractSpectralBackend,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    ms::Tuple;
+    iflag::Int = 1,
+    eps::Real = 1e-9,
+    domain_size::Union{Nothing, Tuple} = nothing
+)
+    # Validate and clean inputs
+    D = length(x_vecs)
+    NU = length(u_vecs)
+    
+    # Check consistency
+    for d in 1:D
+        @assert length(x_vecs[d]) == length(u_vecs[1]) "X and U length mismatch"
+    end
+    @assert length(ms) == D "Dimension of 'ms' must match 'x_vecs'"
+    if domain_size !== nothing
+        @assert length(domain_size) == D "Dimension of 'domain_size' must match 'x_vecs'"
+    end
+
+    return _calculate_spectrum(backend, x_vecs, u_vecs, ms, iflag, eps, domain_size)
 end
 
 # Internal dispatch for DirectSum
@@ -45,20 +64,26 @@ function _calculate_spectrum(
     ms::NTuple{D, Int},
     iflag::Int,
     eps::Real,
+    domain_size::Union{Nothing, Tuple} = nothing
 ) where {D, T1, T2}
     FT = eltype(x_vecs[1])
     N = length(x_vecs[1])
+    NU = length(u_vecs)
     
-    # Identical to FINUFFT: Determine domain size for scaling
-    ranges = ntuple(d -> extrema(x_vecs[d]), Val(D))
-    L = ntuple(d -> ranges[d][2] - ranges[d][1], Val(D))
+    # 1. Coordinate ranges for physical wavenumbers
+    ranges = ntuple(Val(D)) do d
+        if domain_size !== nothing
+            return domain_size[d]
+        else
+            min_x, max_x = extrema(x_vecs[d])
+            return max_x - min_x
+        end
+    end
     
     # Generate physical wavenumbers consistent with FINUFFT
-    ks = ntuple(i -> range(FT(-ms[i]÷2), stop=FT((ms[i]-1)÷2), length=ms[i]), Val(D))
-    ks_phys = ntuple(i -> ks[i] .* (FT(2π) / (L[i] == 0 ? one(FT) : L[i])), Val(D))
+    ks_phys = ntuple(d -> range(FT(-ms[d]÷2), stop=FT((ms[d]-1)÷2), length=ms[d]) .* (FT(2π) / (ranges[d] == 0 ? one(FT) : ranges[d])), Val(D))
     
     # Preallocate coefficients
-    NU = length(u_vecs)
     coeffs = zeros(Complex{FT}, ms..., NU)
     
     # O(N * M) 
@@ -79,11 +104,14 @@ function _calculate_spectrum(
         end
     end
     
+    # Scale by 1/N
+    coeffs ./= N
+    
     return coeffs, ks_phys
 end
 
 
-# Placeholder for extension
+# Placeholder for extension methods
 function _calculate_spectrum_nufft end
 
 function _calculate_spectrum(
@@ -93,8 +121,9 @@ function _calculate_spectrum(
     ms::Tuple,
     iflag::Int,
     eps::Real,
+    domain_size::Union{Nothing, Tuple} = nothing
 )
-    return _calculate_spectrum_nufft(x_vecs, u_vecs, ms, iflag, eps)
+    return _calculate_spectrum_nufft(x_vecs, u_vecs, ms, iflag, eps, domain_size)
 end
 
 # Placeholder for FFT extension
@@ -107,8 +136,26 @@ function _calculate_spectrum(
     ms::Tuple,
     iflag::Int,
     eps::Real,
+    domain_size::Union{Nothing, Tuple} = nothing
 )
-    return _calculate_spectrum_fft(x_vecs, u_vecs, ms, iflag, eps)
+    return _calculate_spectrum_fft(x_vecs, u_vecs, ms, iflag, eps, domain_size)
 end
+
+"""
+    plot_spectrum(k, c; kwargs...)
+
+Plot the power spectrum magnitude. Requires `using CairoMakie`.
+"""
+function plot_spectrum end
+
+"""
+    compare_spectra(results; peaks=nothing, u_idx=1, kwargs...)
+
+Compare multiple spectrum results in subplots. 
+`results` is a list of "Label" => (k, c). 
+`peaks` is an optional list of (kx, ky, amp) or (k, amp) to mark on the plots.
+Requires `using CairoMakie`.
+"""
+function compare_spectra end
 
 end
