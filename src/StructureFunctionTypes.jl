@@ -1,11 +1,11 @@
 module StructureFunctionTypes
 
-using LinearAlgebra: norm
-using ..HelperFunctions
+using LinearAlgebra: LinearAlgebra as LA
+import ..HelperFunctions: HelperFunctions as HF
 
 abstract type AbstractStructureFunctionType end
 
-using LoopVectorization
+using LoopVectorization: LoopVectorization as LV
 
 # norm2_reg(x) = norm(x)^2 # faster? NO
 # norm_alt(x) = sqrt(sum(val->val^2,x)) # faster? NO
@@ -17,7 +17,7 @@ using LoopVectorization
 
 @inline @fastmath @inbounds norm2(x) = begin # no allocations, is a lil faster (for only 2 dimensions not much faster but)
     out::eltype(x) = zero(eltype(x))
-    @tturbo warn_check_args=false for i in eachindex(x)
+    LV.@tturbo warn_check_args=false for i in eachindex(x)
         @inbounds @fastmath out +=  x[i]^2
     end
     return out
@@ -60,13 +60,13 @@ struct SecondOrderStructureFunction <: AbstractStructureFunctionType # D2 |δu|�
     # SecondOrderStructureFunction() = new((δu, r̂) -> norm(δu)^2)
 end
 
-@inbounds LongitudinalSecondOrderStructureFunction_method(δu, r̂) = mδu_l(δu, r̂)^2
+@inbounds LongitudinalSecondOrderStructureFunction_method(δu, r̂) = HF.mδu_l(δu, r̂)^2
 struct LongitudinalSecondOrderStructureFunction <: AbstractStructureFunctionType # D2L |δu_l|² = u_l·δu_l
     method::Function
     LongitudinalSecondOrderStructureFunction() = new(LongitudinalSecondOrderStructureFunction_method)
 end
 
-@inbounds TransverseSecondOrderStructureFunction_method(δu, r̂) = norm2(δu_t(δu, r̂))  # maybe faster than mδu_l(δu, r̂)^2 since we never calculate n̂
+@inbounds TransverseSecondOrderStructureFunction_method(δu, r̂) = norm2(HF.δu_t(δu, r̂))  # maybe faster than HF.mδu_l(δu, r̂)^2 since we never calculate n̂
 struct TransverseSecondOrderStructureFunction <: AbstractStructureFunctionType # D2T |δu_t|² = u_t·δu_t
     method::Function
     TransverseSecondOrderStructureFunction() = new(TransverseSecondOrderStructureFunction_method)
@@ -79,31 +79,31 @@ struct DivergentSecondOrderStructureFunction <: AbstractStructureFunctionType en
 # 3rd Order
 # Note, we use mδu_{} instead of |δu_{}| because the magnitudes have a sign (relative to normal vector)! (I think this is the right way to do it, see https://doi.org/10.1002/2016GL069405 and old Lindberg and Cho papers)
 
-ThirdOrderStructureFunction_method(δu, r̂) = norm(δu)^3  # i think sqrt and then ³ is fastest since we have to calculate sqrt qnyway
+ThirdOrderStructureFunction_method(δu, r̂) = LA.norm(δu)^3  # i think sqrt and then ³ is fastest since we have to calculate sqrt qnyway
 struct ThirdOrderStructureFunction <: AbstractStructureFunctionType # |δu|³  = |δu| δu·δu
     method::Function
     ThirdOrderStructureFunction() = new(ThirdOrderStructureFunction_method)
 end
 
-DiagonalConsistentThirdOrderStructureFunction_method(δu, r̂) = mδu_l(δu, r̂)^3
+DiagonalConsistentThirdOrderStructureFunction_method(δu, r̂) = HF.mδu_l(δu, r̂)^3
 struct DiagonalConsistentThirdOrderStructureFunction <: AbstractStructureFunctionType # mδu_l³ 
     method::Function
     DiagonalConsistentThirdOrderStructureFunction() = new(DiagonalConsistentThirdOrderStructureFunction_method)
 end
 
-DiagonalInconsistentThirdOrderStructureFunction_method(δu, r̂) = mδu_l(δu, r̂)^2 * mδu_t(δu, r̂)  # you could probably cache some intermediate results here
+DiagonalInconsistentThirdOrderStructureFunction_method(δu, r̂) = HF.mδu_l(δu, r̂)^2 * HF.mδu_t(δu, r̂)  # you could probably cache some intermediate results here
 struct DiagonalInconsistentThirdOrderStructureFunction <: AbstractStructureFunctionType # |δu_l|² * mδu_t
     method::Function
     DiagonalInconsistentThirdOrderStructureFunction() = new(DiagonalInconsistentThirdOrderStructureFunction_method )
 end
 
-OffDiagonalInconsistentThirdOrderStructureFunction_method(δu, r̂) = mδu_l(δu, r̂) * norm2(δu_t(δu, r̂))  # norm(δu_t) might be faster than mδu_t(δu, r̂)^2 since we never calculate n̂ and we're squaring anyway so sign is irrelevant
+OffDiagonalInconsistentThirdOrderStructureFunction_method(δu, r̂) = HF.mδu_l(δu, r̂) * norm2(HF.δu_t(δu, r̂))  # norm(δu_t) might be faster than mδu_t(δu, r̂)^2 since we never calculate n̂ and we're squaring anyway so sign is irrelevant
 struct OffDiagonalInconsistentThirdOrderStructureFunction <: AbstractStructureFunctionType # mδu_l * |δu_t|²
     method::Function
     OffDiagonalInconsistentThirdOrderStructureFunction() = new(OffDiagonalInconsistentThirdOrderStructureFunction_method) 
 end
 
-OffDiagonalConsistentThirdOrderStructureFunction_method(δu, r̂) = mδu_t(δu, r̂)^3  # you could probably cache some intermediate results here
+OffDiagonalConsistentThirdOrderStructureFunction_method(δu, r̂) = HF.mδu_t(δu, r̂)^3  # you could probably cache some intermediate results here
 struct OffDiagonalConsistentThirdOrderStructureFunction <: AbstractStructureFunctionType # mδu_t³
     method::Function
     OffDiagonalConsistentThirdOrderStructureFunction() = new(OffDiagonalConsistentThirdOrderStructureFunction_method)

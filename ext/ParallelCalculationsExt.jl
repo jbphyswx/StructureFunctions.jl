@@ -2,67 +2,35 @@
 The workhorse of this package
 For speed, pretty much all your inputs seems to need to be SharedArrays...
 """
+module ParallelCalculationsExt
+using Distributed: Distributed
+using ProgressMeter: ProgressMeter as PM
+import Distances: Distances as DI
+using StaticArrays: StaticArrays as SA
+using LinearAlgebra: LinearAlgebra as LA
+using SharedArrays: SharedArrays as ShA
+import StructureFunctions as SF # Use alias to avoid name conflict if any
 
-module ParallelCalculationsExt # how to use  with @everywhere?
-using Distributed
-using StructureFunctions
-# @everywhere out = begin 
-# using Distributed
-using ProgressMeter: @showprogress
-# include("../src/HelperFunctions.jl") # We need to load these because this has to happen on all workers in the parallel case... (idk how to make this submodule a separate module though...)
-# include("../src/Calculations.jl")
-# import ..StructureFunction # ideally
-import Distances # from JuliaStats
-# import NaNStatistics # consider making this a strong dependency for easier use
-using StaticArrays
-using LinearAlgebra
-
-using SharedArrays
-
-# import ..Calculations
-# import ..HelperFunctions
-using StructureFunctions
+const Calculations = SF.Calculations
+const HelperFunctions = SF.HelperFunctions
+const StructureFunctionTypes = SF.StructureFunctionTypes
 
 
-const Calculations = StructureFunctions.Calculations
-const HelperFunctions = StructureFunctions.HelperFunctions
-const StructureFunctionTypes = StructureFunctions.StructureFunctionTypes
-
-
-@info("On Ext: ", workers()) # this shows that the extension isn't reaching all workers... :(
-
-
-export parallel_calculate_structure_function #consider changing this to just calculate_structure function to match the non-parallel name
-# export Calculations.parallel_calculate_structure_function
-@info(@__DIR__)
-
-
-
-"""
-Consider using some sort of Intervals thingy for the intervals
-    worked on arrays of size 1e4 in 12 seconds, was about a true half and half timewise, so w/ saved bins would be about 6 seconds...
-    note we still need to turn values to vectors for u,v,w, etc and have a function for the SF calculation that's not just order...
-    and we need a parallel version, maybe parallelize over the `i` loop, aggregate the results separately, then bin and average from the workers...
-    - probably shouldn't use sharedarrays as those can possibly fail w/ concurrent reads/writes
-
-    parallel version took 4 seconds, 2 for bin calculation, 2 for SF w/ 5 workers (was 12 w/o parallel so 3x speedup)
-"""
-
-
+export parallel_calculate_structure_function 
 
 function Calculations.parallel_calculate_structure_function(
-    x_vecs::NTuple{N, <:Union{SharedVector{FT1}, SVector{N2, FT1}}}, # Tuple{Vararg{Vector{FT},N}} # I think this is faster than array cause then we have columns only
-    u_vecs::NTuple{N, <:Union{SharedVector{FT2}, SVector{N2, FT2}}}, # Tuple{Vararg{Vector{FT},N}}
-    distance_bins::SVector{N3, Tuple{FT3, FT3}},
+    x_vecs::NTuple{N, <:Union{ShA.SharedVector{FT1}, SA.SVector{N2, FT1}}}, # Tuple{Vararg{Vector{FT},N}} # I think this is faster than array cause then we have columns only
+    u_vecs::NTuple{N, <:Union{ShA.SharedVector{FT2}, SA.SVector{N2, FT2}}}, # Tuple{Vararg{Vector{FT},N}}
+    distance_bins::SA.SVector{N3, Tuple{FT3, FT3}},
     structure_function_type::StructureFunctionTypes.AbstractStructureFunctionType; # add N here?
-    distance_metric::Distances.PreMetric = Distances.Euclidean(),
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
 ) where {FT1 <: Real, FT2 <: Real, FT3 <: Real, N, N2, N3}
 
 
-    distance_bins_vec = SVector{length(distance_bins) + 1, FT3}(
+    distance_bins_vec = SA.SVector{length(distance_bins) + 1, FT3}(
         [[distance_bin[1] for distance_bin in distance_bins]; [distance_bins[end][2]]]...,
     ) # the start of each bin plus the ending
 
@@ -71,7 +39,7 @@ function Calculations.parallel_calculate_structure_function(
     end
 
     output, counts =
-        @showprogress enabled = show_progress @distributed ((x, y) -> ((x[1] .+ y[1]), (x[2] .+ y[2]))) for i in
+        PM.@showprogress enabled = show_progress Distributed.@distributed ((x, y) -> ((x[1] .+ y[1]), (x[2] .+ y[2]))) for i in
                                                                                                             eachindex(
             x_vecs[1],
         )
@@ -95,16 +63,12 @@ function Calculations.parallel_calculate_structure_function(
 end
 
 
-"""
-Function to the bins and and i value and calculate the outputs and counts for that bin 
-"""
-
 function Calculations.parallel_calculate_structure_function(
-    x_vecs::NTuple{N, <:Union{SharedVector{FT1}, SVector{N2, FT1}}}, # Tuple{Vararg{Vector{FT},N}} # I think this is faster than array cause then we have columns only
-    u_vecs::NTuple{N, <:Union{SharedVector{FT2}, SVector{N2, FT2}}}, # Tuple{Vararg{Vector{FT},N}}
+    x_vecs::NTuple{N, <:Union{ShA.SharedVector{FT1}, SA.SVector{N2, FT1}}}, # Tuple{Vararg{Vector{FT},N}} # I think this is faster than array cause then we have columns only
+    u_vecs::NTuple{N, <:Union{ShA.SharedVector{FT2}, SA.SVector{N2, FT2}}}, # Tuple{Vararg{Vector{FT},N}}
     distance_bins::Int,
     structure_function_type::StructureFunctionTypes.AbstractStructureFunctionType;
-    distance_metric::Distances.PreMetric = Distances.Euclidean(),
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     bin_spacing = :logarithmic,
     verbose = true,
     show_progress = true,
@@ -127,7 +91,7 @@ function Calculations.parallel_calculate_structure_function(
 
 
     min_distance, max_distance =
-        @showprogress enabled = show_progress @distributed ((x, y) -> (min(x[1], y[1]), max(x[2], y[2]))) for i in
+        PM.@showprogress enabled = show_progress Distributed.@distributed ((x, y) -> (min(x[1], y[1]), max(x[2], y[2]))) for i in
                                                                                                               eachindex(
             x_vecs[1],
         )
@@ -146,7 +110,7 @@ function Calculations.parallel_calculate_structure_function(
         error("bin_spacing must be :linear or :logarithmic/:log")
     end
     FT3 = eltype(distance_bins)
-    distance_bins = SVector{n_distance_bins, Tuple{FT3, FT3}}(
+    distance_bins = SA.SVector{n_distance_bins, Tuple{FT3, FT3}}(
         [(distance_bins[i], distance_bins[i + 1]) for i in 1:n_distance_bins]...,
     ) # convert to tuples of the bin edges
 
