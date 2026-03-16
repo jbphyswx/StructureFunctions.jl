@@ -28,22 +28,24 @@ Consider using some sort of Intervals thingy for the intervals
     - probably shouldn't use sharedarrays as those can possibly fail w/ concurrent reads/writes
 """
 function calculate_structure_function(
-    x_vecs::NTuple{N, <:Union{NTuple{N2, FT1}, ShA.SharedVector{FT1}, SA.SVector{N2, FT1}, AbstractVector{FT1}}}, # Tuple{Vararg{Vector{FT},N}} # I think this is faster than array cause then we have columns only
-    u_vecs::NTuple{N, <:Union{NTuple{N2, FT2}, ShA.SharedVector{FT2}, SA.SVector{N2, FT2}, AbstractVector{FT2}}}, # Tuple{Vararg{Vector{FT},N}}
+    x_vecs::NTuple{N, <:Union{NTuple{N2, FT1}, ShA.SharedVector{FT1}, SA.SVector{N2, FT1}, AbstractVector{FT1}}},
+    u_vecs::NTuple{N, <:Union{NTuple{N2, FT2}, ShA.SharedVector{FT2}, SA.SVector{N2, FT2}, AbstractVector{FT2}}},
     distance_bins::SA.SVector{N3, Tuple{FT3, FT3}},
-    structure_function_type::SFT.AbstractStructureFunctionType; # add N here?
+    structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1 <: Real, FT2 <: Real, FT3 <: Real, N, N2, N3}
+) where {FT1, FT2, FT3, N, N2, N3}
     # calculate and bin and mean the pairwise distances
     # distances = pairwise(distance_metric, X, Y, dims=2) # will blow up if too big... so we're just doing the loop
 
 
-    # preallocate output as vector of length of distance_bins (vector so it's mutable)
-    output = zeros(N3)
-    counts = zeros(N3)
+    # preallocate output as vector of length of distance_bins
+    # Use promote_type and float to ensure output can hold float results/NaN
+    OT = promote_type(float(FT1), float(FT2)) 
+    output = zeros(OT, N3)
+    counts = zeros(OT, N3)
 
     distance_bins_vec = SA.SVector{length(distance_bins) + 1, FT3}(
         [[distance_bin[1] for distance_bin in distance_bins]; [distance_bins[end][2]]]...,
@@ -82,21 +84,22 @@ end
 
 function calculate_structure_function_i(
     i::Int,
-    x_vecs::NTuple{N, <:Union{NTuple{N2, FT1}, ShA.SharedVector{FT1}, SA.SVector{N2, FT1}, AbstractVector{FT1}}}, # Tuple{Vararg{Vector{FT},N}} # I think this is faster than array cause then we have columns only
-    u_vecs::NTuple{N, <:Union{NTuple{N2, FT2}, ShA.SharedVector{FT2}, SA.SVector{N2, FT2}, AbstractVector{FT2}}}, # Tuple{Vararg{Vector{FT},N}}
+    x_vecs::NTuple{N, <:Union{NTuple{N2, FT1}, ShA.SharedVector{FT1}, SA.SVector{N2, FT1}, AbstractVector{FT1}}},
+    u_vecs::NTuple{N, <:Union{NTuple{N2, FT2}, ShA.SharedVector{FT2}, SA.SVector{N2, FT2}, AbstractVector{FT2}}},
     distance_bins_vec::SA.SVector{N3, FT3},
-    structure_function_type::SFT.AbstractStructureFunctionType; # add N here?
+    structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {FT1 <: Real, FT2 <: Real, FT3 <: Real, N, N2, N3}
+) where {FT1, FT2, FT3, N, N2, N3}
 
 
 
     # Commit A2: Fixed "double calculating" by iterating only over unique pairs (j > i).
     # Removed BadImplementationError as this path is now considered correct.
 
-    # preallocate output as vector of length of distance_bins (vector so it's mutable)
-    output = zeros(N3 - 1)
-    counts = zeros(N3 - 1)
+    # preallocate output as vector of length of distance_bins
+    OT = promote_type(float(FT1), float(FT2))
+    output = zeros(OT, N3 - 1)
+    counts = zeros(OT, N3 - 1)
 
     iter_inds = eachindex(x_vecs[1]) 
     X1 = SA.SVector{N, FT1}((x_vec[i] for x_vec in x_vecs)...)
@@ -128,7 +131,7 @@ function calculate_structure_function(
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1 <: Real, FT2 <: Real, N, N2} # You can't dispatch on N, N2 since they're Ints not types (remove N since we can't use it bc we use eachindex....)
+) where {FT1, FT2, N, N2}
     """
     Here we assume that the distance bins are evenly spaced
     However, we assume we cant store all the output pairs in memory (cause goes as len(x)^2
@@ -182,9 +185,9 @@ end
 
 function minmax_i(
     i::Int,
-    x_vecs::NTuple{N, <:Union{NTuple{N2, FT}, ShA.SharedVector{FT}, SA.SVector{N2, FT}, AbstractVector{FT}}}, # Tuple{Vararg{Vector{FT},N}} # I think this is faster than array cause then we have columns only
+    x_vecs::NTuple{N, <:Union{NTuple{N2, FT}, ShA.SharedVector{FT}, SA.SVector{N2, FT}, AbstractVector{FT}}},
     distance_metric = DI.Euclidean(),
-) where {FT <: Real, N, N2} # You can't dispatch on N, N2 since they're Ints not types
+) where {FT, N, N2}
     """ calculate, bin, and mean the pairwise distances """
 
 

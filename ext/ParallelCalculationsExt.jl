@@ -27,7 +27,7 @@ function Calculations.parallel_calculate_structure_function(
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1 <: Real, FT2 <: Real, FT3 <: Real, N, N2, N3}
+) where {FT1, FT2, FT3, N, N2, N3}
 
 
     distance_bins_vec = SA.SVector{length(distance_bins) + 1, FT3}(
@@ -73,7 +73,7 @@ function Calculations.parallel_calculate_structure_function(
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1 <: Real, FT2 <: Real, N, N2} # You can't dispatch on N, N2 since they're Ints not types
+) where {FT1, FT2, N, N2}
     """
     Here we assume that the distance bins are evenly spaced
     However, we assume we cant store all the output pairs in memory (cause goes as len(x)^2
