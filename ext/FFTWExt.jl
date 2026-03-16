@@ -1,14 +1,13 @@
 module FFTWExt
 
-using FFTW: FFTW
-using StaticArrays: StaticArrays as SA
-import StructureFunctions.SpectralAnalysis: SpectralAnalysis as SA_mod
+import FFTW
+import StructureFunctions.SpectralAnalysis as SA_mod
+import StructureFunctions.SpectralAnalysis: FFTBackend
 
 """
-    _calculate_spectrum_fft(x_vecs, u_vecs, ms, iflag, eps)
+    _calculate_spectrum_fft(x_vecs, u_vecs, ms, iflag, eps; ...)
 
-Extension implementation for FFTW backend.
-Calculates FFT.
+Implementation of spectral analysis using FFT (requires uniform grid).
 """
 function SA_mod._calculate_spectrum_fft(
     x_vecs::Tuple,
@@ -16,41 +15,53 @@ function SA_mod._calculate_spectrum_fft(
     ms::Tuple,
     iflag::Int,
     eps::Real,
+    domain_size::Union{Nothing, Tuple} = nothing
 )
     D = length(x_vecs)
     T1 = eltype(x_vecs[1])
-    T2 = eltype(u_vecs[1])
-    FT = T1
-    N = length(x_vecs[1])
     NU = length(u_vecs)
+    FT = T1
 
-    # Preallocate uniform data
+    # FFTW expects a uniform grid. 
+    # ms is the target grid size. 
+    # For now we assume the data is already shaped as (N1, N2, ..., NU) 
+    # but the API gives it to us as vectors. 
+    # We reshaped it carefully in the test. 
+
+    # 1. Reshape inputs to grid if they are vectors
+    # (Assuming ms matches the underlying grid)
     coeffs = zeros(Complex{FT}, ms..., NU)
-    
-    for u_idx in 1:NU
-        # If D=1:
-        if D == 1
-            # Check if input length matches 'ms' (uniform grid assumption)
-            if N == ms[1]
-                data = u_vecs[u_idx]
-                if iflag == 1
-                    selectdim(coeffs, D + 1, u_idx) .= FFTW.fft(data)
-                else
-                    # Scale to match sum-convention
-                    selectdim(coeffs, D + 1, u_idx) .= FFTW.ifft(data) .* N
-                end
-            else
-                error("FFTBackend currently requires input length to match 'ms' (uniform grid assumption)")
-            end
+    for k in 1:NU
+        uk = reshape(u_vecs[k], ms...)
+        # FFTW.ifft is Type 2 (backwards), FFTW.fft is Type 1 (forwards)
+        # Note: StructureFunctions standard iflag=1 is e^+ikx (backwards in FFTW)
+        if iflag == 1
+            coeffs_k = FFTW.fft(uk)
         else
-            error("FFTBackend only supports 1D currently. Use FINUFFT or DirectSum for nD scattered data.")
+            coeffs_k = FFTW.ifft(uk) .* prod(ms)
         end
+        
+        # 2. Shift to center zero-frequency
+        # FFTW returns [0, M-1]. We need [-M/2, M/2-1].
+        selectdim(coeffs, D+1, k) .= FFTW.fftshift(coeffs_k)
     end
 
-    ranges = ntuple(d -> extrema(x_vecs[d]), Val(D))
-    ks_phys = ntuple(d -> range(FT(-ms[d]÷2), stop=FT((ms[d]-1)÷2), length=ms[d]) .* (FT(2π) / (ranges[d][2] - ranges[d][1])), Val(D))
+    # 3. Scaling
+    # Average factor 1/N
+    coeffs ./= prod(ms)
+
+    # 4. Physical wavenumbers
+    ranges = ntuple(Val(D)) do d
+        if domain_size !== nothing
+            return domain_size[d]
+        else
+            min_x, max_x = extrema(x_vecs[d])
+            return max_x - min_x
+        end
+    end
+    ks_phys = ntuple(d -> range(FT(-ms[d]÷2), stop=FT((ms[d]-1)÷2), length=ms[d]) .* (FT(2π) / ranges[d]), Val(D))
 
     return coeffs, ks_phys
 end
 
-end
+end # module

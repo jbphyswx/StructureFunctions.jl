@@ -9,7 +9,7 @@ using Base.Threads: Threads
 
 import ..HelperFunctions: HelperFunctions as HF
 
-export calculate_spectrum, DirectSumBackend, FINUFFTBackend, FFTBackend, plot_spectrum, compare_spectra
+export calculate_spectrum, DirectSumBackend, FINUFFTBackend, FFTBackend, plot_spectrum, compare_spectra, compare_spectral_analysis
 
 abstract type AbstractSpectralBackend end
 struct DirectSumBackend <: AbstractSpectralBackend end
@@ -95,7 +95,8 @@ function _calculate_spectrum(
             x_pos = SA.SVector{D, FT}(ntuple(d -> x_vecs[d][j], Val(D)))
             
             # Phase factor (Direct Sum uses physical coordinates and physical wavenumbers)
-            phi = iflag * (LA.dot(k_phys, x_pos))
+            # Standard forward transform convention: e^(-i * k * x)
+            phi = -iflag * (LA.dot(k_phys, x_pos))
             W = exp(LA.im * phi)
             
             for u_idx in 1:NU
@@ -158,4 +159,6 @@ Requires `using CairoMakie`.
 """
 function compare_spectra end
 
-end
+function compare_spectral_analysis end
+
+end # module

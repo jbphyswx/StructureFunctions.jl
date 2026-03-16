@@ -1,7 +1,7 @@
 module CairoMakieExt
 
 using CairoMakie: CairoMakie
-import StructureFunctions.SpectralAnalysis: plot_spectrum, compare_spectra
+import StructureFunctions.SpectralAnalysis: plot_spectrum, compare_spectra, compare_spectral_analysis
 
 """
     plot_spectrum(k_ranges::Tuple, coeffs::Array; 
@@ -83,6 +83,63 @@ function compare_spectra(results; peaks=nothing, u_idx=1, title="Spectral Analys
             
             if i == N
                 CairoMakie.Colorbar(fig[1, i+1], hm)
+            end
+        end
+    end
+    
+    return fig
+end
+
+"""
+    compare_spectral_analysis(input_data, results; peaks=nothing, u_idx=1, title="Spectral Analysis Comparison", kwargs...)
+
+Prepend a plot of the input field to the spectral comparison.
+input_data: Tuple(x_vecs, u_vecs)
+"""
+function compare_spectral_analysis(input_data, results; peaks=nothing, u_idx=1, title="Spectral Analysis Comparison", kwargs...)
+    x_vecs, u_vecs = input_data
+    NU = length(u_vecs)
+    D = length(x_vecs)
+    N_results = length(results)
+    
+    # Grid: 1 field plot + N spectral plots
+    fig = CairoMakie.Figure(; size=(600 * (N_results + 1), 550))
+    CairoMakie.Label(fig[0, :], title, fontsize=20, font=:bold)
+    
+    # 1. Plot Input Field
+    ax_field = CairoMakie.Axis(fig[1, 1]; title="Input Field (u[$u_idx])", xlabel=D==1 ? "x" : "x", ylabel=D==1 ? "u" : "y")
+    u_plot = u_vecs[u_idx]
+    
+    if D == 1
+        CairoMakie.lines!(ax_field, x_vecs[1], real.(u_plot))
+    else
+        # Check if approx uniform to use heatmap, else scatter
+        # For simplicity in tests, we can use scatter if it's large, but heatmap is better for high-res
+        # Let's assume scatter for now as these are often non-uniform in our tests
+        CairoMakie.scatter!(ax_field, x_vecs[1], x_vecs[2], color=real.(u_plot), markersize=4)
+    end
+    
+    # 2. Spectral Results (shifted by 1)
+    for (i, (label, (coeffs, k_ranges))) in enumerate(results)
+        spectral_idx = i + 1
+        ax = CairoMakie.Axis(fig[1, spectral_idx]; title=label, xlabel=D==1 ? "k" : "kx", ylabel=D==1 ? "|c(k)|" : "ky")
+        
+        if D == 1
+            CairoMakie.lines!(ax, k_ranges[1], abs.(Base.selectdim(coeffs, 2, u_idx)))
+            if peaks !== nothing
+                for p in peaks
+                    CairoMakie.vlines!(ax, [p[1]], color=:red, linestyle=:dash, alpha=0.5)
+                end
+            end
+        else
+            hm = CairoMakie.heatmap!(ax, k_ranges[1], k_ranges[2], abs.(Base.selectdim(coeffs, 3, u_idx)))
+            if peaks !== nothing
+                p_kx = [p[1] for p in peaks]
+                p_ky = [p[2] for p in peaks]
+                CairoMakie.scatter!(ax, p_kx, p_ky, color=:red, marker=:xcross, markersize=15, label="Target Peaks")
+            end
+            if i == N_results
+                CairoMakie.Colorbar(fig[1, spectral_idx+1], hm)
             end
         end
     end
