@@ -5,8 +5,9 @@ version = "0.2.0"
 
 [deps]
 Distances = "b4f34e82-e78d-54a5-968a-f98e89d6e8f7"
-Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+FINUFFT = "d8beea63-0952-562e-9c6a-8e8ef7364055"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
 ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 SharedArrays = "1a1011a3-84de-559e-8e89-a11a2f7dc383"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"

@@ -24,10 +24,9 @@ using SharedArrays
 using StructureFunctions
 
 
-Distances = StructureFunctions.Calculations.Distances
-Calculations = StructureFunctions.Calculations
-HelperFunctions = StructureFunctions.HelperFunctions
-StructureFunctionTypes = StructureFunctions.StructureFunctionTypes
+const Calculations = StructureFunctions.Calculations
+const HelperFunctions = StructureFunctions.HelperFunctions
+const StructureFunctionTypes = StructureFunctions.StructureFunctionTypes
 
 
 @info("On Ext: ", workers()) # this shows that the extension isn't reaching all workers... :(
