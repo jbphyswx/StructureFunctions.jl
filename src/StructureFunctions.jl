@@ -10,6 +10,9 @@ abstract type AbstractStructureFunction end
 include("HelperFunctions.jl")
 include("StructureFunctionTypes.jl")
 include("Calculations.jl")
+include("SpectralAnalysis.jl")
+
+export SpectralAnalysis
 
 
 # Define structure function type that holds structure functions of different orders for diffrent radii or radii bins
