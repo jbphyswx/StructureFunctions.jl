@@ -28,7 +28,6 @@ export digitize,
     """
     searchsortedfirst(bins, x) - 1
 end
-
 @inline function digitize(
     x::Union{AbstractVector{<:Real}, SVector{N, <:Real}},
     bins::Union{AbstractVector{<:Real}, SVector{N2, <:Real}},
@@ -37,15 +36,15 @@ end
     Return the indices of the bins that x belongs to
     (see np.digitize and https://discourse.julialang.org/t/find-the-index-of-a-bin-where-a-value-between-two-bin-value/32080/2?u=jbphyswx )
     """
-    digitize.(Ref(bins), x)
+    digitize.(x, Ref(bins))
 end
 
-@inline function digitize(x::Union{AbstractVector{<:Real}, SVector{N, <:Real}}, bins::Tuple{<:Real}) where {N}
+@inline function digitize(x::Union{AbstractVector{<:Real}, SVector{N, <:Real}}, bins::Tuple{Real}) where {N}
     """
     Return the indices of the bins that x belongs to
     (see np.digitize and https://discourse.julialang.org/t/find-the-index-of-a-bin-where-a-value-between-two-bin-value/32080/2?u=jbphyswx )
     """
-    digitize.(Ref(bins), x)
+    digitize.(x, Ref(bins))
 end
 
 
