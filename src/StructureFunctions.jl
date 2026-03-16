@@ -1,6 +1,6 @@
 module StructureFunctions # `using StructureFunctions`` should work `@everywhere` automatically... hopefully the methods and extensinos below follow...
 
-using StaticArrays # for speed, SVectors should be useful...
+using StaticArrays: StaticArrays as SA
 abstract type AbstractStructureFunction end
 
 # using Distributed
