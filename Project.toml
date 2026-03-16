@@ -22,7 +22,9 @@ ParallelCalculationsExt = ["Distributed"]
 Distances = "0.10"
 ProgressMeter = "1.9"
 StaticArrays = "1.9"
-julia = "1.9"
+julia = "1.12"
+
+[workspace]
 
 [extras]
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
