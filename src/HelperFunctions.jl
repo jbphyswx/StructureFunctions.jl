@@ -19,7 +19,7 @@ export digitize,
     n̂,
     δr
 
-@inline function digitize(x, bins::Union{AbstractVector{T2}, SA.SVector{N2, T2}}) where {T2, N2}
+@inline function digitize(x, bins::AbstractVector)
     """
     Return the index of the bin that x belongs to
     (see np.digitize and https://discourse.julialang.org/t/find-the-index-of-a-bin-where-a-value-between-two-bin-value/32080/2?u=jbphyswx )
@@ -27,10 +27,7 @@ export digitize,
     """
     searchsortedfirst(bins, x) - 1
 end
-@inline function digitize(
-    x::Union{AbstractVector{T1}, SA.SVector{N, T1}},
-    bins::Union{AbstractVector{T2}, SA.SVector{N2, T2}},
-) where {T1, T2, N, N2}
+@inline function digitize(x::AbstractVector, bins::AbstractVector)
     """
     Return the indices of the bins that x belongs to
     (see np.digitize and https://discourse.julialang.org/t/find-the-index-of-a-bin-where-a-value-between-two-bin-value/32080/2?u=jbphyswx )
@@ -38,7 +35,7 @@ end
     digitize.(x, Ref(bins))
 end
 
-@inline function digitize(x::Union{AbstractVector{T1}, SA.SVector{N, T1}}, bins::Tuple{T2}) where {T1, T2, N}
+@inline function digitize(x::AbstractVector, bins::Tuple)
     """
     Return the indices of the bins that x belongs to
     (see np.digitize and https://discourse.julialang.org/t/find-the-index-of-a-bin-where-a-value-between-two-bin-value/32080/2?u=jbphyswx )
@@ -48,32 +45,24 @@ end
 
 
 
-@inline LA.normalize(x::NTuple{N, T}) where {N, T} = NTuple{N, T}(LA.normalize(SA.SVector(x...))) # normalize doesnt work for tuples so use this
+@inline LA.normalize(x::Tuple{T, Vararg{T}}) where {T} = NTuple{length(x), T}(LA.normalize(SA.SVector(x)))
 
-@inline function δr(
-    x1::Union{AbstractVector{FT}, SA.SVector{N, FT}, NTuple{N, FT}},
-    x2::Union{AbstractVector{FT2}, SA.SVector{N, FT2}, NTuple{N, FT2}},
-) where {FT, FT2, N}
+@inline function δr(x1, x2)
     """
-    Return the vector from  x to y
+    Return the vector from x1 to x2
     """
     return x2 .- x1
 end
 
-@inline function r̂(
-    x1::Union{AbstractVector{FT1}, SA.SVector{N, FT1}, NTuple{N, FT1}},
-    x2::Union{AbstractVector{FT2}, SA.SVector{N, FT2}, NTuple{N, FT2}},
-) where {FT1, FT2, N}
+@inline function r̂(x1, x2)
     """
-    Return the longitudinal (parallel) unit vector from  x to y
+    Return the longitudinal (parallel) unit vector from x1 to x2
     """
-    return LA.normalize( δr(x1, x2)) # note this doesnt work with tuple.... can't divide...
+    return LA.normalize(δr(x1, x2))
 end
 
 
-@inline function n̂(
-    r_hat::Union{AbstractVector{FT}, SA.SVector{N, FT}, NTuple{N, FT}},
-) where {FT, N}
+@inline function n̂(r_hat::AbstractVector{FT}) where {FT}
     """
     Return the transverse (perpendicular) unit vector given the longitudinal unit vector r_hat.
     In 2D: n̂ = [r_hat[2], -r_hat[1]]
@@ -92,10 +81,7 @@ end
     end
 end
 
-@inline function n̂(
-    x1::Union{AbstractVector{FT1}, SA.SVector{N, FT1}, NTuple{N, FT1}},
-    x2::Union{AbstractVector{FT2}, SA.SVector{N, FT2}, NTuple{N, FT2}},
-) where {FT1, FT2, N}
+@inline function n̂(x1, x2)
     """
     Return the transverse (perpendicular) unit vector from  x to y
     Calling this  n̂ is opposite of Lindberg and Cho notation, but idk...
@@ -105,10 +91,7 @@ end
 end
 
 
-@inline function magnitude_δu_longitudinal(
-    δu::Union{AbstractVector{FT1}, SA.SVector{N, FT1}, NTuple{N, FT1}},
-    r_hat::Union{AbstractVector{FT2}, SA.SVector{N, FT2}, NTuple{N, FT2}},
-) where {FT1, FT2, N}
+@inline function magnitude_δu_longitudinal(δu, r_hat)
     """
     Return the longitudinal component of u (along the vector)
     Left to the user to ensure r_hat has norm 1
@@ -116,10 +99,7 @@ end
     return LA.dot(δu, r_hat) # r_hat is unit vector so just dot product
 end
 
-@inline function δu_longitudinal(
-    δu::Union{AbstractVector{FT1}, SA.SVector{N, FT1}, NTuple{N, FT1}},
-    r_hat::Union{AbstractVector{FT2}, SA.SVector{N, FT2}, NTuple{N, FT2}},
-) where {FT1, FT2, N}
+@inline function δu_longitudinal(δu, r_hat)
     """
     Return the longitudinal component of u (along the vector)
     Left to the user to ensure r_hat has norm 1
@@ -127,10 +107,7 @@ end
     return magnitude_δu_longitudinal(δu, r_hat) * r_hat
 end
 
-@inline function magnitude_δu_transverse(
-    δu::Union{AbstractVector{FT1}, SA.SVector{N, FT1}, NTuple{N, FT1}},
-    r_hat::Union{AbstractVector{FT2}, SA.SVector{N, FT2}, NTuple{N, FT2}},
-) where {FT1, FT2, N}
+@inline function magnitude_δu_transverse(δu, r_hat)
     """
     Return the magnitude of the transverse component of u (perpendicular to the vector) relative to the normal vector...
     Left to the user to ensure r_hat has norm 1
@@ -139,10 +116,7 @@ end
     return LA.dot(δu, n̂(r_hat)) 
 end
 
-@inline function δu_transverse(
-    δu::Union{AbstractVector{FT1}, SA.SVector{N, FT1}, NTuple{N, FT1}},
-    r_hat::Union{AbstractVector{FT2}, SA.SVector{N, FT2}, NTuple{N, FT2}},;
-) where {FT1, FT2, N}
+@inline function δu_transverse(δu, r_hat)
     """
     Return the transverse component of u (perpendicular to the vector)
     Left to the user to ensure r_hat (and local_unit_vertical) has norm 1
