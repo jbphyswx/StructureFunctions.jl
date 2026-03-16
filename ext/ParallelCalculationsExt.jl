@@ -19,20 +19,25 @@ const StructureFunctionTypes = SF.StructureFunctionTypes
 export parallel_calculate_structure_function 
 
 function Calculations.parallel_calculate_structure_function(
-    x_vecs::NTuple{N, <:Union{ShA.SharedVector{FT1}, SA.SVector{N2, FT1}}}, # Tuple{Vararg{Vector{FT},N}} # I think this is faster than array cause then we have columns only
-    u_vecs::NTuple{N, <:Union{ShA.SharedVector{FT2}, SA.SVector{N2, FT2}}}, # Tuple{Vararg{Vector{FT},N}}
-    distance_bins::SA.SVector{N3, Tuple{FT3, FT3}},
-    structure_function_type::StructureFunctionTypes.AbstractStructureFunctionType; # add N here?
+    x_vecs::Tuple{T1, Vararg{T1}},
+    u_vecs::Tuple{T2, Vararg{T2}},
+    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    structure_function_type::StructureFunctionTypes.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1, FT2, FT3, N, N2, N3}
+) where {T1, T2, FT3}
+    N = length(x_vecs)
+    N3 = length(distance_bins)
 
 
-    distance_bins_vec = SA.SVector{length(distance_bins) + 1, FT3}(
-        [[distance_bin[1] for distance_bin in distance_bins]; [distance_bins[end][2]]]...,
-    ) # the start of each bin plus the ending
+    # Create a stable Vector for bins edges
+    distance_bins_vec = Vector{FT3}(undef, N3 + 1)
+    for k in 1:N3
+        distance_bins_vec[k] = distance_bins[k][1]
+    end
+    distance_bins_vec[end] = distance_bins[end][2]
 
     if verbose
         @info("calculating structure function")
@@ -64,8 +69,8 @@ end
 
 
 function Calculations.parallel_calculate_structure_function(
-    x_vecs::NTuple{N, <:Union{ShA.SharedVector{FT1}, SA.SVector{N2, FT1}}}, # Tuple{Vararg{Vector{FT},N}} # I think this is faster than array cause then we have columns only
-    u_vecs::NTuple{N, <:Union{ShA.SharedVector{FT2}, SA.SVector{N2, FT2}}}, # Tuple{Vararg{Vector{FT},N}}
+    x_vecs::Tuple{T1, Vararg{T1}},
+    u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::Int,
     structure_function_type::StructureFunctionTypes.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
@@ -73,7 +78,8 @@ function Calculations.parallel_calculate_structure_function(
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1, FT2, N, N2}
+) where {T1, T2}
+    N = length(x_vecs)
     """
     Here we assume that the distance bins are evenly spaced
     However, we assume we cant store all the output pairs in memory (cause goes as len(x)^2
@@ -112,7 +118,7 @@ function Calculations.parallel_calculate_structure_function(
     FT3 = eltype(distance_bins)
     distance_bins = SA.SVector{n_distance_bins, Tuple{FT3, FT3}}(
         [(distance_bins[i], distance_bins[i + 1]) for i in 1:n_distance_bins]...,
-    ) # convert to tuples of the bin edges
+    )
 
 
     return Calculations.parallel_calculate_structure_function(

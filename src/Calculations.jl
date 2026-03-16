@@ -9,7 +9,6 @@ import ..StructureFunctionTypes: StructureFunctionTypes as SFT
 
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
-using SharedArrays: SharedArrays as ShA
 using Base.Threads: Threads
 using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization (Phase 3/4)
 
@@ -28,15 +27,19 @@ Consider using some sort of Intervals thingy for the intervals
     - probably shouldn't use sharedarrays as those can possibly fail w/ concurrent reads/writes
 """
 function calculate_structure_function(
-    x_vecs::NTuple{N, <:Union{NTuple{N2, FT1}, ShA.SharedVector{FT1}, SA.SVector{N2, FT1}, AbstractVector{FT1}}},
-    u_vecs::NTuple{N, <:Union{NTuple{N2, FT2}, ShA.SharedVector{FT2}, SA.SVector{N2, FT2}, AbstractVector{FT2}}},
-    distance_bins::SA.SVector{N3, Tuple{FT3, FT3}},
+    x_vecs::Tuple{T1, Vararg{T1}},
+    u_vecs::Tuple{T2, Vararg{T2}},
+    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
     structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1, FT2, FT3, N, N2, N3}
+) where {T1, T2, FT3}
+    N = length(x_vecs)
+    FT1 = eltype(T1)
+    FT2 = eltype(T2)
+    N3 = length(distance_bins)
     # calculate and bin and mean the pairwise distances
     # distances = pairwise(distance_metric, X, Y, dims=2) # will blow up if too big... so we're just doing the loop
 
@@ -47,9 +50,12 @@ function calculate_structure_function(
     output = zeros(OT, N3)
     counts = zeros(OT, N3)
 
-    distance_bins_vec = SA.SVector{length(distance_bins) + 1, FT3}(
-        [[distance_bin[1] for distance_bin in distance_bins]; [distance_bins[end][2]]]...,
-    ) # the start of each bin plus the ending
+    # Create a stable Vector for bins edges
+    distance_bins_vec = Vector{FT3}(undef, N3 + 1)
+    for k in 1:N3
+        distance_bins_vec[k] = distance_bins[k][1]
+    end
+    distance_bins_vec[end] = distance_bins[end][2]
 
     if verbose
         @info("calculating structure function")
@@ -84,12 +90,16 @@ end
 
 function calculate_structure_function_i(
     i::Int,
-    x_vecs::NTuple{N, <:Union{NTuple{N2, FT1}, ShA.SharedVector{FT1}, SA.SVector{N2, FT1}, AbstractVector{FT1}}},
-    u_vecs::NTuple{N, <:Union{NTuple{N2, FT2}, ShA.SharedVector{FT2}, SA.SVector{N2, FT2}, AbstractVector{FT2}}},
-    distance_bins_vec::SA.SVector{N3, FT3},
+    x_vecs::Tuple{T1, Vararg{T1}},
+    u_vecs::Tuple{T2, Vararg{T2}},
+    distance_bins_vec::AbstractVector{FT3},
     structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {FT1, FT2, FT3, N, N2, N3}
+) where {T1, T2, FT3}
+    N = length(x_vecs)
+    FT1 = eltype(T1)
+    FT2 = eltype(T2)
+    N3 = length(distance_bins_vec)
 
 
 
@@ -102,15 +112,16 @@ function calculate_structure_function_i(
     counts = zeros(OT, N3 - 1)
 
     iter_inds = eachindex(x_vecs[1]) 
-    X1 = SA.SVector{N, FT1}((x_vec[i] for x_vec in x_vecs)...)
-    U1 = SA.SVector{N, FT2}((u_vec[i] for u_vec in u_vecs)...)
+    # Use explicit N to help SVector inference
+    X1 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][i], Val(N)))
+    U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val(N)))
     
     # Iterate only over unique pairs where j > i to avoid double calculation
     LV.@simd for j in (i+1):last(iter_inds)
-        X2 = SA.SVector{N, FT1}((x_vec[j] for x_vec in x_vecs)...)
-        U2 = SA.SVector{N, FT2}((u_vec[j] for u_vec in u_vecs)...)
+        X2 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][j], Val(N)))
+        U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
 
-        @inbounds distance = distance_metric(X1, X2)
+        distance = distance_metric(X1, X2)
         bin = HF.digitize(distance, distance_bins_vec)
         @inbounds output[bin] += structure_function_type(U2 - U1, HF.r̂(X1, X2))
         @inbounds counts[bin] += 1
@@ -122,8 +133,8 @@ end
 
 
 function calculate_structure_function(
-    x_vecs::NTuple{N, <:Union{NTuple{N2, FT1}, ShA.SharedVector{FT1}, SA.SVector{N2, FT1}, AbstractVector{FT1}}}, # Tuple{Vararg{Vector{FT},N}} # I think this is faster than array cause then we have columns only
-    u_vecs::NTuple{N, <:Union{NTuple{N2, FT2}, ShA.SharedVector{FT2}, SA.SVector{N2, FT2}, AbstractVector{FT2}}}, # Tuple{Vararg{Vector{FT},N}}
+    x_vecs::Tuple{T1, Vararg{T1}},
+    u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::Int,
     structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
@@ -131,7 +142,8 @@ function calculate_structure_function(
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1, FT2, N, N2}
+) where {T1, T2}
+    N = length(x_vecs)
     """
     Here we assume that the distance bins are evenly spaced
     However, we assume we cant store all the output pairs in memory (cause goes as len(x)^2
@@ -185,21 +197,23 @@ end
 
 function minmax_i(
     i::Int,
-    x_vecs::NTuple{N, <:Union{NTuple{N2, FT}, ShA.SharedVector{FT}, SA.SVector{N2, FT}, AbstractVector{FT}}},
+    x_vecs::Tuple{T, Vararg{T}},
     distance_metric = DI.Euclidean(),
-) where {FT, N, N2}
+) where {T}
+    N = length(x_vecs)
+    FT = eltype(T)
     """ calculate, bin, and mean the pairwise distances """
 
 
     # preallocate output as vector of length of distance_bins
     min_distance, max_distance = Inf, 0
 
-    @inbounds X1 = SA.SVector{N, FT}((x_vec[i] for x_vec in x_vecs)...) # StaticArrays.sacollect(SVector{N, FT}, x_vec[i] for x_vec in x_vecs ) could be faster
+    @inbounds X1 = SA.SVector{N, FT}(ntuple(k -> x_vecs[k][i], Val(N)))
     for j in eachindex(x_vecs[1])
         if i != j
-            @inbounds X2 = SA.SVector{N, FT}((x_vec[j] for x_vec in x_vecs)...) # StaticArrays.sacollect(SVector{N, FT}, x_vec[i] for x_vec in x_vecs ) could be faster
+            @inbounds X2 = SA.SVector{N, FT}(ntuple(k -> x_vecs[k][j], Val(N)))
             # update the min and max distances
-            distance = distance_metric(X1, X2) # this is the slow part
+            distance = distance_metric(X1, X2) 
             if distance < min_distance
                 min_distance = distance
             elseif distance > max_distance
@@ -220,15 +234,16 @@ Array version (is slower lol)
 # array version seems to be slower lol, idk why (and we're even using views!)
 
 function calculate_structure_function(
-    x_arr::T1,
-    u_arr::T2,
-    distance_bins::SA.SVector{N3, Tuple{FT3, FT3}},
-    structure_function_type::SFT.AbstractStructureFunctionType; # add N here?
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1 <: Real, FT2 <: Real, FT3 <: Real, N3, T1 <:Union{ShA.SharedArray{FT1}, AbstractArray{FT1}}, T2 <:Union{ShA.SharedArray{FT2}, AbstractArray{FT2}}}
+) where {FT1 <: Real, FT2 <: Real, FT3 <: Real}
+    N3 = length(distance_bins)
     # calculate and bin and mean the pairwise distances
     # distances = pairwise(distance_metric, X, Y, dims=2) # will blow up if too big... so we're just doing the loop
 
@@ -236,9 +251,12 @@ function calculate_structure_function(
     output = zeros(N3)
     counts = zeros(N3)
 
-    distance_bins_vec = SA.SVector{length(distance_bins) + 1, FT3}(
-        [[distance_bin[1] for distance_bin in distance_bins]; [distance_bins[end][2]]]...,
-    ) # the start of each bin plus the ending
+    # Create a stable Vector for bins edges
+    distance_bins_vec = Vector{FT3}(undef, N3 + 1)
+    for k in 1:N3
+        distance_bins_vec[k] = distance_bins[k][1]
+    end
+    distance_bins_vec[end] = distance_bins[end][2]
 
     if verbose
         @info("calculating structure function")
@@ -270,12 +288,13 @@ end
 
 function calculate_structure_function_i(
     i::Int,
-    x_arr::T1,
-    u_arr::T2,
-    distance_bins_vec::SA.SVector{N3, FT3},
-    structure_function_type::SFT.AbstractStructureFunctionType; # add N here?
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins_vec::AbstractVector{FT3},
+    structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {FT1 <: Real, FT2 <: Real, FT3 <: Real, N3, T1 <:Union{ShA.SharedArray{FT1}, AbstractArray{FT1}}, T2 <:Union{ShA.SharedArray{FT2}, AbstractArray{FT2}}}
+) where {FT1 <: Real, FT2 <: Real, FT3 <: Real}
+    N3 = length(distance_bins_vec)
 
 
     # preallocate output as vector of length of distance_bins (vector so it's mutable)
@@ -310,8 +329,8 @@ end
 
 
 function calculate_structure_function(
-    x_arr::T1,
-    u_arr::T2,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
     distance_bins::Int,
     structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
@@ -319,7 +338,7 @@ function calculate_structure_function(
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1 <: Real, FT2 <: Real, T1 <:Union{ShA.SharedArray{FT1}, AbstractArray{FT1}}, T2 <:Union{ShA.SharedArray{FT2}, AbstractArray{FT2}}}
+) where {FT1 <: Real, FT2 <: Real}
     """
     Here we assume that the distance bins are evenly spaced
     However, we assume we cant store all the output pairs in memory (cause goes as len(x)^2
@@ -373,9 +392,9 @@ end
 
 function minmax_i(
     i::Int,
-    x_arr::T1,
+    x_arr::AbstractArray{FT},
     distance_metric = DI.Euclidean(),
-) where {FT <: Real, T1 <:Union{ShA.SharedArray{FT}, AbstractArray{FT}}}
+) where {FT <: Real}
     """ calculate, bin, and mean the pairwise distances """
 
 
@@ -439,12 +458,7 @@ end
 
 
 
-### ====================================================== ###
-### ====================================================== ###
-### ====================================================== ###
-
 
 function parallel_calculate_structure_function end # placeholder for parallel extension
-
 
 end
