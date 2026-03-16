@@ -11,7 +11,7 @@ using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using SharedArrays: SharedArrays as ShA
 using Base.Threads: Threads
-using LoopVectorization: LoopVectorization as LV
+using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization (Phase 3/4)
 
 export calculate_structure_function, parallel_calculate_structure_function
 

@@ -5,7 +5,7 @@ import ..HelperFunctions: HelperFunctions as HF
 
 abstract type AbstractStructureFunctionType end
 
-using LoopVectorization: LoopVectorization as LV
+using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization (Phase 3/4)
 
 # norm2_reg(x) = norm(x)^2 # faster? NO
 # norm_alt(x) = sqrt(sum(val->val^2,x)) # faster? NO
