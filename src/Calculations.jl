@@ -112,7 +112,7 @@ function calculate_structure_function_i(
 
         @inbounds distance = distance_metric(X1, X2)
         bin = HF.digitize(distance, distance_bins_vec)
-        @inbounds output[bin] += structure_function_type.method(U2 - U1, HF.r̂(X1, X2))
+        @inbounds output[bin] += structure_function_type(U2 - U1, HF.r̂(X1, X2))
         @inbounds counts[bin] += 1
     end
     return output, counts
@@ -300,7 +300,7 @@ function calculate_structure_function_i(
 
             @inbounds distance = distance_metric(X1, X2) # this is the slow part
             bin = HF.digitize(distance, distance_bins_vec) # this will fail when the the distance value equals the smallest bin's smallest edge due to the way digitize works, we could add a handler here but we extended the smallest bin to be the next smallest float so this shouldn't happen
-            @inbounds output[bin] += structure_function_type.method(U2 - U1, HF.r̂(X1, X2))
+            @inbounds output[bin] += structure_function_type(U2 - U1, HF.r̂(X1, X2))
             @inbounds counts[bin] += 1
         end
     end
