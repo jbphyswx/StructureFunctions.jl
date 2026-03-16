@@ -155,11 +155,11 @@ end
 end
 
 
-δu_l = δu_longitudinal
-δu_t = δu_transverse
+const δu_l = δu_longitudinal
+const δu_t = δu_transverse
 
-mδu_l = magnitude_δu_longitudinal
-mδu_t = magnitude_δu_transverse
+const mδu_l = magnitude_δu_longitudinal
+const mδu_t = magnitude_δu_transverse
 
 
 
