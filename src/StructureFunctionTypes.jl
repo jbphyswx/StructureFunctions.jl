@@ -4,6 +4,7 @@ using LinearAlgebra: LinearAlgebra as LA
 import ..HelperFunctions: HelperFunctions as HF
 
 abstract type AbstractStructureFunctionType end
+@inline (sf::AbstractStructureFunctionType)(δu, r̂) = sf.method(δu, r̂) # Functor dispatch
 
 using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization (Phase 3/4)
 
