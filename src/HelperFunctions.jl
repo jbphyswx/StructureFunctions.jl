@@ -71,11 +71,11 @@ end
     ND::Int = length(r_hat)
 
     if ND == 2
-        return LA.normalize(typeof(r_hat)([r_hat[2], -r_hat[1]]))
+        return LA.normalize(SA.SVector{2, FT}(r_hat[2], -r_hat[1]))
     elseif ND == 3
-        k_hat = SA.@SVector FT[0, 0, 1]
+        k_hat = SA.SVector{3, FT}(0, 0, 1)
         # Lindberg and Cho defined this order in NH and opposite in SH but we're just doing the same for both
-        return LA.normalize(LA.cross(SA.SVector{3, FT}(r_hat...), k_hat))
+        return LA.normalize(LA.cross(SA.SVector{3, FT}(r_hat[1], r_hat[2], r_hat[3]), k_hat))
     else
         error("Only 2D and 3D supported")
     end

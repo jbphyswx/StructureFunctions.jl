@@ -1,6 +1,7 @@
 module StructureFunctions # `using StructureFunctions`` should work `@everywhere` automatically... hopefully the methods and extensinos below follow...
 
 using StaticArrays: StaticArrays as SA
+import PrecompileTools
 abstract type AbstractStructureFunction end
 
 # using Distributed
@@ -12,7 +13,20 @@ include("StructureFunctionTypes.jl")
 include("Calculations.jl")
 include("SpectralAnalysis.jl")
 
+using .HelperFunctions
+using .StructureFunctionTypes
+using .Calculations
+using .SpectralAnalysis
+
+# Re-export key APIs
+export calculate_structure_function
+export LongitudinalSecondOrderStructureFunction, TransverseSecondOrderStructureFunction
+export SecondOrderStructureFunction, ThirdOrderStructureFunction
+export DiagonalConsistentThirdOrderStructureFunction, DiagonalInconsistentThirdOrderStructureFunction
+export OffDiagonalConsistentThirdOrderStructureFunction, OffDiagonalInconsistentThirdOrderStructureFunction
 export SpectralAnalysis
+export DirectSumBackend, FINUFFTBackend, FFTBackend
+export calculate_spectrum
 
 
 # Define structure function type that holds structure functions of different orders for diffrent radii or radii bins
@@ -55,7 +69,11 @@ end
 #     @require Distributed="8ba89e20-285c-5b6f-9357-94700520ee1b" begin # maybe this always works because Distributed is in the extension?
 #         println(pkgdir(Distributed))
 #         include("ParallelCalculations.jl") # This seems to be almost twice as fast as the extension, not sure why...
-#     end
 # end
+# end
+
+PrecompileTools.@setup_workload begin
+    include("precompile.jl")
+end
 
 end

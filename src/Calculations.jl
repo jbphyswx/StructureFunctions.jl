@@ -114,14 +114,19 @@ function calculate_structure_function_i(
     counts = zeros(OT, N3 - 1)
 
     iter_inds = eachindex(x_vecs[1]) 
-    # Use explicit N to help SVector inference
-    X1 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][i], Val(N)))
-    U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val(N)))
+    
+    # PERFORMANCE NOTE: Converting to SVector at the loop boundary (hoisting)
+    # is critical for zero heap-allocations in the inner loop. 
+    # v2 - v1 on SubArrays/Vectors triggers heap temporaries via broadcasting.
+    # SVector arithmetic is handled entirely on the stack/CPU registers.
+    # We load U1/X1 once here to avoid redundant memory access in the j-loop.
+    X1 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][i], Val{N}()))
+    U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val{N}()))
     
     # Iterate only over unique pairs where j > i to avoid double calculation
     for j in (i+1):last(iter_inds)
-        X2 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][j], Val(N)))
-        U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
+        X2 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][j], Val{N}()))
+        U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val{N}()))
 
         distance = distance_metric(X1, X2)
         bin = HF.digitize(distance, distance_bins_vec)
@@ -212,10 +217,10 @@ function minmax_i(
     # preallocate output as vector of length of distance_bins
     min_distance, max_distance = Inf, 0
 
-    @inbounds X1 = SA.SVector{N, FT}(ntuple(k -> x_vecs[k][i], Val(N)))
+    @inbounds X1 = SA.SVector{N, FT}(ntuple(k -> x_vecs[k][i], Val{N}()))
     for j in eachindex(x_vecs[1])
         if i != j
-            @inbounds X2 = SA.SVector{N, FT}(ntuple(k -> x_vecs[k][j], Val(N)))
+            @inbounds X2 = SA.SVector{N, FT}(ntuple(k -> x_vecs[k][j], Val{N}()))
             # update the min and max distances
             distance = distance_metric(X1, X2) 
             if distance < min_distance
@@ -268,8 +273,11 @@ function calculate_structure_function(
 
     iter_inds = axes(x_arr,2) # these should all match..., idk if doing 1:N2 is faster but the indexing could be shifted...
     # iter_inds = axes(x_arr,1) # these should all match..., idk if doing 1:N2 is faster but the indexing could be shifted...
-    PM.@showprogress enabled = show_progress for i in iter_inds # is this the fast order?
-        _output, _counts = calculate_structure_function_i(
+    N = size(x_arr, 1)
+    vN = if N == 1 Val{1}() elseif N == 2 Val{2}() elseif N == 3 Val{3}() else Val(N) end
+        PM.@showprogress enabled = show_progress for i in iter_inds 
+            _output, _counts = calculate_structure_function_i(
+                vN,
             i,
             x_arr,
             u_arr,
@@ -291,40 +299,41 @@ function calculate_structure_function(
 end
 
 function calculate_structure_function_i(
+    ::Val{N},
     i::Int,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
     distance_bins_vec::AbstractVector{FT3},
     structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {FT1 <: Real, FT2 <: Real, FT3 <: Real}
+) where {N, FT1 <: Real, FT2 <: Real, FT3 <: Real}
     N3 = length(distance_bins_vec)
-
 
     # preallocate output as vector of length of distance_bins (vector so it's mutable)
     output = zeros(N3 - 1)
     counts = zeros(N3 - 1)
 
+    iter_inds = axes(x_arr,2) 
+    
+    # PERFORMANCE NOTE: Converting to SVector at the loop boundary (hoisting)
+    # is critical for zero heap-allocations in the inner loop. 
+    # v2 - v1 on SubArrays/Vectors triggers heap temporaries via broadcasting.
+    # SVector arithmetic is handled entirely on the stack/CPU registers.
+    # We load U1/X1 once here to avoid redundant memory access in the j-loop.
+    X1 = SA.SVector{N, FT1}(ntuple(k -> x_arr[k, i], Val{N}()))
+    U1 = SA.SVector{N, FT2}(ntuple(k -> u_arr[k, i], Val{N}()))
 
-    iter_inds = axes(x_arr,2) # these should all match..., idk if doing 1:N2 is faster but the indexing could be shifted...
-    # iter_inds = axes(x_arr,1) # these should all match..., idk if doing 1:N2 is faster but the indexing could be shifted...
-    X1 = @view(x_arr[:, i]) # column major faster right?
-    U1 = @view(u_arr[:, i])
-    # X1 = @view(x_arr[i, :]) # column major faster right?
-    # U1 = @view(u_arr[i, :])
+    for j in iter_inds
+        if i != j 
+            X2 = SA.SVector{N, FT1}(ntuple(k -> x_arr[k, j], Val{N}()))
+            U2 = SA.SVector{N, FT2}(ntuple(k -> u_arr[k, j], Val{N}()))
 
-
-    LV.@simd for j in iter_inds
-        if i != j # this has δx and δu = 0, so we skip it
-            X2 = @view(x_arr[:, j])
-            U2 = @view(u_arr[:, j])
-            # X2 = @view(x_arr[j, :])
-            # U2 = @view(u_arr[j, :])
-
-            @inbounds distance = distance_metric(X1, X2) # this is the slow part
-            bin = HF.digitize(distance, distance_bins_vec) # this will fail when the the distance value equals the smallest bin's smallest edge due to the way digitize works, we could add a handler here but we extended the smallest bin to be the next smallest float so this shouldn't happen
-            @inbounds output[bin] += structure_function_type(U2 - U1, HF.r̂(X1, X2))
-            @inbounds counts[bin] += 1
+            distance = distance_metric(X1, X2) 
+            bin = HF.digitize(distance, distance_bins_vec) 
+            if 1 <= bin < N3
+                @inbounds output[bin] += structure_function_type(U2 - U1, HF.r̂(X1, X2))
+                @inbounds counts[bin] += 1
+            end
         end
     end
     return output, counts

@@ -384,7 +384,7 @@ Each commit below is intentionally small and reviewable.
 4. Commit E4: implement direct exponential-sum backend.
 5. Commit E5: add parity tests and normalization/phase docs.
 
-## Block F: Synthetic Dataset & Full Test Expansion [COMPLETE]
+## Block F: Synthetic Dataset & Full Test Expansion
 
 1. Commit F1: Implement Non-Uniform Domain (Mercator-ish) & Deterministic Field Generator.
 2. Commit F2: Implement Tiered Spectral Verification Engine with `CairoMakie` extension for visual diagnostics.
@@ -557,6 +557,16 @@ All items below must be true:
     - [x] Commit 9796854: implement direct exponential-sum backend.
     - [x] Commit 9796854: add parity tests and fix scaling/normalization.
 
+## Phase 6: Synthetic Dataset & Full Test Expansion (Block F) [DONE]
+- **Goal**: Implement deterministic verification engine and robust SF E2E suite.
+- **Milestones**:
+    - [x] Commit 9d6bd2c: add deterministic spectral signal generator and tiered verification loop.
+    - [x] Commit 9d6bd2c: integrate CairoMakie for visual spectral recovery diagnostics.
+    - [x] Commit 2f1a3b4: implement exhaustive input matrix test factory.
+    - [x] Commit 210dc16: implement Structure Function E2E suite with threading stability fixes.
+    - [x] Commit 210dc16: add deep stability checks for AD and collinear points.
+    - [x] Commit 210dc16: standardize Fourier convention and finalize documentation.
+
 - 2026-03-16:
   - **Commit 9796854 (Block E)**:
     - **Submodule Architecture**: Introduced the `SpectralAnalysis` submodule as a dedicated domain for Fourier-based analysis. This keeps the top-level `StructureFunctions` namespace clean and provides a clear separation of concerns between structure functions and spectral power density calculations.
@@ -573,3 +583,9 @@ All items below must be true:
     - **Fourier Sign Standardization**: Standardized the default transform convention to $e^{-ikx}$ (forward) across all backends. This ensures that physical signals $e^{imkx}$ recovered with the forward transform consistently peak at wavenumber $+k$, simplifying verification and conforming to standard Fourier library expectations.
     - **Exhaustive Input Coverage**: Implemented `test/test_phase6_inputs.jl` which validates the API against `SA.SVector` coordinates, `SubArray` views, multiple fields (NU > 1), and complex-valued fields.
     - **Robustness Fixes**: Resolved `DimensionMismatch` in `SVector` conversion and achieved bit-parity for views in `FINUFFT` and `FFTW` extensions.
+  - **Commit 210dc16 (Block F4-F6)**:
+    - **Structure Function E2E Suite**: Implemented `test/test_phase6_sf_e2e.jl` which validates 11+ SF types on both uniform and scattered datasets.
+    - **Segfault & Threading Resolution**: Fixed a critical memory safety issue in the parallel calculation loop caused by out-of-bounds indexing in `digitize`. Stabilized multithreading by introducing `ReentrantLock` for the shared output accumulation.
+    - **Deep Stability Verification**: Implemented `test/test_phase6_stability.jl` to verify AD compatibility using `MockDual` and robustness to degenerate/collinear point configurations.
+    - **Visual Diagnostics**: Enhanced the `CairoMakie` extension to include input field visualizations in spectral diagnostic subplots, providing a "ground truth to recovery" verification chain.
+    - **Project Cleanup**: Finalized documentation in `README.md` and `test/plots/README.md`, and updated the project modernization plan.
