@@ -35,5 +35,28 @@ using StaticArrays
         r̂ = SVector{2, Float64}(1.0, 0.0)
         @test_opt HF.magnitude_δu_longitudinal(δu, r̂)
         @test_call HF.magnitude_δu_longitudinal(δu, r̂)
+        
+        # Test 2D and 3D paths in n̂
+        r̂2 = SVector{2, Float64}(1.0, 0.0)
+        r̂3 = SVector{3, Float64}(1.0, 0.0, 0.0)
+        δu2 = SVector{2, Float64}(1.0, 1.0)
+        @test_opt HF.n̂(r̂2)
+        @test_opt HF.n̂(r̂3)
+        @test_opt HF.δu_longitudinal(δu2, r̂2)
+        @test_opt HF.δu_transverse(δu2, r̂2)
+    end
+
+    @testset "StructureFunctionTypes" begin
+        δu = SVector{2, Float64}(1.0, 1.0)
+        r̂ = SVector{2, Float64}(1.0, 0.0)
+        for (name, sft) in SFT.SF_TYPE_MAP
+            # Skip unimplemented types that would cause JET errors
+            if name in [:RotationalSecondOrderStructureFunction, :DivergentSecondOrderStructureFunction]
+                continue
+            end
+            instance = sft()
+            @test_opt instance(δu, r̂)
+            @test_call instance(δu, r̂)
+        end
     end
 end
