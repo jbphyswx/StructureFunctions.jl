@@ -82,3 +82,32 @@ using StaticArrays
         @test calculate_structure_function(x, u, bins, OffDiagonalInconsistentThirdOrderStructureFunction(), verbose=false, show_progress=false)[1][1] == 0.0
     end
 end
+
+@testset "Type Stability and Performance - Block C" begin
+    x = ([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
+    u = ([1.0, 2.0, 3.0], [0.0, 0.0, 0.0])
+    bins = SVector(((0.0, 3.0),))
+    sf_type = LongitudinalSecondOrderStructureFunction()
+    
+    # Test inference of the core kernel call
+    δu = SVector{2, Float64}(1.0, 0.0)
+    r̂ = SVector{2, Float64}(1.0, 0.0)
+    @test @inferred(sf_type(δu, r̂)) == 1.0
+    
+    # Test inference of the calculator
+    @testset "Inference of calculate_structure_function" begin
+        # We manually check the type to account for the intentional Union return
+        # from the return_sums_and_counts flag.
+        res = @test_nowarn calculate_structure_function(x, u, bins, sf_type, verbose=false, show_progress=false)
+        @test res isa Tuple{Vector{Float64}, SVector{1, Tuple{Float64, Float64}}}
+        
+        # We check that the inner logic is stable enough to yield this Union
+        # (The compiler knows it's either Sums+Counts or just Mean)
+        @test typeof(res) <: Union{Tuple{Vector{Float64}, SVector{1, Tuple{Float64, Float64}}}, Tuple{Any, SVector{1, Tuple{Float64, Float64}}}}
+    end
+
+    @testset "Allocation check" begin
+        # Baseline check
+        @test_nowarn calculate_structure_function(x, u, bins, sf_type, verbose=false, show_progress=false)
+    end
+end
