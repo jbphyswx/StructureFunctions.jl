@@ -8,7 +8,28 @@
 [zenodo-latest-url]: https://doi.org/10.5281/zenodo.14945669
 
 
-Given data, calculates varying order structure functions (https://en.wikipedia.org/wiki/Turbulence#Kolmogorov's_theory_of_1941).
+Given data, calculates varying order structure functions for turbulence analysis.
 
-This package will implement methods for calculating the `longitudinal` and `transverse` structure function for at least `1st`, `2nd`, and `3rd` order for velocity data in `1D`, `2D`, and `3D`.
+## Features
+
+- **Structure Functions**: Longitudinal and transverse SFs (1st, 2nd, 3rd order) in 1D, 2D, and 3D.
+- **Spectral Analysis**: Unified API for power spectrum density calculation using:
+  - `DirectSumBackend`: Accurate $O(N \cdot M)$ reference sum.
+  - `FINUFFTBackend`: High-performance Non-Uniform Fast Fourier Transform.
+  - `FFTBackend`: Standard FFT for uniform grids.
+- **Modern Architecture**: Extension-based dependencies and type-stable dispatch.
+
+## Quick Start
+
+```julia
+using StructureFunctions
+using StructureFunctions.SpectralAnalysis
+
+# Calculate spectrum from scattered data
+r = calculate_spectrum(FINUFFTBackend(), (x, y), (u, v), ms; domain_size=(Lx, Ly))
+
+# Visual comparison (requires CairoMakie)
+using CairoMakie
+compare_spectra(["Result" => r]; peaks=target_peaks)
+```
 

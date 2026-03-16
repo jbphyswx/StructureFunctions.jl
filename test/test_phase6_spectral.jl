@@ -49,7 +49,7 @@ using .SyntheticData
         
         # Consolidate Diagnostic Plot
         sym_peaks = vcat(peaks, [(-p[1], -p[2], p[3]) for p in peaks])
-        fig = compare_spectra([
+        fig = compare_spectral_analysis(((xv, yv), (real(u),)), [
             "Direct Sum" => r_direct,
             "FINUFFT"    => r_nufft,
             "FFTW (FFT)" => r_fft
@@ -79,7 +79,7 @@ using .SyntheticData
         
         # Mark both k and -k peaks for real(u)
         sym_peaks = vcat(peaks, [(-p[1], -p[2], p[3]) for p in peaks])
-        fig = compare_spectra([
+        fig = compare_spectral_analysis(((xs, ys), (real(u),)), [
             "Direct Sum (Scattered)" => r_direct,
             "FINUFFT (Scattered)"    => r_nufft
         ]; peaks=sym_peaks, title="Scattered Grid Parity (u=real, noise=0.05)")
@@ -112,7 +112,7 @@ using .SyntheticData
         @test abs(c_nufft[idx1, idx2, 1]) > 0.45 # Dominant peak
         
         sym_peaks = vcat(peaks, [(-p[1], -p[2], p[3]) for p in peaks])
-        fig = compare_spectra([
+        fig = compare_spectral_analysis(((xs, ys), (real(us),)), [
             "NUFFT (Scattered Samples)" => r_nufft,
             "Direct Sum (Ground Truth)" => r_direct
         ]; peaks=sym_peaks, title="Sampling Validation (Scattered vs Truth)")

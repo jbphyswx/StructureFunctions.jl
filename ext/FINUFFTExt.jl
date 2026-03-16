@@ -65,11 +65,11 @@ function SA_mod._calculate_spectrum_nufft(
         coeffs_k = zeros(Complex{FT}, ms...)
         
         if D == 1
-            FINUFFT.nufft1d1!(xs[1], uk, iflag, eps, coeffs_k)
+            FINUFFT.nufft1d1!(xs[1], uk, -iflag, eps, coeffs_k)
         elseif D == 2
-            FINUFFT.nufft2d1!(xs[1], xs[2], uk, iflag, eps, coeffs_k)
+            FINUFFT.nufft2d1!(xs[1], xs[2], uk, -iflag, eps, coeffs_k)
         elseif D == 3
-            FINUFFT.nufft3d1!(xs[1], xs[2], xs[3], uk, iflag, eps, coeffs_k)
+            FINUFFT.nufft3d1!(xs[1], xs[2], xs[3], uk, -iflag, eps, coeffs_k)
         else
             error("FINUFFT only supports up to 3D")
         end
@@ -83,7 +83,8 @@ function SA_mod._calculate_spectrum_nufft(
     for d in 1:D
         k_vec = ks[d]
         L = ranges[d]
-        phase = exp.(im .* iflag .* k_vec .* (offsets[d] * FT(2π) / L))
+        # Since we use -iflag in nufft, we must use -iflag in the phase shift
+        phase = exp.(im .* (-iflag) .* k_vec .* (offsets[d] * FT(2π) / L))
         if D == 1
             for k in 1:NU
                 coeffs[:, k] .*= phase

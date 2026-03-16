@@ -63,8 +63,8 @@ function calculate_structure_function(
 
     iter_inds = eachindex(x_vecs[1]) # these should all match..., idk if doing 1:N2 is faster but the indexing could be shifted...
     # PM.@showprogress enabled = show_progress for i in iter_inds # is this the fast order?
-    Threads.@threads for i::Int64 in iter_inds # is this the fast order?
-    # @threads for i::Int64 in 1:length(x_vecs[1])::Int64 # is this the fast order?
+    lock = Threads.ReentrantLock()
+    Threads.@threads for i::Int64 in iter_inds
         _output, _counts = calculate_structure_function_i(
             i,
             x_vecs,
@@ -73,8 +73,10 @@ function calculate_structure_function(
             structure_function_type;
             distance_metric = distance_metric,
         )
-        output .+= _output
-        counts .+= _counts
+        Threads.lock(lock) do
+            output .+= _output
+            counts .+= _counts
+        end
     end
 
     if return_sums_and_counts # just return the sums and the counts, don't take the mean in each bin...
@@ -117,14 +119,16 @@ function calculate_structure_function_i(
     U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val(N)))
     
     # Iterate only over unique pairs where j > i to avoid double calculation
-    LV.@simd for j in (i+1):last(iter_inds)
+    for j in (i+1):last(iter_inds)
         X2 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][j], Val(N)))
         U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
 
         distance = distance_metric(X1, X2)
         bin = HF.digitize(distance, distance_bins_vec)
-        @inbounds output[bin] += structure_function_type(U2 - U1, HF.r̂(X1, X2))
-        @inbounds counts[bin] += 1
+        if 1 <= bin < N3
+            @inbounds output[bin] += structure_function_type(U2 - U1, HF.r̂(X1, X2))
+            @inbounds counts[bin] += 1
+        end
     end
     return output, counts
 end

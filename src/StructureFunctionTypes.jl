@@ -8,8 +8,8 @@ abstract type AbstractStructureFunctionType end
 using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization (Phase 3/4)
 
 @inline @fastmath @inbounds norm2(x) = begin
-    out::eltype(x) = zero(eltype(x))
-    LV.@tturbo warn_check_args=false for i in eachindex(x)
+    out = zero(eltype(x))
+    for i in eachindex(x)
         @inbounds @fastmath out +=  x[i]^2
     end
     return out

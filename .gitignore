@@ -43,4 +43,4 @@ __pycache__
 
 # ipynb
 .ipynb_checkpoints/
-.ipynb*
+.ipynb*test/plots/
