@@ -56,6 +56,18 @@ end
     """
     searchsortedfirst(bins, x) - 1
 end
+
+"""
+    midpoints(bins)
+
+Convert a collection of bin edges (tuples) to their midpoints. Internal helper.
+"""
+function midpoints(bins::AbstractVector{Tuple{T, T}}) where {T <: Number}
+    return [(b[1] + b[2]) / 2 for b in bins]
+end
+
+midpoints(v::AbstractVector{<:Number}) = v
+
 @inline function digitize(x::AbstractVector, bins::AbstractVector)
     """
     Return the indices of the bins that x belongs to
