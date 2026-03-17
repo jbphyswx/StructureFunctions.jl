@@ -9,12 +9,15 @@ using Base.Threads: Threads
 
 import ..HelperFunctions: HelperFunctions as HF
 
-export calculate_spectrum, DirectSumBackend, FINUFFTBackend, FFTBackend, plot_spectrum, compare_spectra, compare_spectral_analysis
+export calculate_spectrum, gpu_calculate_spectrum, DirectSumBackend, FINUFFTBackend, FFTBackend, plot_spectrum, compare_spectra, compare_spectral_analysis
 
 abstract type AbstractSpectralBackend end
 struct DirectSumBackend <: AbstractSpectralBackend end
 struct FINUFFTBackend <: AbstractSpectralBackend end
 struct FFTBackend <: AbstractSpectralBackend end
+
+# Stub for GPU extension
+function gpu_calculate_spectrum end
 
 """
     calculate_spectrum([backend], x_vecs::Tuple, u_vecs::Tuple, ms::Tuple; kwargs...)
