@@ -152,8 +152,49 @@ function SFC.gpu_calculate_structure_function(
     x_mat::AbstractMatrix{FT},
     u_mat::AbstractMatrix{FT},
     distance_bins::AbstractVector{FT};
-    workgroup_size::Int = 64,
+    return_sums_and_counts::Bool = false,
+    kwargs...,
 ) where {FT}
+    return SFC.gpu_calculate_structure_function(
+        sf_type,
+        backend,
+        x_mat,
+        u_mat,
+        distance_bins,
+        Val(return_sums_and_counts);
+        kwargs...,
+    )
+end
+
+function SFC.gpu_calculate_structure_function(
+    sf_type::SFT.AbstractStructureFunctionType,
+    backend::KA.Backend,
+    x_mat::AbstractMatrix{FT},
+    u_mat::AbstractMatrix{FT},
+    distance_bins::AbstractVector{FT},
+    ::Val{RSAC};
+    kwargs...,
+) where {FT, RSAC}
+    return _gpu_calculate_structure_function_core(
+        sf_type,
+        backend,
+        x_mat,
+        u_mat,
+        distance_bins,
+        Val(RSAC);
+        kwargs...,
+    )
+end
+
+function _gpu_calculate_structure_function_core(
+    sf_type::SFT.AbstractStructureFunctionType,
+    backend::KA.Backend,
+    x_mat::AbstractMatrix{FT},
+    u_mat::AbstractMatrix{FT},
+    distance_bins::AbstractVector{FT},
+    ::Val{RSAC};
+    workgroup_size::Int = 64,
+) where {FT, RSAC}
     N_dims, N_points = size(x_mat)
     N_bins = length(distance_bins)
 
@@ -178,8 +219,6 @@ function SFC.gpu_calculate_structure_function(
     copyto!(u_dev, u3)
     copyto!(bins_dev, collect(distance_bins))
 
-    n_threads = N_points * N_points
-
     kernel! = _sf_kernel!(backend, workgroup_size)
     kernel!(
         out_dev, cnt_dev,
@@ -191,7 +230,20 @@ function SFC.gpu_calculate_structure_function(
     )
     KA.synchronize(backend)
 
-    return Array(out_dev), Array(cnt_dev)
+    output = Array(out_dev)
+    counts = Array(cnt_dev)
+
+    # Convert distance_bins edges to tuples for SF objects
+    bin_tuples = SA.SVector{N_bins-1, Tuple{FT, FT}}([(distance_bins[i], distance_bins[i+1]) for i in 1:N_bins-1]...)
+
+    if RSAC
+        return SF.StructureFunctionSumsAndCounts(sf_type, bin_tuples, output, counts)
+    else
+        counts_safe = copy(counts) # copy to avoid mutating the original counts
+        counts_safe[counts_safe .== 0] .= NaN # replace 0s with NaNs to avoid divide by 0 giving Inf
+        output_div = output ./ counts_safe
+        return SF.StructureFunction(sf_type, bin_tuples, output_div)
+    end
 end
 
 

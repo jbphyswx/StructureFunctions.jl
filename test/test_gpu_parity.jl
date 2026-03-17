@@ -22,19 +22,20 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
     sft = SF.StructureFunctionTypes.LongitudinalSecondOrderStructureFunction()
 
     # --- Reference: existing CPU implementation (tuple-of-vectors API) ---
-    # return_sums_and_counts=true → ((output, counts), distance_bins)
-    x_tup = Tuple(x[i, :] for i in 1:2)
-    u_tup = Tuple(u[i, :] for i in 1:2)
-
-    (ref_vals, ref_counts), _ = SFC.calculate_structure_function(
-        x_tup, u_tup, bin_tuples, sft;
+    res_ref = SFC.calculate_structure_function(
+        sft, x_tup, u_tup, bin_tuples;
         verbose = false, show_progress = false, return_sums_and_counts = true,
     )
+    ref_vals = res_ref.values
+    ref_counts = res_ref.counts
 
     # --- GPU extension (CPU backend for parity test) ---
-    gpu_vals, gpu_counts = SFC.gpu_calculate_structure_function(
-        KA.CPU(), x, u, bin_edges, sft,
+    res_gpu = SFC.gpu_calculate_structure_function(
+        sft, KA.CPU(), x, u, bin_edges;
+        return_sums_and_counts = true,
     )
+    gpu_vals = res_gpu.values
+    gpu_counts = res_gpu.counts
 
     Test.@test gpu_counts ≈ ref_counts  atol=0.0
     Test.@test gpu_vals   ≈ ref_vals    atol=1e-12
