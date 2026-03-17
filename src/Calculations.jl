@@ -6,6 +6,7 @@ using ProgressMeter: ProgressMeter as PM
 using Distances: Distances as DI
 using ..HelperFunctions: HelperFunctions as SFH
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
+using ..StructureFunctionObjects: StructureFunctionObjects as SFO
 
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
@@ -112,11 +113,11 @@ function calculate_structure_function(
     lock = Threads.ReentrantLock()
     Threads.@threads for i::Int64 in iter_inds
         _output, _counts = calculate_structure_function_i(
+            structure_function_type,
             i,
             x_vecs,
             u_vecs,
-            distance_bins_vec,
-            structure_function_type;
+            distance_bins_vec;
             distance_metric = distance_metric,
         )
         Threads.lock(lock) do
@@ -126,22 +127,23 @@ function calculate_structure_function(
     end
 
     if return_sums_and_counts # just return the sums and the counts, don't take the mean in each bin...
-        return (output, counts), distance_bins
+        return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, output, counts)
     else # do the mean in each bin.
-        counts[counts .== 0] .= NaN # replace 0s with NaNs to avoid divide by 0 giving Inf
-        output ./= counts
-        return output, distance_bins
+        counts_safe = copy(counts) # copy to avoid mutating the original counts
+        counts_safe[counts_safe .== 0] .= NaN # replace 0s with NaNs to avoid divide by 0 giving Inf
+        output_div = output ./ counts_safe
+        return SFO.StructureFunction(structure_function_type, distance_bins, output_div)
     end
 end
 
 
 
 function calculate_structure_function_i(
+    structure_function_type::SFT.AbstractStructureFunctionType,
     i::Int,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins_vec::AbstractVector{FT3},
-    structure_function_type::SFT.AbstractStructureFunctionType;
+    distance_bins_vec::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
 ) where {T1, T2, FT3}
     N = length(x_vecs)
@@ -324,33 +326,34 @@ function calculate_structure_function(
         PM.@showprogress enabled = show_progress for i in iter_inds 
             _output, _counts = calculate_structure_function_i(
                 vN,
-            i,
-            x_arr,
-            u_arr,
-            distance_bins_vec,
-            structure_function_type;
-            distance_metric = distance_metric,
-        )
+                structure_function_type,
+                i,
+                x_arr,
+                u_arr,
+                distance_bins_vec;
+                distance_metric = distance_metric,
+            )
         output .+= _output
         counts .+= _counts
     end
 
     if return_sums_and_counts # just return the sums and the counts, don't take the mean in each bin...
-        return (output, counts), distance_bins
+        return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, output, counts)
     else # do the mean in each bin.
-        counts[counts .== 0] .= NaN # replace 0s with NaNs to avoid divide by 0 giving Inf
-        output ./= counts
-        return output, distance_bins
+        counts_safe = copy(counts)
+        counts_safe[counts_safe .== 0] .= NaN # replace 0s with NaNs to avoid divide by 0 giving Inf
+        output_div = output ./ counts_safe
+        return SFO.StructureFunction(structure_function_type, distance_bins, output_div)
     end
 end
 
 function calculate_structure_function_i(
     ::Val{N},
+    structure_function_type::SFT.AbstractStructureFunctionType,
     i::Int,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins_vec::AbstractVector{FT3},
-    structure_function_type::SFT.AbstractStructureFunctionType;
+    distance_bins_vec::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
 ) where {N, FT1 <: Number, FT2 <: Number, FT3 <: Number}
     N3 = length(distance_bins_vec)

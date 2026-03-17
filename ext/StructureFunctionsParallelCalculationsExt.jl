@@ -45,21 +45,22 @@ function SFC.parallel_calculate_structure_function(
             x_vecs[1],
         )
             SFC.calculate_structure_function_i(
+                structure_function_type,
                 i,
                 x_vecs,
                 u_vecs,
-                distance_bins_vec,
-                structure_function_type;
+                distance_bins_vec;
                 distance_metric = distance_metric,
             )
         end
 
     if return_sums_and_counts
-        return (output, counts), distance_bins
+        return SF.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, output, counts)
     else
-        counts[counts .== 0] .= NaN # replace 0s with NaNs to avoid divide by 0 giving Inf
-        output ./= counts
-        return output, distance_bins
+        counts_safe = copy(counts)
+        counts_safe[counts_safe .== 0] .= NaN # replace 0s with NaNs to avoid divide by 0 giving Inf
+        output_div = output ./ counts_safe
+        return SF.StructureFunction(structure_function_type, distance_bins, output_div)
     end
 end
 
