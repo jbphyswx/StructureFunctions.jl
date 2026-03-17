@@ -213,15 +213,21 @@ function _calculate_structure_function_core(
     end
     distance_bins_vec[end] = distance_bins[end][2]
 
+    # Create thread-local buffers to eliminate lock contention and allocations per iteration
+    n_threads = Threads.nthreads()
+    local_outputs = [zeros(OT, N3) for _ in 1:n_threads]
+    local_counts = [zeros(OT, N3) for _ in 1:n_threads]
+
     if verbose
-        @info("calculating structure function")
+        @info("calculating structure function (parallel reduction)")
     end
 
-    iter_inds = eachindex(x_vecs[1]) # these should all match..., idk if doing 1:N2 is faster but the indexing could be shifted...
-    # PM.@showprogress enabled = show_progress for i in iter_inds # is this the fast order?
-    lock = Threads.ReentrantLock()
-    Threads.@threads for i::Int64 in iter_inds
-        _output, _counts = calculate_structure_function_i(
+    iter_inds = eachindex(x_vecs[1])
+    Threads.@threads for i in iter_inds
+        tid = Threads.threadid()
+        calculate_structure_function_i!(
+            local_outputs[tid],
+            local_counts[tid],
             structure_function_type,
             i,
             x_vecs,
@@ -229,10 +235,12 @@ function _calculate_structure_function_core(
             distance_bins_vec;
             distance_metric = distance_metric,
         )
-        Threads.lock(lock) do
-            output .+= _output
-            counts .+= _counts
-        end
+    end
+
+    # Global reduction from thread-local buffers
+    for tid in 1:n_threads
+        output .+= local_outputs[tid]
+        counts .+= local_counts[tid]
     end
 
     if RSAC # just return the sums and the counts, don't take the mean in each bin...
@@ -247,43 +255,28 @@ end
 
 
 
-function calculate_structure_function_i(
+function calculate_structure_function_i!(
+    output::AbstractVector{OT},
+    counts::AbstractVector{OT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     i::Int,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins_vec::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {T1, T2, FT3}
+) where {OT, T1, T2, FT3}
     N = length(x_vecs)
     FT1 = eltype(T1)
     FT2 = eltype(T2)
     N3 = length(distance_bins_vec)
 
-
-
-    # Commit A2: Fixed "double calculating" by iterating only over unique pairs (j > i).
-    # Removed BadImplementationError as this path is now considered correct.
-
-    # preallocate output as vector of length of distance_bins
-    OT = promote_type(float(FT1), float(FT2))
-    output = zeros(OT, N3 - 1)
-    counts = zeros(OT, N3 - 1)
-
+    X1 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][i], Val(N)))
+    U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val(N)))
+    
     iter_inds = eachindex(x_vecs[1]) 
-    
-    # PERFORMANCE NOTE: Converting to SVector at the loop boundary (hoisting)
-    # is critical for zero heap-allocations in the inner loop. 
-    # v2 - v1 on SubArrays/Vectors triggers heap temporaries via broadcasting.
-    # SVector arithmetic is handled entirely on the stack/CPU registers.
-    # We load U1/X1 once here to avoid redundant memory access in the j-loop.
-    X1 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][i], Val{N}()))
-    U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val{N}()))
-    
-    # Iterate only over unique pairs where j > i to avoid double calculation
     for j in (i+1):last(iter_inds)
-        X2 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][j], Val{N}()))
-        U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val{N}()))
+        X2 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][j], Val(N)))
+        U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
 
         distance = distance_metric(X1, X2)
         bin = SFH.digitize(distance, distance_bins_vec)
@@ -292,7 +285,7 @@ function calculate_structure_function_i(
             @inbounds counts[bin] += 1
         end
     end
-    return output, counts
+    return nothing
 end
 
 
@@ -460,26 +453,38 @@ function _calculate_structure_function_core(
     end
     distance_bins_vec[end] = distance_bins[end][2]
 
+    # Create thread-local buffers
+    n_threads = Threads.nthreads()
+    local_outputs = [zeros(n_threads) for _ in 1:n_threads] # Wait, N3 length...
+    local_outputs = [zeros(N3) for _ in 1:n_threads]
+    local_counts = [zeros(N3) for _ in 1:n_threads]
+
     if verbose
-        @info("calculating structure function")
+        @info("calculating structure function (parallel reduction)")
     end
 
-    iter_inds = axes(x_arr,2) # these should all match..., idk if doing 1:N2 is faster but the indexing could be shifted...
-    # iter_inds = axes(x_arr,1) # these should all match..., idk if doing 1:N2 is faster but the indexing could be shifted...
+    iter_inds = axes(x_arr, 2)
     N = size(x_arr, 1)
-    vN = if N == 1 Val{1}() elseif N == 2 Val{2}() elseif N == 3 Val{3}() else Val(N) end
-        PM.@showprogress enabled = show_progress for i in iter_inds 
-            _output, _counts = calculate_structure_function_i(
-                vN,
-                structure_function_type,
-                i,
-                x_arr,
-                u_arr,
-                distance_bins_vec;
-                distance_metric = distance_metric,
-            )
-        output .+= _output
-        counts .+= _counts
+    vN = if N == 1 Val(1) elseif N == 2 Val(2) elseif N == 3 Val(3) else Val(N) end
+
+    Threads.@threads for i in iter_inds
+        tid = Threads.threadid()
+        calculate_structure_function_i!(
+            local_outputs[tid],
+            local_counts[tid],
+            vN,
+            structure_function_type,
+            i,
+            x_arr,
+            u_arr,
+            distance_bins_vec;
+            distance_metric = distance_metric,
+        )
+    end
+
+    for tid in 1:n_threads
+        output .+= local_outputs[tid]
+        counts .+= local_counts[tid]
     end
 
     if RSAC # just return the sums and the counts, don't take the mean in each bin...
@@ -492,7 +497,9 @@ function _calculate_structure_function_core(
     end
 end
 
-function calculate_structure_function_i(
+function calculate_structure_function_i!(
+    output::AbstractVector{FT},
+    counts::AbstractVector{FT},
     ::Val{N},
     structure_function_type::SFT.AbstractStructureFunctionType,
     i::Int,
@@ -500,37 +507,26 @@ function calculate_structure_function_i(
     u_arr::AbstractArray{FT2},
     distance_bins_vec::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {N, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT, N, FT1 <: Number, FT2 <: Number, FT3 <: Number}
     N3 = length(distance_bins_vec)
-
-    # preallocate output as vector of length of distance_bins (vector so it's mutable)
-    output = zeros(N3 - 1)
-    counts = zeros(N3 - 1)
-
-    iter_inds = axes(x_arr,2) 
+    iter_inds = axes(x_arr, 2)
     
-    # PERFORMANCE NOTE: Converting to SVector at the loop boundary (hoisting)
-    # is critical for zero heap-allocations in the inner loop. 
-    # v2 - v1 on SubArrays/Vectors triggers heap temporaries via broadcasting.
-    # SVector arithmetic is handled entirely on the stack/CPU registers.
-    # We load U1/X1 once here to avoid redundant memory access in the j-loop.
-    X1 = SA.SVector{N, FT1}(ntuple(k -> x_arr[k, i], Val{N}()))
-    U1 = SA.SVector{N, FT2}(ntuple(k -> u_arr[k, i], Val{N}()))
+    X1 = SA.SVector{N, FT1}(ntuple(k -> x_arr[k, i], Val(N)))
+    U1 = SA.SVector{N, FT2}(ntuple(k -> u_arr[k, i], Val(N)))
 
-    for j in iter_inds
-        if i != j 
-            X2 = SA.SVector{N, FT1}(ntuple(k -> x_arr[k, j], Val{N}()))
-            U2 = SA.SVector{N, FT2}(ntuple(k -> u_arr[k, j], Val{N}()))
+    # Restore symmetry (j > i) for $O(N^2/2)$ performance
+    for j in (i+1):last(iter_inds)
+        X2 = SA.SVector{N, FT1}(ntuple(k -> x_arr[k, j], Val(N)))
+        U2 = SA.SVector{N, FT2}(ntuple(k -> u_arr[k, j], Val(N)))
 
-            distance = distance_metric(X1, X2) 
-            bin = SFH.digitize(distance, distance_bins_vec) 
-            if 1 <= bin < N3
-                @inbounds output[bin] += structure_function_type(U2 - U1, SFH.r̂(X1, X2))
-                @inbounds counts[bin] += 1
-            end
+        distance = distance_metric(X1, X2) 
+        bin = SFH.digitize(distance, distance_bins_vec) 
+        if 1 <= bin < N3
+            @inbounds output[bin] += structure_function_type(U2 - U1, SFH.r̂(X1, X2))
+            @inbounds counts[bin] += 1
         end
     end
-    return output, counts
+    return nothing
 end
 
 
