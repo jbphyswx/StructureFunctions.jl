@@ -79,11 +79,47 @@ function calculate_structure_function(
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector{<:Tuple{FT3, FT3}};
+    return_sums_and_counts::Bool = false,
+    kwargs...,
+) where {T1, T2, FT3}
+    return calculate_structure_function(
+        structure_function_type,
+        x_vecs,
+        u_vecs,
+        distance_bins,
+        Val(return_sums_and_counts);
+        kwargs...,
+    )
+end
+
+function calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_vecs::Tuple{T1, Vararg{T1}},
+    u_vecs::Tuple{T2, Vararg{T2}},
+    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    ::Val{RSAC};
+    kwargs...,
+) where {T1, T2, FT3, RSAC}
+    return _calculate_structure_function_core(
+        structure_function_type,
+        x_vecs,
+        u_vecs,
+        distance_bins,
+        Val(RSAC);
+        kwargs...,
+    )
+end
+
+function _calculate_structure_function_core(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_vecs::Tuple{T1, Vararg{T1}},
+    u_vecs::Tuple{T2, Vararg{T2}},
+    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    ::Val{RSAC};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
-    return_sums_and_counts = false,
-) where {T1, T2, FT3}
+) where {T1, T2, FT3, RSAC}
     N = length(x_vecs)
     FT1 = eltype(T1)
     FT2 = eltype(T2)
@@ -126,7 +162,7 @@ function calculate_structure_function(
         end
     end
 
-    if return_sums_and_counts # just return the sums and the counts, don't take the mean in each bin...
+    if RSAC # just return the sums and the counts, don't take the mean in each bin...
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, output, counts)
     else # do the mean in each bin.
         counts_safe = copy(counts) # copy to avoid mutating the original counts
@@ -295,11 +331,47 @@ function calculate_structure_function(
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector{Tuple{FT3, FT3}};
+    return_sums_and_counts::Bool = false,
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    return calculate_structure_function(
+        structure_function_type,
+        x_arr,
+        u_arr,
+        distance_bins,
+        Val(return_sums_and_counts);
+        kwargs...,
+    )
+end
+
+function calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    ::Val{RSAC};
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC}
+    return _calculate_structure_function_core(
+        structure_function_type,
+        x_arr,
+        u_arr,
+        distance_bins,
+        Val(RSAC);
+        kwargs...,
+    )
+end
+
+function _calculate_structure_function_core(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    ::Val{RSAC};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
-    return_sums_and_counts = false,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC}
     N3 = length(distance_bins)
     # calculate and bin and mean the pairwise distances
     # distances = pairwise(distance_metric, X, Y, dims=2) # will blow up if too big... so we're just doing the loop
@@ -337,7 +409,7 @@ function calculate_structure_function(
         counts .+= _counts
     end
 
-    if return_sums_and_counts # just return the sums and the counts, don't take the mean in each bin...
+    if RSAC # just return the sums and the counts, don't take the mean in each bin...
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, output, counts)
     else # do the mean in each bin.
         counts_safe = copy(counts)
