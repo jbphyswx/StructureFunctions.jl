@@ -14,12 +14,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2.2.0
+    - uses: actions/checkout@v4
 
     - name: Set up Julia
-      uses: julia-actions/setup-julia@latest
+      uses: julia-actions/setup-julia@v2.6.0
       with:
-        version: 1.9.3
+        version: '1.12'
 
     - name: Test with coverage
       env:
@@ -31,14 +31,15 @@ jobs:
     - name: Generate coverage file
       env:
         JULIA_PROJECT: "@."
-      run: julia --project=@. -e 'using Pkg; Pkg.add("Coverage");
-                                  using Coverage;
-                                  LCOV.writefile("coverage-lcov.info", Codecov.process_folder())'
+      run: |
+        julia --project=@. -e 'using Pkg; Pkg.add("Coverage");
+                              using Coverage;
+                              LCOV.writefile("coverage-lcov.info", Codecov.process_folder())'
       if: success()
 
     - name: Submit coverage
-      uses: codecov/codecov-action@v1.0.7
+      uses: codecov/codecov-action@v5.1.2
       with:
-        token: ${{secrets.CODECOV_TOKEN}}
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: coverage-lcov.info
       if: success()
-
