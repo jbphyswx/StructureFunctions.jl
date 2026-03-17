@@ -660,7 +660,7 @@ All items below must be true:
 
   - **Commit 0160b9e (Block J1 & J2)**: Completed source cleanup and workflow modernization. Deleted `CI.yml` and `CompatHelper.yml`. Consolidated into a single `ci.yml` with a Julia 1.12-only matrix. Standardized `CodeCov.yml`, `JuliaFormatter.yml`, and `UpDeps.yml` using pinned action versions (`setup-julia@v2.6.0`, `codecov-action@v5.1.2`, `paths-filter@v3.0.2`). Verified Julia 1.12 target across all workflows.
 
-  - **Commit J3 (Naming & Signature Refinement)**:
+  - **Commit J3 (Naming & Signature Refinement)** (Hash: `0d58d797`):
     - Renamed all `AbstractStructureFunctionType` subtypes to include `Type` suffix.
     - Defined comprehensive type and singleton aliases (e.g., `L2SFType`, `L2SF`).
     - Move operator type to the first argument in `calculate_structure_function`.
