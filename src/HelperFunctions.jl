@@ -119,6 +119,11 @@ end
     end
 end
 
+# @inline n̂(r_hat::Tuple) = n̂(SA.SVector(r_hat))
+@inline n̂(r_hat::NTuple{2, T}) where {T} = SA.SVector(r_hat[2], -r_hat[1])
+@inline n̂(r_hat::NTuple{3, T}) where {T} = LA.normalize(LA.cross(SA.SVector{3, T}(r_hat[1], r_hat[2], r_hat[3]), SA.SVector{3, T}(0, 0, 1)))
+
+
 @inline function n̂(x1, x2)
     """
     Return the transverse (perpendicular) unit vector from  x to y

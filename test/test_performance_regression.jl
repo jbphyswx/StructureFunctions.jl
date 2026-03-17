@@ -1,9 +1,9 @@
-using Test
-using BenchmarkTools
-using StructureFunctions
-using StaticArrays: SVector
+using Test: Test
+using BenchmarkTools: BenchmarkTools
+using StructureFunctions: StructureFunctions
+using StaticArrays: StaticArrays as SA
 using Random: Random
-using JSON
+using JSON: JSON
 
 # Benchmark Metadata
 const RESULTS_FILE = joinpath(@__DIR__, "bench_results.json")
@@ -35,7 +35,7 @@ function run_sf_benchmark(x, u, bins, sf_type; threaded=false)
     end
 end
 
-@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
+Test.@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
     Random.seed!(42)
     N = 100
     
@@ -75,7 +75,7 @@ end
     ]
 
     for (name, x_in, u_in, sft) in test_matrix
-        @testset "$name" begin
+        Test.@testset "$name" begin
             b = run_sf_benchmark(x_in, u_in, bins, sft)
             allocs = b.allocs
             time_min = minimum(b.times) / 1e3 # μs
@@ -85,16 +85,16 @@ end
             
             if haskey(previous_results, name)
                 prev = previous_results[name]
-                @test allocs <= prev["allocs"]
+                Test.@test allocs <= prev["allocs"]
             else
                 @info "  New baseline recorded for $name."
                 # Initial sanity gates
-                @test allocs < 100000 
+                Test.@test allocs < 100000 
             end
         end
     end
 
-    @testset "Spectral Analysis API" begin
+    Test.@testset "Spectral Analysis API" begin
         ms = (16, 16)
         b_direct = @benchmark calculate_spectrum(DirectSumBackend(), $x2, $u2, $ms; domain_size=(10.0, 10.0)) seconds=0.2 samples=10
         
@@ -106,20 +106,19 @@ end
 
         if haskey(previous_results, "direct_sum_spectral")
             prev = previous_results["direct_sum_spectral"]
-            @test allocs <= prev["allocs"]
+            Test.@test allocs <= prev["allocs"]
         end
     end
 
-    @testset "Static Constructor Efficiency" begin
-        using StructureFunctions.HelperFunctions: n̂
-        r_hat = SVector(1.0, 0.0)
-        b_nhat = @benchmark n̂($r_hat)
+    Test.@testset "Static Constructor Efficiency" begin
+        r_hat = SA.SVector(1.0, 0.0)
+        b_nhat = @benchmark SF.HelperFunctions.n̂($r_hat)
         
         allocs = b_nhat.allocs
         current_results["nhat_helper"] = Dict("allocs" => allocs, "time_μs" => minimum(b_nhat.times)/1e3)
         @info "HelperFunctions.n̂: $allocs allocs"
         
-        @test allocs == 0
+        Test.@test allocs == 0
     end
 
     # Save current results as the new baseline

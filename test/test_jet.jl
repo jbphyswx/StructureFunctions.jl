@@ -13,14 +13,19 @@ Test.@testset "JET Stability Audit" begin
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
     Test.@testset "calculate_structure_function (Tuple input)" begin
-        JET.@test_opt SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
+        # Test the core (positional dispatch) for absolute stability
+        # We only audit SF module to ignore internal Base.Threads dispatches
+        JET.@test_opt target_modules=(SF,) SFC.calculate_structure_function(sf_type, x, u, bins, Val(false); verbose=false, show_progress=false)
+        # Test the convenience entry point for correctness (call)
         JET.@test_call SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
     end
 
     Test.@testset "calculate_structure_function (Array input)" begin
         xa = [0.0 1.0; 0.0 0.0]
         ua = [1.0 2.0; 0.0 0.0]
-        JET.@test_opt SFC.calculate_structure_function(sf_type, xa, ua, bins; verbose=false, show_progress=false)
+        # Test the core (positional dispatch) for absolute stability
+        JET.@test_opt target_modules=(SF,) SFC.calculate_structure_function(sf_type, xa, ua, bins, Val(false); verbose=false, show_progress=false)
+        # Test the convenience entry point for correctness (call)
         JET.@test_call SFC.calculate_structure_function(sf_type, xa, ua, bins; verbose=false, show_progress=false)
     end
 

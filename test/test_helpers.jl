@@ -1,5 +1,4 @@
-using StructureFunctions: StructureFunctions as SF
-using StructureFunctions.HelperFunctions: HelperFunctions as SFH
+using StructureFunctions: StructureFunctions as SF, HelperFunctions as SFH
 using Test: Test
 using LinearAlgebra: LinearAlgebra as LA
 using StaticArrays: StaticArrays as SA

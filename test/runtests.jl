@@ -1,19 +1,44 @@
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using Test: Test
+using StructureFunctions: StructureFunctions as SF
 
+include("test_synthetic_data.jl")
+using .SyntheticData: SyntheticData
 
-Test.@testset "StructureFunctions" begin
-    a = SF.SA.SVector([1, 2, 3]...)
-    b = SF.SA.SVector([0, 0, 0]...)
-    Test.@test SFC.calculate_structure_function(
-        SFT.LongitudinalSecondOrderStructureFunction,
-        (a, a),
-        (b, b),
-        1;
-        show_progress = true,
-        verbose = true,
-        bin_spacing = :linear,
-    ).values == [0.0]
-
+Test.@testset "StructureFunctions.jl" begin
+    println("--- Running Helpers Test ---")
+    include("test_helpers.jl")
+    
+    println("--- Running Core Correctness Test ---")
     include("test_core_correctness.jl")
+
+    println("--- Running Inputs Test ---")
+    include("test_inputs.jl")
+
+    println("--- Running E2E Test ---")
+    include("test_e2e.jl")
+    
+    println("--- Running Stability & Inference Test ---")
+    include("test_stability.jl")
+    
+    println("--- Running Shorthands Test ---")
+    include("test_shorthands.jl")
+    
+    println("--- Running Spectral Extended Test ---")
+    include("test_spectral_extended.jl")
+    
+    # Enable Parallel/Distributed Test
+    println("--- Running Parallel Equivalence Test ---")
+    include("test_parallel_equivalence.jl")
+    
+    println("--- Running Real Data Extensions Test ---")
+    include("test_real_data_extensions.jl")
+    
+    println("--- Running GPU Parity Test ---")
+    include("test_gpu_parity.jl")
+    
+    println("--- Running Aqua Test ---")
+    include("test_aqua.jl")
+    
+    println("--- Running JET Test ---")
+    include("test_jet.jl")
 end

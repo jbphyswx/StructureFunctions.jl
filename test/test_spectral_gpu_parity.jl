@@ -1,13 +1,12 @@
-using Test
-using KernelAbstractions: CPU
-using StructureFunctions
-using StructureFunctions.SpectralAnalysis
-using Random
-using LinearAlgebra
+using Test: Test
+using KernelAbstractions: KernelAbstractions as KA
+using StructureFunctions: StructureFunctions, SpectralAnalysis as SFSA
+using Random: Random
+using LinearAlgebra: LinearAlgebra
 
 Random.seed!(42)
 
-@testset "Spectral GPU Parity (KA.CPU)" begin
+Test.@testset "Spectral GPU Parity (KA.CPU)" begin
     # Small 2D dataset
     N = 100
     FT = Float64
@@ -18,21 +17,21 @@ Random.seed!(42)
     iflag = 1
     
     # --- Reference: existing CPU implementation ---
-    ref_coeffs, ref_ks = calculate_spectrum(
+    ref_coeffs, ref_ks = SFSA.calculate_spectrum(
         x, u, ms;
-        backend = DirectSumBackend(),
+        backend = SFSA.DirectSumBackend(),
         iflag = iflag
     )
     
     # --- GPU extension (CPU backend) ---
-    gpu_coeffs, gpu_ks = gpu_calculate_spectrum(
-        CPU(), x, u, ms;
+    gpu_coeffs, gpu_ks = SFSA.gpu_calculate_spectrum(
+        KA.CPU(), x, u, ms;
         iflag = iflag
     )
     
-    @test gpu_coeffs ≈ ref_coeffs atol=1e-12
-    @test gpu_ks[1] == ref_ks[1]
-    @test gpu_ks[2] == ref_ks[2]
+    Test.@test gpu_coeffs ≈ ref_coeffs atol=1e-12
+    Test.@test gpu_ks[1] == ref_ks[1]
+    Test.@test gpu_ks[2] == ref_ks[2]
     
     println("Spectral GPU Parity check passed!")
 end

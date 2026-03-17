@@ -3,6 +3,7 @@ using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using Random: Random
 using LinearAlgebra: LinearAlgebra as LA
+using StaticArrays: StaticArrays as SA
 
 Random.seed!(42)
 
@@ -17,16 +18,20 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
     bin_edges  = collect(FT, range(0.0, 1.4, length = 11))   # 10 bins
 
     # CPU reference requires Tuple-pair format: [(lo, hi), ...]
-    bin_tuples = [(bin_edges[i], bin_edges[i+1]) for i in 1:length(bin_edges)-1]
+    bin_tuples = SA.SVector{10, Tuple{FT, FT}}([(bin_edges[i], bin_edges[i+1]) for i in 1:length(bin_edges)-1]...)
 
-    sft = SF.StructureFunctionTypes.LongitudinalSecondOrderStructureFunction()
+    sft = SFT.L2SFType()
 
-    # --- Reference: existing CPU implementation (tuple-of-vectors API) ---
+    # Create Tuple format for CPU reference
+    x_tup = (x[1, :], x[2, :])
+    u_tup = (u[1, :], u[2, :])
+
+    # --- Reference: existing CPU implementation ---
     res_ref = SFC.calculate_structure_function(
         sft, x_tup, u_tup, bin_tuples;
         verbose = false, show_progress = false, return_sums_and_counts = true,
     )
-    ref_vals = res_ref.values
+    ref_vals = res_ref.sums
     ref_counts = res_ref.counts
 
     # --- GPU extension (CPU backend for parity test) ---
@@ -34,7 +39,7 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
         sft, KA.CPU(), x, u, bin_edges;
         return_sums_and_counts = true,
     )
-    gpu_vals = res_gpu.values
+    gpu_vals = res_gpu.sums
     gpu_counts = res_gpu.counts
 
     Test.@test gpu_counts ≈ ref_counts  atol=0.0

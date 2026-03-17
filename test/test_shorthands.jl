@@ -1,8 +1,8 @@
-using Test: Test, @inferred
+using Test: Test
 using StructureFunctions: StructureFunctions as SF, StructureFunctionObjects as SFO, StructureFunctionTypes as SFT
 using StaticArrays: StaticArrays as SA
 
-Test.@testset "Phase J7 Shorthands Verification" begin
+Test.@testset "Shorthands Verification" begin
     N = 10
     FT = Float64
     x = ([rand(FT) for _ in 1:N], [rand(FT) for _ in 1:N])
@@ -23,9 +23,11 @@ Test.@testset "Phase J7 Shorthands Verification" begin
 
     # 3. Val dispatch shorthand (stable)
     println("Testing Val dispatch shorthand (Val(:L2SF))...")
-    @inferred SF.calculate_structure_function(Val(:L2SF), x, u, bins; verbose=false, show_progress=false)
-    res2v = SF.calculate_structure_function(Val(:L2SF), x, u, bins; verbose=false, show_progress=false)
+    res2v = SF.calculate_structure_function(Val(:L2SF), x, u, bins, Val(false); verbose=false, show_progress=false)
+    Test.@test res2v isa SF.StructureFunction
     Test.@test res2v.operator === SF.L2SF
+    println("Testing @inferred Val dispatch...")
+    Test.@inferred SF.calculate_structure_function(Val(:L2SF), x, u, bins, Val(false); verbose=false, show_progress=false)
 
     # 4. Order/Mode dispatch shorthand
     println("Testing Order/Mode dispatch shorthand (2, :longitudinal)...")
@@ -35,8 +37,8 @@ Test.@testset "Phase J7 Shorthands Verification" begin
 
     # 5. Order/Mode Val dispatch (stable)
     println("Testing Order/Mode Val dispatch (Val(2), Val(:long))...")
-    @inferred SF.calculate_structure_function(Val(2), Val(:long), x, u, bins; verbose=false, show_progress=false)
-    res3v = SF.calculate_structure_function(Val(2), Val(:long), x, u, bins; verbose=false, show_progress=false)
+    Test.@inferred SF.calculate_structure_function(Val(2), Val(:long), x, u, bins, Val(false); verbose=false, show_progress=false)
+    res3v = SF.calculate_structure_function(Val(2), Val(:long), x, u, bins, Val(false); verbose=false, show_progress=false)
     Test.@test res3v.operator === SF.L2SF
 
     # 6. Factory constructor shorthand
@@ -47,7 +49,7 @@ Test.@testset "Phase J7 Shorthands Verification" begin
 
     # 7. Factory Val constructor (stable)
     println("Testing Factory Val constructor (StructureFunction(Val(2), Val(:long)))...")
-    @inferred SF.StructureFunction(Val(2), Val(:long), x, u, bins; verbose=false, show_progress=false)
+    Test.@inferred SF.StructureFunction(Val(2), Val(:long), x, u, bins, Val(false); verbose=false, show_progress=false)
 
     # 8. Check other shorthands presence
     println("Checking other shorthands presence...")

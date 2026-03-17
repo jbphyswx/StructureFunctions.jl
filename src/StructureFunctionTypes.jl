@@ -239,7 +239,7 @@ end
 
 @generated function get_structure_function_type(::Val{sym}) where {sym}
     if haskey(SF_TYPE_MAP, sym)
-        return SF_TYPE_MAP[sym]
+        return Meta.quot(SF_TYPE_MAP[sym])
     else
         return :(error("Unknown structure function type symbol: $($sym)"))
     end
@@ -281,7 +281,7 @@ function get_structure_function_type(order::Int, mode::Symbol)
 end
 
 @generated function get_structure_function_type(::Val{order}, ::Val{mode}) where {order, mode}
-    return get_structure_function_type(order, mode)
+    return Meta.quot(get_structure_function_type(order, mode))
 end
 
 """

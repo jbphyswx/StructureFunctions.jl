@@ -42,7 +42,7 @@ function SFC.calculate_structure_function_from_file(
         x_clean, u_clean = SFH.remove_nans(x_mat, u_mat)
 
         # 5. Delegate
-        return SFC.calculate_structure_function(x_clean, u_clean, bin_edges, sf_type; kwargs...)
+        return SFC.calculate_structure_function(sf_type, x_clean, u_clean, bin_edges; kwargs...)
     end
 end
 

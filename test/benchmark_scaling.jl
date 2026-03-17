@@ -145,89 +145,89 @@ println("\nSaved results → $json_path")
 # ─────────────────────────────────────────────────────────────────────────────
 println("\n── Generating figures ──────────────────────────────────────────────")
 try
-    using CairoMakie
+    using CairoMakie: CairoMakie as CM
 
     threads_v  = Float64.(THREAD_COUNTS)
     ideal_line = threads_v
 
     # --- Strong scaling figure ---
-    fig_strong = Figure(size = (1000, 700), fontsize = 14)
-    Label(fig_strong[0, 1:2], "Strong Scaling  (N = $N_STRONG points, 3D, longitudinal 2nd-order SF)",
+    fig_strong = CM.Figure(size = (1000, 700), fontsize = 14)
+    CM.Label(fig_strong[0, 1:2], "Strong Scaling  (N = $N_STRONG points, 3D, longitudinal 2nd-order SF)",
           fontsize = 16, font = :bold)
 
-    ax_t1 = Axis(fig_strong[1, 1],
+    ax_t1 = CM.Axis(fig_strong[1, 1],
         xlabel = "Threads", ylabel = "Elapsed time (s)",
         xscale = log2, xticks = (THREAD_COUNTS, string.(THREAD_COUNTS)))
-    lines!(ax_t1, threads_v, [r["elapsed_s"] for r in strong_results],
+    CM.lines!(ax_t1, threads_v, [r["elapsed_s"] for r in strong_results],
            color = :steelblue, linewidth = 2.5)
-    scatter!(ax_t1, threads_v, [r["elapsed_s"] for r in strong_results],
+    CM.scatter!(ax_t1, threads_v, [r["elapsed_s"] for r in strong_results],
              color = :steelblue, markersize = 10)
 
-    ax_sp = Axis(fig_strong[1, 2],
+    ax_sp = CM.Axis(fig_strong[1, 2],
         xlabel = "Threads", ylabel = "Speedup  (T₁ / Tₚ)",
         xscale = log2, yscale = log2,
         xticks = (THREAD_COUNTS, string.(THREAD_COUNTS)),
         yticks = (THREAD_COUNTS, string.(THREAD_COUNTS)))
-    lines!(ax_sp, threads_v, ideal_line,
+    CM.lines!(ax_sp, threads_v, ideal_line,
            color = (:gray, 0.7), linewidth = 1.5, linestyle = :dash, label = "Ideal (linear)")
-    lines!(ax_sp, threads_v, [r["speedup"] for r in strong_results],
+    CM.lines!(ax_sp, threads_v, [r["speedup"] for r in strong_results],
            color = :crimson, linewidth = 2.5, label = "Actual")
-    scatter!(ax_sp, threads_v, [r["speedup"] for r in strong_results],
+    CM.scatter!(ax_sp, threads_v, [r["speedup"] for r in strong_results],
              color = :crimson, markersize = 10)
-    axislegend(ax_sp, position = :lt)
+    CM.axislegend(ax_sp, position = :lt)
 
-    ax_eff = Axis(fig_strong[2, 1:2],
+    ax_eff = CM.Axis(fig_strong[2, 1:2],
         xlabel = "Threads", ylabel = "Parallel efficiency  (speedup / p)",
         xscale = log2, xticks = (THREAD_COUNTS, string.(THREAD_COUNTS)),
         limits = (nothing, (0.0, 1.15)))
-    hlines!(ax_eff, [1.0], color = (:gray, 0.6), linestyle = :dash)
-    lines!(ax_eff, threads_v, [r["efficiency"] for r in strong_results],
+    CM.hlines!(ax_eff, [1.0], color = (:gray, 0.6), linestyle = :dash)
+    CM.lines!(ax_eff, threads_v, [r["efficiency"] for r in strong_results],
            color = :seagreen, linewidth = 2.5)
-    scatter!(ax_eff, threads_v, [r["efficiency"] for r in strong_results],
+    CM.scatter!(ax_eff, threads_v, [r["efficiency"] for r in strong_results],
              color = :seagreen, markersize = 10)
 
-    save(joinpath(RESULTS_DIR, "strong_scaling.png"), fig_strong, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "strong_scaling.png"), fig_strong, px_per_unit = 2)
     println("Saved → $(joinpath(RESULTS_DIR, "strong_scaling.png"))")
 
     # --- Weak scaling figure ---
     N_weak_v = Float64.([r["N_weak"] for r in weak_results])
 
-    fig_weak = Figure(size = (1000, 700), fontsize = 14)
-    Label(fig_weak[0, 1:2],
+    fig_weak = CM.Figure(size = (1000, 700), fontsize = 14)
+    CM.Label(fig_weak[0, 1:2],
           "Weak Scaling  (N ∝ √p, N_base = $N_WEAK_BASE/thread, 3D, longitudinal 2nd-order SF)",
           fontsize = 16, font = :bold)
 
-    ax_wt = Axis(fig_weak[1, 1],
+    ax_wt = CM.Axis(fig_weak[1, 1],
         xlabel = "Threads", ylabel = "Elapsed time (s)",
         xscale = log2, xticks = (THREAD_COUNTS, string.(THREAD_COUNTS)),
         title  = "Wall-clock time (ideal: flat)")
-    hlines!(ax_wt, [weak_results[1]["elapsed_s"]], color = (:gray, 0.6),
+    CM.hlines!(ax_wt, [weak_results[1]["elapsed_s"]], color = (:gray, 0.6),
             linestyle = :dash, label = "Ideal (constant)")
-    lines!(ax_wt, threads_v, [r["elapsed_s"] for r in weak_results],
+    CM.lines!(ax_wt, threads_v, [r["elapsed_s"] for r in weak_results],
            color = :darkorange, linewidth = 2.5, label = "Actual")
-    scatter!(ax_wt, threads_v, [r["elapsed_s"] for r in weak_results],
+    CM.scatter!(ax_wt, threads_v, [r["elapsed_s"] for r in weak_results],
              color = :darkorange, markersize = 10)
-    axislegend(ax_wt, position = :lt)
+    CM.axislegend(ax_wt, position = :lt)
 
-    ax_wn = Axis(fig_weak[1, 2],
+    ax_wn = CM.Axis(fig_weak[1, 2],
         xlabel = "Threads", ylabel = "Normalised time  (Tₚ / T₁)",
         xscale = log2, xticks = (THREAD_COUNTS, string.(THREAD_COUNTS)),
         limits = (nothing, (0.0, 2.5)),
         title = "Normalised wall-clock (ideal: 1.0)")
-    hlines!(ax_wn, [1.0], color = (:gray, 0.6), linestyle = :dash)
-    lines!(ax_wn, threads_v, [r["normalised_time"] for r in weak_results],
+    CM.hlines!(ax_wn, [1.0], color = (:gray, 0.6), linestyle = :dash)
+    CM.lines!(ax_wn, threads_v, [r["normalised_time"] for r in weak_results],
            color = :purple, linewidth = 2.5)
-    scatter!(ax_wn, threads_v, [r["normalised_time"] for r in weak_results],
+    CM.scatter!(ax_wn, threads_v, [r["normalised_time"] for r in weak_results],
              color = :purple, markersize = 10)
 
-    ax_wN = Axis(fig_weak[2, 1:2],
+    ax_wN = CM.Axis(fig_weak[2, 1:2],
         xlabel = "Threads", ylabel = "N (number of points)",
         xscale = log2, xticks = (THREAD_COUNTS, string.(THREAD_COUNTS)),
         title = "Problem size used at each thread count")
-    lines!(ax_wN, threads_v, N_weak_v, color = :teal, linewidth = 2)
-    scatter!(ax_wN, threads_v, N_weak_v, color = :teal, markersize = 10)
+    CM.lines!(ax_wN, threads_v, N_weak_v, color = :teal, linewidth = 2)
+    CM.scatter!(ax_wN, threads_v, N_weak_v, color = :teal, markersize = 10)
 
-    save(joinpath(RESULTS_DIR, "weak_scaling.png"), fig_weak, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "weak_scaling.png"), fig_weak, px_per_unit = 2)
     println("Saved → $(joinpath(RESULTS_DIR, "weak_scaling.png"))")
 
 catch e
@@ -244,7 +244,7 @@ gpu_available = false
 gpu_results   = Dict[]
 
 try
-    @eval using CUDA
+    @eval using CUDA: CUDA
     if CUDA.functional()
         global gpu_available = true
         println("  ✓ CUDA functional: $(CUDA.name(CUDA.device()))")

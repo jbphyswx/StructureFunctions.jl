@@ -1,5 +1,5 @@
-using BenchmarkTools
-using StaticArrays
+using BenchmarkTools: BenchmarkTools
+using StaticArrays: StaticArrays as SA
 
 println("--- Julia View vs SVector Arithmetic Micro-Benchmark ---")
 
@@ -26,7 +26,7 @@ end
 function bench_svector(A, N)
     s = 0.0
     # Capture size statically for unrolling
-    SV = SVector{2, Float64}
+    SV = SA.SVector{2, Float64}
     for i in 1:N
         v1 = SV(A[1, i], A[2, i])
         for j in 1:N
@@ -42,7 +42,7 @@ end
 # 3. View-to-SVector (what we do now)
 function bench_view_to_svector(A, N)
     s = 0.0
-    SV = SVector{2, Float64}
+    SV = SA.SVector{2, Float64}
     for i in 1:N
         v1 = SV(view(A, :, i))
         for j in 1:N
@@ -57,7 +57,7 @@ end
 # 4. User-suggested pattern: Keep views, convert only during subtraction
 function bench_user_pattern(A, N)
     s = 0.0
-    SV = SVector{2, Float64}
+    SV = SA.SVector{2, Float64}
     for i in 1:N
         v1 = view(A, :, i)
         for j in 1:N
@@ -76,7 +76,7 @@ function bench_direct_ntuple_subtraction(A, N)
     for i in 1:N
         # If we subtract directly here, we must access A[:, i] 100 times in the j-loop
         for j in 1:N
-            diff = SVector{2, Float64}(ntuple(k -> A[k, j] - A[k, i], Val(2)))
+            diff = SA.SVector{2, Float64}(ntuple(k -> A[k, j] - A[k, i], Val(2)))
             s += diff[1]^2 + diff[2]^2
         end
     end
@@ -84,19 +84,19 @@ function bench_direct_ntuple_subtraction(A, N)
 end
 
 println("\n1. Benchmark: Pure Views (Original Path)")
-b1 = @benchmark bench_views($A, $N)
+b1 = BenchmarkTools.@benchmark bench_views($A, $N)
 println("   Allocs: $(b1.allocs), Min Time: $(minimum(b1.times)/1e3) μs")
 
 println("\n2. Benchmark: SVector (Static Access)")
-b2 = @benchmark bench_svector($A, $N)
+b2 = BenchmarkTools.@benchmark bench_svector($A, $N)
 println("   Allocs: $(b2.allocs), Min Time: $(minimum(b2.times)/1e3) μs")
 
 println("\n3. Benchmark: SVector from View (Loop-Boundary / Hoisted)")
-b3 = @benchmark bench_view_to_svector($A, $N)
+b3 = BenchmarkTools.@benchmark bench_view_to_svector($A, $N)
 println("   Allocs: $(b3.allocs), Min Time: $(minimum(b3.times)/1e3) μs")
 
 println("\n4. Benchmark: Direct NTuple Subtraction (Inner-Loop / Unhoisted)")
-b4 = @benchmark bench_direct_ntuple_subtraction($A, $N)
+b4 = BenchmarkTools.@benchmark bench_direct_ntuple_subtraction($A, $N)
 println("   Allocs: $(b4.allocs), Min Time: $(minimum(b4.times)/1e3) μs")
 
 println("\nConclusion: Both 3 and 4 have 0 allocations.")

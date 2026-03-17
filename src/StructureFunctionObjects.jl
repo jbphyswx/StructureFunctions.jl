@@ -55,9 +55,20 @@ end
 # Ergonomics & Base Extensions
 # ---------------------------------------------------------------------------
 
-import Base: show, length
+import Base: show, length, +
 
 Base.length(sf::AbstractStructureFunction) = length(sf.distance)
+
+function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSumsAndCounts)
+    @assert sf1.operator == sf2.operator "Cannot add results with different operators"
+    @assert sf1.distance == sf2.distance "Cannot add results with different binning"
+    return StructureFunctionSumsAndCounts(
+        sf1.operator,
+        sf1.distance,
+        sf1.sums + sf2.sums,
+        sf1.counts + sf2.counts
+    )
+end
 
 # Delegation to primary data container
 Base.getindex(sf::StructureFunction, i...) = getindex(sf.values, i...)
@@ -82,5 +93,29 @@ end
 # Specialized getters
 operator(sf::AbstractStructureFunction) = sf.operator
 SFT.order(sf::AbstractStructureFunction) = SFT.order(sf.operator)
+
+# Comparison & Conversion
+import Base: isapprox, Float32, Float64
+
+function Base.isapprox(sf1::StructureFunction, sf2::StructureFunction; kwargs...)
+    return sf1.operator == sf2.operator &&
+           sf1.distance == sf2.distance &&
+           isapprox(sf1.values, sf2.values; kwargs...)
+end
+
+function Base.isapprox(sf::StructureFunction, vals::AbstractVector; kwargs...)
+    return isapprox(sf.values, vals; kwargs...)
+end
+function Base.isapprox(vals::AbstractVector, sf::StructureFunction; kwargs...)
+    return isapprox(sf.values, vals; kwargs...)
+end
+
+function Base.Float32(sf::StructureFunction)
+    return StructureFunction(sf.operator, sf.distance, Float32.(sf.values))
+end
+
+function Base.Float64(sf::StructureFunction)
+    return StructureFunction(sf.operator, sf.distance, Float64.(sf.values))
+end
 
 end # module
