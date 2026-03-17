@@ -19,13 +19,13 @@ Test.@testset "Parallel Equivalence Verification" begin
     x = ([rand() for _ in 1:N], [rand() for _ in 1:N])
     u = ([rand() for _ in 1:N], [rand() for _ in 1:N])
     bins = SA.SVector(((0.0, 0.5), (0.5, 1.0)))
-    sf_type = SFT.LongitudinalSecondOrderStructureFunction()
+    sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
     # 1. Serial
-    out_serial, counts_serial = SFC.calculate_structure_function(x, u, bins, sf_type, verbose=false, show_progress=false, return_sums_and_counts=true)
+    out_serial, counts_serial = SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false, return_sums_and_counts=true)
 
     # 2. Threaded
-    out_thread, counts_thread = SFC.calculate_structure_function(x, u, bins, sf_type, verbose=false, show_progress=false, return_sums_and_counts=true)
+    out_thread, counts_thread = SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false, return_sums_and_counts=true)
     
     Test.@testset "Serial vs Threaded" begin
         Test.@test out_serial[1] ≈ out_thread[1]
@@ -37,7 +37,7 @@ Test.@testset "Parallel Equivalence Verification" begin
     sx = (SharedArrays.SharedArray(x[1]), SharedArrays.SharedArray(x[2]))
     su = (SharedArrays.SharedArray(u[1]), SharedArrays.SharedArray(u[2]))
     
-    out_dist, counts_dist = SFC.parallel_calculate_structure_function(sx, su, bins, sf_type, verbose=false, show_progress=false, return_sums_and_counts=true)
+    out_dist, counts_dist = SFC.parallel_calculate_structure_function(sf_type, sx, su, bins; verbose=false, show_progress=false, return_sums_and_counts=true)
 
     Test.@testset "Serial vs Distributed" begin
         Test.@test out_serial[1] ≈ out_dist[1]

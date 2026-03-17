@@ -28,14 +28,14 @@ using .SyntheticData
     r_bins = SVector{5}([(0.1 + (i-1)*0.4, 0.1 + i*0.4) for i in 1:5])
 
     @testset "Basic Execution" begin
-        sf_type = SecondOrderStructureFunction()
-        @test_nowarn calculate_structure_function(pos, vals, r_bins, sf_type; verbose=false, show_progress=false)
+        sf_type = SecondOrderStructureFunction
+        @test_nowarn calculate_structure_function(sf_type, pos, vals, r_bins; verbose=false, show_progress=false)
     end
 
     @testset "Multi-field Execution" begin
-        sf_type = LongitudinalSecondOrderStructureFunction()
+        sf_type = LongitudinalSecondOrderStructureFunction
         # calculate_structure_function handles (u, v) as a vector field
-        res, _ = calculate_structure_function(pos, vals, r_bins, sf_type; verbose=false, show_progress=false)
+        res, _ = calculate_structure_function(sf_type, pos, vals, r_bins; verbose=false, show_progress=false)
         @test length(res) == 5
         @test all(res .>= 0)
     end
@@ -48,8 +48,8 @@ using .SyntheticData
         # Use exact bin types
         r32 = SVector{5, Tuple{Float32, Float32}}([(Float32(b[1]), Float32(b[2])) for b in r_bins])
         
-        sf64, _ = calculate_structure_function(pos, vals, r_bins, SecondOrderStructureFunction(); verbose=false, show_progress=false)
-        sf32, _ = calculate_structure_function((xs32, ys32), (u32, v32), r32, SecondOrderStructureFunction(); verbose=false, show_progress=false)
+        sf64, _ = calculate_structure_function(SecondOrderStructureFunction, pos, vals, r_bins; verbose=false, show_progress=false)
+        sf32, _ = calculate_structure_function(SecondOrderStructureFunction, (xs32, ys32), (u32, v32), r32; verbose=false, show_progress=false)
         
         @test sf32 ≈ Float32.(sf64) rtol=1e-5
     end

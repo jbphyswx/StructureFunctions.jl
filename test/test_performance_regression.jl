@@ -29,9 +29,9 @@ end
 function run_sf_benchmark(x, u, bins, sf_type; threaded=false)
     # Cap benchmarks to 0.2s to keep the test suite under 10s
     if threaded
-        return @benchmark calculate_structure_function($x, $u, $bins, $sf_type; verbose=false, show_progress=false) seconds=0.2 samples=50
+        return @benchmark calculate_structure_function($sf_type, $x, $u, $bins; verbose=false, show_progress=false) seconds=0.2 samples=50
     else
-        return @benchmark calculate_structure_function($x, $u, $bins, $sf_type; verbose=false, show_progress=false) seconds=0.2 samples=50
+        return @benchmark calculate_structure_function($sf_type, $x, $u, $bins; verbose=false, show_progress=false) seconds=0.2 samples=50
     end
 end
 
@@ -55,9 +55,9 @@ end
     
     bins = [(0.0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 2.0)]
     
-    sf_2nd_long = LongitudinalSecondOrderStructureFunction()
-    sf_2nd_trans = TransverseSecondOrderStructureFunction()
-    sf_3rd_diag = DiagonalConsistentThirdOrderStructureFunction()
+    sf_2nd_long = LongitudinalSecondOrderStructureFunction
+    sf_2nd_trans = TransverseSecondOrderStructureFunction
+    sf_3rd_diag = DiagonalConsistentThirdOrderStructureFunction
     
     previous_results = load_previous_results()
     current_results = Dict()

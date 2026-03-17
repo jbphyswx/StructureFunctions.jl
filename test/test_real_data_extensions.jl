@@ -24,7 +24,7 @@ Test.@testset "Real Data Extensions Verification" begin
     # Reference calculation (memory-based)
     bin_edges = range(0.0, stop=1.0, length=10)
     sft = SF.StructureFunctionTypes.LongitudinalSecondOrderStructureFunction
-    ref_sf, _ = SF.Calculations.calculate_structure_function(x, u, bin_edges, sft)
+    ref_sf, _ = SF.Calculations.calculate_structure_function(sft, x, u, bin_edges)
 
     # Temporary directory for test files
     mktempdir() do tmpdir
@@ -33,7 +33,7 @@ Test.@testset "Real Data Extensions Verification" begin
             jldsave(fpath; x=x, u=u)
             
             # Test direct loading
-            sf, _ = SF.Calculations.calculate_structure_function(fpath, bin_edges, sft; x_key="x", u_key="u")
+            sf, _ = SF.Calculations.calculate_structure_function(sft, fpath, bin_edges; x_key="x", u_key="u")
             Test.@test sf ≈ ref_sf
         end
 
@@ -42,7 +42,7 @@ Test.@testset "Real Data Extensions Verification" begin
             df = DataFrame(x1=x[1], x2=x[2], u1=u[1], u2=u[2])
             CSV.write(fpath, df)
             
-            sf, _ = SF.Calculations.calculate_structure_function(fpath, bin_edges, sft; 
+            sf, _ = SF.Calculations.calculate_structure_function(sft, fpath, bin_edges; 
                 x_key=("x1", "x2"), u_key=("u1", "u2"))
             Test.@test sf ≈ ref_sf
         end
@@ -69,10 +69,10 @@ Test.@testset "Real Data Extensions Verification" begin
             # Reference calculation for the grid
             x_nc = (repeat(lon, 1, ny), repeat(lat', nx, 1))
             u_nc = (u_grid, v_grid)
-            ref_sf_nc, _ = SF.Calculations.calculate_structure_function(SFH.flatten_data(x_nc), SFH.flatten_data(u_nc), bin_edges, sft)
+            ref_sf_nc, _ = SF.Calculations.calculate_structure_function(sft, SFH.flatten_data(x_nc), SFH.flatten_data(u_nc), bin_edges)
 
             # Test extension with automatic expansion
-            sf_nc, _ = SF.Calculations.calculate_structure_function(fpath, bin_edges, sft; 
+            sf_nc, _ = SF.Calculations.calculate_structure_function(sft, fpath, bin_edges; 
                 x_key=("lon", "lat"), u_key=("u", "v"))
             
             Test.@test sf_nc ≈ ref_sf_nc
@@ -92,7 +92,7 @@ Test.@testset "Real Data Extensions Verification" begin
             zu2 = Zarr.zcreate(FT, zg, "u2", N)
             zu2[:] = u[2]
             
-            sf, _ = SF.Calculations.calculate_structure_function(fpath, bin_edges, sft; 
+            sf, _ = SF.Calculations.calculate_structure_function(sft, fpath, bin_edges; 
                 x_key=("x1", "x2"), u_key=("u1", "u2"))
             Test.@test sf ≈ ref_sf
         end
@@ -106,7 +106,7 @@ Test.@testset "Real Data Extensions Verification" begin
                 file["u2"] = u[2]
             end
             
-            sf, _ = SF.Calculations.calculate_structure_function(fpath, bin_edges, sft; 
+            sf, _ = SF.Calculations.calculate_structure_function(sft, fpath, bin_edges; 
                 x_key=("x1", "x2"), u_key=("u1", "u2"))
             Test.@test sf ≈ ref_sf
         end
@@ -122,12 +122,12 @@ Test.@testset "Real Data Extensions Verification" begin
             x_mat = hcat(x_nan[1], x_nan[2])'
             u_mat = hcat(u_nan[1], u_nan[2])'
             x_c, u_c = SFH.remove_nans(x_mat, u_mat)
-            ref_sf_nan, _ = SF.Calculations.calculate_structure_function(x_c, u_c, bin_edges, sft)
+            ref_sf_nan, _ = SF.Calculations.calculate_structure_function(sft, x_c, u_c, bin_edges)
             
             # Verify JLD2 loading with NaN
             fpath = joinpath(tmpdir, "test_nan.jld2")
             jldsave(fpath; x=x_nan, u=u_nan)
-            sf_nan, _ = SF.Calculations.calculate_structure_function(fpath, bin_edges, sft)
+            sf_nan, _ = SF.Calculations.calculate_structure_function(sft, fpath, bin_edges)
             
             Test.@test sf_nan ≈ ref_sf_nan
             Test.@test length(x_c[1, :]) == N - 2 # verifying 2 points dropped
