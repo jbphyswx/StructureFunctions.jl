@@ -10,18 +10,18 @@ Test.@testset "JET Stability Audit" begin
     x = ([0.0, 1.0], [0.0, 0.0])
     u = ([1.0, 2.0], [0.0, 0.0])
     bins = SA.SVector(((0.0, 2.0),))
-    sf_type = SFT.LongitudinalSecondOrderStructureFunction()
+    sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
     Test.@testset "calculate_structure_function (Tuple input)" begin
-        JET.@test_opt SFC.calculate_structure_function(x, u, bins, sf_type, verbose=false, show_progress=false)
-        JET.@test_call SFC.calculate_structure_function(x, u, bins, sf_type, verbose=false, show_progress=false)
+        JET.@test_opt SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
+        JET.@test_call SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
     end
 
     Test.@testset "calculate_structure_function (Array input)" begin
         xa = [0.0 1.0; 0.0 0.0]
         ua = [1.0 2.0; 0.0 0.0]
-        JET.@test_opt SFC.calculate_structure_function(xa, ua, bins, sf_type, verbose=false, show_progress=false)
-        JET.@test_call SFC.calculate_structure_function(xa, ua, bins, sf_type, verbose=false, show_progress=false)
+        JET.@test_opt SFC.calculate_structure_function(sf_type, xa, ua, bins; verbose=false, show_progress=false)
+        JET.@test_call SFC.calculate_structure_function(sf_type, xa, ua, bins; verbose=false, show_progress=false)
     end
 
     Test.@testset "HelperFunctions" begin

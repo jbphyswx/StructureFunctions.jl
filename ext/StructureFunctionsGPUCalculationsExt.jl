@@ -147,11 +147,11 @@ Compute structure functions on `backend` (any KernelAbstractions backend).
 `(sf_values, counts)` – both are host-side `Vector{Float64}` of length `N_bins - 1`.
 """
 function SFC.gpu_calculate_structure_function(
+    sf_type::SFT.AbstractStructureFunctionType,
     backend::KA.Backend,
     x_mat::AbstractMatrix{FT},
     u_mat::AbstractMatrix{FT},
-    distance_bins::AbstractVector{FT},
-    sf_type::SFT.AbstractStructureFunctionType;
+    distance_bins::AbstractVector{FT};
     workgroup_size::Int = 64,
 ) where {FT}
     N_dims, N_points = size(x_mat)

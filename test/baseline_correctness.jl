@@ -10,7 +10,7 @@ using StaticArrays
     x = ([0.0, 1.0], [0.0, 0.0]) # NTuple of vectors
     u = ([1.0, 2.0], [0.0, 0.0])
     bins = SVector(((0.0, 2.0),))
-    sf_type = LongitudinalSecondOrderStructureFunction()
+    sf_type = LongitudinalSecondOrderStructureFunction
 
-    @test_throws ErrorException calculate_structure_function(x, u, bins, sf_type)
+    @test_throws ErrorException calculate_structure_function(sf_type, x, u, bins)
 end

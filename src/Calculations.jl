@@ -15,14 +15,14 @@ using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or re
 export calculate_structure_function, parallel_calculate_structure_function, gpu_calculate_structure_function, calculate_structure_function_from_file
 
 """
-    calculate_structure_function(path::String, args...; kwargs...)
+    calculate_structure_function(sf_type::SFT.AbstractStructureFunctionType, path::String, bins; kwargs...)
 
 Entry point for calculating structure functions from a file (e.g. NetCDF, JLD2, CSV).
 The file extension is used to dispatch to an appropriate extension method.
 """
-function calculate_structure_function(path::String, args...; kwargs...)
+function calculate_structure_function(sf_type::SFT.AbstractStructureFunctionType, path::String, bins; kwargs...)
     ext_str = lowercase(split(path, '.')[end])
-    return calculate_structure_function_from_file(Val(Symbol(ext_str)), path, args...; kwargs...)
+    return calculate_structure_function_from_file(Val(Symbol(ext_str)), path, bins, sf_type; kwargs...)
 end
 
 """
@@ -39,13 +39,22 @@ function gpu_calculate_structure_function end
 # Stub for file extensions
 function calculate_structure_function_from_file end
 
+# ---------------------------------------------------------------------------
+# Functor Support: Operator(x, u, bins; kwargs...) -> calculate_structure_function
+# ---------------------------------------------------------------------------
+
+function (sf::SFT.AbstractStructureFunctionType)(x, u, bins; kwargs...)
+    return calculate_structure_function(sf, x, u, bins; kwargs...)
+end
+
 """
-    calculate_structure_function(x, u, bin_edges::AbstractVector{<:Number}, ...)
+    calculate_structure_function(sf_type, x, u, bin_edges::AbstractVector{<:Number}, ...)
 
 Convenience method that converts a vector of bin edges `[e1, e2, e3]` into 
 adjacent bins `[(e1, e2), (e2, e3)]` and calls the core calculation.
 """
 function calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
     x::Union{Tuple, AbstractArray},
     u::Union{Tuple, AbstractArray},
     bin_edges::AbstractVector{<:Number},
@@ -53,26 +62,18 @@ function calculate_structure_function(
     kwargs...
 )
     bin_tuples = [(bin_edges[i], bin_edges[i+1]) for i in 1:(length(bin_edges)-1)]
-    return calculate_structure_function(x, u, bin_tuples, args...; kwargs...)
+    return calculate_structure_function(structure_function_type, x, u, bin_tuples, args...; kwargs...)
 end
 
-
 ###########
-# Add methods for dispatching vectors/tuples to the static SVector versions...
+# Core Calculation Methods
 ########
 
-"""
-Consider using some sort of Intervals thingy for the intervals
-    worked on arrays of size 1e4 in 12 seconds, was about a true half and half timewise, so w/ saved bins would be about 6 seconds...
-    note we still need to turn values to vectors for u,v,w, etc and have a function for the SF calculation that's not just order...
-    and we need a parallel version, maybe parallelize over the `i` loop, aggregate the results separately, then bin and average from the workers...
-    - probably shouldn't use sharedarrays as those can possibly fail w/ concurrent reads/writes
-"""
 function calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
-    structure_function_type::SFT.AbstractStructureFunctionType;
+    distance_bins::AbstractVector{<:Tuple{FT3, FT3}};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
@@ -84,7 +85,6 @@ function calculate_structure_function(
     N3 = length(distance_bins)
     # calculate and bin and mean the pairwise distances
     # distances = pairwise(distance_metric, X, Y, dims=2) # will blow up if too big... so we're just doing the loop
-
 
     # preallocate output as vector of length of distance_bins
     # Use promote_type and float to ensure output can hold float results/NaN
@@ -184,10 +184,10 @@ end
 
 
 function calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::Int,
-    structure_function_type::SFT.AbstractStructureFunctionType;
+    distance_bins::Int;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     bin_spacing = :logarithmic,
     verbose = true,
@@ -234,10 +234,10 @@ function calculate_structure_function(
         [(distance_bins[i], distance_bins[i + 1]) for i in 1:n_distance_bins]...,
     ) # convert to tuples of the bin edges
     return calculate_structure_function(
+        structure_function_type,
         x_vecs,
         u_vecs,
-        distance_bins,
-        structure_function_type;
+        distance_bins;
         distance_metric = distance_metric,
         verbose = verbose,
         show_progress = show_progress,
@@ -285,15 +285,15 @@ Array version (is slower lol)
 # array version seems to be slower lol, idk why (and we're even using views!)
 
 function calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
-    structure_function_type::SFT.AbstractStructureFunctionType;
+    distance_bins::AbstractVector{Tuple{FT3, FT3}};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1 <: Real, FT2 <: Real, FT3 <: Real}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
     N3 = length(distance_bins)
     # calculate and bin and mean the pairwise distances
     # distances = pairwise(distance_metric, X, Y, dims=2) # will blow up if too big... so we're just doing the loop
@@ -348,7 +348,7 @@ function calculate_structure_function_i(
     distance_bins_vec::AbstractVector{FT3},
     structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {N, FT1 <: Real, FT2 <: Real, FT3 <: Real}
+) where {N, FT1 <: Number, FT2 <: Number, FT3 <: Number}
     N3 = length(distance_bins_vec)
 
     # preallocate output as vector of length of distance_bins (vector so it's mutable)
@@ -384,16 +384,16 @@ end
 
 
 function calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::Int,
-    structure_function_type::SFT.AbstractStructureFunctionType;
+    distance_bins::Int;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     bin_spacing = :logarithmic,
     verbose = true,
     show_progress = true,
     return_sums_and_counts = false,
-) where {FT1 <: Real, FT2 <: Real}
+) where {FT1 <: Number, FT2 <: Number}
     """
     Here we assume that the distance bins are evenly spaced
     However, we assume we cant store all the output pairs in memory (cause goes as len(x)^2
@@ -434,10 +434,10 @@ function calculate_structure_function(
         [(distance_bins[i], distance_bins[i + 1]) for i in 1:n_distance_bins]...,
     ) # convert to tuples of the bin edges
     return calculate_structure_function(
+        structure_function_type,
         x_arr,
         u_arr,
-        distance_bins,
-        structure_function_type;
+        distance_bins;
         distance_metric = distance_metric,
         verbose = verbose,
         show_progress = show_progress,

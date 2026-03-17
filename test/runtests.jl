@@ -6,10 +6,10 @@ Test.@testset "StructureFunctions" begin
     a = SF.SA.SVector([1, 2, 3]...)
     b = SF.SA.SVector([0, 0, 0]...)
     Test.@test SFC.calculate_structure_function(
+        SFT.LongitudinalSecondOrderStructureFunction,
         (a, a),
         (b, b),
-        1,
-        SFT.LongitudinalSecondOrderStructureFunction();
+        1;
         show_progress = true,
         verbose = true,
         bin_spacing = :linear,

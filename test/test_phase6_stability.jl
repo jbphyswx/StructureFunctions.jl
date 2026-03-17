@@ -39,8 +39,8 @@ using LinearAlgebra
         v_dual = [MockDual(0.0, 0.0), MockDual(0.0, 0.0), MockDual(0.0, 0.0)]
         bins = SVector{1}([(0.1, 5.0)])
         
-        sf_type = SecondOrderStructureFunction()
-        @test_nowarn calculate_structure_function((xs, ys), (u_dual, v_dual), bins, sf_type; verbose=false, show_progress=false)
+        sf_type = SecondOrderStructureFunction
+        @test_nowarn calculate_structure_function(sf_type, (xs, ys), (u_dual, v_dual), bins; verbose=false, show_progress=false)
     end
 
     # 2. Degenerate/Collinear Points
@@ -52,8 +52,8 @@ using LinearAlgebra
         v = [0.0, 0.0, 0.0]
         bins = SVector{1}([(0.1, 5.0)])
         
-        sf_type = SecondOrderStructureFunction()
-        res, _ = calculate_structure_function((xs, ys), (u, v), bins, sf_type; verbose=false, show_progress=false)
+        sf_type = SecondOrderStructureFunction
+        res, _ = calculate_structure_function(sf_type, (xs, ys), (u, v), bins; verbose=false, show_progress=false)
         @test !any(isnan.(res))
     end
 
@@ -65,8 +65,8 @@ using LinearAlgebra
         v = zeros(4)
         bins = SVector{2}([(0.1, 1.5), (1.5, 3.5)])
         
-        sf_type = LongitudinalSecondOrderStructureFunction()
-        res, _ = calculate_structure_function((xs, ys), (u, v), bins, sf_type; verbose=false, show_progress=false)
+        sf_type = LongitudinalSecondOrderStructureFunction
+        res, _ = calculate_structure_function(sf_type, (xs, ys), (u, v), bins; verbose=false, show_progress=false)
         @test length(res) == 2
         @test all(res .> 0)
     end

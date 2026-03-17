@@ -15,10 +15,10 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC, HelperF
 export parallel_calculate_structure_function 
 
 function SFC.parallel_calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
-    structure_function_type::SFT.AbstractStructureFunctionType;
+    distance_bins::AbstractVector{<:Tuple{FT3, FT3}};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
@@ -65,10 +65,10 @@ end
 
 
 function SFC.parallel_calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::Int,
-    structure_function_type::SFT.AbstractStructureFunctionType;
+    distance_bins::Int;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     bin_spacing = :logarithmic,
     verbose = true,
@@ -94,7 +94,7 @@ function SFC.parallel_calculate_structure_function(
 
     min_distance, max_distance =
         PM.@showprogress enabled = show_progress Distributed.@distributed ((x, y) -> (min(x[1], y[1]), max(x[2], y[2]))) for i in
-                                                                                                              eachindex(
+                                                                                                               eachindex(
             x_vecs[1],
         )
             SFC.minmax_i(i, x_vecs, distance_metric)
@@ -118,10 +118,10 @@ function SFC.parallel_calculate_structure_function(
 
 
     return SFC.parallel_calculate_structure_function(
+        structure_function_type,
         x_vecs,
         u_vecs,
-        distance_bins,
-        structure_function_type;
+        distance_bins;
         distance_metric = distance_metric,
         verbose = verbose,
         show_progress = show_progress,
