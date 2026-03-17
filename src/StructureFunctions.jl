@@ -28,13 +28,13 @@ export LongitudinalSecondOrderStructureFunctionType, TransverseSecondOrderStruct
 export SecondOrderStructureFunctionType, ThirdOrderStructureFunctionType
 export DiagonalConsistentThirdOrderStructureFunctionType, DiagonalInconsistentThirdOrderStructureFunctionType
 export OffDiagonalConsistentThirdOrderStructureFunctionType, OffDiagonalInconsistentThirdOrderStructureFunctionType
-export L2SFType, T2SFType, L3SFType
+export L2SFType, T2SFType, L3SFType, S2SFType, S3SFType, T3SFType, L2T1SFType, L1T2SFType
 
 export LongitudinalSecondOrderStructureFunction, TransverseSecondOrderStructureFunction
 export SecondOrderStructureFunction, ThirdOrderStructureFunction
 export DiagonalConsistentThirdOrderStructureFunction, DiagonalInconsistentThirdOrderStructureFunction
 export OffDiagonalConsistentThirdOrderStructureFunction, OffDiagonalInconsistentThirdOrderStructureFunction
-export L2SF, T2SF, L3SF
+export L2SF, T2SF, L3SF, S2SF, S3SF, T3SF, L2T1SF, L1T2SF
 
 export SpectralAnalysis
 export DirectSumBackend, FINUFFTBackend, FFTBackend
