@@ -27,6 +27,71 @@ function calculate_structure_function(sf_type::SFT.AbstractStructureFunctionType
 end
 
 """
+    calculate_structure_function(sf_sym::Symbol, args...; kwargs...)
+
+Shorthand that looks up the operator by name and calls the core calculation.
+"""
+function calculate_structure_function(sf_sym::Symbol, args...; kwargs...)
+    return calculate_structure_function(Val(sf_sym), args...; kwargs...)
+end
+
+function calculate_structure_function(::Val{sf_sym}, args...; kwargs...) where {sf_sym}
+    return calculate_structure_function(SFT.get_structure_function_type(Val(sf_sym)), args...; kwargs...)
+end
+
+"""
+    calculate_structure_function(order::Int, mode::Symbol, args...; kwargs...)
+
+Shorthand that looks up the operator by order and mode and calls the core calculation.
+"""
+function calculate_structure_function(order::Int, mode::Symbol, args...; kwargs...)
+    return calculate_structure_function(Val(order), Val(mode), args...; kwargs...)
+end
+
+function calculate_structure_function(::Val{order}, ::Val{mode}, args...; kwargs...) where {order, mode}
+    return calculate_structure_function(SFT.get_structure_function_type(Val(order), Val(mode)), args...; kwargs...)
+end
+
+# Shorthand for parallel version too
+function parallel_calculate_structure_function(sf_sym::Symbol, args...; kwargs...)
+    return parallel_calculate_structure_function(Val(sf_sym), args...; kwargs...)
+end
+
+function parallel_calculate_structure_function(::Val{sf_sym}, args...; kwargs...) where {sf_sym}
+    return parallel_calculate_structure_function(SFT.get_structure_function_type(Val(sf_sym)), args...; kwargs...)
+end
+
+function parallel_calculate_structure_function(order::Int, mode::Symbol, args...; kwargs...)
+    return parallel_calculate_structure_function(Val(order), Val(mode), args...; kwargs...)
+end
+
+function parallel_calculate_structure_function(::Val{order}, ::Val{mode}, args...; kwargs...) where {order, mode}
+    return parallel_calculate_structure_function(SFT.get_structure_function_type(Val(order), Val(mode)), args...; kwargs...)
+end
+
+"""
+    StructureFunction(order::Int, mode::Symbol, x, u, bins; kwargs...)
+
+Factory constructor that calculates a structure function and returns a result object.
+This redirects to `calculate_structure_function`.
+"""
+function SFO.StructureFunction(order::Int, mode::Symbol, args...; kwargs...)
+    return calculate_structure_function(Val(order), Val(mode), args...; kwargs...)
+end
+
+function SFO.StructureFunction(::Val{order}, ::Val{mode}, args...; kwargs...) where {order, mode}
+    return calculate_structure_function(Val(order), Val(mode), args...; kwargs...)
+end
+
+function SFO.StructureFunction(sf_sym::Symbol, args...; kwargs...)
+    return calculate_structure_function(Val(sf_sym), args...; kwargs...)
+end
+
+function SFO.StructureFunction(::Val{sf_sym}, args...; kwargs...) where {sf_sym}
+    return calculate_structure_function(Val(sf_sym), args...; kwargs...)
+end
+
+"""
     gpu_calculate_structure_function(...)
 
 GPU-accelerated structure function calculation. Requires loading `KernelAbstractions.jl`
@@ -48,8 +113,16 @@ function (sf::SFT.AbstractStructureFunctionType)(x, u, bins; kwargs...)
     return calculate_structure_function(sf, x, u, bins; kwargs...)
 end
 
+function (sf::SFT.AbstractStructureFunctionType)(x, u, bins, ::Val{RSAC}; kwargs...) where {RSAC}
+    return calculate_structure_function(sf, x, u, bins, Val(RSAC); kwargs...)
+end
+
 function (::Type{T})(x, u, bins; kwargs...) where {T <: SFT.AbstractStructureFunctionType}
     return calculate_structure_function(T(), x, u, bins; kwargs...)
+end
+
+function (::Type{T})(x, u, bins, ::Val{RSAC}; kwargs...) where {T <: SFT.AbstractStructureFunctionType, RSAC}
+    return calculate_structure_function(T(), x, u, bins, Val(RSAC); kwargs...)
 end
 
 """
@@ -79,7 +152,7 @@ function calculate_structure_function(
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector{<:Tuple{FT3, FT3}};
-    return_sums_and_counts::Bool = false,
+    return_sums_and_counts = Val(false),
     kwargs...,
 ) where {T1, T2, FT3}
     return calculate_structure_function(
@@ -87,7 +160,7 @@ function calculate_structure_function(
         x_vecs,
         u_vecs,
         distance_bins,
-        Val(return_sums_and_counts);
+        return_sums_and_counts isa Bool ? Val(return_sums_and_counts) : return_sums_and_counts;
         kwargs...,
     )
 end
@@ -331,7 +404,7 @@ function calculate_structure_function(
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector{Tuple{FT3, FT3}};
-    return_sums_and_counts::Bool = false,
+    return_sums_and_counts = Val(false),
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
     return calculate_structure_function(
@@ -339,7 +412,7 @@ function calculate_structure_function(
         x_arr,
         u_arr,
         distance_bins,
-        Val(return_sums_and_counts);
+        return_sums_and_counts isa Bool ? Val(return_sums_and_counts) : return_sums_and_counts;
         kwargs...,
     )
 end
