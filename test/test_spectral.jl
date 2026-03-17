@@ -1,12 +1,11 @@
-using StructureFunctions
-using StructureFunctions.SpectralAnalysis
-using Test
-using StaticArrays
-using LinearAlgebra
-using FINUFFT
-using FFTW
+using StructureFunctions: StructureFunctions as SF, SpectralAnalysis as SFSA
+using Test: Test
+using StaticArrays: StaticArrays as SA
+using LinearAlgebra: LinearAlgebra as LA
+using FINUFFT: FINUFFT
+using FFTW: FFTW
 
-@testset "Spectral Analysis - Unified Backend Parity" begin
+Test.@testset "Spectral Analysis - Unified Backend Parity" begin
     # 1D Uniform Case to compare FFT, FINUFFT, and DirectSum
     N = 64
     L = 1.0
@@ -20,13 +19,13 @@ using FFTW
     
     # Use explicit module or using
     # 1. DirectSum (Ground Truth)
-    c_direct, ks_direct = calculate_spectrum(x_vecs, u_vecs, ms, backend=DirectSumBackend())
+    c_direct, ks_direct = SFSA.calculate_spectrum(x_vecs, u_vecs, ms, backend=SFSA.DirectSumBackend())
     
     # 2. FINUFFT (Approximation)
-    c_nufft, ks_nufft = calculate_spectrum(x_vecs, u_vecs, ms, backend=FINUFFTBackend(), eps=1e-12)
+    c_nufft, ks_nufft = SFSA.calculate_spectrum(x_vecs, u_vecs, ms, backend=SFSA.FINUFFTBackend(), eps=1e-12)
     
     # 3. FFT (Reference for uniform)
-    c_fft, ks_fft = calculate_spectrum(x_vecs, u_vecs, ms, backend=FFTBackend())
+    c_fft, ks_fft = SFSA.calculate_spectrum(x_vecs, u_vecs, ms, backend=SFSA.FFTBackend())
     
     # Check Power Spikes at f0=5
     # Standard FFT convention: freq = k / L? 
@@ -43,10 +42,10 @@ using FFTW
     # These will differ by scaling and phase convention unless carefully matched.
     
     # For now, let's just ensure FINUFFT and DirectSum match perfectly as they use the same convention.
-    @test isapprox(c_direct, c_nufft, rtol=1e-7)
+    Test.@test isapprox(c_direct, c_nufft, rtol=1e-7)
 end
 
-@testset "Spectral Analysis - 2D Non-Uniform" begin
+Test.@testset "Spectral Analysis - 2D Non-Uniform" begin
     N = 100
     L = 1.0
     x = rand(N) * L
@@ -57,8 +56,8 @@ end
     u_vecs = (u,)
     ms = (16, 16)
     
-    c_direct, _ = calculate_spectrum(x_vecs, u_vecs, ms, backend=DirectSumBackend())
-    c_nufft, _ = calculate_spectrum(x_vecs, u_vecs, ms, backend=FINUFFTBackend(), eps=1e-9)
+    c_direct, _ = SFSA.calculate_spectrum(x_vecs, u_vecs, ms, backend=SFSA.DirectSumBackend())
+    c_nufft, _ = SFSA.calculate_spectrum(x_vecs, u_vecs, ms, backend=SFSA.FINUFFTBackend(), eps=1e-9)
     
-    @test isapprox(c_direct, c_nufft, rtol=1e-6)
+    Test.@test isapprox(c_direct, c_nufft, rtol=1e-6)
 end

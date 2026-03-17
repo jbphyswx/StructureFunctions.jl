@@ -1,7 +1,7 @@
 module StructureFunctions # `using StructureFunctions`` should work `@everywhere` automatically... hopefully the methods and extensinos below follow...
 
 using StaticArrays: StaticArrays as SA
-import PrecompileTools
+using PrecompileTools: PrecompileTools
 abstract type AbstractStructureFunction end
 
 # using Distributed

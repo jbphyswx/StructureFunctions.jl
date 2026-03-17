@@ -2,27 +2,23 @@
 The workhorse of this package
 For speed, pretty much all your inputs seems to need to be SharedArrays...
 """
-module ParallelCalculationsExt
+module StructureFunctionsParallelCalculationsExt
 using Distributed: Distributed
 using ProgressMeter: ProgressMeter as PM
-import Distances: Distances as DI
+using Distances: Distances as DI
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
-using SharedArrays: SharedArrays as ShA
-import StructureFunctions as SF # Use alias to avoid name conflict if any
-
-const Calculations = SF.Calculations
-const HelperFunctions = SF.HelperFunctions
-const StructureFunctionTypes = SF.StructureFunctionTypes
+using SharedArrays: SharedArrays
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH, StructureFunctionTypes as SFT
 
 
 export parallel_calculate_structure_function 
 
-function Calculations.parallel_calculate_structure_function(
+function SFC.parallel_calculate_structure_function(
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
-    structure_function_type::StructureFunctionTypes.AbstractStructureFunctionType;
+    structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
@@ -48,7 +44,7 @@ function Calculations.parallel_calculate_structure_function(
                                                                                                             eachindex(
             x_vecs[1],
         )
-            Calculations.calculate_structure_function_i(
+            SFC.calculate_structure_function_i(
                 i,
                 x_vecs,
                 u_vecs,
@@ -68,11 +64,11 @@ function Calculations.parallel_calculate_structure_function(
 end
 
 
-function Calculations.parallel_calculate_structure_function(
+function SFC.parallel_calculate_structure_function(
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::Int,
-    structure_function_type::StructureFunctionTypes.AbstractStructureFunctionType;
+    structure_function_type::SFT.AbstractStructureFunctionType;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     bin_spacing = :logarithmic,
     verbose = true,
@@ -101,7 +97,7 @@ function Calculations.parallel_calculate_structure_function(
                                                                                                               eachindex(
             x_vecs[1],
         )
-            Calculations.minmax_i(i, x_vecs, distance_metric)
+            SFC.minmax_i(i, x_vecs, distance_metric)
         end
 
 
@@ -121,7 +117,7 @@ function Calculations.parallel_calculate_structure_function(
     )
 
 
-    return Calculations.parallel_calculate_structure_function(
+    return SFC.parallel_calculate_structure_function(
         x_vecs,
         u_vecs,
         distance_bins,

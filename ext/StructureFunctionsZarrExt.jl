@@ -1,9 +1,8 @@
-module ZarrExt
+module StructureFunctionsZarrExt
 
-using Zarr
-using DiskArrays
-import StructureFunctions.Calculations: calculate_structure_function_from_file, calculate_structure_function
-import StructureFunctions.HelperFunctions: flatten_data, remove_nans
+using Zarr: Zarr
+using DiskArrays: DiskArrays
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH
 
 """
     calculate_structure_function_from_file(::Val{:zarr}, fpath::String, bin_edges, sf_type; 
@@ -12,7 +11,7 @@ import StructureFunctions.HelperFunctions: flatten_data, remove_nans
 Load data from a Zarr store and calculate the structure function.
 Supports out-of-core computation if the backend supports it (to be enhanced in I2).
 """
-function calculate_structure_function_from_file(
+function SFC.calculate_structure_function_from_file(
     ::Val{:zarr},
     fpath::String,
     bin_edges,
@@ -22,7 +21,7 @@ function calculate_structure_function_from_file(
     kwargs...
 )
     # Open Zarr group
-    z = zopen(fpath, "r")
+    z = Zarr.zopen(fpath, "r")
     
     # 1. Load data handles (lazy)
     x_raw = _load_zvars(z, x_key)
@@ -30,8 +29,8 @@ function calculate_structure_function_from_file(
 
     # 2. For now, we materialise (Block I2 will enable lazy processing)
     # To enable true out-of-core, core calculations need to support AbstractDiskArray.
-    x_flat = flatten_data(x_raw)
-    u_flat = flatten_data(u_raw)
+    x_flat = SFH.flatten_data(x_raw)
+    u_flat = SFH.flatten_data(u_raw)
 
     # Materialize (Block I2 TODO: lazy chunks)
     FT = eltype(u_flat[1])
@@ -45,10 +44,10 @@ function calculate_structure_function_from_file(
     for i in 1:NU; u_mat[i, :] .= u_flat[i][:]; end
 
     # 3. Clean NaNs
-    x_clean, u_clean = remove_nans(x_mat, u_mat)
+    x_clean, u_clean = SFH.remove_nans(x_mat, u_mat)
 
     # 4. Delegate
-    return calculate_structure_function(x_clean, u_clean, bin_edges, sf_type; kwargs...)
+    return SFC.calculate_structure_function(x_clean, u_clean, bin_edges, sf_type; kwargs...)
 end
 
 function _load_zvars(z, key)

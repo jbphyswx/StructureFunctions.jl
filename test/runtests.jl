@@ -1,15 +1,15 @@
-using StructureFunctions
-using Test
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+using Test: Test
 
 
-@testset "StructureFunctions" begin
-    a = StructureFunctions.SA.SVector([1, 2, 3]...)
-    b = StructureFunctions.SA.SVector([0, 0, 0]...)
-    @test StructureFunctions.Calculations.calculate_structure_function(
+Test.@testset "StructureFunctions" begin
+    a = SF.SA.SVector([1, 2, 3]...)
+    b = SF.SA.SVector([0, 0, 0]...)
+    Test.@test SFC.calculate_structure_function(
         (a, a),
         (b, b),
         1,
-        StructureFunctions.StructureFunctionTypes.LongitudinalSecondOrderStructureFunction();
+        SFT.LongitudinalSecondOrderStructureFunction();
         show_progress = true,
         verbose = true,
         bin_spacing = :linear,

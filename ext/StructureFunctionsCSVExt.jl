@@ -1,8 +1,7 @@
-module CSVExt
+module StructureFunctionsCSVExt
 
-using CSV
-import StructureFunctions.Calculations: calculate_structure_function_from_file, calculate_structure_function
-import StructureFunctions.HelperFunctions: remove_nans
+using CSV: CSV
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH
 
 """
     calculate_structure_function_from_file(::Val{:csv}, fpath::String, bin_edges, sf_type; 
@@ -10,7 +9,7 @@ import StructureFunctions.HelperFunctions: remove_nans
 
 Load data from a CSV file and calculate the structure function.
 """
-function calculate_structure_function_from_file(
+function SFC.calculate_structure_function_from_file(
     ::Val{:csv},
     fpath::String,
     bin_edges,
@@ -47,16 +46,16 @@ function calculate_structure_function_from_file(
     end
 
     # 2. Clean NaNs
-    x_clean, u_clean = remove_nans(x_mat, u_mat)
+    x_clean, u_clean = SFH.remove_nans(x_mat, u_mat)
 
     # 3. Delegate
-    return calculate_structure_function(x_clean, u_clean, bin_edges, sf_type; kwargs...)
+    return SFC.calculate_structure_function(x_clean, u_clean, bin_edges, sf_type; kwargs...)
 end
 
 # Alias for .txt, .dat
-calculate_structure_function_from_file(::Val{:txt}, args...; kwargs...) = 
-    calculate_structure_function_from_file(Val(:csv), args...; kwargs...)
-calculate_structure_function_from_file(::Val{:dat}, args...; kwargs...) = 
-    calculate_structure_function_from_file(Val(:csv), args...; kwargs...)
+SFC.calculate_structure_function_from_file(::Val{:txt}, args...; kwargs...) = 
+    SFC.calculate_structure_function_from_file(Val(:csv), args...; kwargs...)
+SFC.calculate_structure_function_from_file(::Val{:dat}, args...; kwargs...) = 
+    SFC.calculate_structure_function_from_file(Val(:csv), args...; kwargs...)
 
 end # module

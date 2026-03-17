@@ -1,8 +1,7 @@
-module NCDatasetsExt
+module StructureFunctionsNCDatasetsExt
 
 using NCDatasets: NCDatasets as NC
-import StructureFunctions.Calculations: calculate_structure_function_from_file, calculate_structure_function
-import StructureFunctions.HelperFunctions: flatten_data, remove_nans
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH
 
 """
     calculate_structure_function_from_file(::Val{:nc}, fpath::String, bin_edges, sf_type; 
@@ -10,7 +9,7 @@ import StructureFunctions.HelperFunctions: flatten_data, remove_nans
 
 Load data from a NetCDF file and calculate the structure function.
 """
-function calculate_structure_function_from_file(
+function SFC.calculate_structure_function_from_file(
     ::Val{:nc},
     fpath::String,
     bin_edges,
@@ -28,8 +27,8 @@ function calculate_structure_function_from_file(
         x_vals = ntuple(i -> x_raw[i][:], length(x_raw))
         u_vals = ntuple(i -> u_raw[i][:], length(u_raw))
         
-        x_flat = flatten_data(x_vals)
-        u_flat = flatten_data(u_vals)
+        x_flat = SFH.flatten_data(x_vals)
+        u_flat = SFH.flatten_data(u_vals)
 
         # 3. Handle coordinate grids (using lazy u_raw[1] for shape)
         x_flat_expanded = _expand_coords(x_flat, u_raw[1])
@@ -48,16 +47,16 @@ function calculate_structure_function_from_file(
         for i in 1:NU; u_mat[i, :] .= u_flat[i]; end
 
         # 5. Clean NaNs (common in NetCDF)
-        x_clean, u_clean = remove_nans(x_mat, u_mat)
+        x_clean, u_clean = SFH.remove_nans(x_mat, u_mat)
 
         # 6. Delegate
-        return calculate_structure_function(x_clean, u_clean, bin_edges, sf_type; kwargs...)
+        return SFC.calculate_structure_function(x_clean, u_clean, bin_edges, sf_type; kwargs...)
     end
 end
 
 # Alias for .netcdf
-calculate_structure_function_from_file(::Val{:netcdf}, args...; kwargs...) = 
-    calculate_structure_function_from_file(Val(:nc), args...; kwargs...)
+SFC.calculate_structure_function_from_file(::Val{:netcdf}, args...; kwargs...) = 
+    SFC.calculate_structure_function_from_file(Val(:nc), args...; kwargs...)
 
 function _load_vars(ds, key)
     if key isa Union{Tuple, AbstractVector}
