@@ -62,10 +62,7 @@ end
 
 Convert a collection of bin edges (tuples) to their midpoints. Internal helper.
 """
-function midpoints(bins::AbstractVector{Tuple{T, T}}) where {T <: Number}
-    return [(b[1] + b[2]) / 2 for b in bins]
-end
-
+midpoints(bins) = map(b -> (b[1]+b[2])/2, bins)
 midpoints(v::AbstractVector{<:Number}) = v
 
 @inline function digitize(x::AbstractVector, bins::AbstractVector)
