@@ -1,7 +1,7 @@
 module SyntheticData
 using Random: Random
-using StaticArrays: SVector
-using LinearAlgebra: dot
+using StaticArrays: StaticArrays as SA
+using LinearAlgebra: LinearAlgebra as LA
 
 export generate_nonuniform_domain, generate_spectral_field, generate_highres_uniform
 

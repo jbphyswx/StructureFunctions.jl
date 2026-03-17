@@ -2,7 +2,7 @@ using Test: Test, @inferred
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, StructureFunctionObjects as SFO
 using StaticArrays: StaticArrays as SA
 
-Test.@testset "Phase J6 Stability Verification" begin
+Test.@testset "Stability Verification" begin
     N = 100
     FT = Float64
     x = ([rand(FT) for _ in 1:N], [rand(FT) for _ in 1:N])

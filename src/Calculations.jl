@@ -31,12 +31,20 @@ end
 
 Shorthand that looks up the operator by name and calls the core calculation.
 """
-function calculate_structure_function(sf_sym::Symbol, args...; kwargs...)
-    return calculate_structure_function(Val(sf_sym), args...; kwargs...)
+function calculate_structure_function(sf_sym::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...)
+    return calculate_structure_function(Val(sf_sym), x, u, bins; kwargs...)
 end
 
-function calculate_structure_function(::Val{sf_sym}, args...; kwargs...) where {sf_sym}
-    return calculate_structure_function(SFT.get_structure_function_type(Val(sf_sym)), args...; kwargs...)
+function calculate_structure_function(sf_sym::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {RSAC}
+    return calculate_structure_function(Val(sf_sym), x, u, bins, Val(RSAC); kwargs...)
+end
+
+function calculate_structure_function(::Val{sf_sym}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...) where {sf_sym}
+    return calculate_structure_function(SFT.get_structure_function_type(Val(sf_sym)), x, u, bins; kwargs...)
+end
+
+function calculate_structure_function(::Val{sf_sym}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {sf_sym, RSAC}
+    return calculate_structure_function(SFT.get_structure_function_type(Val(sf_sym)), x, u, bins, Val(RSAC); kwargs...)
 end
 
 """
@@ -44,29 +52,53 @@ end
 
 Shorthand that looks up the operator by order and mode and calls the core calculation.
 """
-function calculate_structure_function(order::Int, mode::Symbol, args...; kwargs...)
-    return calculate_structure_function(Val(order), Val(mode), args...; kwargs...)
+function calculate_structure_function(order::Int, mode::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...)
+    return calculate_structure_function(Val(order), Val(mode), x, u, bins; kwargs...)
 end
 
-function calculate_structure_function(::Val{order}, ::Val{mode}, args...; kwargs...) where {order, mode}
-    return calculate_structure_function(SFT.get_structure_function_type(Val(order), Val(mode)), args...; kwargs...)
+function calculate_structure_function(order::Int, mode::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {RSAC}
+    return calculate_structure_function(Val(order), Val(mode), x, u, bins, Val(RSAC); kwargs...)
+end
+
+function calculate_structure_function(::Val{order}, ::Val{mode}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...) where {order, mode}
+    return calculate_structure_function(SFT.get_structure_function_type(Val(order), Val(mode)), x, u, bins; kwargs...)
+end
+
+function calculate_structure_function(::Val{order}, ::Val{mode}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {order, mode, RSAC}
+    return calculate_structure_function(SFT.get_structure_function_type(Val(order), Val(mode)), x, u, bins, Val(RSAC); kwargs...)
 end
 
 # Shorthand for parallel version too
-function parallel_calculate_structure_function(sf_sym::Symbol, args...; kwargs...)
-    return parallel_calculate_structure_function(Val(sf_sym), args...; kwargs...)
+function parallel_calculate_structure_function(sf_sym::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...)
+    return parallel_calculate_structure_function(Val(sf_sym), x, u, bins; kwargs...)
 end
 
-function parallel_calculate_structure_function(::Val{sf_sym}, args...; kwargs...) where {sf_sym}
-    return parallel_calculate_structure_function(SFT.get_structure_function_type(Val(sf_sym)), args...; kwargs...)
+function parallel_calculate_structure_function(sf_sym::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {RSAC}
+    return parallel_calculate_structure_function(Val(sf_sym), x, u, bins, Val(RSAC); kwargs...)
 end
 
-function parallel_calculate_structure_function(order::Int, mode::Symbol, args...; kwargs...)
-    return parallel_calculate_structure_function(Val(order), Val(mode), args...; kwargs...)
+function parallel_calculate_structure_function(::Val{sf_sym}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...) where {sf_sym}
+    return parallel_calculate_structure_function(SFT.get_structure_function_type(Val(sf_sym)), x, u, bins; kwargs...)
 end
 
-function parallel_calculate_structure_function(::Val{order}, ::Val{mode}, args...; kwargs...) where {order, mode}
-    return parallel_calculate_structure_function(SFT.get_structure_function_type(Val(order), Val(mode)), args...; kwargs...)
+function parallel_calculate_structure_function(::Val{sf_sym}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {sf_sym, RSAC}
+    return parallel_calculate_structure_function(SFT.get_structure_function_type(Val(sf_sym)), x, u, bins, Val(RSAC); kwargs...)
+end
+
+function parallel_calculate_structure_function(order::Int, mode::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...)
+    return parallel_calculate_structure_function(Val(order), Val(mode), x, u, bins; kwargs...)
+end
+
+function parallel_calculate_structure_function(order::Int, mode::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {RSAC}
+    return parallel_calculate_structure_function(Val(order), Val(mode), x, u, bins, Val(RSAC); kwargs...)
+end
+
+function parallel_calculate_structure_function(::Val{order}, ::Val{mode}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...) where {order, mode}
+    return parallel_calculate_structure_function(SFT.get_structure_function_type(Val(order), Val(mode)), x, u, bins; kwargs...)
+end
+
+function parallel_calculate_structure_function(::Val{order}, ::Val{mode}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {order, mode, RSAC}
+    return parallel_calculate_structure_function(SFT.get_structure_function_type(Val(order), Val(mode)), x, u, bins, Val(RSAC); kwargs...)
 end
 
 """
@@ -75,20 +107,36 @@ end
 Factory constructor that calculates a structure function and returns a result object.
 This redirects to `calculate_structure_function`.
 """
-function SFO.StructureFunction(order::Int, mode::Symbol, args...; kwargs...)
-    return calculate_structure_function(Val(order), Val(mode), args...; kwargs...)
+function SFO.StructureFunction(order::Int, mode::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...)
+    return calculate_structure_function(order, mode, x, u, bins; kwargs...)
 end
 
-function SFO.StructureFunction(::Val{order}, ::Val{mode}, args...; kwargs...) where {order, mode}
-    return calculate_structure_function(Val(order), Val(mode), args...; kwargs...)
+function SFO.StructureFunction(order::Int, mode::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {RSAC}
+    return calculate_structure_function(order, mode, x, u, bins, Val(RSAC); kwargs...)
 end
 
-function SFO.StructureFunction(sf_sym::Symbol, args...; kwargs...)
-    return calculate_structure_function(Val(sf_sym), args...; kwargs...)
+function SFO.StructureFunction(::Val{order}, ::Val{mode}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...) where {order, mode}
+    return calculate_structure_function(Val(order), Val(mode), x, u, bins; kwargs...)
 end
 
-function SFO.StructureFunction(::Val{sf_sym}, args...; kwargs...) where {sf_sym}
-    return calculate_structure_function(Val(sf_sym), args...; kwargs...)
+function SFO.StructureFunction(::Val{order}, ::Val{mode}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {order, mode, RSAC}
+    return calculate_structure_function(Val(order), Val(mode), x, u, bins, Val(RSAC); kwargs...)
+end
+
+function SFO.StructureFunction(sf_sym::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...)
+    return calculate_structure_function(Val(sf_sym), x, u, bins; kwargs...)
+end
+
+function SFO.StructureFunction(sf_sym::Symbol, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {RSAC}
+    return calculate_structure_function(Val(sf_sym), x, u, bins, Val(RSAC); kwargs...)
+end
+
+function SFO.StructureFunction(::Val{sf_sym}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector; kwargs...) where {sf_sym}
+    return calculate_structure_function(Val(sf_sym), x, u, bins; kwargs...)
+end
+
+function SFO.StructureFunction(::Val{sf_sym}, x::Union{Tuple, AbstractArray}, u::Union{Tuple, AbstractArray}, bins::AbstractVector, ::Val{RSAC}; kwargs...) where {sf_sym, RSAC}
+    return calculate_structure_function(Val(sf_sym), x, u, bins, Val(RSAC); kwargs...)
 end
 
 """
@@ -152,7 +200,7 @@ function calculate_structure_function(
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector{<:Tuple{FT3, FT3}};
-    return_sums_and_counts = Val(false),
+    return_sums_and_counts::Bool = false,
     kwargs...,
 ) where {T1, T2, FT3}
     return calculate_structure_function(
@@ -160,7 +208,7 @@ function calculate_structure_function(
         x_vecs,
         u_vecs,
         distance_bins,
-        return_sums_and_counts isa Bool ? Val(return_sums_and_counts) : return_sums_and_counts;
+        Val(return_sums_and_counts);
         kwargs...,
     )
 end
@@ -223,32 +271,44 @@ function _calculate_structure_function_core(
     end
 
     iter_inds = eachindex(x_vecs[1])
-    Threads.@threads for i in iter_inds
-        tid = Threads.threadid()
-        calculate_structure_function_i!(
-            local_outputs[tid],
-            local_counts[tid],
-            structure_function_type,
-            i,
-            x_vecs,
-            u_vecs,
-            distance_bins_vec;
-            distance_metric = distance_metric,
-        )
+    # Pass Val(length(x_vecs)) to make it a type parameter in the work function
+    vN = Val(length(x_vecs))
+    let lo=local_outputs, lc=local_counts, vn=vN, st=structure_function_type, xv=x_vecs, uv=u_vecs, dbv=distance_bins_vec, dm=distance_metric
+        Threads.@threads for i in iter_inds
+            tid = Threads.threadid()
+            calculate_structure_function_i!(
+                lo[tid],
+                lc[tid],
+                vn,
+                st,
+                i,
+                xv,
+                uv,
+                dbv;
+                distance_metric = dm,
+            )
+        end
     end
 
     # Global reduction from thread-local buffers
     for tid in 1:n_threads
-        output .+= local_outputs[tid]
-        counts .+= local_counts[tid]
+        lt_out = local_outputs[tid]
+        lt_cnt = local_counts[tid]
+        for k in 1:N3
+            @inbounds output[k] += lt_out[k]
+            @inbounds counts[k] += lt_cnt[k]
+        end
     end
 
     if RSAC # just return the sums and the counts, don't take the mean in each bin...
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, output, counts)
     else # do the mean in each bin.
-        counts_safe = copy(counts) # copy to avoid mutating the original counts
-        counts_safe[counts_safe .== 0] .= NaN # replace 0s with NaNs to avoid divide by 0 giving Inf
-        output_div = output ./ counts_safe
+        # Use explicit loop instead of broadcast to satisfy JET and avoid Makie dispatch
+        output_div = similar(output)
+        for k in eachindex(output)
+            c = counts[k]
+            output_div[k] = iszero(c) ? OT(NaN) : output[k] / c
+        end
         return SFO.StructureFunction(structure_function_type, distance_bins, output_div)
     end
 end
@@ -258,14 +318,14 @@ end
 function calculate_structure_function_i!(
     output::AbstractVector{OT},
     counts::AbstractVector{OT},
+    ::Val{N},
     structure_function_type::SFT.AbstractStructureFunctionType,
     i::Int,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins_vec::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {OT, T1, T2, FT3}
-    N = length(x_vecs)
+) where {OT, N, T1, T2, FT3}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
     N3 = length(distance_bins_vec)
@@ -286,6 +346,43 @@ function calculate_structure_function_i!(
         end
     end
     return nothing
+end
+
+"""
+    calculate_structure_function_i(...)
+
+Result-object wrapper for `calculate_structure_function_i!`.
+Returns a `StructureFunctionSumsAndCounts` for a single point `i`'s contributions.
+Used primary by the `@distributed` backend.
+"""
+function calculate_structure_function_i(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    i::Int,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+)
+    OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
+    N3 = length(distance_bins)
+    local_output = zeros(OT, N3)
+    local_counts = zeros(OT, N3)
+    
+    # Kernel expects edges
+    FT3 = eltype(eltype(distance_bins))
+    bin_edges = Vector{FT3}(undef, N3 + 1)
+    for k in 1:N3
+        bin_edges[k] = distance_bins[k][1]
+    end
+    bin_edges[end] = distance_bins[end][2]
+
+    calculate_structure_function_i!(
+        local_output, local_counts,
+        Val(length(x_vecs)),
+        structure_function_type, i, x_vecs, u_vecs, bin_edges;
+        distance_metric = distance_metric
+    )
+    return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, local_output, local_counts)
 end
 
 
@@ -397,7 +494,7 @@ function calculate_structure_function(
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector{Tuple{FT3, FT3}};
-    return_sums_and_counts = Val(false),
+    return_sums_and_counts::Bool = false,
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
     return calculate_structure_function(
@@ -405,7 +502,7 @@ function calculate_structure_function(
         x_arr,
         u_arr,
         distance_bins,
-        return_sums_and_counts isa Bool ? Val(return_sums_and_counts) : return_sums_and_counts;
+        Val(return_sums_and_counts);
         kwargs...,
     )
 end
@@ -443,8 +540,9 @@ function _calculate_structure_function_core(
     # distances = pairwise(distance_metric, X, Y, dims=2) # will blow up if too big... so we're just doing the loop
 
     # preallocate output as vector of length of distance_bins (vector so it's mutable)
-    output = zeros(N3)
-    counts = zeros(N3)
+    OT = promote_type(float(FT1), float(FT2))
+    output = zeros(OT, N3)
+    counts = zeros(OT, N3)
 
     # Create a stable Vector for bins edges
     distance_bins_vec = Vector{FT3}(undef, N3 + 1)
@@ -454,10 +552,10 @@ function _calculate_structure_function_core(
     distance_bins_vec[end] = distance_bins[end][2]
 
     # Create thread-local buffers
+    # Create thread-local buffers to eliminate lock contention and allocations per iteration
     n_threads = Threads.nthreads()
-    local_outputs = [zeros(n_threads) for _ in 1:n_threads] # Wait, N3 length...
-    local_outputs = [zeros(N3) for _ in 1:n_threads]
-    local_counts = [zeros(N3) for _ in 1:n_threads]
+    local_outputs = [zeros(OT, N3) for _ in 1:n_threads]
+    local_counts = [zeros(OT, N3) for _ in 1:n_threads]
 
     if verbose
         @info("calculating structure function (parallel reduction)")
@@ -467,32 +565,42 @@ function _calculate_structure_function_core(
     N = size(x_arr, 1)
     vN = if N == 1 Val(1) elseif N == 2 Val(2) elseif N == 3 Val(3) else Val(N) end
 
-    Threads.@threads for i in iter_inds
-        tid = Threads.threadid()
-        calculate_structure_function_i!(
-            local_outputs[tid],
-            local_counts[tid],
-            vN,
-            structure_function_type,
-            i,
-            x_arr,
-            u_arr,
-            distance_bins_vec;
-            distance_metric = distance_metric,
-        )
+    let lo=local_outputs, lc=local_counts, vn=vN, st=structure_function_type, xa=x_arr, ua=u_arr, dbv=distance_bins_vec, dm=distance_metric
+        Threads.@threads for i in iter_inds
+            tid = Threads.threadid()
+            calculate_structure_function_i!(
+                lo[tid],
+                lc[tid],
+                vn,
+                st,
+                i,
+                xa,
+                ua,
+                dbv;
+                distance_metric = dm,
+            )
+        end
     end
 
+    # Global reduction from thread-local buffers
     for tid in 1:n_threads
-        output .+= local_outputs[tid]
-        counts .+= local_counts[tid]
+        lt_out = local_outputs[tid]
+        lt_cnt = local_counts[tid]
+        for k in 1:N3
+            @inbounds output[k] += lt_out[k]
+            @inbounds counts[k] += lt_cnt[k]
+        end
     end
 
     if RSAC # just return the sums and the counts, don't take the mean in each bin...
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, output, counts)
     else # do the mean in each bin.
-        counts_safe = copy(counts)
-        counts_safe[counts_safe .== 0] .= NaN # replace 0s with NaNs to avoid divide by 0 giving Inf
-        output_div = output ./ counts_safe
+        # Use explicit loop instead of broadcast to satisfy JET and avoid Makie dispatch
+        output_div = similar(output)
+        for k in eachindex(output)
+            c = counts[k]
+            output_div[k] = iszero(c) ? OT(NaN) : output[k] / c
+        end
         return SFO.StructureFunction(structure_function_type, distance_bins, output_div)
     end
 end
@@ -591,6 +699,37 @@ function calculate_structure_function(
         show_progress = show_progress,
         return_sums_and_counts = return_sums_and_counts,
     )
+end
+
+"""
+    minmax_i(i, x_vecs, distance_metric)
+
+Calculate the min and max distances from point `i` to all other points `j != i`.
+Used for automatic binning.
+"""
+function minmax_i(
+    i::Int,
+    x_vecs::Tuple,
+    distance_metric = DI.Euclidean(),
+)
+    N = length(x_vecs)
+    FT = eltype(x_vecs[1])
+    X1 = SA.SVector{N, FT}(ntuple(k -> x_vecs[k][i], Val(N)))
+    
+    min_distance, max_distance = FT(Inf), FT(0.0)
+    iter_inds = eachindex(x_vecs[1])
+    for j in iter_inds
+        if i != j
+            X2 = SA.SVector{N, FT}(ntuple(k -> x_vecs[k][j], Val(N)))
+            distance = distance_metric(X1, X2)
+            if distance < min_distance
+                min_distance = distance
+            elseif distance > max_distance
+                max_distance = distance
+            end
+        end
+    end
+    return min_distance, max_distance
 end
 
 function minmax_i(

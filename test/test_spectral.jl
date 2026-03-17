@@ -34,7 +34,7 @@ Test.@testset "Spectral Analysis - Unified Backend Parity" begin
     # Actually, in standard integer-based NUFFT, k is in [-ms/2, (ms-1)/2].
     
     # Let's check numerical equivalence between backends instead of absolute frequency physics for now
-    @test isapprox(c_direct, c_nufft, rtol=1e-5)
+    Test.@test isapprox(c_direct, c_nufft, rtol=1e-5)
     
     # FFT backend uses standard FFT, which might have different scaling than sum-convention.
     # My DirectSum calculates Σ u_j exp(im * k * x_j).

@@ -16,12 +16,12 @@ export parallel_calculate_structure_function
 
 function SFC.parallel_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
-    x_vecs::Tuple{T1, Vararg{T1}},
-    u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}};
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector;
     return_sums_and_counts::Bool = false,
     kwargs...,
-) where {T1, T2, FT3}
+)
     return SFC.parallel_calculate_structure_function(
         structure_function_type,
         x_vecs,
@@ -34,12 +34,12 @@ end
 
 function SFC.parallel_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
-    x_vecs::Tuple{T1, Vararg{T1}},
-    u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector,
     ::Val{RSAC};
     kwargs...,
-) where {T1, T2, FT3, RSAC}
+) where {RSAC}
     return _parallel_calculate_structure_function_core(
         structure_function_type,
         x_vecs,
@@ -52,50 +52,37 @@ end
 
 function _parallel_calculate_structure_function_core(
     structure_function_type::SFT.AbstractStructureFunctionType,
-    x_vecs::Tuple{T1, Vararg{T1}},
-    u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector,
     ::Val{RSAC};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
-) where {T1, T2, FT3, RSAC}
-    N = length(x_vecs)
-    N3 = length(distance_bins)
-
-
-    # Create a stable Vector for bins edges
-    distance_bins_vec = Vector{FT3}(undef, N3 + 1)
-    for k in 1:N3
-        distance_bins_vec[k] = distance_bins[k][1]
-    end
-    distance_bins_vec[end] = distance_bins[end][2]
-
+) where {RSAC}
     if verbose
-        @info("calculating structure function")
+        @info("calculating structure function (distributed reduction)")
     end
 
-    output, counts =
-        PM.@showprogress enabled = show_progress Distributed.@distributed ((x, y) -> ((x[1] .+ y[1]), (x[2] .+ y[2]))) for i in
-                                                                                                            eachindex(
-            x_vecs[1],
-        )
+    # Use the result-object wrapper for clean distributed reduction using package types
+    sums_and_counts =
+        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for i in eachindex(x_vecs[1])
             SFC.calculate_structure_function_i(
                 structure_function_type,
                 i,
                 x_vecs,
                 u_vecs,
-                distance_bins_vec;
+                distance_bins;
                 distance_metric = distance_metric,
             )
         end
 
     if RSAC
-        return SF.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, output, counts)
+        return sums_and_counts
     else
-        counts_safe = copy(counts)
+        counts_safe = copy(sums_and_counts.counts)
         counts_safe[counts_safe .== 0] .= NaN # replace 0s with NaNs to avoid divide by 0 giving Inf
-        output_div = output ./ counts_safe
+        output_div = sums_and_counts.sums ./ counts_safe
         return SF.StructureFunction(structure_function_type, distance_bins, output_div)
     end
 end
@@ -103,15 +90,15 @@ end
 
 function SFC.parallel_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
-    x_vecs::Tuple{T1, Vararg{T1}},
-    u_vecs::Tuple{T2, Vararg{T2}},
+    x_vecs::Tuple,
+    u_vecs::Tuple,
     distance_bins::Int;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     bin_spacing = :logarithmic,
     verbose = true,
     show_progress = true,
-    return_sums_and_counts = false,
-) where {T1, T2}
+    return_sums_and_counts::Bool = false,
+)
     N = length(x_vecs)
     """
     Here we assume that the distance bins are evenly spaced
