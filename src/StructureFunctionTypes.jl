@@ -40,6 +40,8 @@ with **longitudinal (`NL`)** and **transverse (`NT`)** contributions.
 """
 struct ProjectedStructureFunction{NL,NT} <: AbstractStructureFunctionType end
 
+ProjectedStructureFunction(NL::Integer, NT::Integer) = ProjectedStructureFunction{NL,NT}()
+
 """
     (sf::ProjectedStructureFunction{NL,NT})(δu, r̂)
 
@@ -89,6 +91,7 @@ Parametric type representing structure functions
 with only the **full vector magnitude** ||δu||.
 """
 struct FullVectorStructureFunction{NF} <: AbstractStructureFunctionType end
+FullVectorStructureFunction(NF::Integer) = FullVectorStructureFunction{NF}()
 
 """
     (sf::FullVectorStructureFunction{NF})(δu, r̂)

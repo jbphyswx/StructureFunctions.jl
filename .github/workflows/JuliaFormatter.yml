@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-      - trying
-      - staging
     tags: '*'
   pull_request:
 
@@ -15,23 +13,23 @@ jobs:
     timeout-minutes: 30
     steps:
     - name: Cancel Previous Runs
-      uses: styfle/cancel-workflow-action@0.4.0
+      uses: styfle/cancel-workflow-action@0.12.1
       with:
         access_token: ${{ github.token }}
 
-    - uses: actions/checkout@v2.2.0
+    - uses: actions/checkout@v4
 
-    - uses: dorny/paths-filter@v2.9.1
+    - uses: dorny/paths-filter@v3.0.2
       id: filter
       with:
         filters: |
           julia_file_change:
             - added|modified: '**.jl'
 
-    - uses: julia-actions/setup-julia@latest
+    - uses: julia-actions/setup-julia@v2.6.0
       if: steps.filter.outputs.julia_file_change == 'true'
       with:
-        version: 1.9.3
+        version: '1.12'
 
     - name: Apply JuliaFormatter
       if: steps.filter.outputs.julia_file_change == 'true'
