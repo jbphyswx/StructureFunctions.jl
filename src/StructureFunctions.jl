@@ -2,7 +2,6 @@ module StructureFunctions # `using StructureFunctions`` should work `@everywhere
 
 using StaticArrays: StaticArrays as SA
 using PrecompileTools: PrecompileTools
-abstract type AbstractStructureFunction end
 
 # using Distributed
 # @everywhere include("ParallelCalculations.jl") # this works w/ include("src/StructureFunctions.jl") but not w/ using StructureFunctions, and the former dumps directly into Main...
