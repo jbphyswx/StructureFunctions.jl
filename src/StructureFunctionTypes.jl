@@ -1,72 +1,140 @@
 module StructureFunctionTypes
 
-using LinearAlgebra: LinearAlgebra as LA
-import ..HelperFunctions: HelperFunctions as HF
+using LinearAlgebra: norm
+import ..HelperFunctions: mδu_l, δu_t, mδu_t
 
 abstract type AbstractStructureFunctionType end
 
-using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization (Phase 3/4)
+# Identity call for backward compatibility: Allows SFType() where SFType is now a constant instance.
+(sf::AbstractStructureFunctionType)() = sf
 
-@inline @fastmath @inbounds norm2(x) = begin
-    out = zero(eltype(x))
-    for i in eachindex(x)
-        @inbounds @fastmath out +=  x[i]^2
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+"""
+    norm2(x)
+
+Compute the sum of squares of elements of `x`. Faster than `norm(x)^2`
+for small vectors, used for transverse components.
+"""
+@inline function norm2(x)
+    @fastmath @inbounds begin
+        out = zero(eltype(x))
+        for i in eachindex(x)
+            out += x[i]^2
+        end
+        return out
     end
-    return out
 end
 
-export SecondOrderStructureFunction,
-    LongitudinalSecondOrderStructureFunction,
-    TransverseSecondOrderStructureFunction,
-    RotationalSecondOrderStructureFunction,
-    DivergentSecondOrderStructureFunction,
-    ThirdOrderStructureFunction,
-    DiagonalConsistentThirdOrderStructureFunction,
-    DiagonalInconsistentThirdOrderStructureFunction,
-    OffDiagonalInconsistentThirdOrderStructureFunction,
-    OffDiagonalConsistentThirdOrderStructureFunction,
-    get_structure_function_type
+# ---------------------------------------------------------------------------
+# Parametric Types
+# ---------------------------------------------------------------------------
 
-# see https://doi.org/10.1002/2016GL069405 for definitions
+"""
+    ProjectedStructureFunction{NL,NT}
 
-# 2nd Order
-struct SecondOrderStructureFunction <: AbstractStructureFunctionType end
-@inline (::SecondOrderStructureFunction)(δu, r̂) = norm2(δu)
+Parametric type representing structure functions
+with **longitudinal (`NL`)** and **transverse (`NT`)** contributions.
+"""
+struct ProjectedStructureFunction{NL,NT} <: AbstractStructureFunctionType end
 
-struct LongitudinalSecondOrderStructureFunction <: AbstractStructureFunctionType end
-@inline (::LongitudinalSecondOrderStructureFunction)(δu, r̂) = HF.mδu_l(δu, r̂)^2
+"""
+    (sf::ProjectedStructureFunction{NL,NT})(δu, r̂)
 
-struct TransverseSecondOrderStructureFunction <: AbstractStructureFunctionType end
-@inline (::TransverseSecondOrderStructureFunction)(δu, r̂) = norm2(HF.δu_t(δu, r̂))
+Compute the structure function for longitudinal/transverse components.
 
-struct RotationalSecondOrderStructureFunction <: AbstractStructureFunctionType end # NotImplemented
-struct DivergentSecondOrderStructureFunction <: AbstractStructureFunctionType end # NotImplemented
+- `NL` : power of longitudinal component δu_l
+- `NT` : power of transverse component ||δu_t||
+"""
+@generated function (sf::ProjectedStructureFunction{NL,NT})(δu, r̂) where {NL,NT}
+    ex = :(one(eltype(δu)))
 
+    # Longitudinal contribution (always scalar, integer power)
+    if !iszero(NL)
+        if NL == 1
+            ex = :($ex * mδu_l(δu, r̂))
+        elseif NL == 2
+            ex = :($ex * mδu_l(δu, r̂)^2)
+        else
+            ex = :($ex * (mδu_l(δu, r̂)^$NL))
+        end
+    end
 
-# 3rd Order
-struct ThirdOrderStructureFunction <: AbstractStructureFunctionType end
-@inline (::ThirdOrderStructureFunction)(δu, r̂) = LA.norm(δu)^3
+    # Transverse contribution
+    if !iszero(NT)
+        if NT == 2
+            # fast path: sum-of-squares, no sqrt
+            ex = :($ex * norm2(δu_t(δu, r̂)))
+        elseif NT == 3
+            # standard magnitude cubed (precomputed scalar), avoids fractional exponent
+            ex = :($ex * (mδu_t(δu, r̂)^3))
+        elseif NT == 1
+            ex = :($ex * mδu_t(δu, r̂))
+        else
+            # fallback: use scalar magnitude raised to NT (for uncommon powers)
+            ex = :($ex * (mδu_t(δu, r̂)^$NT))
+        end
+    end
 
-struct DiagonalConsistentThirdOrderStructureFunction <: AbstractStructureFunctionType end
-@inline (::DiagonalConsistentThirdOrderStructureFunction)(δu, r̂) = HF.mδu_l(δu, r̂)^3
+    return ex
+end
 
-struct DiagonalInconsistentThirdOrderStructureFunction <: AbstractStructureFunctionType end
-@inline (::DiagonalInconsistentThirdOrderStructureFunction)(δu, r̂) = HF.mδu_l(δu, r̂)^2 * HF.mδu_t(δu, r̂)
+# ---------------------------------------------------------------------------
+"""
+    FullVectorStructureFunction{NF}
 
-struct OffDiagonalInconsistentThirdOrderStructureFunction <: AbstractStructureFunctionType end
-@inline (::OffDiagonalInconsistentThirdOrderStructureFunction)(δu, r̂) = HF.mδu_l(δu, r̂) * norm2(HF.δu_t(δu, r̂))
+Parametric type representing structure functions
+with only the **full vector magnitude** ||δu||.
+"""
+struct FullVectorStructureFunction{NF} <: AbstractStructureFunctionType end
 
-struct OffDiagonalConsistentThirdOrderStructureFunction <: AbstractStructureFunctionType end
-@inline (::OffDiagonalConsistentThirdOrderStructureFunction)(δu, r̂) = HF.mδu_t(δu, r̂)^3
+"""
+    (sf::FullVectorStructureFunction{NF})(δu, r̂)
 
+Compute the structure function for the full vector magnitude:
 
-# Mapping for get_structure_function_type to avoid eval. Convenience function for end users.
-const SF_TYPE_MAP = Dict{Symbol, Type{<:AbstractStructureFunctionType}}(
+- `NF` : power of ||δu||
+"""
+@generated function (sf::FullVectorStructureFunction{NF})(δu, r̂) where {NF}
+    if NF == 2
+        return :(norm2(δu))
+    else
+        return :(norm(δu)^$NF)
+    end
+end
+
+# ---------------------------------------------------------------------------
+# Backward Compatibility & Named Constants
+
+# 2nd order
+const SecondOrderStructureFunction           = FullVectorStructureFunction{2}()
+const LongitudinalSecondOrderStructureFunction = ProjectedStructureFunction{2,0}()
+const TransverseStructureFunction              = ProjectedStructureFunction{0,2}() # Legacy alias
+const TransverseSecondOrderStructureFunction   = ProjectedStructureFunction{0,2}()
+
+# 3rd order
+const ThirdOrderStructureFunction                 = FullVectorStructureFunction{3}()
+const DiagonalConsistentThirdOrderStructureFunction  = ProjectedStructureFunction{3,0}()
+const DiagonalInconsistentThirdOrderStructureFunction = ProjectedStructureFunction{2,1}()
+const OffDiagonalInconsistentThirdOrderStructureFunction = ProjectedStructureFunction{1,2}()
+const OffDiagonalConsistentThirdOrderStructureFunction = ProjectedStructureFunction{0,3}()
+
+# Compatibility layer for Rotational/Divergent (placeholders)
+struct RotationalSecondOrderStructureFunction <: AbstractStructureFunctionType end
+struct DivergentSecondOrderStructureFunction <: AbstractStructureFunctionType end
+
+# ---------------------------------------------------------------------------
+# Convenience Mappings
+
+const SF_TYPE_MAP = Dict{Symbol, AbstractStructureFunctionType}(
     :SecondOrderStructureFunction => SecondOrderStructureFunction,
     :LongitudinalSecondOrderStructureFunction => LongitudinalSecondOrderStructureFunction,
     :TransverseSecondOrderStructureFunction => TransverseSecondOrderStructureFunction,
-    :RotationalSecondOrderStructureFunction => RotationalSecondOrderStructureFunction,
-    :DivergentSecondOrderStructureFunction => DivergentSecondOrderStructureFunction,
+    :TransverseStructureFunction => TransverseStructureFunction,
+    :RotationalSecondOrderStructureFunction => RotationalSecondOrderStructureFunction(),
+    :DivergentSecondOrderStructureFunction => DivergentSecondOrderStructureFunction(),
     :ThirdOrderStructureFunction => ThirdOrderStructureFunction,
     :DiagonalConsistentThirdOrderStructureFunction => DiagonalConsistentThirdOrderStructureFunction,
     :DiagonalInconsistentThirdOrderStructureFunction => DiagonalInconsistentThirdOrderStructureFunction,
@@ -74,13 +142,36 @@ const SF_TYPE_MAP = Dict{Symbol, Type{<:AbstractStructureFunctionType}}(
     :OffDiagonalConsistentThirdOrderStructureFunction => OffDiagonalConsistentThirdOrderStructureFunction,
 )
 
+export SecondOrderStructureFunction,
+    LongitudinalSecondOrderStructureFunction,
+    TransverseSecondOrderStructureFunction,
+    TransverseStructureFunction,
+    RotationalSecondOrderStructureFunction,
+    DivergentSecondOrderStructureFunction,
+    ThirdOrderStructureFunction,
+    DiagonalConsistentThirdOrderStructureFunction,
+    DiagonalInconsistentThirdOrderStructureFunction,
+    OffDiagonalInconsistentThirdOrderStructureFunction,
+    OffDiagonalConsistentThirdOrderStructureFunction,
+    ProjectedStructureFunction,
+    FullVectorStructureFunction,
+    get_structure_function_type
+
 get_structure_function_type(x::String) = get_structure_function_type(Symbol(x))
 function get_structure_function_type(x::Symbol)
     if haskey(SF_TYPE_MAP, x)
-        return SF_TYPE_MAP[x]()
+        return SF_TYPE_MAP[x]
     else
         error("Unknown structure function type: $x")
     end
 end
 
-end
+"""
+    order(sf::AbstractStructureFunctionType)
+
+Returns the order of the structure function.
+"""
+order(::ProjectedStructureFunction{NL,NT}) where {NL,NT} = NL + NT
+order(::FullVectorStructureFunction{NF}) where {NF} = NF
+
+end # module

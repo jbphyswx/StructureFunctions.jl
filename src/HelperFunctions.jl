@@ -17,7 +17,36 @@ export digitize,
     magnitude_δu_transverse, mδu_t,
     r̂,
     n̂,
-    δr
+    δr,
+    flatten_data,
+    remove_nans
+
+"""
+    flatten_data(vecs::Tuple)
+
+Flatten multi-dimensional arrays in the tuple to vectors. 
+Useful for converting grid data to point lists.
+"""
+function flatten_data(vecs::Tuple)
+    return ntuple(i -> vec(vecs[i]), length(vecs))
+end
+
+"""
+    remove_nans(x_mat::AbstractMatrix, u_mat::AbstractMatrix)
+
+Remove points (columns) where either the position `x_mat` or the velocity `u_mat` 
+contains a `NaN`. Returns `(x_mat_clean, u_mat_clean)`.
+"""
+function remove_nans(x_mat::AbstractMatrix{FT}, u_mat::AbstractMatrix{FT}) where {FT}
+    # Find columns that have NO NaNs in either matrix
+    nan_in_x = any(isnan, x_mat, dims=1)
+    nan_in_u = any(isnan, u_mat, dims=1)
+    
+    # Combined mask (vec to turn 1xN matrix into N-vector)
+    valid_mask = vec(.!(nan_in_x .| nan_in_u))
+    
+    return x_mat[:, valid_mask], u_mat[:, valid_mask]
+end
 
 @inline function digitize(x, bins::AbstractVector)
     """

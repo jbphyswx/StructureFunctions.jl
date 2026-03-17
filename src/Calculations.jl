@@ -12,7 +12,18 @@ using LinearAlgebra: LinearAlgebra as LA
 using Base.Threads: Threads
 using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization (Phase 3/4)
 
-export calculate_structure_function, parallel_calculate_structure_function, gpu_calculate_structure_function
+export calculate_structure_function, parallel_calculate_structure_function, gpu_calculate_structure_function, calculate_structure_function_from_file
+
+"""
+    calculate_structure_function(path::String, args...; kwargs...)
+
+Entry point for calculating structure functions from a file (e.g. NetCDF, JLD2, CSV).
+The file extension is used to dispatch to an appropriate extension method.
+"""
+function calculate_structure_function(path::String, args...; kwargs...)
+    ext_str = lowercase(split(path, '.')[end])
+    return calculate_structure_function_from_file(Val(Symbol(ext_str)), path, args...; kwargs...)
+end
 
 """
     gpu_calculate_structure_function(...)
@@ -24,6 +35,26 @@ to activate the `GPUCalculationsExt` extension. The backend can be `KernelAbstra
 This stub exists so the extension can legally extend this function.
 """
 function gpu_calculate_structure_function end
+
+# Stub for file extensions
+function calculate_structure_function_from_file end
+
+"""
+    calculate_structure_function(x, u, bin_edges::AbstractVector{<:Number}, ...)
+
+Convenience method that converts a vector of bin edges `[e1, e2, e3]` into 
+adjacent bins `[(e1, e2), (e2, e3)]` and calls the core calculation.
+"""
+function calculate_structure_function(
+    x::Union{Tuple, AbstractArray},
+    u::Union{Tuple, AbstractArray},
+    bin_edges::AbstractVector{<:Number},
+    args...;
+    kwargs...
+)
+    bin_tuples = [(bin_edges[i], bin_edges[i+1]) for i in 1:(length(bin_edges)-1)]
+    return calculate_structure_function(x, u, bin_tuples, args...; kwargs...)
+end
 
 
 ###########
