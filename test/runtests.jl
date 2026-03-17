@@ -13,7 +13,7 @@ Test.@testset "StructureFunctions" begin
         show_progress = true,
         verbose = true,
         bin_spacing = :linear,
-    )[1] == [0.0]
+    ).values == [0.0]
 
     include("test_core_correctness.jl")
 end

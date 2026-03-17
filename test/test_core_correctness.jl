@@ -18,15 +18,15 @@ Test.@testset "Core Correctness - Block A" begin
         bins = SA.SVector(((0.0, 3.0),))
         sf_type = SFT.SecondOrderStructureFunction
         
-        (output, counts), _ = SFC.calculate_structure_function(sf_type, x, u, bins;
+        res = SFC.calculate_structure_function(sf_type, x, u, bins;
                                 verbose=false, show_progress=false, return_sums_and_counts=true)
-        Test.@test sum(counts) == 3.0
+        Test.@test sum(res.counts) == 3.0
         
         # N=4 points -> 4*3/2 = 6 pairs
         x4 = ([0.0, 1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 0.0])
-        (output4, counts4), _ = SFC.calculate_structure_function(sf_type, x4, (zeros(4), zeros(4)), bins;
+        res4 = SFC.calculate_structure_function(sf_type, x4, (zeros(4), zeros(4)), bins;
                                 verbose=false, show_progress=false, return_sums_and_counts=true)
-        Test.@test sum(counts4) == 6.0
+        Test.@test sum(res4.counts) == 6.0
     end
 
     Test.@testset "Numerical reference (Tiny case)" begin
@@ -39,7 +39,7 @@ Test.@testset "Core Correctness - Block A" begin
         bins = SA.SVector(((0.0, 2.0),))
         sf_type = SFT.LongitudinalSecondOrderStructureFunction
         
-        val, _ = SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
+        val = SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
         Test.@test val[1] ≈ 1.0
         
         # 3 points: (0,0), (1,0), (0,1)
@@ -53,7 +53,7 @@ Test.@testset "Core Correctness - Block A" begin
         # Mean = 4/3
         x3 = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
         u3 = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
-        val3, _ = SFC.calculate_structure_function(sf_type, x3, u3, bins; verbose=false, show_progress=false)
+        val3 = SFC.calculate_structure_function(sf_type, x3, u3, bins; verbose=false, show_progress=false)
         Test.@test val3[1] ≈ 4/3
     end
 
@@ -97,11 +97,10 @@ Test.@testset "Type Stability and Performance - Block C" begin
         # We manually check the type to account for the intentional Union return
         # from the return_sums_and_counts flag.
         res = Test.@test_nowarn SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
-        Test.@test res isa Tuple{Vector{Float64}, SA.SVector{1, Tuple{Float64, Float64}}}
+        Test.@test res isa SF.AbstractStructureFunction
         
-        # We check that the inner logic is stable enough to yield this Union
-        # (The compiler knows it's either Sums+Counts or just Mean)
-        Test.@test typeof(res) <: Union{Tuple{Vector{Float64}, SA.SVector{1, Tuple{Float64, Float64}}}, Tuple{Any, SA.SVector{1, Tuple{Float64, Float64}}}}
+        # We check that the inner logic is stable enough
+        Test.@test typeof(res) <: SF.StructureFunction
     end
 
     Test.@testset "Allocation check" begin

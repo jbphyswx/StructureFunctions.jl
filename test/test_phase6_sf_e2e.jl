@@ -33,9 +33,8 @@ using .SyntheticData
     end
 
     @testset "Multi-field Execution" begin
-        sf_type = LongitudinalSecondOrderStructureFunction
-        # calculate_structure_function handles (u, v) as a vector field
-        res, _ = calculate_structure_function(sf_type, pos, vals, r_bins; verbose=false, show_progress=false)
+        # calculate_structure_function now returns a StructureFunction object
+        res = calculate_structure_function(sf_type, pos, vals, r_bins; verbose=false, show_progress=false)
         @test length(res) == 5
         @test all(res .>= 0)
     end
@@ -48,8 +47,8 @@ using .SyntheticData
         # Use exact bin types
         r32 = SVector{5, Tuple{Float32, Float32}}([(Float32(b[1]), Float32(b[2])) for b in r_bins])
         
-        sf64, _ = calculate_structure_function(SecondOrderStructureFunction, pos, vals, r_bins; verbose=false, show_progress=false)
-        sf32, _ = calculate_structure_function(SecondOrderStructureFunction, (xs32, ys32), (u32, v32), r32; verbose=false, show_progress=false)
+        sf64 = calculate_structure_function(SecondOrderStructureFunction, pos, vals, r_bins; verbose=false, show_progress=false)
+        sf32 = calculate_structure_function(SecondOrderStructureFunction, (xs32, ys32), (u32, v32), r32; verbose=false, show_progress=false)
         
         @test sf32 ≈ Float32.(sf64) rtol=1e-5
     end

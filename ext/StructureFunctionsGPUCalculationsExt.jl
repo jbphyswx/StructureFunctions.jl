@@ -17,7 +17,7 @@ The kernel is O(N²) pair-wise and relies on atomic accumulation into distance b
 """
 module StructureFunctionsGPUCalculationsExt
 
-using KernelAbstractions: KA, @index, @atomic
+using KernelAbstractions: KernelAbstractions as KA, @index, @atomic
 using StaticArrays: StaticArrays as SA
 using Distances: Distances as DI
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, SpectralAnalysis as SFSA, HelperFunctions as SFH, StructureFunctionTypes as SFT
