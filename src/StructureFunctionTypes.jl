@@ -1,7 +1,7 @@
 module StructureFunctionTypes
 
-using LinearAlgebra: norm
-import ..HelperFunctions: mδu_l, δu_t, mδu_t
+using LinearAlgebra: LinearAlgebra as LA
+using ..HelperFunctions: HelperFunctions as SFH
 
 abstract type AbstractStructureFunctionType end
 
@@ -54,11 +54,11 @@ Compute the structure function for longitudinal/transverse components.
     # Longitudinal contribution (always scalar, integer power)
     if !iszero(NL)
         if NL == 1
-            ex = :($ex * mδu_l(δu, r̂))
+            ex = :($ex * SFH.mδu_l(δu, r̂))
         elseif NL == 2
-            ex = :($ex * mδu_l(δu, r̂)^2)
+            ex = :($ex * SFH.mδu_l(δu, r̂)^2)
         else
-            ex = :($ex * (mδu_l(δu, r̂)^$NL))
+            ex = :($ex * (SFH.mδu_l(δu, r̂)^$NL))
         end
     end
 
@@ -66,15 +66,15 @@ Compute the structure function for longitudinal/transverse components.
     if !iszero(NT)
         if NT == 2
             # fast path: sum-of-squares, no sqrt
-            ex = :($ex * norm2(δu_t(δu, r̂)))
+            ex = :($ex * norm2(SFH.δu_t(δu, r̂)))
         elseif NT == 3
             # standard magnitude cubed (precomputed scalar), avoids fractional exponent
-            ex = :($ex * (mδu_t(δu, r̂)^3))
+            ex = :($ex * (SFH.mδu_t(δu, r̂)^3))
         elseif NT == 1
-            ex = :($ex * mδu_t(δu, r̂))
+            ex = :($ex * SFH.mδu_t(δu, r̂))
         else
             # fallback: use scalar magnitude raised to NT (for uncommon powers)
-            ex = :($ex * (mδu_t(δu, r̂)^$NT))
+            ex = :($ex * (SFH.mδu_t(δu, r̂)^$NT))
         end
     end
 
@@ -101,7 +101,7 @@ Compute the structure function for the full vector magnitude:
     if NF == 2
         return :(norm2(δu))
     else
-        return :(norm(δu)^$NF)
+        return :(LA.norm(δu)^$NF)
     end
 end
 

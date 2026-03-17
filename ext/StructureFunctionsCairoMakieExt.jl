@@ -1,7 +1,7 @@
-module CairoMakieExt
+module StructureFunctionsCairoMakieExt
 
 using CairoMakie: CairoMakie
-import StructureFunctions.SpectralAnalysis: plot_spectrum, compare_spectra, compare_spectral_analysis
+using StructureFunctions: StructureFunctions as SF, SpectralAnalysis as SFSA
 
 """
     plot_spectrum(k_ranges::Tuple, coeffs::Array; 
@@ -13,7 +13,7 @@ import StructureFunctions.SpectralAnalysis: plot_spectrum, compare_spectra, comp
 
 Plot the magnitude of the spectral coefficients.
 """
-function plot_spectrum(k_ranges::Tuple, coeffs::Array; 
+function SFSA.plot_spectrum(k_ranges::Tuple, coeffs::Array; 
     title="Power Spectrum", 
     u_idx=1,
     kwargs...
@@ -49,7 +49,7 @@ end
 
 Plot multiple spectra side-by-side and optionally mark expected peaks.
 """
-function compare_spectra(results; peaks=nothing, u_idx=1, title="Spectral Analysis Comparison", kwargs...)
+function SFSA.compare_spectra(results; peaks=nothing, u_idx=1, title="Spectral Analysis Comparison", kwargs...)
     N = length(results)
     # 0.15+ uses size, resolution is deprecated
     fig = CairoMakie.Figure(; size=(600 * N, 550))
@@ -96,7 +96,7 @@ end
 Prepend a plot of the input field to the spectral comparison.
 input_data: Tuple(x_vecs, u_vecs)
 """
-function compare_spectral_analysis(input_data, results; peaks=nothing, u_idx=1, title="Spectral Analysis Comparison", kwargs...)
+function SFSA.compare_spectral_analysis(input_data, results; peaks=nothing, u_idx=1, title="Spectral Analysis Comparison", kwargs...)
     x_vecs, u_vecs = input_data
     NU = length(u_vecs)
     D = length(x_vecs)

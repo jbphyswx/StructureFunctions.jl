@@ -1,15 +1,14 @@
-module FINUFFTExt
+module StructureFunctionsFINUFFTExt
 
-import FINUFFT
-import StructureFunctions.SpectralAnalysis as SA_mod
-import StructureFunctions.SpectralAnalysis: FINUFFTBackend
+using FINUFFT: FINUFFT
+using StructureFunctions: StructureFunctions as SF, SpectralAnalysis as SFSA
 
 """
     _calculate_spectrum_nufft(x_vecs, u_vecs, ms, iflag, eps; ...)
 
 Implementation of spectral analysis using Non-Uniform Fast Fourier Transform (FINUFFT).
 """
-function SA_mod._calculate_spectrum_nufft(
+function SFSA._calculate_spectrum_nufft(
     x_vecs::Tuple,
     u_vecs::Tuple,
     ms::Tuple,

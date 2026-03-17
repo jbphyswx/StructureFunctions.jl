@@ -8,32 +8,19 @@ The `gpu_calculate_structure_function` entry point accepts any KA-compatible bac
   - `ROCBackend()` from AMDGPU.jl – for AMD GPU acceleration
 
 The kernel is O(N²) pair-wise and relies on atomic accumulation into distance bins.
+
+!!! note "KernelAbstractions Macro Limitations"
+    We explicitly import `@index` and `@atomic` from `KernelAbstractions` because 
+    these macros currently fail to resolve correctly when called as `KA.@index` or `KA.@atomic`.
+    This is a known issue in KernelAbstractions.jl (see https://github.com/JuliaGPU/KernelAbstractions.jl/issues/542#issuecomment-3986160961)
+    and is expected to be fixed in a future release.
 """
-module GPUCalculationsExt
+module StructureFunctionsGPUCalculationsExt
 
-using KernelAbstractions: KernelAbstractions as KA, @index, @atomic
-#
-# IMPORTANT: Do NOT use `KA.@index` or `KA.@atomic` inside `@kernel` functions.
-# The `@KA.kernel` macro rewrites bare `@index` and `@atomic` symbols in the
-# AST to inject hidden thread/block context arguments (like `__ctx__`). When
-# these macros are written with a module prefix (`KA.@index`), the parser sees
-# a different pattern and skips the rewrite, so at runtime the functions are
-# called without the required context argument, causing a MethodError.
-# Fix: import them bare and use the bare form inside every @kernel body.
-#
-# Upstream tracking issue (fix expected in a future KA release):
-# https://github.com/JuliaGPU/KernelAbstractions.jl/issues/542#issuecomment-3986160961
-#
-# TODO: Once the upstream fix is released and we bump our KA compat bound,
-#       this workaround (and this comment) can be removed.
+using KernelAbstractions: KA, @index, @atomic
 using StaticArrays: StaticArrays as SA
-import Distances: Distances as DI
-import StructureFunctions as SF
-
-const Calculations = SF.Calculations
-const SpectralAnalysis = SF.SpectralAnalysis
-const HF = SF.HelperFunctions
-const SFT = SF.StructureFunctionTypes
+using Distances: Distances as DI
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, SpectralAnalysis as SFSA, HelperFunctions as SFH, StructureFunctionTypes as SFT
 
 # ---------------------------------------------------------------------------
 # Inner kernel
@@ -66,10 +53,10 @@ KA.@kernel function _sf_kernel!(
         dist = sqrt(dX[1]^2 + dX[2]^2 + dX[3]^2)
 
         # Binary search for bin index
-        bin = HF.digitize(dist, distance_bins)
+        bin = SFH.digitize(dist, distance_bins)
 
         if 1 <= bin < N_bins
-            r̂ = HF.r̂(X1, X2)
+            r̂ = SFH.r̂(X1, X2)
             val = sf_type(U2 - U1, r̂)
             # IMPORTANT: Use bare `@atomic` (not `KA.@atomic`) — same reason as @index above.
             @atomic output[bin] += val
@@ -159,7 +146,7 @@ Compute structure functions on `backend` (any KernelAbstractions backend).
 # Returns
 `(sf_values, counts)` – both are host-side `Vector{Float64}` of length `N_bins - 1`.
 """
-function Calculations.gpu_calculate_structure_function(
+function SFC.gpu_calculate_structure_function(
     backend::KA.Backend,
     x_mat::AbstractMatrix{FT},
     u_mat::AbstractMatrix{FT},
@@ -212,7 +199,7 @@ end
 # Spectral Analysis API Extension
 # ---------------------------------------------------------------------------
 
-function SpectralAnalysis.gpu_calculate_spectrum(
+function SFSA.gpu_calculate_spectrum(
     backend::KA.Backend,
     x_vecs::Tuple,
     u_vecs::Tuple,

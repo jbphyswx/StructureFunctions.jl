@@ -2,15 +2,15 @@
 The workhorse of this package
 """
 module Calculations
-import ProgressMeter: ProgressMeter as PM
-import Distances: Distances as DI
-import ..HelperFunctions: HelperFunctions as HF
-import ..StructureFunctionTypes: StructureFunctionTypes as SFT
+using ProgressMeter: ProgressMeter as PM
+using Distances: Distances as DI
+using ..HelperFunctions: HelperFunctions as SFH
+using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using Base.Threads: Threads
-using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization (Phase 3/4)
+using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization
 
 export calculate_structure_function, parallel_calculate_structure_function, gpu_calculate_structure_function, calculate_structure_function_from_file
 
@@ -171,9 +171,9 @@ function calculate_structure_function_i(
         U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val{N}()))
 
         distance = distance_metric(X1, X2)
-        bin = HF.digitize(distance, distance_bins_vec)
+        bin = SFH.digitize(distance, distance_bins_vec)
         if 1 <= bin < N3
-            @inbounds output[bin] += structure_function_type(U2 - U1, HF.r̂(X1, X2))
+            @inbounds output[bin] += structure_function_type(U2 - U1, SFH.r̂(X1, X2))
             @inbounds counts[bin] += 1
         end
     end
@@ -371,9 +371,9 @@ function calculate_structure_function_i(
             U2 = SA.SVector{N, FT2}(ntuple(k -> u_arr[k, j], Val{N}()))
 
             distance = distance_metric(X1, X2) 
-            bin = HF.digitize(distance, distance_bins_vec) 
+            bin = SFH.digitize(distance, distance_bins_vec) 
             if 1 <= bin < N3
-                @inbounds output[bin] += structure_function_type(U2 - U1, HF.r̂(X1, X2))
+                @inbounds output[bin] += structure_function_type(U2 - U1, SFH.r̂(X1, X2))
                 @inbounds counts[bin] += 1
             end
         end

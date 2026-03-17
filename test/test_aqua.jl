@@ -1,10 +1,10 @@
-using StructureFunctions
-using Aqua
-using Test
+using StructureFunctions: StructureFunctions as SF
+using Aqua: Aqua
+using Test: Test
 
-@testset "Aqua.jl" begin
+Test.@testset "Aqua.jl" begin
     Aqua.test_all(
-        StructureFunctions;
+        SF;
         ambiguities = true,
         unbound_args = true,
         undefined_exports = true,

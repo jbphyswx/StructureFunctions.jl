@@ -1,8 +1,7 @@
-module HDF5Ext
+module StructureFunctionsHDF5Ext
 
-using HDF5
-import StructureFunctions.Calculations: calculate_structure_function_from_file, calculate_structure_function
-import StructureFunctions.HelperFunctions: flatten_data, remove_nans
+using HDF5: HDF5
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH
 
 """
     calculate_structure_function_from_file(::Val{:h5}, fpath::String, bin_edges, sf_type; 
@@ -10,7 +9,7 @@ import StructureFunctions.HelperFunctions: flatten_data, remove_nans
 
 Load data from an HDF5 file and calculate the structure function.
 """
-function calculate_structure_function_from_file(
+function SFC.calculate_structure_function_from_file(
     ::Val{:h5},
     fpath::String,
     bin_edges,
@@ -19,14 +18,14 @@ function calculate_structure_function_from_file(
     u_key = "u",
     kwargs...
 )
-    h5open(fpath, "r") do file
+    HDF5.h5open(fpath, "r") do file
         # 1. Load data
         x_raw = _load_h5vars(file, x_key)
         u_raw = _load_h5vars(file, u_key)
 
         # 2. Flatten
-        x_flat = flatten_data(x_raw)
-        u_flat = flatten_data(u_raw)
+        x_flat = SFH.flatten_data(x_raw)
+        u_flat = SFH.flatten_data(u_raw)
 
         # 3. Convert to matrices
         FT = eltype(u_flat[1])
@@ -40,18 +39,18 @@ function calculate_structure_function_from_file(
         for i in 1:NU; u_mat[i, :] .= u_flat[i][:]; end
 
         # 4. Clean NaNs
-        x_clean, u_clean = remove_nans(x_mat, u_mat)
+        x_clean, u_clean = SFH.remove_nans(x_mat, u_mat)
 
         # 5. Delegate
-        return calculate_structure_function(x_clean, u_clean, bin_edges, sf_type; kwargs...)
+        return SFC.calculate_structure_function(x_clean, u_clean, bin_edges, sf_type; kwargs...)
     end
 end
 
 # Aliases for .hdf5, .hdf
-calculate_structure_function_from_file(::Val{:hdf5}, args...; kwargs...) = 
-    calculate_structure_function_from_file(Val(:h5), args...; kwargs...)
-calculate_structure_function_from_file(::Val{:hdf}, args...; kwargs...) = 
-    calculate_structure_function_from_file(Val(:h5), args...; kwargs...)
+SFC.calculate_structure_function_from_file(::Val{:hdf5}, args...; kwargs...) = 
+    SFC.calculate_structure_function_from_file(Val(:h5), args...; kwargs...)
+SFC.calculate_structure_function_from_file(::Val{:hdf}, args...; kwargs...) = 
+    SFC.calculate_structure_function_from_file(Val(:h5), args...; kwargs...)
 
 function _load_h5vars(file, key)
     if key isa Union{Tuple, AbstractVector}

@@ -7,7 +7,7 @@ using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using Base.Threads: Threads
 
-import ..HelperFunctions: HelperFunctions as HF
+using ..HelperFunctions: HelperFunctions as SFH
 
 export calculate_spectrum, gpu_calculate_spectrum, DirectSumBackend, FINUFFTBackend, FFTBackend, plot_spectrum, compare_spectra, compare_spectral_analysis
 
@@ -100,7 +100,7 @@ function _calculate_spectrum(
             # Phase factor (Direct Sum uses physical coordinates and physical wavenumbers)
             # Standard forward transform convention: e^(-i * k * x)
             phi = -iflag * (LA.dot(k_phys, x_pos))
-            W = exp(LA.im * phi)
+            W = exp(im * phi)
             
             for u_idx in 1:NU
                 coeffs[I, u_idx] += u_vecs[u_idx][j] * W

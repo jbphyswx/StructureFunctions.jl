@@ -1,15 +1,14 @@
-module FFTWExt
+module StructureFunctionsFFTWExt
 
-import FFTW
-import StructureFunctions.SpectralAnalysis as SA_mod
-import StructureFunctions.SpectralAnalysis: FFTBackend
+using FFTW: FFTW
+using StructureFunctions: StructureFunctions as SF, SpectralAnalysis as SFSA
 
 """
     _calculate_spectrum_fft(x_vecs, u_vecs, ms, iflag, eps; ...)
 
 Implementation of spectral analysis using FFT (requires uniform grid).
 """
-function SA_mod._calculate_spectrum_fft(
+function SFSA._calculate_spectrum_fft(
     x_vecs::Tuple,
     u_vecs::Tuple,
     ms::Tuple,
