@@ -47,6 +47,10 @@ function (sf::SFT.AbstractStructureFunctionType)(x, u, bins; kwargs...)
     return calculate_structure_function(sf, x, u, bins; kwargs...)
 end
 
+function (::Type{T})(x, u, bins; kwargs...) where {T <: SFT.AbstractStructureFunctionType}
+    return calculate_structure_function(T(), x, u, bins; kwargs...)
+end
+
 """
     calculate_structure_function(sf_type, x, u, bin_edges::AbstractVector{<:Number}, ...)
 

@@ -6,9 +6,9 @@ PrecompileTools.@compile_workload begin
     for FT in FTs
         bins = [(FT(0), FT(1)), (FT(1), FT(2))]
         sfs = [
-            LongitudinalSecondOrderStructureFunction(),
-            TransverseSecondOrderStructureFunction(),
-            DiagonalConsistentThirdOrderStructureFunction()
+            LongitudinalSecondOrderStructureFunction,
+            TransverseSecondOrderStructureFunction,
+            DiagonalConsistentThirdOrderStructureFunction
         ]
         
         for N in dims
@@ -17,14 +17,14 @@ PrecompileTools.@compile_workload begin
             u_tuple = ntuple(_ -> FT[0, 1, 2], Val{N}())
             
             for sf in sfs
-                calculate_structure_function(x_tuple, u_tuple, bins, sf; verbose=false, show_progress=false)
+                calculate_structure_function(sf, x_tuple, u_tuple, bins; verbose=false, show_progress=false)
             end
             
             # Matrix API Precompilation
             x_mat = zeros(FT, N, 3)
             u_mat = zeros(FT, N, 3)
             for sf in sfs
-                calculate_structure_function(x_mat, u_mat, bins, sf; verbose=false, show_progress=false)
+                calculate_structure_function(sf, x_mat, u_mat, bins; verbose=false, show_progress=false)
             end
         end
         
