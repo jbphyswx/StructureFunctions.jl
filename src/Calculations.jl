@@ -12,7 +12,18 @@ using LinearAlgebra: LinearAlgebra as LA
 using Base.Threads: Threads
 using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization (Phase 3/4)
 
-export calculate_structure_function, parallel_calculate_structure_function
+export calculate_structure_function, parallel_calculate_structure_function, gpu_calculate_structure_function
+
+"""
+    gpu_calculate_structure_function(...)
+
+GPU-accelerated structure function calculation. Requires loading `KernelAbstractions.jl`
+to activate the `GPUCalculationsExt` extension. The backend can be `KernelAbstractions.CPU()`
+(for testing parity) or any GPU backend like `CUDABackend()` from `CUDA.jl`.
+
+This stub exists so the extension can legally extend this function.
+"""
+function gpu_calculate_structure_function end
 
 
 ###########
