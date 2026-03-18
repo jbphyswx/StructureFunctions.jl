@@ -1,4 +1,5 @@
-using StructureFunctions: StructureFunctions as SF, StructureFunctionTypes as SFT, Calculations as SFC
+using StructureFunctions:
+    StructureFunctions as SF, StructureFunctionTypes as SFT, Calculations as SFC
 using Test: Test
 using StaticArrays: StaticArrays as SA
 
@@ -8,7 +9,14 @@ Test.@testset "Core Correctness - Block A" begin
         u = ([1.0, 2.0], [0.0, 0.0])
         bins = SA.SVector(((0.0, 2.0),))
         sf_type = SFT.LongitudinalSecondOrderStructureFunction
-        Test.@test_nowarn SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
+        Test.@test_nowarn SFC.calculate_structure_function(
+            sf_type,
+            x,
+            u,
+            bins;
+            verbose = false,
+            show_progress = false,
+        )
     end
 
     Test.@testset "Pair-count verification" begin
@@ -17,15 +25,15 @@ Test.@testset "Core Correctness - Block A" begin
         u = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
         bins = SA.SVector(((0.0, 3.0),))
         sf_type = SFT.SecondOrderStructureFunction
-        
+
         res = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                verbose=false, show_progress=false, return_sums_and_counts=true)
+            verbose = false, show_progress = false, return_sums_and_counts = true)
         Test.@test sum(res.counts) == 3.0
-        
+
         # N=4 points -> 4*3/2 = 6 pairs
         x4 = ([0.0, 1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 0.0])
         res4 = SFC.calculate_structure_function(sf_type, x4, (zeros(4), zeros(4)), bins;
-                                verbose=false, show_progress=false, return_sums_and_counts=true)
+            verbose = false, show_progress = false, return_sums_and_counts = true)
         Test.@test sum(res4.counts) == 6.0
     end
 
@@ -38,10 +46,17 @@ Test.@testset "Core Correctness - Block A" begin
         u = ([1.0, 2.0], [0.0, 0.0])
         bins = SA.SVector(((0.0, 2.0),))
         sf_type = SFT.LongitudinalSecondOrderStructureFunction
-        
-        val = SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
+
+        val = SFC.calculate_structure_function(
+            sf_type,
+            x,
+            u,
+            bins;
+            verbose = false,
+            show_progress = false,
+        )
         Test.@test val[1] ≈ 1.0
-        
+
         # 3 points: (0,0), (1,0), (0,1)
         # Velocities: (0,0), (1,0), (0,1)
         # Pairs:
@@ -53,8 +68,15 @@ Test.@testset "Core Correctness - Block A" begin
         # Mean = 4/3
         x3 = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
         u3 = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
-        val3 = SFC.calculate_structure_function(sf_type, x3, u3, bins; verbose=false, show_progress=false)
-        Test.@test val3[1] ≈ 4/3
+        val3 = SFC.calculate_structure_function(
+            sf_type,
+            x3,
+            u3,
+            bins;
+            verbose = false,
+            show_progress = false,
+        )
+        Test.@test val3[1] ≈ 4 / 3
     end
 
     Test.@testset "SF wiring and signed magnitude consistency" begin
@@ -63,21 +85,56 @@ Test.@testset "Core Correctness - Block A" begin
         x = ([0.0, 1.0], [0.0, 0.0])
         u = ([0.0, 0.0], [1.0, 2.0])
         bins = SA.SVector(((0.0, 2.0),))
-        
+
         # Longitudinal Second Order: (du.rhat)^2 = 0^2 = 0
-        Test.@test SFC.calculate_structure_function(SFT.LongitudinalSecondOrderStructureFunction, x, u, bins; verbose=false, show_progress=false)[1][1] == 0.0
-        
+        Test.@test SFC.calculate_structure_function(
+            SFT.LongitudinalSecondOrderStructureFunction,
+            x,
+            u,
+            bins;
+            verbose = false,
+            show_progress = false,
+        )[1][1] == 0.0
+
         # Transverse Second Order: |du_t|^2 = (-1)^2 = 1
-        Test.@test SFC.calculate_structure_function(SFT.TransverseSecondOrderStructureFunction, x, u, bins; verbose=false, show_progress=false)[1][1] == 1.0
-        
+        Test.@test SFC.calculate_structure_function(
+            SFT.TransverseSecondOrderStructureFunction,
+            x,
+            u,
+            bins;
+            verbose = false,
+            show_progress = false,
+        )[1][1] == 1.0
+
         # Diagonal Consistent Third Order (l^3): 0^3 = 0
-        Test.@test SFC.calculate_structure_function(SFT.DiagonalConsistentThirdOrderStructureFunction, x, u, bins; verbose=false, show_progress=false)[1][1] == 0.0
-        
+        Test.@test SFC.calculate_structure_function(
+            SFT.DiagonalConsistentThirdOrderStructureFunction,
+            x,
+            u,
+            bins;
+            verbose = false,
+            show_progress = false,
+        )[1][1] == 0.0
+
         # Off-Diagonal Consistent Third Order (t^3): (-1)^3 = -1
-        Test.@test SFC.calculate_structure_function(SFT.OffDiagonalConsistentThirdOrderStructureFunction, x, u, bins; verbose=false, show_progress=false)[1][1] == -1.0
-        
+        Test.@test SFC.calculate_structure_function(
+            SFT.OffDiagonalConsistentThirdOrderStructureFunction,
+            x,
+            u,
+            bins;
+            verbose = false,
+            show_progress = false,
+        )[1][1] == -1.0
+
         # Off-Diagonal Inconsistent Third Order (l*t^2): 0 * (-1)^2 = 0
-        Test.@test SFC.calculate_structure_function(SFT.OffDiagonalInconsistentThirdOrderStructureFunction, x, u, bins; verbose=false, show_progress=false)[1][1] == 0.0
+        Test.@test SFC.calculate_structure_function(
+            SFT.OffDiagonalInconsistentThirdOrderStructureFunction,
+            x,
+            u,
+            bins;
+            verbose = false,
+            show_progress = false,
+        )[1][1] == 0.0
     end
 end
 
@@ -86,25 +143,39 @@ Test.@testset "Type Stability and Performance - Block C" begin
     u = ([1.0, 2.0, 3.0], [0.0, 0.0, 0.0])
     bins = SA.SVector(((0.0, 3.0),))
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
-    
+
     # Test inference of the core kernel call
     δu = SA.SVector{2, Float64}(1.0, 0.0)
     r̂ = SA.SVector{2, Float64}(1.0, 0.0)
     Test.@test Test.@inferred(sf_type(δu, r̂)) == 1.0
-    
+
     # Test inference of the calculator
     Test.@testset "Inference of calculate_structure_function" begin
         # We manually check the type to account for the intentional Union return
         # from the return_sums_and_counts flag.
-        res = Test.@test_nowarn SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
+        res = Test.@test_nowarn SFC.calculate_structure_function(
+            sf_type,
+            x,
+            u,
+            bins;
+            verbose = false,
+            show_progress = false,
+        )
         Test.@test res isa SF.AbstractStructureFunction
-        
+
         # We check that the inner logic is stable enough
         Test.@test typeof(res) <: SF.StructureFunction
     end
 
     Test.@testset "Allocation check" begin
         # Baseline check
-        Test.@test_nowarn SFC.calculate_structure_function(sf_type, x, u, bins; verbose=false, show_progress=false)
+        Test.@test_nowarn SFC.calculate_structure_function(
+            sf_type,
+            x,
+            u,
+            bins;
+            verbose = false,
+            show_progress = false,
+        )
     end
 end

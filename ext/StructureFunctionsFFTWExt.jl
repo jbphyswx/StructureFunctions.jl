@@ -14,7 +14,7 @@ function SFSA._calculate_spectrum_fft(
     ms::Tuple,
     iflag::Int,
     eps::Real,
-    domain_size::Union{Nothing, Tuple} = nothing
+    domain_size::Union{Nothing, Tuple} = nothing,
 )
     D = length(x_vecs)
     T1 = eltype(x_vecs[1])
@@ -39,10 +39,10 @@ function SFSA._calculate_spectrum_fft(
         else
             coeffs_k = FFTW.ifft(uk) .* prod(ms)
         end
-        
+
         # 2. Shift to center zero-frequency
         # FFTW returns [0, M-1]. We need [-M/2, M/2-1].
-        selectdim(coeffs, D+1, k) .= FFTW.fftshift(coeffs_k)
+        selectdim(coeffs, D + 1, k) .= FFTW.fftshift(coeffs_k)
     end
 
     # 3. Scaling
@@ -58,7 +58,12 @@ function SFSA._calculate_spectrum_fft(
             return max_x - min_x
         end
     end
-    ks_phys = ntuple(d -> range(FT(-ms[d]÷2), stop=FT((ms[d]-1)÷2), length=ms[d]) .* (FT(2π) / ranges[d]), Val(D))
+    ks_phys = ntuple(
+        d ->
+            range(FT(-ms[d] ÷ 2), stop = FT((ms[d] - 1) ÷ 2), length = ms[d]) .*
+            (FT(2π) / ranges[d]),
+        Val(D),
+    )
 
     return coeffs, ks_phys
 end

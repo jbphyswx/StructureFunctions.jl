@@ -21,21 +21,22 @@ N_points = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 3000
 N_threads = Threads.nthreads()
 
 # Reproducible random data
-import Random; Random.seed!(42)
+import Random;
+Random.seed!(42);
 FT = Float64
 
 x = (rand(FT, N_points), rand(FT, N_points), rand(FT, N_points))  # 3D positions
 u = (rand(FT, N_points), rand(FT, N_points), rand(FT, N_points))  # velocity
 
-sft      = LongitudinalSecondOrderStructureFunction
-n_bins   = 20
+sft = LongitudinalSecondOrderStructureFunction
+n_bins = 20
 
 # Warmup (avoid counting compile time)
-calculate_structure_function(sft, x, u, n_bins; verbose=false, show_progress=false)
+calculate_structure_function(sft, x, u, n_bins; verbose = false, show_progress = false)
 
 # Timed run
 t_start = time()
-calculate_structure_function(sft, x, u, n_bins; verbose=false, show_progress=false)
+calculate_structure_function(sft, x, u, n_bins; verbose = false, show_progress = false)
 elapsed = time() - t_start
 
 result = Dict("threads" => N_threads, "N_points" => N_points, "elapsed_s" => elapsed)

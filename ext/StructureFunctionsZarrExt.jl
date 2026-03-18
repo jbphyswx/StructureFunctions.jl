@@ -2,7 +2,8 @@ module StructureFunctionsZarrExt
 
 using Zarr: Zarr
 using DiskArrays: DiskArrays
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH
+using StructureFunctions:
+    StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH
 
 """
     calculate_structure_function_from_file(::Val{:zarr}, fpath::String, bin_edges, sf_type; 
@@ -18,11 +19,11 @@ function SFC.calculate_structure_function_from_file(
     sf_type;
     x_key = ("x1", "x2"),
     u_key = ("u1", "u2"),
-    kwargs...
+    kwargs...,
 )
     # Open Zarr group
     z = Zarr.zopen(fpath, "r")
-    
+
     # 1. Load data handles (lazy)
     x_raw = _load_zvars(z, x_key)
     u_raw = _load_zvars(z, u_key)
@@ -40,8 +41,12 @@ function SFC.calculate_structure_function_from_file(
 
     x_mat = zeros(FT, D, N)
     u_mat = zeros(FT, NU, N)
-    for i in 1:D; x_mat[i, :] .= x_flat[i][:]; end
-    for i in 1:NU; u_mat[i, :] .= u_flat[i][:]; end
+    for i in 1:D
+        x_mat[i, :] .= x_flat[i][:]
+    end
+    for i in 1:NU
+        u_mat[i, :] .= u_flat[i][:]
+    end
 
     # 3. Clean NaNs
     x_clean, u_clean = SFH.remove_nans(x_mat, u_mat)

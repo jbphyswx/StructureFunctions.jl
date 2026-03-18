@@ -1,7 +1,8 @@
 module StructureFunctionsCSVExt
 
 using CSV: CSV
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH
+using StructureFunctions:
+    StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH
 
 """
     calculate_structure_function_from_file(::Val{:csv}, fpath::String, bin_edges, sf_type; 
@@ -16,24 +17,25 @@ function SFC.calculate_structure_function_from_file(
     sf_type;
     x_key = ("x1", "x2"),
     u_key = ("u1", "u2"),
-    kwargs...
+    kwargs...,
 )
     # Load CSV file (using threads if available)
     df = CSV.File(fpath)
-    
+
     # 1. Load columns
     x_keys = x_key isa Union{Tuple, AbstractVector} ? x_key : (x_key,)
     u_keys = u_key isa Union{Tuple, AbstractVector} ? u_key : (u_key,)
-    
+
     D = length(x_keys)
     NU = length(u_keys)
     N = length(df)
-    
+
     # Use first row to get eltype
     FT = Float64
     try
         FT = typeof(getproperty(df[1], Symbol(u_keys[1])))
-    catch; end
+    catch
+    end
 
     x_mat = zeros(FT, D, N)
     u_mat = zeros(FT, NU, N)
@@ -53,9 +55,9 @@ function SFC.calculate_structure_function_from_file(
 end
 
 # Alias for .txt, .dat
-SFC.calculate_structure_function_from_file(::Val{:txt}, args...; kwargs...) = 
+SFC.calculate_structure_function_from_file(::Val{:txt}, args...; kwargs...) =
     SFC.calculate_structure_function_from_file(Val(:csv), args...; kwargs...)
-SFC.calculate_structure_function_from_file(::Val{:dat}, args...; kwargs...) = 
+SFC.calculate_structure_function_from_file(::Val{:dat}, args...; kwargs...) =
     SFC.calculate_structure_function_from_file(Val(:csv), args...; kwargs...)
 
 end # module

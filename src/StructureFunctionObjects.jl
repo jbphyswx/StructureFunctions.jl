@@ -20,7 +20,8 @@ Metadata-rich result object for structure function calculations.
 - `distance`: The coordinate container (can be bin midpoints, edges, or point distances).
 - `values`: The computed structure function values.
 """
-struct StructureFunction{FT, OT <: SFT.AbstractStructureFunctionType, BT, VT} <: AbstractStructureFunction
+struct StructureFunction{FT, OT <: SFT.AbstractStructureFunctionType, BT, VT} <:
+       AbstractStructureFunction
     operator::OT
     distance::BT
     values::VT
@@ -38,13 +39,23 @@ end
 Intermediate result object containing raw sums and contribution counts.
 Useful for aggregating measurements before final averaging.
 """
-struct StructureFunctionSumsAndCounts{FT, OT <: SFT.AbstractStructureFunctionType, BT, VT} <: AbstractStructureFunction
+struct StructureFunctionSumsAndCounts{
+    FT,
+    OT <: SFT.AbstractStructureFunctionType,
+    BT,
+    VT,
+} <: AbstractStructureFunction
     operator::OT
     distance::BT
     sums::VT
     counts::VT
 
-    function StructureFunctionSumsAndCounts(operator::OT, distance::BT, sums::VT, counts::VT) where {OT, BT, VT}
+    function StructureFunctionSumsAndCounts(
+        operator::OT,
+        distance::BT,
+        sums::VT,
+        counts::VT,
+    ) where {OT, BT, VT}
         @assert length(distance) == length(sums) == length(counts) "Containers must have the same length"
         FT = eltype(VT)
         return new{FT, OT, BT, VT}(operator, distance, sums, counts)
@@ -66,7 +77,7 @@ function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSums
         sf1.operator,
         sf1.distance,
         sf1.sums + sf2.sums,
-        sf1.counts + sf2.counts
+        sf1.counts + sf2.counts,
     )
 end
 

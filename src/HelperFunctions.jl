@@ -39,12 +39,12 @@ contains a `NaN`. Returns `(x_mat_clean, u_mat_clean)`.
 """
 function remove_nans(x_mat::AbstractMatrix{FT}, u_mat::AbstractMatrix{FT}) where {FT}
     # Find columns that have NO NaNs in either matrix
-    nan_in_x = any(isnan, x_mat, dims=1)
-    nan_in_u = any(isnan, u_mat, dims=1)
-    
+    nan_in_x = any(isnan, x_mat, dims = 1)
+    nan_in_u = any(isnan, u_mat, dims = 1)
+
     # Combined mask (vec to turn 1xN matrix into N-vector)
     valid_mask = vec(.!(nan_in_x .| nan_in_u))
-    
+
     return x_mat[:, valid_mask], u_mat[:, valid_mask]
 end
 
@@ -62,7 +62,7 @@ end
 
 Convert a collection of bin edges (tuples) to their midpoints. Internal helper.
 """
-midpoints(bins) = map(b -> (b[1]+b[2])/2, bins)
+midpoints(bins) = map(b -> (b[1] + b[2]) / 2, bins)
 midpoints(v::AbstractVector{<:Number}) = v
 
 @inline function digitize(x::AbstractVector, bins::AbstractVector)
@@ -83,7 +83,8 @@ end
 
 
 
-@inline LA.normalize(x::Tuple{T, Vararg{T}}) where {T} = NTuple{length(x), T}(LA.normalize(SA.SVector(x)))
+@inline LA.normalize(x::Tuple{T, Vararg{T}}) where {T} =
+    NTuple{length(x), T}(LA.normalize(SA.SVector(x)))
 
 @inline function δr(x1, x2)
     """
@@ -113,7 +114,9 @@ end
     elseif ND == 3
         k_hat = SA.SVector{3, FT}(0, 0, 1)
         # Lindberg and Cho defined this order in NH and opposite in SH but we're just doing the same for both
-        return LA.normalize(LA.cross(SA.SVector{3, FT}(r_hat[1], r_hat[2], r_hat[3]), k_hat))
+        return LA.normalize(
+            LA.cross(SA.SVector{3, FT}(r_hat[1], r_hat[2], r_hat[3]), k_hat),
+        )
     else
         error("Only 2D and 3D supported")
     end
@@ -121,7 +124,9 @@ end
 
 # @inline n̂(r_hat::Tuple) = n̂(SA.SVector(r_hat))
 @inline n̂(r_hat::NTuple{2, T}) where {T} = SA.SVector(r_hat[2], -r_hat[1])
-@inline n̂(r_hat::NTuple{3, T}) where {T} = LA.normalize(LA.cross(SA.SVector{3, T}(r_hat[1], r_hat[2], r_hat[3]), SA.SVector{3, T}(0, 0, 1)))
+@inline n̂(r_hat::NTuple{3, T}) where {T} = LA.normalize(
+    LA.cross(SA.SVector{3, T}(r_hat[1], r_hat[2], r_hat[3]), SA.SVector{3, T}(0, 0, 1)),
+)
 
 
 @inline function n̂(x1, x2)
@@ -156,7 +161,7 @@ end
     Left to the user to ensure r_hat has norm 1
     """
     # This instead of  LA.norm(δu .- δu_longitudinal(δu, r_hat)) because we want the signed magnitude relative to the normal vector...
-    return LA.dot(δu, n̂(r_hat)) 
+    return LA.dot(δu, n̂(r_hat))
 end
 
 @inline function δu_transverse(δu, r_hat)

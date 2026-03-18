@@ -38,11 +38,12 @@ end
 Parametric type representing structure function operators
 with **longitudinal (`NL`)** and **transverse (`NT`)** contributions.
 """
-struct ProjectedStructureFunctionType{NL,NT} <: AbstractStructureFunctionType end
+struct ProjectedStructureFunctionType{NL, NT} <: AbstractStructureFunctionType end
 
 const ProjectedStructureFunction = ProjectedStructureFunctionType # Longhand alias for the type
 
-ProjectedStructureFunctionType(NL::Integer, NT::Integer) = ProjectedStructureFunctionType{NL,NT}()
+ProjectedStructureFunctionType(NL::Integer, NT::Integer) =
+    ProjectedStructureFunctionType{NL, NT}()
 
 """
     (sf::ProjectedStructureFunctionType{NL,NT})(δu, r̂)
@@ -52,7 +53,7 @@ Compute the structure function kernel for longitudinal/transverse components.
 - `NL` : power of longitudinal component δu_l
 - `NT` : power of transverse component ||δu_t||
 """
-@generated function (sf::ProjectedStructureFunctionType{NL,NT})(δu, r̂) where {NL,NT}
+@generated function (sf::ProjectedStructureFunctionType{NL, NT})(δu, r̂) where {NL, NT}
     ex = :(one(eltype(δu)))
 
     # Longitudinal contribution (always scalar, integer power)
@@ -117,24 +118,28 @@ end
 # Named Constants: Type Aliases (longhand and shorthands)
 
 # 2nd order Type Aliases
-const SecondOrderStructureFunctionType             = FullVectorStructureFunctionType{2}
-const LongitudinalSecondOrderStructureFunctionType = ProjectedStructureFunctionType{2,0}
-const TransverseSecondOrderStructureFunctionType   = ProjectedStructureFunctionType{0,2}
+const SecondOrderStructureFunctionType = FullVectorStructureFunctionType{2}
+const LongitudinalSecondOrderStructureFunctionType = ProjectedStructureFunctionType{2, 0}
+const TransverseSecondOrderStructureFunctionType = ProjectedStructureFunctionType{0, 2}
 
 # 3rd order Type Aliases
-const ThirdOrderStructureFunctionType                 = FullVectorStructureFunctionType{3}
-const DiagonalConsistentThirdOrderStructureFunctionType  = ProjectedStructureFunctionType{3,0}
-const DiagonalInconsistentThirdOrderStructureFunctionType = ProjectedStructureFunctionType{2,1}
-const OffDiagonalInconsistentThirdOrderStructureFunctionType = ProjectedStructureFunctionType{1,2}
-const OffDiagonalConsistentThirdOrderStructureFunctionType = ProjectedStructureFunctionType{0,3}
+const ThirdOrderStructureFunctionType = FullVectorStructureFunctionType{3}
+const DiagonalConsistentThirdOrderStructureFunctionType =
+    ProjectedStructureFunctionType{3, 0}
+const DiagonalInconsistentThirdOrderStructureFunctionType =
+    ProjectedStructureFunctionType{2, 1}
+const OffDiagonalInconsistentThirdOrderStructureFunctionType =
+    ProjectedStructureFunctionType{1, 2}
+const OffDiagonalConsistentThirdOrderStructureFunctionType =
+    ProjectedStructureFunctionType{0, 3}
 
 # Shorthand Type Aliases
-const S2SFType   = SecondOrderStructureFunctionType
-const L2SFType   = LongitudinalSecondOrderStructureFunctionType
-const T2SFType   = TransverseSecondOrderStructureFunctionType
-const S3SFType   = ThirdOrderStructureFunctionType
-const L3SFType   = DiagonalConsistentThirdOrderStructureFunctionType
-const T3SFType   = OffDiagonalConsistentThirdOrderStructureFunctionType
+const S2SFType = SecondOrderStructureFunctionType
+const L2SFType = LongitudinalSecondOrderStructureFunctionType
+const T2SFType = TransverseSecondOrderStructureFunctionType
+const S3SFType = ThirdOrderStructureFunctionType
+const L3SFType = DiagonalConsistentThirdOrderStructureFunctionType
+const T3SFType = OffDiagonalConsistentThirdOrderStructureFunctionType
 const L2T1SFType = DiagonalInconsistentThirdOrderStructureFunctionType
 const L1T2SFType = OffDiagonalInconsistentThirdOrderStructureFunctionType
 
@@ -142,25 +147,30 @@ const L1T2SFType = OffDiagonalInconsistentThirdOrderStructureFunctionType
 # Named Constants: Singleton Functors (The "Longhand" names now point to instances)
 
 # 2nd order Singleton Functors
-const SecondOrderStructureFunction             = SecondOrderStructureFunctionType()
-const LongitudinalSecondOrderStructureFunction   = LongitudinalSecondOrderStructureFunctionType()
-const TransverseSecondOrderStructureFunction     = TransverseSecondOrderStructureFunctionType()
-const TransverseStructureFunction                = TransverseSecondOrderStructureFunction # Legacy alias
+const SecondOrderStructureFunction = SecondOrderStructureFunctionType()
+const LongitudinalSecondOrderStructureFunction =
+    LongitudinalSecondOrderStructureFunctionType()
+const TransverseSecondOrderStructureFunction = TransverseSecondOrderStructureFunctionType()
+const TransverseStructureFunction = TransverseSecondOrderStructureFunction # Legacy alias
 
 # 3rd order Singleton Functors
-const ThirdOrderStructureFunction                 = ThirdOrderStructureFunctionType()
-const DiagonalConsistentThirdOrderStructureFunction  = DiagonalConsistentThirdOrderStructureFunctionType()
-const DiagonalInconsistentThirdOrderStructureFunction = DiagonalInconsistentThirdOrderStructureFunctionType()
-const OffDiagonalInconsistentThirdOrderStructureFunction = OffDiagonalInconsistentThirdOrderStructureFunctionType()
-const OffDiagonalConsistentThirdOrderStructureFunction = OffDiagonalConsistentThirdOrderStructureFunctionType()
+const ThirdOrderStructureFunction = ThirdOrderStructureFunctionType()
+const DiagonalConsistentThirdOrderStructureFunction =
+    DiagonalConsistentThirdOrderStructureFunctionType()
+const DiagonalInconsistentThirdOrderStructureFunction =
+    DiagonalInconsistentThirdOrderStructureFunctionType()
+const OffDiagonalInconsistentThirdOrderStructureFunction =
+    OffDiagonalInconsistentThirdOrderStructureFunctionType()
+const OffDiagonalConsistentThirdOrderStructureFunction =
+    OffDiagonalConsistentThirdOrderStructureFunctionType()
 
 # Shorthand Singleton Functors
-const S2SF   = SecondOrderStructureFunction
-const L2SF   = LongitudinalSecondOrderStructureFunction
-const T2SF   = TransverseSecondOrderStructureFunction
-const S3SF   = ThirdOrderStructureFunction
-const L3SF   = DiagonalConsistentThirdOrderStructureFunction
-const T3SF   = OffDiagonalConsistentThirdOrderStructureFunction
+const S2SF = SecondOrderStructureFunction
+const L2SF = LongitudinalSecondOrderStructureFunction
+const T2SF = TransverseSecondOrderStructureFunction
+const S3SF = ThirdOrderStructureFunction
+const L3SF = DiagonalConsistentThirdOrderStructureFunction
+const T3SF = OffDiagonalConsistentThirdOrderStructureFunction
 const L2T1SF = DiagonalInconsistentThirdOrderStructureFunction
 const L1T2SF = OffDiagonalInconsistentThirdOrderStructureFunction
 
@@ -176,16 +186,21 @@ const DivergentSecondOrderStructureFunction = DivergentSecondOrderStructureFunct
 
 const SF_TYPE_MAP = Dict{Symbol, AbstractStructureFunctionType}(
     :SecondOrderStructureFunction => SecondOrderStructureFunction,
-    :LongitudinalSecondOrderStructureFunction => LongitudinalSecondOrderStructureFunction,
+    :LongitudinalSecondOrderStructureFunction =>
+        LongitudinalSecondOrderStructureFunction,
     :TransverseSecondOrderStructureFunction => TransverseSecondOrderStructureFunction,
     :TransverseStructureFunction => TransverseStructureFunction,
     :RotationalSecondOrderStructureFunction => RotationalSecondOrderStructureFunction,
     :DivergentSecondOrderStructureFunction => DivergentSecondOrderStructureFunction,
     :ThirdOrderStructureFunction => ThirdOrderStructureFunction,
-    :DiagonalConsistentThirdOrderStructureFunction => DiagonalConsistentThirdOrderStructureFunction,
-    :DiagonalInconsistentThirdOrderStructureFunction => DiagonalInconsistentThirdOrderStructureFunction,
-    :OffDiagonalInconsistentThirdOrderStructureFunction => OffDiagonalInconsistentThirdOrderStructureFunction,
-    :OffDiagonalConsistentThirdOrderStructureFunction => OffDiagonalConsistentThirdOrderStructureFunction,
+    :DiagonalConsistentThirdOrderStructureFunction =>
+        DiagonalConsistentThirdOrderStructureFunction,
+    :DiagonalInconsistentThirdOrderStructureFunction =>
+        DiagonalInconsistentThirdOrderStructureFunction,
+    :OffDiagonalInconsistentThirdOrderStructureFunction =>
+        OffDiagonalInconsistentThirdOrderStructureFunction,
+    :OffDiagonalConsistentThirdOrderStructureFunction =>
+        OffDiagonalConsistentThirdOrderStructureFunction,
     :L2SF => L2SF,
     :T2SF => T2SF,
     :L3SF => L3SF,
@@ -208,7 +223,6 @@ export AbstractStructureFunctionType,
     RotationalSecondOrderStructureFunctionType,
     DivergentSecondOrderStructureFunctionType,
     S2SFType, L2SFType, T2SFType, S3SFType, L3SFType, T3SFType, L2T1SFType, L1T2SFType,
-    
     SecondOrderStructureFunction,
     LongitudinalSecondOrderStructureFunction,
     TransverseSecondOrderStructureFunction,
@@ -220,9 +234,7 @@ export AbstractStructureFunctionType,
     DiagonalInconsistentThirdOrderStructureFunction,
     OffDiagonalInconsistentThirdOrderStructureFunction,
     OffDiagonalConsistentThirdOrderStructureFunction,
-    S2SF, L2SF, T2SF, S3SF, L3SF, T3SF, L2T1SF, L1T2SF,
-    
-    ProjectedStructureFunctionType,
+    S2SF, L2SF, T2SF, S3SF, L3SF, T3SF, L2T1SF, L1T2SF, ProjectedStructureFunctionType,
     FullVectorStructureFunctionType,
     ProjectedStructureFunction,
     FullVectorStructureFunction,
@@ -280,7 +292,10 @@ function get_structure_function_type(order::Int, mode::Symbol)
     error("No mapping for order $order and mode $mode")
 end
 
-@generated function get_structure_function_type(::Val{order}, ::Val{mode}) where {order, mode}
+@generated function get_structure_function_type(
+    ::Val{order},
+    ::Val{mode},
+) where {order, mode}
     return Meta.quot(get_structure_function_type(order, mode))
 end
 
@@ -289,7 +304,7 @@ end
 
 Returns the order of the structure function.
 """
-order(::ProjectedStructureFunctionType{NL,NT}) where {NL,NT} = NL + NT
+order(::ProjectedStructureFunctionType{NL, NT}) where {NL, NT} = NL + NT
 order(::FullVectorStructureFunctionType{NF}) where {NF} = NF
 order(::RotationalSecondOrderStructureFunctionType) = 2
 order(::DivergentSecondOrderStructureFunctionType) = 2

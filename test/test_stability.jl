@@ -1,5 +1,6 @@
 using Test: Test, @inferred
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, StructureFunctionObjects as SFO
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
+    StructureFunctionTypes as SFT, StructureFunctionObjects as SFO
 using StaticArrays: StaticArrays as SA
 
 Test.@testset "Stability Verification" begin
@@ -14,10 +15,10 @@ Test.@testset "Stability Verification" begin
     println("Checking type stability for Tuple variant (positional Val)...")
     @inferred SFC.calculate_structure_function(sft, x, u, bins, Val(false))
     @inferred SFC.calculate_structure_function(sft, x, u, bins, Val(true))
-    
+
     res_false = SFC.calculate_structure_function(sft, x, u, bins, Val(false))
     Test.@test res_false isa SFO.StructureFunction
-    
+
     res_true = SFC.calculate_structure_function(sft, x, u, bins, Val(true))
     Test.@test res_true isa SFO.StructureFunctionSumsAndCounts
 

@@ -20,7 +20,8 @@ module StructureFunctionsGPUCalculationsExt
 using KernelAbstractions: KernelAbstractions as KA, @index, @atomic
 using StaticArrays: StaticArrays as SA
 using Distances: Distances as DI
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, SpectralAnalysis as SFSA, HelperFunctions as SFH, StructureFunctionTypes as SFT
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
+    SpectralAnalysis as SFSA, HelperFunctions as SFH, StructureFunctionTypes as SFT
 
 # ---------------------------------------------------------------------------
 # Inner kernel
@@ -44,10 +45,10 @@ KA.@kernel function _sf_kernel!(
 
     if i < j
         # Build SVector on-stack  (N_dims must be small, typically 1–3)
-        X1 = SA.SVector{3}(x_mat[1,i], x_mat[2,i], x_mat[3,i])
-        X2 = SA.SVector{3}(x_mat[1,j], x_mat[2,j], x_mat[3,j])
-        U1 = SA.SVector{3}(u_mat[1,i], u_mat[2,i], u_mat[3,i])
-        U2 = SA.SVector{3}(u_mat[1,j], u_mat[2,j], u_mat[3,j])
+        X1 = SA.SVector{3}(x_mat[1, i], x_mat[2, i], x_mat[3, i])
+        X2 = SA.SVector{3}(x_mat[1, j], x_mat[2, j], x_mat[3, j])
+        U1 = SA.SVector{3}(u_mat[1, i], u_mat[2, i], u_mat[3, i])
+        U2 = SA.SVector{3}(u_mat[1, j], u_mat[2, j], u_mat[3, j])
 
         dX = X2 - X1
         dist = sqrt(dX[1]^2 + dX[2]^2 + dX[3]^2)
@@ -79,32 +80,32 @@ KA.@kernel function _spectral_kernel!(
     N::Int,
     NU::Int,
     D::Int,
-    ms::NTuple # Use NTuple (untapped) to avoid UndefVarError
+    ms::NTuple, # Use NTuple (untapped) to avoid UndefVarError
 )
     # One thread per wavenumber I
     idx = @index(Global, Cartesian)
-    
+
     # Pre-fetch k_phys components for this wavenumber
     # We use SVector{3} and dot with padded x_pos
     k_phys = SA.SVector{3, eltype(x_dev)}(
         D >= 1 ? ks_phys_dev[1][idx[1]] : zero(eltype(x_dev)),
         D >= 2 ? ks_phys_dev[2][idx[2]] : zero(eltype(x_dev)),
-        D >= 3 ? ks_phys_dev[3][idx[3]] : zero(eltype(x_dev))
+        D >= 3 ? ks_phys_dev[3][idx[3]] : zero(eltype(x_dev)),
     )
-    
+
     for u_idx in 1:NU
         sum_val = zero(eltype(coeffs))
         for j in 1:N
             x_pos = SA.SVector{3, eltype(x_dev)}(
                 x_dev[1, j],
                 x_dev[2, j],
-                x_dev[3, j]
+                x_dev[3, j],
             )
-            
+
             # Phase factor
             phi = -iflag * (SA.dot(k_phys, x_pos))
-            W = complex(cos(phi), sin(phi)) 
-            
+            W = complex(cos(phi), sin(phi))
+
             sum_val += u_dev[u_idx, j] * W
         end
         coeffs[idx, u_idx] = sum_val / N
@@ -209,11 +210,11 @@ function _gpu_calculate_structure_function_core(
     u3[1:N_dims, :] .= u_mat
 
     # Allocate device arrays
-    x_dev    = KA.allocate(backend, FT, 3, N_points)
-    u_dev    = KA.allocate(backend, FT, 3, N_points)
+    x_dev = KA.allocate(backend, FT, 3, N_points)
+    u_dev = KA.allocate(backend, FT, 3, N_points)
     bins_dev = KA.allocate(backend, FT, N_bins)
-    out_dev  = KA.zeros(backend, FT, N_bins - 1)
-    cnt_dev  = KA.zeros(backend, FT, N_bins - 1)
+    out_dev = KA.zeros(backend, FT, N_bins - 1)
+    cnt_dev = KA.zeros(backend, FT, N_bins - 1)
 
     copyto!(x_dev, x3)
     copyto!(u_dev, u3)
@@ -234,7 +235,9 @@ function _gpu_calculate_structure_function_core(
     counts = Array(cnt_dev)
 
     # Convert distance_bins edges to tuples for SF objects
-    bin_tuples = SA.SVector{N_bins-1, Tuple{FT, FT}}([(distance_bins[i], distance_bins[i+1]) for i in 1:N_bins-1]...)
+    bin_tuples = SA.SVector{N_bins - 1, Tuple{FT, FT}}(
+        [(distance_bins[i], distance_bins[i + 1]) for i in 1:(N_bins - 1)]...,
+    )
 
     if RSAC
         return SF.StructureFunctionSumsAndCounts(sf_type, bin_tuples, output, counts)
@@ -258,7 +261,7 @@ function SFSA.gpu_calculate_spectrum(
     ms::NTuple{D, Int};
     iflag::Int = 1,
     domain_size::Union{Nothing, Tuple} = nothing,
-    workgroup_size::Int = 16
+    workgroup_size::Int = 16,
 ) where {D}
     FT = eltype(x_vecs[1])
     N = length(x_vecs[1])
@@ -273,15 +276,24 @@ function SFSA.gpu_calculate_spectrum(
             return max_x - min_x
         end
     end
-    
-    ks_phys = ntuple(d -> range(FT(-ms[d]÷2), stop=FT((ms[d]-1)÷2), length=ms[d]) .* (FT(2π) / (ranges[d] == 0 ? one(FT) : ranges[d])), Val(D))
+
+    ks_phys = ntuple(
+        d ->
+            range(FT(-ms[d] ÷ 2), stop = FT((ms[d] - 1) ÷ 2), length = ms[d]) .*
+            (FT(2π) / (ranges[d] == 0 ? one(FT) : ranges[d])),
+        Val(D),
+    )
 
     # 2. Allocate and transfer
     # Standardize to 3D padding for SVector compatibility in kernel
     x_mat = zeros(FT, 3, N)
     u_mat = zeros(FT, NU, N)
-    for d in 1:D; x_mat[d, :] .= x_vecs[d]; end
-    for u_idx in 1:NU; u_mat[u_idx, :] .= u_vecs[u_idx]; end
+    for d in 1:D
+        x_mat[d, :] .= x_vecs[d]
+    end
+    for u_idx in 1:NU
+        u_mat[u_idx, :] .= u_vecs[u_idx]
+    end
 
     x_dev = KA.allocate(backend, FT, 3, N)
     u_dev = KA.allocate(backend, FT, NU, N)
@@ -290,15 +302,15 @@ function SFSA.gpu_calculate_spectrum(
 
     # Transfer ks_phys as vectors, padded to 3
     ks_phys_dev = ntuple(d_ -> begin
-        if d_ <= D
-            v = KA.allocate(backend, FT, length(ks_phys[d_]))
-            copyto!(v, collect(ks_phys[d_]))
-            return v
-        else
-            # Dummy for padding
-            return KA.allocate(backend, FT, 1)
-        end
-    end, Val(3))
+            if d_ <= D
+                v = KA.allocate(backend, FT, length(ks_phys[d_]))
+                copyto!(v, collect(ks_phys[d_]))
+                return v
+            else
+                # Dummy for padding
+                return KA.allocate(backend, FT, 1)
+            end
+        end, Val(3))
 
     coeffs_dev = KA.zeros(backend, Complex{FT}, ms..., NU)
 
@@ -312,7 +324,7 @@ function SFSA.gpu_calculate_spectrum(
         iflag,
         N, NU, D,
         ms;
-        ndrange = ms
+        ndrange = ms,
     )
     KA.synchronize(backend)
 

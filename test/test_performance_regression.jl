@@ -26,19 +26,33 @@ function save_results(results)
     end
 end
 
-function run_sf_benchmark(x, u, bins, sf_type; threaded=false)
+function run_sf_benchmark(x, u, bins, sf_type; threaded = false)
     # Cap benchmarks to 0.2s to keep the test suite under 10s
     if threaded
-        return @benchmark calculate_structure_function($sf_type, $x, $u, $bins; verbose=false, show_progress=false) seconds=0.2 samples=50
+        return @benchmark calculate_structure_function(
+            $sf_type,
+            $x,
+            $u,
+            $bins;
+            verbose = false,
+            show_progress = false,
+        ) seconds = 0.2 samples = 50
     else
-        return @benchmark calculate_structure_function($sf_type, $x, $u, $bins; verbose=false, show_progress=false) seconds=0.2 samples=50
+        return @benchmark calculate_structure_function(
+            $sf_type,
+            $x,
+            $u,
+            $bins;
+            verbose = false,
+            show_progress = false,
+        ) seconds = 0.2 samples = 50
     end
 end
 
 Test.@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
     Random.seed!(42)
     N = 100
-    
+
     # 1D Setup
     x1 = (randn(N),)
     u1 = (randn(N),)
@@ -48,20 +62,20 @@ Test.@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
     # 3D Setup
     x3 = (randn(N), randn(N), randn(N))
     u3 = (randn(N), randn(N), randn(N))
-    
+
     # Matrix version of 2D
     xm = randn(2, N)
     um = randn(2, N)
-    
+
     bins = [(0.0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 2.0)]
-    
+
     sf_2nd_long = LongitudinalSecondOrderStructureFunction
     sf_2nd_trans = TransverseSecondOrderStructureFunction
     sf_3rd_diag = DiagonalConsistentThirdOrderStructureFunction
-    
+
     previous_results = load_previous_results()
     current_results = Dict()
-    
+
     @info "Running Comprehensive Benchmarks..."
 
     # Matrix of tests
@@ -79,29 +93,36 @@ Test.@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
             b = run_sf_benchmark(x_in, u_in, bins, sft)
             allocs = b.allocs
             time_min = minimum(b.times) / 1e3 # μs
-            
+
             current_results[name] = Dict("allocs" => allocs, "time_μs" => time_min)
             @info "$name: $allocs allocs, $time_min μs"
-            
+
             if haskey(previous_results, name)
                 prev = previous_results[name]
                 Test.@test allocs <= prev["allocs"]
             else
                 @info "  New baseline recorded for $name."
                 # Initial sanity gates
-                Test.@test allocs < 100000 
+                Test.@test allocs < 100000
             end
         end
     end
 
     Test.@testset "Spectral Analysis API" begin
         ms = (16, 16)
-        b_direct = @benchmark calculate_spectrum(DirectSumBackend(), $x2, $u2, $ms; domain_size=(10.0, 10.0)) seconds=0.2 samples=10
-        
+        b_direct = @benchmark calculate_spectrum(
+            DirectSumBackend(),
+            $x2,
+            $u2,
+            $ms;
+            domain_size = (10.0, 10.0),
+        ) seconds = 0.2 samples = 10
+
         allocs = b_direct.allocs
         time_min = minimum(b_direct.times) / 1e3 # μs
-        
-        current_results["direct_sum_spectral"] = Dict("allocs" => allocs, "time_μs" => time_min)
+
+        current_results["direct_sum_spectral"] =
+            Dict("allocs" => allocs, "time_μs" => time_min)
         @info "DirectSum Spectral: $allocs allocs, $time_min μs"
 
         if haskey(previous_results, "direct_sum_spectral")
@@ -113,11 +134,12 @@ Test.@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
     Test.@testset "Static Constructor Efficiency" begin
         r_hat = SA.SVector(1.0, 0.0)
         b_nhat = @benchmark SF.HelperFunctions.n̂($r_hat)
-        
+
         allocs = b_nhat.allocs
-        current_results["nhat_helper"] = Dict("allocs" => allocs, "time_μs" => minimum(b_nhat.times)/1e3)
+        current_results["nhat_helper"] =
+            Dict("allocs" => allocs, "time_μs" => minimum(b_nhat.times) / 1e3)
         @info "HelperFunctions.n̂: $allocs allocs"
-        
+
         Test.@test allocs == 0
     end
 

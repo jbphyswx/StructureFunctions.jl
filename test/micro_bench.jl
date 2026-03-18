@@ -14,7 +14,14 @@ function run_bench()
 
     println("Benchmarking calculate_structure_function (100 points)...")
     try
-        @btime calculate_structure_function($x, $u, $bins, $sf_type, verbose=false, show_progress=false)
+        @btime calculate_structure_function(
+            $x,
+            $u,
+            $bins,
+            $sf_type,
+            verbose = false,
+            show_progress = false,
+        )
     catch e
         println("Benchmark failed as expected: ", e)
     end
