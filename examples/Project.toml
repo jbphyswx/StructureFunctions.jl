@@ -1,0 +1,6 @@
+[deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+StructureFunctions = "e93fee26-4d5e-49c1-899d-490508cfd19b"
+
+[compat]
+CairoMakie = "0.15"

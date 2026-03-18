@@ -117,6 +117,12 @@ end
 # N-dimensional variant: pads 1D/2D inputs to 3D for uniformity
 # ---------------------------------------------------------------------------
 
+"""
+    _pad3(v::SVector)
+
+Pad 1D/2D static vectors to 3D by appending zeros.
+3D vectors are returned unchanged.
+"""
 function _pad3(v::SA.SVector{N, T}) where {N, T}
     if N == 1
         return SA.SVector{3, T}(v[1], zero(T), zero(T))
@@ -295,6 +301,14 @@ function SFC.gpu_calculate_structure_function(
     )
 end
 
+"""
+    _gpu_calculate_structure_function_core(sf_type, backend, x_mat, u_mat, distance_bins, ::Val{RSAC}; workgroup_size=64)
+
+GPU kernel execution core for structure-function evaluation on dense matrix inputs.
+
+This routine pads inputs to 3D, launches `_sf_kernel!`, synchronizes, and returns
+either raw sums/counts (`RSAC=true`) or normalized structure-function values.
+"""
 function _gpu_calculate_structure_function_core(
     sf_type::SFT.AbstractStructureFunctionType,
     backend::KA.Backend,

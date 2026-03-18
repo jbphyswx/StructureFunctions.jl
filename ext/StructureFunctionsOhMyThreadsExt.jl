@@ -8,6 +8,14 @@ using StructureFunctions:
     StructureFunctionObjects as SFO,
     StructureFunctionTypes as SFT
 
+"""
+    SFC.threaded_calculate_structure_function(sf_type, x_vecs, u_vecs, distance_bins, ::Val{RSAC}; ...)
+
+Threaded tuple-input backend using OhMyThreads reduction over tuple point inputs.
+
+Returns `StructureFunctionSumsAndCounts` when `RSAC == true`, otherwise
+returns normalized `StructureFunction` values.
+"""
 function SFC.threaded_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple,
@@ -46,6 +54,17 @@ function SFC.threaded_calculate_structure_function(
     return SF.StructureFunction(structure_function_type, distance_bins, output_div)
 end
 
+"""
+    SFC.threaded_calculate_structure_function(sf_type, x_arr, u_arr, distance_bins, ::Val{RSAC}; ...)
+
+Threaded array-input backend powered by OhMyThreads reduction.
+
+Supports 1D, 2D, and 3D inputs (`size(x_arr, 1) in (1,2,3)`), computes
+thread-local accumulators, and reduces into a single result object.
+
+Returns `StructureFunctionSumsAndCounts` when `RSAC == true`, otherwise
+returns normalized `StructureFunction` values.
+"""
 function SFC.threaded_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},

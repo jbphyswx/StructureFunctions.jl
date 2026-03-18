@@ -67,7 +67,7 @@ StructureFunctions.jl v0.3.0 is a major release featuring a complete backend sys
 
 ### Testing
 
-- **Unit tests**: 149/149 passing
+- **Unit tests**: 151/151 passing
 - **JET analysis**: 44/44 tests passing (all code paths validated)
 - **Docstring validation**: All public functions documented
 - **Example verification**: 5 worked examples, each validated
@@ -170,7 +170,7 @@ ed95f81 fix: unify backend execution system and resolve threadid buffer indexing
 ### v0.3.0 (Current)
 - ✅ Full Python/GPU/distributed support
 - ✅ Comprehensive documentation
-- ✅ 149/149 tests passing
+- ✅ 151/151 tests passing
 - ✅ Production-ready
 
 ### v0.4.0 (Planned)
