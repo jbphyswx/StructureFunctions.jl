@@ -35,9 +35,9 @@ See README.md § "Scaling Benchmarks" for full documentation.
 # ─────────────────────────────────────────────────────────────────────────────
 # Dependencies
 # ─────────────────────────────────────────────────────────────────────────────
-using JSON
-using Printf
-import Dates
+using JSON: JSON
+using Printf: Printf
+using Dates: Dates
 
 const RESULTS_DIR = joinpath(@__DIR__, "benchmark_results")
 mkpath(RESULTS_DIR)
@@ -93,7 +93,7 @@ for p in THREAD_COUNTS
     flush(stdout)
     r = run_worker(p, N_STRONG)
     push!(strong_results, r)
-    @printf("%.3f s\n", r["elapsed_s"])
+    Printf.@printf("%.3f s\n", r["elapsed_s"])
 end
 
 t1_strong = strong_results[1]["elapsed_s"]
@@ -115,7 +115,7 @@ for p in THREAD_COUNTS
     r = run_worker(p, N_weak)
     r["N_weak"] = N_weak   # store for plotting
     push!(weak_results, r)
-    @printf("%.3f s\n", r["elapsed_s"])
+    Printf.@printf("%.3f s\n", r["elapsed_s"])
 end
 
 # Normalise: ideal weak scaling → elapsed stays constant (ratio = 1)

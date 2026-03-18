@@ -2,6 +2,8 @@ name: JuliaFormatter
 
 on:
   push:
+    branches:
+      - main
     tags: '*'
   pull_request:
 

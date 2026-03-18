@@ -5,6 +5,9 @@ include("test_synthetic_data.jl")
 using .SyntheticData: SyntheticData
 
 Test.@testset "StructureFunctions.jl" begin
+    println("--- Running Baseline Correctness Test ---")
+    include("baseline_correctness.jl")
+
     println("--- Running Helpers Test ---")
     include("test_helpers.jl")
 
@@ -23,8 +26,14 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Shorthands Test ---")
     include("test_shorthands.jl")
 
-    println("--- Running Spectral Extended Test ---")
-    include("test_spectral_extended.jl")
+    println("--- Running Spectral Test ---")
+    include("test_spectral.jl")
+
+    println("--- Running Spectral GPU Parity Test ---")
+    include("test_spectral_gpu_parity.jl")
+
+    # println("--- Running Performance Benchmark Test ---") # This need not run all the time, but it's here for reference
+    # include("benchmark_performance.jl")
 
     # Enable Parallel/Distributed Test
     println("--- Running Parallel Equivalence Test ---")

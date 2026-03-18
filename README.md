@@ -22,14 +22,13 @@ Given data, calculates varying order structure functions for turbulence analysis
 ## Quick Start
 
 ```julia
-using StructureFunctions
-using StructureFunctions.SpectralAnalysis
+using StructureFunctions: StructureFunctions, SpectralAnalysis as SFSA
 
 # Calculate spectrum from scattered data
-r = calculate_spectrum(FINUFFTBackend(), (x, y), (u, v), ms; domain_size=(Lx, Ly))
+r = SFSA.calculate_spectrum(SFSA.FINUFFTBackend(), (x, y), (u, v), ms; domain_size=(Lx, Ly))
 
 # Visual comparison (requires CairoMakie)
-using CairoMakie
-compare_spectra(["Result" => r]; peaks=target_peaks)
+using CairoMakie: CairoMakie
+SFSA.compare_spectra(["Result" => r]; peaks=target_peaks)
 ```
 
