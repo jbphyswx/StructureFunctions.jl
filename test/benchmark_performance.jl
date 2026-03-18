@@ -1,4 +1,4 @@
-using BenchmarkTools
+using BenchmarkTools: BenchmarkTools
 using StructureFunctions: StructureFunctions as SF
 using StaticArrays: StaticArrays as SA
 
@@ -10,7 +10,7 @@ function run_benchmark()
     bins = SA.SVector{10}([(i * 0.1, (i + 1) * 0.1) for i in 0:9])
 
     println("--- Benchmark: Tuple Variant (N=$N, Bins=10) ---")
-    b_tuple = @benchmark SF.calculate_structure_function(
+    b_tuple = BenchmarkTools.@benchmark SF.calculate_structure_function(
         SF.L2SF,
         $x,
         $u,
@@ -23,7 +23,7 @@ function run_benchmark()
     x_arr = rand(FT, 2, N)
     u_arr = rand(FT, 2, N)
     println("\n--- Benchmark: Array Variant (N=$N, Bins=10) ---")
-    b_array = @benchmark SF.calculate_structure_function(
+    b_array = BenchmarkTools.@benchmark SF.calculate_structure_function(
         SF.L2SF,
         $x_arr,
         $u_arr,

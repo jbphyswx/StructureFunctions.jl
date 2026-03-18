@@ -5,7 +5,7 @@
 # To update dependencies, run:
 # julia -e 'using Pkg; Pkg.add("PkgDevTools"); using PkgDevTools; PkgDevTools.update_deps(".")'
 
-using Pkg
+using Pkg: Pkg
 
 root = dirname(@__DIR__)
 dirs = (

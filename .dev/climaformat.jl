@@ -1,4 +1,4 @@
-using Pkg
+using Pkg: Pkg
 Pkg.activate(@__DIR__)
 Pkg.instantiate()
 
@@ -6,6 +6,6 @@ Pkg.instantiate()
 # or using julia -e 'using JuliaFormatter; format(".")'.
 # This project now uses a root-level .JuliaFormatter.toml.
 
-using JuliaFormatter
+using JuliaFormatter: JuliaFormatter
 
-format(".")
+JuliaFormatter.format(".")

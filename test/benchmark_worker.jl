@@ -12,16 +12,15 @@ Usage (internal, called automatically by benchmark_scaling.jl):
     julia --project=test -t 8 test/benchmark_worker.jl 5000
 """
 
-using StructureFunctions
-using StructureFunctions.Calculations: calculate_structure_function
-using JSON
+using StructureFunctions: StructureFunctions, Calculations as SFC
+using JSON: JSON
 
 # Problem size (points in 3D)
 N_points = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 3000
 N_threads = Threads.nthreads()
 
 # Reproducible random data
-import Random;
+using Random: Random
 Random.seed!(42);
 FT = Float64
 
@@ -32,11 +31,11 @@ sft = LongitudinalSecondOrderStructureFunction
 n_bins = 20
 
 # Warmup (avoid counting compile time)
-calculate_structure_function(sft, x, u, n_bins; verbose = false, show_progress = false)
+SFC.calculate_structure_function(sft, x, u, n_bins; verbose = false, show_progress = false)
 
 # Timed run
 t_start = time()
-calculate_structure_function(sft, x, u, n_bins; verbose = false, show_progress = false)
+SFC.calculate_structure_function(sft, x, u, n_bins; verbose = false, show_progress = false)
 elapsed = time() - t_start
 
 result = Dict("threads" => N_threads, "N_points" => N_points, "elapsed_s" => elapsed)

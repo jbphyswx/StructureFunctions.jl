@@ -11,5 +11,13 @@ Test.@testset "Baseline Correctness" begin
     bins = SA.SVector(((0.0, 2.0),))
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
-    Test.@test_throws ErrorException SFC.calculate_structure_function(sf_type, x, u, bins)
+    val = SFC.calculate_structure_function(
+        sf_type,
+        x,
+        u,
+        bins;
+        verbose = false,
+        show_progress = false,
+    )
+    Test.@test val[1] ≈ 1.0
 end
