@@ -26,7 +26,10 @@ Test.@testset "JET Stability Audit" begin
             show_progress = false,
         )
         # Test the convenience entry point for correctness (call)
-        JET.@test_call SFC.calculate_structure_function(
+        # Only analyze StructureFunctions module code, not external packages like ProgressMeter
+        # which do compile-time checks for Main.IJulia that may not be present.
+        # See: https://github.com/timholy/ProgressMeter.jl/issues/348
+        JET.@test_call target_modules = (SF,) SFC.calculate_structure_function(
             sf_type,
             x,
             u,
@@ -50,7 +53,10 @@ Test.@testset "JET Stability Audit" begin
             show_progress = false,
         )
         # Test the convenience entry point for correctness (call)
-        JET.@test_call SFC.calculate_structure_function(
+        # Only analyze StructureFunctions module code, not external packages like ProgressMeter
+        # which do compile-time checks for Main.IJulia that may not be present.
+        # See: https://github.com/timholy/ProgressMeter.jl/issues/348
+        JET.@test_call target_modules = (SF,) SFC.calculate_structure_function(
             sf_type,
             xa,
             ua,
