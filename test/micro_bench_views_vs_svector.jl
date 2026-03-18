@@ -15,7 +15,7 @@ function bench_views(A, N)
         for j in 1:N
             v2 = view(A, :, j)
             # Arithmetic on views triggers heap-allocated temporaries
-            diff = v2 - v1 
+            diff = v2 - v1
             s += diff[1]^2 + diff[2]^2
         end
     end

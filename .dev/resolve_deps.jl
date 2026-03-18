@@ -5,7 +5,13 @@ files in all of our environments.
 
 root = dirname(@__DIR__)
 dirs =
-    (root, joinpath(root, "test"), joinpath(root, "perf"), joinpath(root, "docs"), joinpath(root, "integration_tests"))
+    (
+        root,
+        joinpath(root, "test"),
+        joinpath(root, "perf"),
+        joinpath(root, "docs"),
+        joinpath(root, "integration_tests"),
+    )
 
 cd(root) do
     for dir in dirs

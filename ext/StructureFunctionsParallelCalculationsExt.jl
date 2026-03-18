@@ -9,10 +9,11 @@ using Distances: Distances as DI
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using SharedArrays: SharedArrays
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH, StructureFunctionTypes as SFT
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
+    HelperFunctions as SFH, StructureFunctionTypes as SFT
 
 
-export parallel_calculate_structure_function 
+export parallel_calculate_structure_function
 
 function SFC.parallel_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
@@ -66,7 +67,10 @@ function _parallel_calculate_structure_function_core(
 
     # Use the result-object wrapper for clean distributed reduction using package types
     sums_and_counts =
-        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for i in eachindex(x_vecs[1])
+        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for i in
+                                                                                  eachindex(
+            x_vecs[1],
+        )
             SFC.calculate_structure_function_i(
                 structure_function_type,
                 i,
@@ -117,8 +121,10 @@ function SFC.parallel_calculate_structure_function(
 
 
     min_distance, max_distance =
-        PM.@showprogress enabled = show_progress Distributed.@distributed ((x, y) -> (min(x[1], y[1]), max(x[2], y[2]))) for i in
-                                                                                                               eachindex(
+        PM.@showprogress enabled = show_progress Distributed.@distributed (
+            (x, y) -> (min(x[1], y[1]), max(x[2], y[2]))
+        ) for i in
+              eachindex(
             x_vecs[1],
         )
             SFC.minmax_i(i, x_vecs, distance_metric)
@@ -129,7 +135,9 @@ function SFC.parallel_calculate_structure_function(
     if bin_spacing == :linear
         distance_bins = range(min_distance, max_distance, length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
     elseif bin_spacing ∈ (:logarithmic, :log)
-        distance_bins = 10 .^ range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
+        distance_bins =
+            10 .^
+            range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
         distance_bins[1] = min_distance # combat floating point errors (may have rounded up or down during operations)
         distance_bins[end] = max_distance # combat floating point errors (may have rounded up or down during operations)
     else

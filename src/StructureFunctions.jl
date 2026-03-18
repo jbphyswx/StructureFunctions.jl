@@ -13,7 +13,8 @@ include("StructureFunctionObjects.jl")
 include("Calculations.jl")
 include("SpectralAnalysis.jl")
 
-import .StructureFunctionObjects: AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts
+import .StructureFunctionObjects:
+    AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts
 
 using .HelperFunctions
 using .StructureFunctionTypes
@@ -24,16 +25,21 @@ using .SpectralAnalysis
 # Re-export key APIs
 export calculate_structure_function
 export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts
-export LongitudinalSecondOrderStructureFunctionType, TransverseSecondOrderStructureFunctionType
+export LongitudinalSecondOrderStructureFunctionType,
+    TransverseSecondOrderStructureFunctionType
 export SecondOrderStructureFunctionType, ThirdOrderStructureFunctionType
-export DiagonalConsistentThirdOrderStructureFunctionType, DiagonalInconsistentThirdOrderStructureFunctionType
-export OffDiagonalConsistentThirdOrderStructureFunctionType, OffDiagonalInconsistentThirdOrderStructureFunctionType
+export DiagonalConsistentThirdOrderStructureFunctionType,
+    DiagonalInconsistentThirdOrderStructureFunctionType
+export OffDiagonalConsistentThirdOrderStructureFunctionType,
+    OffDiagonalInconsistentThirdOrderStructureFunctionType
 export L2SFType, T2SFType, L3SFType, S2SFType, S3SFType, T3SFType, L2T1SFType, L1T2SFType
 
 export LongitudinalSecondOrderStructureFunction, TransverseSecondOrderStructureFunction
 export SecondOrderStructureFunction, ThirdOrderStructureFunction
-export DiagonalConsistentThirdOrderStructureFunction, DiagonalInconsistentThirdOrderStructureFunction
-export OffDiagonalConsistentThirdOrderStructureFunction, OffDiagonalInconsistentThirdOrderStructureFunction
+export DiagonalConsistentThirdOrderStructureFunction,
+    DiagonalInconsistentThirdOrderStructureFunction
+export OffDiagonalConsistentThirdOrderStructureFunction,
+    OffDiagonalInconsistentThirdOrderStructureFunction
 export L2SF, T2SF, L3SF, S2SF, S3SF, T3SF, L2T1SF, L1T2SF
 
 export SpectralAnalysis

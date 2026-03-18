@@ -1,7 +1,8 @@
 module StructureFunctionsJLD2Ext
 
 using JLD2: JLD2
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH
+using StructureFunctions:
+    StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH
 
 """
     calculate_structure_function_from_file(::Val{:jld2}, fpath::String, bin_edges, sf_type; 
@@ -21,7 +22,7 @@ function SFC.calculate_structure_function_from_file(
     sf_type;
     x_key = "x",
     u_key = "u",
-    kwargs...
+    kwargs...,
 )
     JLD2.jldopen(fpath, "r") do file
         # 1. Load data
@@ -40,14 +41,24 @@ function SFC.calculate_structure_function_from_file(
 
         x_mat = zeros(FT, D, N)
         u_mat = zeros(FT, NU, N)
-        for i in 1:D; x_mat[i, :] .= x_flat[i]; end
-        for i in 1:NU; u_mat[i, :] .= u_flat[i]; end
+        for i in 1:D
+            x_mat[i, :] .= x_flat[i]
+        end
+        for i in 1:NU
+            u_mat[i, :] .= u_flat[i]
+        end
 
         # 4. Clean NaNs (Block I3)
         x_clean, u_clean = SFH.remove_nans(x_mat, u_mat)
 
         # 5. Delegate to core calculation
-        return SFC.calculate_structure_function(sf_type, x_clean, u_clean, bin_edges; kwargs...)
+        return SFC.calculate_structure_function(
+            sf_type,
+            x_clean,
+            u_clean,
+            bin_edges;
+            kwargs...,
+        )
     end
 end
 
@@ -59,7 +70,7 @@ function _load_keys(file, key)
         val = file[string(key)]
         # If the value itself is a Tuple/Vector of data, return it
         if val isa Union{Tuple, AbstractVector} && !(eltype(val) <: Number)
-             return ntuple(i -> val[i], length(val))
+            return ntuple(i -> val[i], length(val))
         end
         return (val,)
     end

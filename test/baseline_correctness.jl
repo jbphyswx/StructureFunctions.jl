@@ -1,4 +1,5 @@
-using StructureFunctions: StructureFunctions as SF, StructureFunctionTypes as SFT, Calculations as SFC
+using StructureFunctions:
+    StructureFunctions as SF, StructureFunctionTypes as SFT, Calculations as SFC
 using Test: Test
 using StaticArrays: StaticArrays as SA
 
