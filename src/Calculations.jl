@@ -722,8 +722,8 @@ function serial_calculate_structure_function(
     distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
     ::Val{RSAC};
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    verbose = true,
-    show_progress = true,
+    verbose::Bool = true,
+    show_progress::Bool = true,
 ) where {T1, T2, FT3, RSAC}
     N = length(x_vecs)
     FT1 = eltype(T1)
@@ -752,7 +752,7 @@ function serial_calculate_structure_function(
     iter_inds = eachindex(x_vecs[1])
     # Pass Val(length(x_vecs)) to make it a type parameter in the work function
     vN = Val(length(x_vecs))
-    for i in iter_inds
+    PM.@showprogress enabled = show_progress for i in iter_inds
         calculate_structure_function_i!(
             output,
             counts,
@@ -871,9 +871,9 @@ function calculate_structure_function(
     distance_bins::Int;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     bin_spacing = :logarithmic,
-    verbose = true,
-    show_progress = true,
-    return_sums_and_counts = false,
+    verbose::Bool = true,
+    show_progress::Bool = true,
+    return_sums_and_counts::Bool = false,
 ) where {T1, T2}
     N = length(x_vecs)
     """
@@ -1012,8 +1012,8 @@ function serial_calculate_structure_function(
     distance_bins::AbstractVector{Tuple{FT3, FT3}},
     ::Val{RSAC};
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    verbose = true,
-    show_progress = true,
+    verbose::Bool = true,
+    show_progress::Bool = true,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC}
     N3 = length(distance_bins)
     # calculate and bin and mean the pairwise distances
@@ -1038,7 +1038,7 @@ function serial_calculate_structure_function(
     iter_inds = axes(x_arr, 2)
     N = size(x_arr, 1)
     if N == 1
-        for i in iter_inds
+        PM.@showprogress enabled = show_progress for i in iter_inds
             calculate_structure_function_i!(
                 output,
                 counts,
@@ -1052,7 +1052,7 @@ function serial_calculate_structure_function(
             )
         end
     elseif N == 2
-        for i in iter_inds
+        PM.@showprogress enabled = show_progress for i in iter_inds
             calculate_structure_function_i!(
                 output,
                 counts,
@@ -1066,7 +1066,7 @@ function serial_calculate_structure_function(
             )
         end
     elseif N == 3
-        for i in iter_inds
+        PM.@showprogress enabled = show_progress for i in iter_inds
             calculate_structure_function_i!(
                 output,
                 counts,
@@ -1142,9 +1142,9 @@ function calculate_structure_function(
     distance_bins::Int;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     bin_spacing = :logarithmic,
-    verbose = true,
-    show_progress = true,
-    return_sums_and_counts = false,
+    verbose::Bool = true,
+    show_progress::Bool = true,
+    return_sums_and_counts::Bool = false,
 ) where {FT1 <: Number, FT2 <: Number}
     """
     Here we assume that the distance bins are evenly spaced
