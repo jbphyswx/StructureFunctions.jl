@@ -15,7 +15,7 @@ The kernel is O(N²) pair-wise and relies on atomic accumulation into distance b
     This is a known issue in KernelAbstractions.jl (see https://github.com/JuliaGPU/KernelAbstractions.jl/issues/542#issuecomment-3986160961)
     and is expected to be fixed in a future release.
 """
-module StructureFunctionsGPUCalculationsExt
+module StructureFunctionsGPUExt
 
 using KernelAbstractions: KernelAbstractions as KA, @index, @atomic
 using StaticArrays: StaticArrays as SA
@@ -170,6 +170,114 @@ end
 function SFC.gpu_calculate_structure_function(
     sf_type::SFT.AbstractStructureFunctionType,
     backend::KA.Backend,
+    x_vecs::Tuple{T, Vararg{T}},
+    u_vecs::Tuple{U, Vararg{U}},
+    distance_bins::AbstractVector{<:Tuple};
+    return_sums_and_counts::Bool = false,
+    kwargs...,
+) where {T <: AbstractVector, U <: AbstractVector}
+    return SFC.gpu_calculate_structure_function(
+        sf_type,
+        backend,
+        x_vecs,
+        u_vecs,
+        distance_bins,
+        Val(return_sums_and_counts);
+        kwargs...,
+    )
+end
+
+function SFC.gpu_calculate_structure_function(
+    sf_type::SFT.AbstractStructureFunctionType,
+    backend::KA.Backend,
+    x_vecs::Tuple{T, Vararg{T}},
+    u_vecs::Tuple{U, Vararg{U}},
+    distance_bins::AbstractVector{<:Tuple},
+    ::Val{RSAC};
+    kwargs...,
+) where {T <: AbstractVector, U <: AbstractVector, RSAC}
+    N_dims = length(x_vecs)
+    N_points = length(x_vecs[1])
+    TX = eltype(T)
+    TU = eltype(U)
+    FT = promote_type(float(TX), float(TU))
+
+    x_mat = Matrix{FT}(undef, N_dims, N_points)
+    u_mat = Matrix{FT}(undef, N_dims, N_points)
+    for k in 1:N_dims
+        @views x_mat[k, :] .= x_vecs[k]
+        @views u_mat[k, :] .= u_vecs[k]
+    end
+
+    n_bins = length(distance_bins)
+    bin_edges = Vector{FT}(undef, n_bins + 1)
+    for k in 1:n_bins
+        bin_edges[k] = distance_bins[k][1]
+    end
+    bin_edges[end] = distance_bins[end][2]
+
+    return SFC.gpu_calculate_structure_function(
+        sf_type,
+        backend,
+        x_mat,
+        u_mat,
+        bin_edges,
+        Val(RSAC);
+        kwargs...,
+    )
+end
+
+function SFC.gpu_calculate_structure_function(
+    sf_type::SFT.AbstractStructureFunctionType,
+    backend::KA.Backend,
+    x_mat::AbstractMatrix{FT1},
+    u_mat::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{<:Tuple};
+    return_sums_and_counts::Bool = false,
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number}
+    return SFC.gpu_calculate_structure_function(
+        sf_type,
+        backend,
+        x_mat,
+        u_mat,
+        distance_bins,
+        Val(return_sums_and_counts);
+        kwargs...,
+    )
+end
+
+function SFC.gpu_calculate_structure_function(
+    sf_type::SFT.AbstractStructureFunctionType,
+    backend::KA.Backend,
+    x_mat::AbstractMatrix{FT1},
+    u_mat::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{<:Tuple},
+    ::Val{RSAC};
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, RSAC}
+    FT = promote_type(float(FT1), float(FT2))
+    n_bins = length(distance_bins)
+    bin_edges = Vector{FT}(undef, n_bins + 1)
+    for k in 1:n_bins
+        bin_edges[k] = distance_bins[k][1]
+    end
+    bin_edges[end] = distance_bins[end][2]
+
+    return SFC.gpu_calculate_structure_function(
+        sf_type,
+        backend,
+        x_mat,
+        u_mat,
+        bin_edges,
+        Val(RSAC);
+        kwargs...,
+    )
+end
+
+function SFC.gpu_calculate_structure_function(
+    sf_type::SFT.AbstractStructureFunctionType,
+    backend::KA.Backend,
     x_mat::AbstractMatrix{FT},
     u_mat::AbstractMatrix{FT},
     distance_bins::AbstractVector{FT},
@@ -200,7 +308,7 @@ function _gpu_calculate_structure_function_core(
     N_bins = length(distance_bins)
 
     if N_dims > 3
-        error("GPUCalculationsExt: only 1D–3D inputs are supported (got N_dims=$N_dims)")
+        error("GPUExt: only 1D-3D inputs are supported (got N_dims=$N_dims)")
     end
 
     # Pad to 3D so the kernel can use fixed-size SVectors
@@ -332,4 +440,4 @@ function SFSA.gpu_calculate_spectrum(
 end
 
 
-end # module GPUCalculationsExt
+end # module GPUExt

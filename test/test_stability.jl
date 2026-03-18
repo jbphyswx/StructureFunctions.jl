@@ -29,6 +29,6 @@ Test.@testset "Stability Verification" begin
     @inferred SFC.calculate_structure_function(sft, x_arr, u_arr, bins, Val(false))
     @inferred SFC.calculate_structure_function(sft, x_arr, u_arr, bins, Val(true))
 
-    # 3. Parallel Stability Check (if ParallelCalculationsExt is loaded)
+    # 3. Distributed Stability Check (if DistributedExt is loaded)
     # We'll just check if the method exists for now, or skip if not tested here.
 end
