@@ -26,6 +26,9 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Shorthands Test ---")
     include("test_shorthands.jl")
 
+    println("--- Running Threading Backend Test ---")
+    include("test_threads.jl")
+
     println("--- Running Spectral Test ---")
     include("test_spectral.jl")
 

@@ -2,7 +2,7 @@
 The workhorse of this package
 For speed, pretty much all your inputs seems to need to be SharedArrays...
 """
-module StructureFunctionsParallelCalculationsExt
+module StructureFunctionsDistributedExt
 using Distributed: Distributed
 using ProgressMeter: ProgressMeter as PM
 using Distances: Distances as DI
@@ -14,6 +14,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 
 
 export parallel_calculate_structure_function
+
+SFC.distributed_workers_available(::Val{:distributed}) = Distributed.nworkers() > 1
 
 function SFC.parallel_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,

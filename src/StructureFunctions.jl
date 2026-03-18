@@ -24,6 +24,9 @@ using .SpectralAnalysis
 
 # Re-export key APIs
 export calculate_structure_function
+export AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
+    GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend
+export serial_calculate_structure_function, threaded_calculate_structure_function
 export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts
 export LongitudinalSecondOrderStructureFunctionType,
     TransverseSecondOrderStructureFunctionType

@@ -14,7 +14,200 @@ using Base.Threads: Threads
 using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization
 
 export calculate_structure_function, parallel_calculate_structure_function,
-    gpu_calculate_structure_function, calculate_structure_function_from_file
+    gpu_calculate_structure_function, calculate_structure_function_from_file,
+    AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
+    GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend,
+    serial_calculate_structure_function, threaded_calculate_structure_function
+
+abstract type AbstractExecutionBackend end
+struct SerialBackend <: AbstractExecutionBackend end
+struct ThreadedBackend <: AbstractExecutionBackend end
+struct DistributedBackend <: AbstractExecutionBackend end
+struct GPUBackend{B} <: AbstractExecutionBackend
+    backend::B
+end
+struct AutoBackend <: AbstractExecutionBackend end
+
+# Backward-compatible aliases for in-flight API migration.
+const AbstractThreadingBackend = AbstractExecutionBackend
+const AutoThreadingBackend = AutoBackend
+
+function threaded_calculate_structure_function(args...; kwargs...)
+    throw(
+        ArgumentError(
+            "Threaded backend is unavailable. Load the OhMyThreads extension or use backend=SerialBackend().",
+        ),
+    )
+end
+
+distributed_workers_available(::Val) = false
+
+function _threaded_backend_available(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    vrsac,
+)
+    return hasmethod(
+        threaded_calculate_structure_function,
+        Tuple{
+            typeof(structure_function_type),
+            typeof(x),
+            typeof(u),
+            typeof(distance_bins),
+            typeof(vrsac),
+        },
+    )
+end
+
+function _dispatch_execution_backend(
+    ::SerialBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    vrsac;
+    kwargs...,
+)
+    return serial_calculate_structure_function(
+        structure_function_type,
+        x,
+        u,
+        distance_bins,
+        vrsac;
+        kwargs...,
+    )
+end
+
+function _dispatch_execution_backend(
+    ::ThreadedBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    vrsac;
+    kwargs...,
+)
+    return threaded_calculate_structure_function(
+        structure_function_type,
+        x,
+        u,
+        distance_bins,
+        vrsac;
+        kwargs...,
+    )
+end
+
+function _distributed_backend_available(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    vrsac,
+)
+    return hasmethod(
+        parallel_calculate_structure_function,
+        Tuple{
+            typeof(structure_function_type),
+            typeof(x),
+            typeof(u),
+            typeof(distance_bins),
+            typeof(vrsac),
+        },
+    )
+end
+
+function _dispatch_execution_backend(
+    ::DistributedBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    vrsac;
+    kwargs...,
+)
+    if !_distributed_backend_available(structure_function_type, x, u, distance_bins, vrsac)
+        throw(
+            ArgumentError(
+                "Distributed backend is unavailable. Load Distributed/SharedArrays extension or use backend=SerialBackend().",
+            ),
+        )
+    end
+    return parallel_calculate_structure_function(
+        structure_function_type,
+        x,
+        u,
+        distance_bins,
+        vrsac;
+        kwargs...,
+    )
+end
+
+function _dispatch_execution_backend(
+    backend::GPUBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    vrsac;
+    kwargs...,
+)
+    return gpu_calculate_structure_function(
+        structure_function_type,
+        backend.backend,
+        x,
+        u,
+        distance_bins,
+        vrsac;
+        kwargs...,
+    )
+end
+
+function _dispatch_execution_backend(
+    ::AutoBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    vrsac;
+    kwargs...,
+)
+    if distributed_workers_available(Val(:distributed)) &&
+       _distributed_backend_available(structure_function_type, x, u, distance_bins, vrsac)
+        return _dispatch_execution_backend(
+            DistributedBackend(),
+            structure_function_type,
+            x,
+            u,
+            distance_bins,
+            vrsac;
+            kwargs...,
+        )
+    end
+
+    if Threads.nthreads() > 1 &&
+       _threaded_backend_available(structure_function_type, x, u, distance_bins, vrsac)
+        return _dispatch_execution_backend(
+            ThreadedBackend(),
+            structure_function_type,
+            x,
+            u,
+            distance_bins,
+            vrsac;
+            kwargs...,
+        )
+    end
+    return _dispatch_execution_backend(
+        SerialBackend(),
+        structure_function_type,
+        x,
+        u,
+        distance_bins,
+        vrsac;
+        kwargs...,
+    )
+end
 
 """
     calculate_structure_function(sf_type::SFT.AbstractStructureFunctionType, path::String, bins; kwargs...)
@@ -413,7 +606,7 @@ end
     gpu_calculate_structure_function(...)
 
 GPU-accelerated structure function calculation. Requires loading `KernelAbstractions.jl`
-to activate the `GPUCalculationsExt` extension. The backend can be `KernelAbstractions.CPU()`
+to activate the `GPUExt` extension. The backend can be `KernelAbstractions.CPU()`
 (for testing parity) or any GPU backend like `CUDABackend()` from `CUDA.jl`.
 
 This stub exists so the extension can legally extend this function.
@@ -508,9 +701,11 @@ function calculate_structure_function(
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
     ::Val{RSAC};
+    backend::AbstractExecutionBackend = SerialBackend(),
     kwargs...,
 ) where {T1, T2, FT3, RSAC}
-    return _calculate_structure_function_core(
+    return _dispatch_execution_backend(
+        backend,
         structure_function_type,
         x_vecs,
         u_vecs,
@@ -520,7 +715,7 @@ function calculate_structure_function(
     )
 end
 
-function _calculate_structure_function_core(
+function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
@@ -550,45 +745,25 @@ function _calculate_structure_function_core(
     end
     distance_bins_vec[end] = distance_bins[end][2]
 
-    # Create thread-local buffers to eliminate lock contention and allocations per iteration
-    n_threads = Threads.nthreads()
-    local_outputs = [zeros(OT, N3) for _ in 1:n_threads]
-    local_counts = [zeros(OT, N3) for _ in 1:n_threads]
-
     if verbose
-        @info("calculating structure function (parallel reduction)")
+        @info("calculating structure function (serial reduction)")
     end
 
     iter_inds = eachindex(x_vecs[1])
     # Pass Val(length(x_vecs)) to make it a type parameter in the work function
     vN = Val(length(x_vecs))
-    let lo = local_outputs, lc = local_counts, vn = vN, st = structure_function_type,
-        xv = x_vecs, uv = u_vecs, dbv = distance_bins_vec, dm = distance_metric
-
-        Threads.@threads for i in iter_inds
-            tid = Threads.threadid()
-            calculate_structure_function_i!(
-                lo[tid],
-                lc[tid],
-                vn,
-                st,
-                i,
-                xv,
-                uv,
-                dbv;
-                distance_metric = dm,
-            )
-        end
-    end
-
-    # Global reduction from thread-local buffers
-    for tid in 1:n_threads
-        lt_out = local_outputs[tid]
-        lt_cnt = local_counts[tid]
-        for k in 1:N3
-            @inbounds output[k] += lt_out[k]
-            @inbounds counts[k] += lt_cnt[k]
-        end
+    for i in iter_inds
+        calculate_structure_function_i!(
+            output,
+            counts,
+            vN,
+            structure_function_type,
+            i,
+            x_vecs,
+            u_vecs,
+            distance_bins_vec;
+            distance_metric = distance_metric,
+        )
     end
 
     if RSAC # just return the sums and the counts, don't take the mean in each bin...
@@ -816,9 +991,11 @@ function calculate_structure_function(
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector{Tuple{FT3, FT3}},
     ::Val{RSAC};
+    backend::AbstractExecutionBackend = SerialBackend(),
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC}
-    return _calculate_structure_function_core(
+    return _dispatch_execution_backend(
+        backend,
         structure_function_type,
         x_arr,
         u_arr,
@@ -828,7 +1005,7 @@ function calculate_structure_function(
     )
 end
 
-function _calculate_structure_function_core(
+function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
@@ -854,55 +1031,56 @@ function _calculate_structure_function_core(
     end
     distance_bins_vec[end] = distance_bins[end][2]
 
-    # Create thread-local buffers
-    # Create thread-local buffers to eliminate lock contention and allocations per iteration
-    n_threads = Threads.nthreads()
-    local_outputs = [zeros(OT, N3) for _ in 1:n_threads]
-    local_counts = [zeros(OT, N3) for _ in 1:n_threads]
-
     if verbose
-        @info("calculating structure function (parallel reduction)")
+        @info("calculating structure function (serial reduction)")
     end
 
     iter_inds = axes(x_arr, 2)
     N = size(x_arr, 1)
-    vN = if N == 1
-        Val(1)
-    elseif N == 2
-        Val(2)
-    elseif N == 3
-        Val(3)
-    else
-        Val(N)
-    end
-
-    let lo = local_outputs, lc = local_counts, vn = vN, st = structure_function_type,
-        xa = x_arr, ua = u_arr, dbv = distance_bins_vec, dm = distance_metric
-
-        Threads.@threads for i in iter_inds
-            tid = Threads.threadid()
+    if N == 1
+        for i in iter_inds
             calculate_structure_function_i!(
-                lo[tid],
-                lc[tid],
-                vn,
-                st,
+                output,
+                counts,
+                Val(1),
+                structure_function_type,
                 i,
-                xa,
-                ua,
-                dbv;
-                distance_metric = dm,
+                x_arr,
+                u_arr,
+                distance_bins_vec;
+                distance_metric = distance_metric,
             )
         end
-    end
-
-    # Global reduction from thread-local buffers
-    for tid in 1:n_threads
-        lt_out = local_outputs[tid]
-        lt_cnt = local_counts[tid]
-        for k in 1:N3
-            @inbounds output[k] += lt_out[k]
-            @inbounds counts[k] += lt_cnt[k]
+    elseif N == 2
+        for i in iter_inds
+            calculate_structure_function_i!(
+                output,
+                counts,
+                Val(2),
+                structure_function_type,
+                i,
+                x_arr,
+                u_arr,
+                distance_bins_vec;
+                distance_metric = distance_metric,
+            )
         end
+    elseif N == 3
+        for i in iter_inds
+            calculate_structure_function_i!(
+                output,
+                counts,
+                Val(3),
+                structure_function_type,
+                i,
+                x_arr,
+                u_arr,
+                distance_bins_vec;
+                distance_metric = distance_metric,
+            )
+        end
+    else
+        throw(ArgumentError("Array backend supports only 1D, 2D, or 3D inputs."))
     end
 
     if RSAC # just return the sums and the counts, don't take the mean in each bin...
