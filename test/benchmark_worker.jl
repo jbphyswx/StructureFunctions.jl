@@ -13,6 +13,7 @@ Usage (internal, called automatically by benchmark_scaling.jl):
 """
 
 using StructureFunctions: StructureFunctions, Calculations as SFC
+using OhMyThreads: OhMyThreads # Trigger extension
 using JSON: JSON
 
 # Problem size (points in 3D)

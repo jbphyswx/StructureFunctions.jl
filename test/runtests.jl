@@ -14,6 +14,9 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Core Correctness Test ---")
     include("test_core_correctness.jl")
 
+    println("--- Running Single-Pass & Helmholtz Test ---")
+    include("test_single_pass.jl")
+
     println("--- Running Inputs Test ---")
     include("test_inputs.jl")
 
