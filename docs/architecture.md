@@ -88,18 +88,42 @@ Each operator stores:
 - **Order** (n=2, 3, 4, ...) — which structure function order
 - **Projection** (if applicable) — which component to analyze
 
-### Result Container
+### Result Containers
 
+StructureFunctions.jl decouples raw accumulation, processed 1D structure functions, and 2D joint-probability binning into separate parametric result types inheriting from `AbstractStructureFunction`:
+
+1. **`StructureFunction`**: Stores the final processed structure function values.
 ```julia
-struct StructureFunction{T}
-    distance::Vector{T}          # Bin centers
-    structure_function::Matrix{T} # S(distance, order)
-    sums::Matrix{T}              # Numerator sums
-    counts::Vector{Int64}        # Counts per bin
+struct StructureFunction{FT, OT, BT, VT} <: AbstractStructureFunction
+    operator::OT                   # AbstractStructureFunctionType
+    distance_bins::BT              # AbstractVector of (r_min, r_max)
+    values::VT                     # AbstractVector{FT} — computed SF
+    order::Int                     # 1, 2, 3, ...
 end
 ```
 
-Stores **both raw and processed data** so users can customize post-processing.
+2. **`StructureFunctionSumsAndCounts`**: Stores exact computed sums and point counts per bin. Ideal for distributed or chunked temporal aggregation.
+```julia
+struct StructureFunctionSumsAndCounts{FT, OT, BT, VT} <: AbstractStructureFunction
+    operator::OT
+    distance_bins::BT
+    sums::VT                       # Exact computed SF value sums
+    counts::VT                     # Integer counts of contributing pairs
+end
+```
+
+3. **`StructureFunction2D`**: Stores the 2D joint-probability binning grid (separation distance $r$ vs. SF value $v$).
+```julia
+struct StructureFunction2D{FT, OT, BT, VT, MT} <: AbstractStructureFunction
+    operator::OT
+    distance_bins::BT
+    value_bins::VT                 # Value increment bin edges
+    sums::MT                       # 2D matrix of exact sums (distance x value)
+    counts::MT                     # 2D matrix of contribution counts
+end
+```
+
+All result containers support basic `Base` algebraic operations (like `+` and `+=`) to allow seamless aggregation across distributed processes or temporal timesteps.
 
 ---
 

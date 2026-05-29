@@ -40,40 +40,61 @@ Single-threaded, reference implementation. All computations run on the calling t
 - ❌ Large data (>10M points): Too slow
 - ❌ Multi-CPU available: Wastes resources
 
-### Example
+### Examples
+
+**1. Allocating API:**
 
 ```julia
-using StructureFunctions
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 
 # Small test dataset
-x = randn(1000, 2)  # 1000 points in 2D
-u = randn(1000, 2)  # velocity at each point
+x = (randn(1000), randn(1000))
+u = (randn(1000), randn(1000))
+bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
 
-# Use SerialBackend explicitly
-backend = SerialBackend()
-bins = 10:10:100  # 10 distance bins
-
-result = calculate_structure_function(
-    FullVectorStructureFunction{Float64}(order=2),
+# Calculate using SerialBackend explicitly
+result = SFC.calculate_structure_function(
+    SFT.S2SFType(),
     x, u, bins;
-    backend=backend,
+    backend=SFC.SerialBackend(),
     show_progress=true
 )
 
-println("Structure Function at bin 50: $(result.structure_function[50, 1])")
+println("Structure Function values: ", result.values)
+```
+
+**2. Pre-allocated In-place API:**
+
+```julia
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+
+x = (randn(1000), randn(1000))
+u = (randn(1000), randn(1000))
+bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
+
+# Pre-allocate output arrays
+n_bins = length(bins)
+sums = zeros(Float64, n_bins)
+counts = zeros(Float64, n_bins)
+
+# Compute in-place (accumulates directly into provided arrays)
+SFC.calculate_structure_function!(
+    sums, counts, SFT.S2SFType(),
+    x, u, bins;
+    backend=SFC.SerialBackend()
+)
 ```
 
 ### Performance Notes
 - O(N²) complexity; for N=1M, expect ~1 sec
-- Light memory footprint (just result container + temporary arrays)
-- Good for validation before scaling up
+- Mutating `calculate_structure_function!` completely avoids allocating temporary arrays, making it ideal for temporal loops.
 
 ---
 
 ## ThreadedBackend
 
 ### Definition
-Multi-threaded execution using OhMyThreads.jl. Distributes pairwise calculations across Threads.nthreads() worker threads.
+Multi-threaded execution using OhMyThreads.jl. Distributes pairwise calculations across `Threads.nthreads()` worker threads.
 
 ### When to Use
 - ✅ **Medium datasets**: 10M–500M points
@@ -94,56 +115,63 @@ Multi-threaded execution using OhMyThreads.jl. Distributes pairwise calculations
 OhMyThreads = "67456a42-ebe4-4781-8ad1-67f7eda8d8f7"
 ```
 
-### Example
+### Examples
+
+**1. Allocating API:**
 
 ```julia
-using StructureFunctions
-using Base.Threads
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 
-# Set number of threads before running
-# Either: JULIA_NUM_THREADS=8 julia script.jl
-# Or in REPL: Threads.nthreads() -> check current count
+N = 50_000
+x = (randn(N), randn(N))
+u = (randn(N), randn(N))
+bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
 
-# Medium dataset
-N = 50_000_000  # 50M points
-x = randn(N, 2)
-u = randn(N, 2)
-
-backend = ThreadedBackend()
-bins = 10:10:1000  # 100 distance bins
-
-result = calculate_structure_function(
-    FullVectorStructureFunction{Float64}(order=2),
+result = SFC.calculate_structure_function(
+    SFT.L2SFType(),
     x, u, bins;
-    backend=backend,
-    show_progress=true  # Progress bar shows thread work distribution
+    backend=SFC.ThreadedBackend(),
+    show_progress=true
 )
-
-# For 8 threads, expect ~2-8x speedup over serial
 ```
 
-### Performance Characteristics
+**2. Pre-allocated In-place API:**
 
-**Scaling** (measured on 4-core system):
+```julia
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 
-| N | Serial (s) | Threaded (s) | Speedup |
-|---|-----------|------------|---------|
-| 1M | 0.05 | 0.08 | 0.6x (overhead) |
-| 10M | 0.6 | 0.25 | 2.4x |
-| 50M | 3.5 | 1.2 | 2.9x |
-| 100M | 8 | 2.3 | 3.5x |
+N = 50_000
+x = (randn(N), randn(N))
+u = (randn(N), randn(N))
+bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
 
-**Notes**:
-- Speedup is sublinear (not 4x on 4 cores) due to NUMA effects and atomic reductions
-- Optimal for scenarios where data fits in L3 cache per thread
-- Progress bar updates in real-time showing all threads' work
+# Pre-allocate output arrays
+n_bins = length(bins)
+sums = zeros(Float64, n_bins)
+counts = zeros(Float64, n_bins)
+
+# Compute in-place (accumulates directly into provided arrays)
+SFC.calculate_structure_function!(
+    sums, counts, SFT.L2SFType(),
+    x, u, bins;
+    backend=SFC.ThreadedBackend()
+)
+```
+
+### Performance & Memory Efficiency
+
+The modern mutating threaded backend (`threaded_calculate_structure_function!`) utilizes a **chunked reduction** strategy via `OhMyThreads.chunks` to divide point indexes into exactly `nthreads()` sub-ranges.
+
+* **Chunked Workspaces**: Each task/thread allocates exactly **one local buffer pair** for its entire chunk (rather than per-point).
+* **Memory Scaling**: This reduces the number of thread-local heap allocations to exactly **$O(n_{\text{threads}})$**, compared to the highly wasteful **$O(N_{\text{points}})$** allocation pattern in naive map-reduce implementations.
+* **Cache Locality**: This optimization maximizes L1/L2 cache locality while maintaining complete thread safety and task-migration protection.
 
 ### Thread Safety
 
-ThreadedBackend uses **thread-local buffers** to avoid race conditions:
-- Each thread has its own workspace
-- No atomic operations (faster than distributed)
-- Completely safe; no possibility of data races
+ThreadedBackend uses **thread-local reduction buffers** to avoid race conditions:
+- Each task computes on its own local chunk workspace.
+- The results are folded together thread-safely using a parallel tree reduction.
+- No global locks or atomic conflicts are triggered, maximizing performance.
 
 ---
 
