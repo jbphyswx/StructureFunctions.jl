@@ -50,11 +50,11 @@ function calculate_spectrum(
 
     # Check consistency
     for d in 1:D
-        @assert length(x_vecs[d]) == length(u_vecs[1]) "X and U length mismatch"
+        (length(x_vecs[d]) == length(u_vecs[1])) || throw(DimensionMismatch("X coordinate component $d and velocity field must have identical length (got $(length(x_vecs[d])) and $(length(u_vecs[1])))"))
     end
-    @assert length(ms) == D "Dimension of 'ms' must match 'x_vecs'"
+    (length(ms) == D) || throw(ArgumentError("Dimension of 'ms' must match number of coordinate dimensions 'x_vecs' (got $(length(ms)) and $D)"))
     if domain_size !== nothing
-        @assert length(domain_size) == D "Dimension of 'domain_size' must match 'x_vecs'"
+        (length(domain_size) == D) || throw(ArgumentError("Dimension of 'domain_size' must match number of coordinate dimensions 'x_vecs' (got $(length(domain_size)) and $D)"))
     end
 
     return _calculate_spectrum(backend, x_vecs, u_vecs, ms, iflag, eps, domain_size)
