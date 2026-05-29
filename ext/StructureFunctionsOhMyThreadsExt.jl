@@ -11,83 +11,109 @@ using StructureFunctions:
     StructureFunctionTypes as SFT,
     HelperFunctions as SFH
 
-"""
-    SFC.threaded_calculate_structure_function(sf_type, x_vecs, u_vecs, distance_bins, ::Val{RSAC}; ...)
+# --- 1D Tuple thread-safe chunked implementation ---
 
-Threaded tuple-input backend using OhMyThreads reduction over tuple point inputs.
+function SFC.threaded_calculate_structure_function!(
+    output_sums::AbstractVector{OT},
+    output_counts::AbstractVector{OT},
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose = true,
+    show_progress = true,
+) where {OT}
+    if verbose
+        @info("calculating structure function (threaded reduction via OhMyThreads)")
+    end
+    _ = show_progress
 
-Returns `StructureFunctionSumsAndCounts` when `RSAC == true`, otherwise
-returns normalized `StructureFunction` values.
-"""
+    # Chunked tmapreduce: O(n_tasks) allocations instead of O(N_points)
+    result = OMT.tmapreduce(+, OMT.chunks(eachindex(x_vecs[1]); n=Threads.nthreads())) do chunk
+        local_output = zeros(OT, length(distance_bins))
+        local_counts = zeros(OT, length(distance_bins))
+        bin_edges = SFC.flat_bin_edges(distance_bins)
+        vN = Val(length(x_vecs))
+        for i in chunk
+            SFC.calculate_structure_function_i!(
+                local_output,
+                local_counts,
+                vN,
+                structure_function_type,
+                i,
+                x_vecs,
+                u_vecs,
+                bin_edges;
+                distance_metric = distance_metric,
+            )
+        end
+        SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, local_output, local_counts)
+    end
+    output_sums .+= result.sums
+    output_counts .+= result.counts
+    return nothing
+end
+
 function SFC.threaded_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector,
     ::Val{RSAC};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
-    verbose = true,
-    show_progress = true,
+    kwargs...,
 ) where {RSAC}
-    if verbose
-        @info("calculating structure function (threaded reduction via OhMyThreads)")
-    end
+    FT1 = eltype(x_vecs[1])
+    FT2 = eltype(u_vecs[1])
+    OT = promote_type(float(FT1), float(FT2))
+    N3 = length(distance_bins)
+    output = zeros(OT, N3)
+    counts = zeros(OT, N3)
 
-    # OhMyThreads currently does not integrate with our progress display path.
-    _ = show_progress
+    SFC.threaded_calculate_structure_function!(
+        output,
+        counts,
+        structure_function_type,
+        x_vecs,
+        u_vecs,
+        distance_bins;
+        kwargs...,
+    )
 
-    sums_and_counts = OMT.tmapreduce(+, eachindex(x_vecs[1])) do i
-        SFC.calculate_structure_function_i(
+    if RSAC
+        return SFO.StructureFunctionSumsAndCounts(
             structure_function_type,
-            i,
-            x_vecs,
-            u_vecs,
-            distance_bins;
-            distance_metric = distance_metric,
+            distance_bins,
+            output,
+            counts,
         )
     end
 
-    if RSAC
-        return sums_and_counts
-    end
-
-    counts_safe = copy(sums_and_counts.counts)
+    counts_safe = copy(counts)
     counts_safe[counts_safe .== 0] .= NaN
-    output_div = sums_and_counts.sums ./ counts_safe
+    output_div = output ./ counts_safe
     return SF.StructureFunction(structure_function_type, distance_bins, output_div)
 end
 
-"""
-    SFC.threaded_calculate_structure_function(sf_type, x_arr, u_arr, distance_bins, ::Val{RSAC}; ...)
+# --- 1D Array thread-safe chunked implementation ---
 
-Threaded array-input backend powered by OhMyThreads reduction.
-
-Supports 1D, 2D, and 3D inputs (`size(x_arr, 1) in (1,2,3)`), computes
-thread-local accumulators, and reduces into a single result object.
-
-Returns `StructureFunctionSumsAndCounts` when `RSAC == true`, otherwise
-returns normalized `StructureFunction` values.
-"""
-function SFC.threaded_calculate_structure_function(
+function SFC.threaded_calculate_structure_function!(
+    output_sums::AbstractVector{OT},
+    output_counts::AbstractVector{OT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
-    ::Val{RSAC};
+    distance_bins::AbstractVector{Tuple{FT3, FT3}};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC}
+) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
     if verbose
         @info("calculating structure function (threaded reduction via OhMyThreads)")
     end
-
-    # OhMyThreads currently does not integrate with our progress display path.
     _ = show_progress
 
     N3 = length(distance_bins)
-    OT = promote_type(float(FT1), float(FT2))
-
     distance_bins_vec = Vector{FT3}(undef, N3 + 1)
     for k in 1:N3
         distance_bins_vec[k] = distance_bins[k][1]
@@ -99,14 +125,15 @@ function SFC.threaded_calculate_structure_function(
         throw(ArgumentError("Threaded array backend supports only 1D, 2D, or 3D inputs."))
     end
 
-    if N == 1
-        sums_and_counts = OMT.tmapreduce(+, axes(x_arr, 2)) do i
-            local_output = zeros(OT, N3)
-            local_counts = zeros(OT, N3)
+    # Chunked tmapreduce to allocate once per thread/task chunk
+    result = OMT.tmapreduce(+, OMT.chunks(axes(x_arr, 2); n=Threads.nthreads())) do chunk
+        local_output = zeros(OT, N3)
+        local_counts = zeros(OT, N3)
+        for i in chunk
             SFC.calculate_structure_function_i!(
                 local_output,
                 local_counts,
-                Val(1),
+                Val(N),
                 structure_function_type,
                 i,
                 x_arr,
@@ -114,76 +141,213 @@ function SFC.threaded_calculate_structure_function(
                 distance_bins_vec;
                 distance_metric = distance_metric,
             )
-            SFO.StructureFunctionSumsAndCounts(
-                structure_function_type,
-                distance_bins,
-                local_output,
-                local_counts,
-            )
         end
-    elseif N == 2
-        sums_and_counts = OMT.tmapreduce(+, axes(x_arr, 2)) do i
-            local_output = zeros(OT, N3)
-            local_counts = zeros(OT, N3)
-            SFC.calculate_structure_function_i!(
-                local_output,
-                local_counts,
-                Val(2),
-                structure_function_type,
-                i,
-                x_arr,
-                u_arr,
-                distance_bins_vec;
-                distance_metric = distance_metric,
-            )
-            SFO.StructureFunctionSumsAndCounts(
-                structure_function_type,
-                distance_bins,
-                local_output,
-                local_counts,
-            )
-        end
-    else
-        sums_and_counts = OMT.tmapreduce(+, axes(x_arr, 2)) do i
-            local_output = zeros(OT, N3)
-            local_counts = zeros(OT, N3)
-            SFC.calculate_structure_function_i!(
-                local_output,
-                local_counts,
-                Val(3),
-                structure_function_type,
-                i,
-                x_arr,
-                u_arr,
-                distance_bins_vec;
-                distance_metric = distance_metric,
-            )
-            SFO.StructureFunctionSumsAndCounts(
-                structure_function_type,
-                distance_bins,
-                local_output,
-                local_counts,
-            )
-        end
+        SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, local_output, local_counts)
     end
+
+    output_sums .+= result.sums
+    output_counts .+= result.counts
+    return nothing
+end
+
+function SFC.threaded_calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    ::Val{RSAC};
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC}
+    OT = promote_type(float(FT1), float(FT2))
+    N3 = length(distance_bins)
+    output = zeros(OT, N3)
+    counts = zeros(OT, N3)
+
+    SFC.threaded_calculate_structure_function!(
+        output,
+        counts,
+        structure_function_type,
+        x_arr,
+        u_arr,
+        distance_bins;
+        kwargs...,
+    )
 
     if RSAC
-        return sums_and_counts
+        return SFO.StructureFunctionSumsAndCounts(
+            structure_function_type,
+            distance_bins,
+            output,
+            counts,
+        )
     end
 
-    counts_safe = copy(sums_and_counts.counts)
+    counts_safe = copy(counts)
     counts_safe[counts_safe .== 0] .= NaN
-    output_div = sums_and_counts.sums ./ counts_safe
+    output_div = output ./ counts_safe
     return SF.StructureFunction(structure_function_type, distance_bins, output_div)
 end
 
-"""
-    SFC._dispatch_single_pass(::ThreadedBackend, x, u, distance_bins; thread_sums=nothing, thread_counts=nothing)
+# --- 2D Tuple thread-safe chunked implementation ---
 
-Calculates single-pass structure functions utilizing multi-threaded CPU execution with OhMyThreads.jl.
-Chunks the loop over points to balance work across tasks, utilizing a pre-allocated thread-local
-reduction matrix to prevent memory allocation and write hazards.
-"""
+function SFC.threaded_calculate_structure_function!(
+    sums_2d::AbstractMatrix{OT},
+    counts_2d::AbstractMatrix{OT},
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector,
+    value_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose = true,
+    show_progress = true,
+) where {OT}
+    if verbose
+        @info("calculating 2D joint structure function (threaded reduction via OhMyThreads)")
+    end
+    _ = show_progress
+
+    distance_bins_vec = SFC.flat_bin_edges(distance_bins)
+    value_bins_vec = SFC.flat_bin_edges(value_bins)
+    N3 = length(distance_bins)
+    N4 = length(value_bins_vec) - 1
+
+    # Chunked tmapreduce: O(n_tasks) allocations instead of O(N_points)
+    result = OMT.tmapreduce(+, OMT.chunks(eachindex(x_vecs[1]); n=Threads.nthreads())) do chunk
+        local_sums = zeros(OT, N3, N4)
+        local_counts = zeros(OT, N3, N4)
+        vN = Val(length(x_vecs))
+        for i in chunk
+            SFC.calculate_structure_function_2d_i!(
+                local_sums,
+                local_counts,
+                vN,
+                structure_function_type,
+                i,
+                x_vecs,
+                u_vecs,
+                distance_bins_vec,
+                value_bins_vec;
+                distance_metric = distance_metric,
+            )
+        end
+        SFO.StructureFunction2D(
+            structure_function_type,
+            distance_bins,
+            value_bins,
+            local_sums,
+            local_counts,
+        )
+    end
+
+    sums_2d .+= result.sums
+    counts_2d .+= result.counts
+    return nothing
+end
+
+function SFC.threaded_calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector,
+    value_bins::AbstractVector;
+    kwargs...,
+)
+    FT1 = eltype(x_vecs[1])
+    FT2 = eltype(u_vecs[1])
+    OT = promote_type(float(FT1), float(FT2))
+    N3 = length(distance_bins)
+    value_bins_vec = SFC.flat_bin_edges(value_bins)
+    N4 = length(value_bins_vec) - 1
+
+    sums_2d = zeros(OT, N3, N4)
+    counts_2d = zeros(OT, N3, N4)
+
+    SFC.threaded_calculate_structure_function!(
+        sums_2d,
+        counts_2d,
+        structure_function_type,
+        x_vecs,
+        u_vecs,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+
+    return SFO.StructureFunction2D(
+        structure_function_type,
+        distance_bins,
+        value_bins,
+        sums_2d,
+        counts_2d,
+    )
+end
+
+# --- 2D Array thread-safe chunked implementation ---
+
+function SFC.threaded_calculate_structure_function!(
+    sums_2d::AbstractMatrix{OT},
+    counts_2d::AbstractMatrix{OT},
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    value_bins::AbstractVector;
+    kwargs...,
+) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    N_dims = size(x_arr, 1)
+    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
+    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
+    return SFC.threaded_calculate_structure_function!(
+        sums_2d,
+        counts_2d,
+        structure_function_type,
+        x_tuple,
+        u_tuple,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
+function SFC.threaded_calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    value_bins::AbstractVector;
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    OT = promote_type(float(FT1), float(FT2))
+    N3 = length(distance_bins)
+    value_bins_vec = SFC.flat_bin_edges(value_bins)
+    N4 = length(value_bins_vec) - 1
+
+    sums_2d = zeros(OT, N3, N4)
+    counts_2d = zeros(OT, N3, N4)
+
+    SFC.threaded_calculate_structure_function!(
+        sums_2d,
+        counts_2d,
+        structure_function_type,
+        x_arr,
+        u_arr,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+
+    return SFO.StructureFunction2D(
+        structure_function_type,
+        distance_bins,
+        value_bins,
+        sums_2d,
+        counts_2d,
+    )
+end
+
+# --- Preservation of the existing _dispatch_single_pass method ---
+
 function SFC._dispatch_single_pass(
     ::SF.ThreadedBackend,
     x::AbstractMatrix{FT1},
@@ -263,55 +427,4 @@ function SFC._dispatch_single_pass(
     return SFC.postprocess_single_pass_results(sums, counts, distance_bins)
 end
 
-function SFC.threaded_calculate_structure_function(
-    structure_function_type::SFT.AbstractStructureFunctionType,
-    x_vecs::Tuple,
-    u_vecs::Tuple,
-    distance_bins::AbstractVector,
-    value_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
-    verbose = true,
-    show_progress = true,
-)
-    if verbose
-        @info("calculating 2D joint structure function (threaded reduction via OhMyThreads)")
-    end
-    _ = show_progress
-
-    sums_and_counts = OMT.tmapreduce(+, eachindex(x_vecs[1])) do i
-        SFC.calculate_structure_function_2d_i(
-            structure_function_type,
-            i,
-            x_vecs,
-            u_vecs,
-            distance_bins,
-            value_bins;
-            distance_metric = distance_metric,
-        )
-    end
-
-    return sums_and_counts
-end
-
-function SFC.threaded_calculate_structure_function(
-    structure_function_type::SFT.AbstractStructureFunctionType,
-    x_arr::AbstractArray{FT1},
-    u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
-    value_bins::AbstractVector;
-    kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
-    N_dims = size(x_arr, 1)
-    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
-    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
-    return SFC.threaded_calculate_structure_function(
-        structure_function_type,
-        x_tuple,
-        u_tuple,
-        distance_bins,
-        value_bins;
-        kwargs...,
-    )
-end
-
-end
+end # module

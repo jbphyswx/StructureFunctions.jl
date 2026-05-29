@@ -54,6 +54,9 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running 2D Joint-Probability Binning Test ---")
     include("test_2d_binning.jl")
 
+    println("--- Running Pre-allocated In-place Buffer Test ---")
+    include("test_inplace.jl")
+
     println("--- Running Aqua Test ---")
     include("test_aqua.jl")
 

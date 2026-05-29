@@ -281,4 +281,97 @@ function SFC.parallel_calculate_structure_function(
     )
 end
 
+function SFC.parallel_calculate_structure_function!(
+    sums::AbstractVector{OT},
+    counts::AbstractVector{OT},
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector;
+    kwargs...,
+) where {OT}
+    result = SFC.parallel_calculate_structure_function(
+        structure_function_type,
+        x_vecs,
+        u_vecs,
+        distance_bins,
+        Val(true);
+        kwargs...,
+    )
+    sums .+= result.sums
+    counts .+= result.counts
+    return nothing
+end
+
+function SFC.parallel_calculate_structure_function!(
+    sums::AbstractVector{OT},
+    counts::AbstractVector{OT},
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}};
+    kwargs...,
+) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    N_dims = size(x_arr, 1)
+    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
+    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
+    return SFC.parallel_calculate_structure_function!(
+        sums,
+        counts,
+        structure_function_type,
+        x_tuple,
+        u_tuple,
+        distance_bins;
+        kwargs...,
+    )
+end
+
+function SFC.parallel_calculate_structure_function!(
+    sums_2d::AbstractMatrix{OT},
+    counts_2d::AbstractMatrix{OT},
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector,
+    value_bins::AbstractVector;
+    kwargs...,
+) where {OT}
+    result = SFC.parallel_calculate_structure_function(
+        structure_function_type,
+        x_vecs,
+        u_vecs,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+    sums_2d .+= result.sums
+    counts_2d .+= result.counts
+    return nothing
+end
+
+function SFC.parallel_calculate_structure_function!(
+    sums_2d::AbstractMatrix{OT},
+    counts_2d::AbstractMatrix{OT},
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    value_bins::AbstractVector;
+    kwargs...,
+) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    N_dims = size(x_arr, 1)
+    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
+    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
+    return SFC.parallel_calculate_structure_function!(
+        sums_2d,
+        counts_2d,
+        structure_function_type,
+        x_tuple,
+        u_tuple,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
 end
