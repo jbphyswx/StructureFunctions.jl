@@ -14,7 +14,7 @@ include("Calculations.jl")
 include("SpectralAnalysis.jl")
 
 import .StructureFunctionObjects:
-    AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts
+    AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2D
 
 using .HelperFunctions
 using .StructureFunctionTypes
@@ -27,7 +27,7 @@ export calculate_structure_function, calculate_structure_functions_single_pass
 export AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
     GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend
 export serial_calculate_structure_function, threaded_calculate_structure_function
-export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts
+export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2D
 export LongitudinalSecondOrderStructureFunctionType,
     TransverseSecondOrderStructureFunctionType
 export SecondOrderStructureFunctionType, ThirdOrderStructureFunctionType

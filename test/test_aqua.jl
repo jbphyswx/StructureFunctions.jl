@@ -11,5 +11,6 @@ Test.@testset "Aqua.jl" begin
         project_extras = true,
         stale_deps = true,
         deps_compat = true,
+        persistent_tasks = false,
     )
 end

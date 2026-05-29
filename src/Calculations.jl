@@ -901,6 +901,169 @@ function calculate_structure_function(
     )
 end
 
+function calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_vecs::Tuple{T1, Vararg{T1}},
+    u_vecs::Tuple{T2, Vararg{T2}},
+    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    value_bins::AbstractVector;
+    backend::AbstractExecutionBackend = SerialBackend(),
+    kwargs...,
+) where {T1, T2, FT3}
+    return _dispatch_execution_backend(
+        backend,
+        structure_function_type,
+        x_vecs,
+        u_vecs,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
+function _dispatch_execution_backend(
+    ::SerialBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    value_bins::AbstractVector;
+    kwargs...,
+)
+    return serial_calculate_structure_function(
+        structure_function_type,
+        x,
+        u,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
+function _dispatch_execution_backend(
+    ::ThreadedBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    value_bins::AbstractVector;
+    kwargs...,
+)
+    return threaded_calculate_structure_function(
+        structure_function_type,
+        x,
+        u,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
+function _dispatch_execution_backend(
+    ::DistributedBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    value_bins::AbstractVector;
+    kwargs...,
+)
+    return parallel_calculate_structure_function(
+        structure_function_type,
+        x,
+        u,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
+function _dispatch_execution_backend(
+    ::AutoBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    value_bins::AbstractVector;
+    kwargs...,
+)
+    if distributed_workers_available(Val(:distributed)) &&
+       _distributed_backend_available(structure_function_type, x, u, distance_bins, value_bins)
+        return _dispatch_execution_backend(
+            DistributedBackend(),
+            structure_function_type,
+            x,
+            u,
+            distance_bins,
+            value_bins;
+            kwargs...,
+        )
+    end
+
+    if Threads.nthreads() > 1 &&
+       _threaded_backend_available(structure_function_type, x, u, distance_bins, value_bins)
+        return _dispatch_execution_backend(
+            ThreadedBackend(),
+            structure_function_type,
+            x,
+            u,
+            distance_bins,
+            value_bins;
+            kwargs...,
+        )
+    end
+
+    return _dispatch_execution_backend(
+        SerialBackend(),
+        structure_function_type,
+        x,
+        u,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
+function _dispatch_execution_backend(
+    backend::GPUBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    value_bins::AbstractVector;
+    kwargs...,
+)
+    return _dispatch_execution_backend(
+        SerialBackend(),
+        structure_function_type,
+        x,
+        u,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
+function _dispatch_execution_backend(
+    backend::AbstractExecutionBackend,
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x,
+    u,
+    distance_bins,
+    value_bins::AbstractVector;
+    kwargs...,
+)
+    return _dispatch_execution_backend(
+        SerialBackend(),
+        structure_function_type,
+        x,
+        u,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
 function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
@@ -968,6 +1131,181 @@ function serial_calculate_structure_function(
         end
         return SFO.StructureFunction(structure_function_type, distance_bins, output_div)
     end
+end
+
+
+
+@inline function flat_bin_edges(bins::AbstractVector{<:Tuple})
+    N = length(bins)
+    FT = eltype(bins[1])
+    vec = Vector{FT}(undef, N + 1)
+    for k in 1:N
+        vec[k] = bins[k][1]
+    end
+    vec[end] = bins[end][2]
+    return vec
+end
+
+@inline flat_bin_edges(bins::AbstractVector{<:Number}) = bins
+
+function serial_calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_vecs::Tuple{T1, Vararg{T1}},
+    u_vecs::Tuple{T2, Vararg{T2}},
+    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    value_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose::Bool = true,
+    show_progress::Bool = true,
+) where {T1, T2, FT3}
+    N = length(x_vecs)
+    FT1 = eltype(T1)
+    FT2 = eltype(T2)
+    N3 = length(distance_bins)
+    
+    distance_bins_vec = flat_bin_edges(distance_bins)
+    value_bins_vec = flat_bin_edges(value_bins)
+    N4 = length(value_bins_vec) - 1
+
+    OT = promote_type(float(FT1), float(FT2))
+    sums_2d = zeros(OT, N3, N4)
+    counts_2d = zeros(OT, N3, N4)
+
+    if verbose
+        @info("calculating 2D joint structure function (serial reduction)")
+    end
+
+    iter_inds = eachindex(x_vecs[1])
+    vN = Val(length(x_vecs))
+    
+    PM.@showprogress enabled = show_progress for i in iter_inds
+        calculate_structure_function_2d_i!(
+            sums_2d,
+            counts_2d,
+            vN,
+            structure_function_type,
+            i,
+            x_vecs,
+            u_vecs,
+            distance_bins_vec,
+            value_bins_vec;
+            distance_metric = distance_metric,
+        )
+    end
+
+    return SFO.StructureFunction2D(
+        structure_function_type,
+        distance_bins,
+        value_bins,
+        sums_2d,
+        counts_2d,
+    )
+end
+
+function serial_calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    value_bins::AbstractVector;
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    N_dims = size(x_arr, 1)
+    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
+    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
+    return serial_calculate_structure_function(
+        structure_function_type,
+        x_tuple,
+        u_tuple,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
+function calculate_structure_function_2d_i!(
+    sums_2d::AbstractMatrix{OT},
+    counts_2d::AbstractMatrix{OT},
+    ::Val{N},
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    i::Int,
+    x_vecs::Tuple{T1, Vararg{T1}},
+    u_vecs::Tuple{T2, Vararg{T2}},
+    distance_bins_vec::AbstractVector{FT3},
+    value_bins_vec::AbstractVector{FT4};
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+) where {OT, N, T1, T2, FT3, FT4}
+    FT1 = eltype(T1)
+    FT2 = eltype(T2)
+    N3 = length(distance_bins_vec)
+    N4 = length(value_bins_vec)
+
+    X1 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][i], Val(N)))
+    U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val(N)))
+
+    iter_inds = eachindex(x_vecs[1])
+    for j in (i + 1):last(iter_inds)
+        X2 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][j], Val(N)))
+        U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
+
+        distance = distance_metric(X1, X2)
+        dist_bin = SFH.digitize(distance, distance_bins_vec)
+        if 1 <= dist_bin < N3
+            val = structure_function_type(U2 - U1, SFH.r̂(X1, X2))
+            val_bin = SFH.digitize(val, value_bins_vec)
+            
+            if 1 <= val_bin < N4
+                @inbounds sums_2d[dist_bin, val_bin] += val
+                @inbounds counts_2d[dist_bin, val_bin] += 1
+            end
+        end
+    end
+    return nothing
+end
+
+function calculate_structure_function_2d_i(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    i::Int,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector,
+    value_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+)
+    N = length(x_vecs)
+    FT1 = eltype(x_vecs[1])
+    FT2 = eltype(u_vecs[1])
+    N3 = length(distance_bins)
+    
+    distance_bins_vec = flat_bin_edges(distance_bins)
+    value_bins_vec = flat_bin_edges(value_bins)
+    N4 = length(value_bins_vec) - 1
+
+    OT = promote_type(float(FT1), float(FT2))
+    local_sums = zeros(OT, N3, N4)
+    local_counts = zeros(OT, N3, N4)
+
+    vN = Val(N)
+    calculate_structure_function_2d_i!(
+        local_sums,
+        local_counts,
+        vN,
+        structure_function_type,
+        i,
+        x_vecs,
+        u_vecs,
+        distance_bins_vec,
+        value_bins_vec;
+        distance_metric = distance_metric,
+    )
+
+    return SFO.StructureFunction2D(
+        structure_function_type,
+        distance_bins,
+        value_bins,
+        local_sums,
+        local_counts,
+    )
 end
 
 
@@ -1190,6 +1528,27 @@ function calculate_structure_function(
         kwargs...,
     )
 end
+
+function calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    value_bins::AbstractVector;
+    backend::AbstractExecutionBackend = SerialBackend(),
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    return _dispatch_execution_backend(
+        backend,
+        structure_function_type,
+        x_arr,
+        u_arr,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
 
 function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,

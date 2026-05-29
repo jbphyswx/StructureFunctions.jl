@@ -2,7 +2,7 @@ module StructureFunctionObjects
 
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 
-export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts
+export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2D
 
 """
     AbstractStructureFunction
@@ -27,7 +27,7 @@ struct StructureFunction{FT, OT <: SFT.AbstractStructureFunctionType, BT, VT} <:
     values::VT
 
     function StructureFunction(operator::OT, distance::BT, values::VT) where {OT, BT, VT}
-        @assert length(distance) == length(values) "Distance and values must have the same length"
+        (length(distance) == length(values)) || throw(DimensionMismatch("Distance and values must have the same length (got $(length(distance)) and $(length(values)))"))
         FT = eltype(VT)
         return new{FT, OT, BT, VT}(operator, distance, values)
     end
@@ -56,9 +56,47 @@ struct StructureFunctionSumsAndCounts{
         sums::VT,
         counts::VT,
     ) where {OT, BT, VT}
-        @assert length(distance) == length(sums) == length(counts) "Containers must have the same length"
+        ((length(distance) == length(sums)) && (length(sums) == length(counts))) || throw(DimensionMismatch("Containers must have the same length (got distance: $(length(distance)), sums: $(length(sums)), counts: $(length(counts)))"))
         FT = eltype(VT)
         return new{FT, OT, BT, VT}(operator, distance, sums, counts)
+    end
+end
+
+"""
+    StructureFunction2D{FT, OT, BT, VT, MT}
+
+2D Joint-Probability intermediate result container containing raw sums and counts matrices.
+Useful for analyzing the PDF of structure function values across separation distance bins.
+
+- `operator`: The specific operator used (e.g., `L2SF`).
+- `distance_bins`: 1D container of distance bin edges.
+- `value_bins`: 1D container of structure function value bin edges.
+- `sums`: 2D matrix of accumulated exact values of shape (N_distance_bins, N_value_bins).
+- `counts`: 2D matrix of accumulated contribution counts of shape (N_distance_bins, N_value_bins).
+"""
+struct StructureFunction2D{
+    FT,
+    OT <: SFT.AbstractStructureFunctionType,
+    BT,
+    VT,
+    MT,
+} <: AbstractStructureFunction
+    operator::OT
+    distance_bins::BT
+    value_bins::VT
+    sums::MT
+    counts::MT
+
+    function StructureFunction2D(
+        operator::OT,
+        distance_bins::BT,
+        value_bins::VT,
+        sums::MT,
+        counts::MT,
+    ) where {OT, BT, VT, MT}
+        (size(sums) == size(counts)) || throw(DimensionMismatch("Sums and counts matrices must have identical shape (got sums: $(size(sums)), counts: $(size(counts)))"))
+        FT = eltype(sums)
+        return new{FT, OT, BT, VT, MT}(operator, distance_bins, value_bins, sums, counts)
     end
 end
 
@@ -68,14 +106,29 @@ end
 
 import Base: show, length, +
 
-Base.length(sf::AbstractStructureFunction) = length(sf.distance)
+Base.length(sf::StructureFunction) = length(sf.distance)
+Base.length(sf::StructureFunctionSumsAndCounts) = length(sf.distance)
+Base.length(sf::StructureFunction2D) = length(sf.distance_bins)
 
 function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSumsAndCounts)
-    @assert sf1.operator == sf2.operator "Cannot add results with different operators"
-    @assert sf1.distance == sf2.distance "Cannot add results with different binning"
+    (sf1.operator == sf2.operator) || throw(ArgumentError("Cannot add results with different operators: got $(sf1.operator) and $(sf2.operator)"))
+    (sf1.distance == sf2.distance) || throw(ArgumentError("Cannot add results with different binning"))
     return StructureFunctionSumsAndCounts(
         sf1.operator,
         sf1.distance,
+        sf1.sums + sf2.sums,
+        sf1.counts + sf2.counts,
+    )
+end
+
+function Base.:+(sf1::StructureFunction2D, sf2::StructureFunction2D)
+    (sf1.operator == sf2.operator) || throw(ArgumentError("Cannot add results with different operators: got $(sf1.operator) and $(sf2.operator)"))
+    (sf1.distance_bins == sf2.distance_bins) || throw(ArgumentError("Cannot add results with different distance binning"))
+    (sf1.value_bins == sf2.value_bins) || throw(ArgumentError("Cannot add results with different value binning"))
+    return StructureFunction2D(
+        sf1.operator,
+        sf1.distance_bins,
+        sf1.value_bins,
         sf1.sums + sf2.sums,
         sf1.counts + sf2.counts,
     )
@@ -99,6 +152,11 @@ end
 function Base.show(io::IO, sf::StructureFunctionSumsAndCounts{FT, OT}) where {FT, OT}
     print(io, "StructureFunctionSumsAndCounts{", FT, "}")
     print(io, "(operator=", sf.operator, ", points=", length(sf), ")")
+end
+
+function Base.show(io::IO, sf::StructureFunction2D{FT, OT}) where {FT, OT}
+    print(io, "StructureFunction2D{", FT, "}")
+    print(io, "(operator=", sf.operator, ", distance_bins=", length(sf.distance_bins), ", value_bins=", length(sf.value_bins), ")")
 end
 
 # Specialized getters

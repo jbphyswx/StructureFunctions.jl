@@ -263,4 +263,55 @@ function SFC._dispatch_single_pass(
     return SFC.postprocess_single_pass_results(sums, counts, distance_bins)
 end
 
+function SFC.threaded_calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector,
+    value_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose = true,
+    show_progress = true,
+)
+    if verbose
+        @info("calculating 2D joint structure function (threaded reduction via OhMyThreads)")
+    end
+    _ = show_progress
+
+    sums_and_counts = OMT.tmapreduce(+, eachindex(x_vecs[1])) do i
+        SFC.calculate_structure_function_2d_i(
+            structure_function_type,
+            i,
+            x_vecs,
+            u_vecs,
+            distance_bins,
+            value_bins;
+            distance_metric = distance_metric,
+        )
+    end
+
+    return sums_and_counts
+end
+
+function SFC.threaded_calculate_structure_function(
+    structure_function_type::SFT.AbstractStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    value_bins::AbstractVector;
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    N_dims = size(x_arr, 1)
+    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
+    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
+    return SFC.threaded_calculate_structure_function(
+        structure_function_type,
+        x_tuple,
+        u_tuple,
+        distance_bins,
+        value_bins;
+        kwargs...,
+    )
+end
+
 end
