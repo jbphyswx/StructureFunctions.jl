@@ -2,11 +2,14 @@ module StructureFunctionsOhMyThreadsExt
 
 using Distances: Distances as DI
 using OhMyThreads: OhMyThreads as OMT
+using StaticArrays: StaticArrays as SA
+using LinearAlgebra: LinearAlgebra as LA
 using StructureFunctions:
     StructureFunctions as SF,
     Calculations as SFC,
     StructureFunctionObjects as SFO,
-    StructureFunctionTypes as SFT
+    StructureFunctionTypes as SFT,
+    HelperFunctions as SFH
 
 """
     SFC.threaded_calculate_structure_function(sf_type, x_vecs, u_vecs, distance_bins, ::Val{RSAC}; ...)
@@ -172,6 +175,92 @@ function SFC.threaded_calculate_structure_function(
     counts_safe[counts_safe .== 0] .= NaN
     output_div = sums_and_counts.sums ./ counts_safe
     return SF.StructureFunction(structure_function_type, distance_bins, output_div)
+end
+
+"""
+    SFC._dispatch_single_pass(::ThreadedBackend, x, u, distance_bins; thread_sums=nothing, thread_counts=nothing)
+
+Calculates single-pass structure functions utilizing multi-threaded CPU execution with OhMyThreads.jl.
+Chunks the loop over points to balance work across tasks, utilizing a pre-allocated thread-local
+reduction matrix to prevent memory allocation and write hazards.
+"""
+function SFC._dispatch_single_pass(
+    ::SF.ThreadedBackend,
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3};
+    thread_sums = nothing,
+    thread_counts = nothing,
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    OT = promote_type(float(FT1), float(FT2))
+    n_bins = length(distance_bins) - 1
+    n_threads = Threads.nthreads()
+    
+    # Check/allocate thread-local reduction heaps
+    ts = isnothing(thread_sums) ? zeros(OT, 8, n_bins, n_threads) : thread_sums
+    tc = isnothing(thread_counts) ? zeros(Int64, 8, n_bins, n_threads) : thread_counts
+    
+    fill!(ts, zero(OT))
+    fill!(tc, 0)
+    
+    n_points = size(x, 2)
+    
+    OMT.tforeach(1:n_points) do i
+        tid = Threads.threadid()
+        x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
+        u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
+        
+        for j in (i+1):n_points
+            x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
+            
+            dx = SFH.δr(x_i, x_j)
+            r = LA.norm(dx)
+            
+            bin_idx = SFH.digitize(r, distance_bins)
+            
+            if 1 <= bin_idx <= n_bins
+                u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
+                du = u_j - u_i
+                
+                rh = SFH.r̂(x_i, x_j)
+                nh = SFH.n̂(rh)
+                
+                du_L = LA.dot(du, rh)
+                du_T = LA.dot(du, nh)
+                
+                du_L2 = du_L * du_L
+                du_T2 = du_T * du_T
+                
+                @inbounds ts[1, bin_idx, tid] += du_L2 + du_T2
+                @inbounds ts[2, bin_idx, tid] += du_L2
+                @inbounds ts[3, bin_idx, tid] += du_T2
+                @inbounds ts[4, bin_idx, tid] += du_L * (du_L2 + du_T2)
+                @inbounds ts[5, bin_idx, tid] += du_L * du_L2
+                @inbounds ts[6, bin_idx, tid] += du_L2 * du_T
+                @inbounds ts[7, bin_idx, tid] += du_L * du_T2
+                @inbounds ts[8, bin_idx, tid] += du_T * du_T2
+                
+                for t in 1:8
+                    @inbounds tc[t, bin_idx, tid] += 1
+                end
+            end
+        end
+    end
+    
+    # Reduce thread-local slices
+    sums = zeros(OT, 8, n_bins)
+    counts = zeros(Int64, 8, n_bins)
+    for tid in 1:n_threads
+        for k in 1:n_bins
+            for t in 1:8
+                sums[t, k] += ts[t, k, tid]
+                counts[t, k] += tc[t, k, tid]
+            end
+        end
+    end
+    
+    return SFC.postprocess_single_pass_results(sums, counts, distance_bins)
 end
 
 end

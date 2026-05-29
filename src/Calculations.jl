@@ -17,7 +17,8 @@ export calculate_structure_function, parallel_calculate_structure_function,
     gpu_calculate_structure_function, calculate_structure_function_from_file,
     AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
     GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend,
-    serial_calculate_structure_function, threaded_calculate_structure_function
+    serial_calculate_structure_function, threaded_calculate_structure_function,
+    calculate_structure_functions_single_pass
 
 abstract type AbstractExecutionBackend end
 
@@ -1485,5 +1486,312 @@ end
 
 
 function parallel_calculate_structure_function end # placeholder for parallel extension
+
+function parallel_calculate_structure_function end # placeholder for parallel extension
+
+"""
+    serial_calculate_structure_functions_single_pass(x, u, distance_bins, sums, counts)
+
+Calculates the core 8 structure function sums and counts on a single CPU thread.
+To achieve absolute maximum performance and eliminate heap allocations:
+1. Spatial coordinate differences are computed via `SFH.δr` and stack-allocated.
+2. Distance binning is determined via the package's optimized `SFH.digitize`.
+3. To avoid redundant projection dot product FLOPs (which would occur if we called the 8 inlined SFT functors independently),
+   we precompute the longitudinal `du_L` and transverse `du_T` increments once per coordinate pair:
+   - `du_L = LA.dot(du, rh)` where `rh = SFH.r̂(x_i, x_j)`
+   - `du_T = LA.dot(du, nh)` where `nh = SFH.n̂(rh)`
+   These projections are mathematically identical to calling `mδu_l` and `mδu_t` in the `ProjectedStructureFunctionType` functors,
+   preserving perfect physical alignment with the package's type hierarchy.
+"""
+function serial_calculate_structure_functions_single_pass(
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    sums::AbstractMatrix{OT},
+    counts::AbstractMatrix{Int64}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+    n_points = size(x, 2)
+    n_bins = length(distance_bins) - 1
+    
+    fill!(sums, zero(OT))
+    fill!(counts, 0)
+    
+    for i in 1:n_points
+        x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
+        u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
+        
+        for j in (i+1):n_points
+            x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
+            
+            dx = SFH.δr(x_i, x_j)
+            r = LA.norm(dx)
+            
+            bin_idx = SFH.digitize(r, distance_bins)
+            
+            if 1 <= bin_idx <= n_bins
+                u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
+                du = u_j - u_i
+                
+                rh = SFH.r̂(x_i, x_j)
+                nh = SFH.n̂(rh)
+                
+                du_L = LA.dot(du, rh)
+                du_T = LA.dot(du, nh)
+                
+                du_L2 = du_L * du_L
+                du_T2 = du_T * du_T
+                
+                # Natively accumulate the 8 core physical structure functions:
+                @inbounds sums[1, bin_idx] += du_L2 + du_T2            # S2SF (Full Vector 2nd-order)
+                @inbounds sums[2, bin_idx] += du_L2                   # L2SF (Longitudinal 2nd-order)
+                @inbounds sums[3, bin_idx] += du_T2                   # T2SF (Transverse 2nd-order)
+                @inbounds sums[4, bin_idx] += du_L * (du_L2 + du_T2)  # S3SF (Full Vector 3rd-order)
+                @inbounds sums[5, bin_idx] += du_L * du_L2             # L3SF (Longitudinal 3rd-order)
+                @inbounds sums[6, bin_idx] += du_L2 * du_T             # L2T1SF (Diagonal Inconsistent)
+                @inbounds sums[7, bin_idx] += du_L * du_T2             # L1T2SF (Off-Diagonal Inconsistent)
+                @inbounds sums[8, bin_idx] += du_T * du_T2             # T3SF (Transverse 3rd-order)
+                
+                for t in 1:8
+                    @inbounds counts[t, bin_idx] += 1
+                end
+            end
+        end
+    end
+    
+    return sums, counts
+end
+
+# ---------------------------------------------------------------------------
+# Modular Execution Backend Dispatch System (Single-Pass)
+# ---------------------------------------------------------------------------
+
+function _dispatch_single_pass end
+
+"""
+    _dispatch_single_pass(::SerialBackend, x, u, distance_bins; thread_sums=nothing, thread_counts=nothing)
+
+Calculates the single-pass structure functions on a single thread using SerialBackend.
+"""
+function _dispatch_single_pass(
+    ::SerialBackend,
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3};
+    thread_sums = nothing,
+    thread_counts = nothing,
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    OT = promote_type(float(FT1), float(FT2))
+    n_bins = length(distance_bins) - 1
+    
+    ts = isnothing(thread_sums) ? zeros(OT, 8, n_bins) : thread_sums
+    tc = isnothing(thread_counts) ? zeros(Int64, 8, n_bins) : thread_counts
+    
+    sums, counts = serial_calculate_structure_functions_single_pass(x, u, distance_bins, ts, tc)
+    return postprocess_single_pass_results(sums, counts, distance_bins)
+end
+
+"""
+    _dispatch_single_pass(::ThreadedBackend, x, u, distance_bins; kwargs...)
+
+Stub/placeholder for OhMyThreads-based CPU multi-threaded execution.
+Overridden by `StructureFunctionsOhMyThreadsExt.jl` when the OhMyThreads package is loaded.
+"""
+function _dispatch_single_pass(
+    ::ThreadedBackend,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector;
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "Threaded single-pass backend is unavailable. Load the OhMyThreads extension or use backend=SerialBackend().",
+        ),
+    )
+end
+
+"""
+    _dispatch_single_pass(::DistributedBackend, x, u, distance_bins; kwargs...)
+
+Stub/placeholder for Distributed.jl-based multi-process/cluster execution.
+Overridden by `StructureFunctionsDistributedExt.jl` when the Distributed package is loaded.
+"""
+function _dispatch_single_pass(
+    ::DistributedBackend,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector;
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "Distributed single-pass backend is unavailable. Load the Distributed/SharedArrays extension or use backend=SerialBackend().",
+        ),
+    )
+end
+
+"""
+    _dispatch_single_pass(::GPUBackend, x, u, distance_bins; kwargs...)
+
+Stub/placeholder for KernelAbstractions.jl-based GPU execution.
+Overridden by `StructureFunctionsGPUExt.jl` when the KernelAbstractions package is loaded.
+"""
+function _dispatch_single_pass(
+    ::GPUBackend,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector;
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "GPU single-pass backend is unavailable. Load the GPUExt extension or use backend=SerialBackend().",
+        ),
+    )
+end
+
+# Checkers to detect dynamically if extensions loaded and overrode dispatch methods
+_threaded_single_pass_available(x, u, distance_bins) = hasmethod(
+    _dispatch_single_pass,
+    Tuple{ThreadedBackend, typeof(x), typeof(u), typeof(distance_bins)}
+)
+
+_distributed_single_pass_available(x, u, distance_bins) = hasmethod(
+    _dispatch_single_pass,
+    Tuple{DistributedBackend, typeof(x), typeof(u), typeof(distance_bins)}
+)
+
+"""
+    _dispatch_single_pass(::AutoBackend, x, u, distance_bins; kwargs...)
+
+Resolves the execution backend automatically depending on active resources and workers.
+"""
+function _dispatch_single_pass(
+    ::AutoBackend,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector;
+    kwargs...
+)
+    if distributed_workers_available(Val(:distributed)) &&
+       _distributed_single_pass_available(x, u, distance_bins)
+        return _dispatch_single_pass(DistributedBackend(), x, u, distance_bins; kwargs...)
+    end
+    
+    if Threads.nthreads() > 1 &&
+       _threaded_single_pass_available(x, u, distance_bins)
+        return _dispatch_single_pass(ThreadedBackend(), x, u, distance_bins; kwargs...)
+    end
+    
+    return _dispatch_single_pass(SerialBackend(), x, u, distance_bins; kwargs...)
+end
+
+# ---------------------------------------------------------------------------
+# Public Entrypoint
+# ---------------------------------------------------------------------------
+
+"""
+    calculate_structure_functions_single_pass(x, u, distance_bins; backend=AutoBackend(), kwargs...)
+
+Primary high-performance pipeline entrypoint for SMODE.
+Calculates all 10 structure functions (the 8 core 2nd/3rd order ones plus the rotational/divergent Helmholtz integrations)
+in a single pass over position differences, dispatching dynamically to the specified `backend`.
+
+# Arguments
+- `x::AbstractMatrix`: Spatial positions of shape `(2, N)`.
+- `u::AbstractMatrix`: Horizontal velocities of shape `(2, N)`.
+- `distance_bins::AbstractVector`: Monotonically increasing bin edges (typically log-spaced).
+- `backend::AbstractExecutionBackend`: Execution target (`SerialBackend()`, `ThreadedBackend()`, `DistributedBackend()`, `GPUBackend()`, or `AutoBackend()`).
+
+# Reusable Buffers (Keyword Arguments)
+- `thread_sums`: Optional pre-allocated buffer of shape `(8, n_bins, n_threads)` for ThreadedBackend, or `(8, n_bins)` for SerialBackend.
+- `thread_counts`: Optional pre-allocated buffer of shape `(8, n_bins, n_threads)` for ThreadedBackend, or `(8, n_bins)` for SerialBackend.
+"""
+function calculate_structure_functions_single_pass(
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3};
+    backend::AbstractExecutionBackend = AutoBackend(),
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    return _dispatch_single_pass(backend, x, u, distance_bins; kwargs...)
+end
+
+# ---------------------------------------------------------------------------
+# Isotropic Helmholtz Decomposition Postprocessing
+# ---------------------------------------------------------------------------
+
+"""
+    postprocess_single_pass_results(sums, counts, distance_bins)
+
+Runs the 2D isotropic Helmholtz decomposition natively using the trapezoidal rule over the binned structure functions.
+This implements the cumulative integral equations described by Erik Lindborg (JFM 2015) and Bühler, Callies, and Ferrari (JFM 2014)
+to separate longitudinal (\$D_{LL}\$) and transverse (\$D_{TT}\$) structure functions into rotational (\$D_{\\text{rot}}\$) and divergent (\$D_{\\text{div}}\$) modes.
+
+# Mathematical Formulation
+Given the isotropic horizontal kinetic energy structure functions:
+- \$D_{LL}(r) = \\langle (\\delta u_L)^2 \\rangle\$
+- \$D_{TT}(r) = \\langle (\\delta u_T)^2 \\rangle\$
+
+The rotational and divergent structure functions satisfy:
+\$\$D_{\\text{rot}}(r) = D_{TT}(r) + r \\int_0^r \\frac{D_{TT}(s) - D_{LL}(s)}{s} \\, ds\$\$
+\$\$D_{\\text{div}}(r) = D_{LL}(r) - r \\int_0^r \\frac{D_{TT}(s) - D_{LL}(s)}{s} \\, ds\$\$
+
+We evaluate the cumulative integral using a trapezoidal rule on log-spaced bin midpoints \$r_k\$:
+\$\$I(r_k) = \\sum_{j=2}^{k} \\frac{1}{2} \\left( \\frac{D_{TT}(r_j) - D_{LL}(r_j)}{r_j} + \\frac{D_{TT}(r_{j-1}) - D_{LL}(r_{j-1})}{r_{j-1}} \\right) (r_j - r_{j-1})\$\$
+
+The derived structure functions are returned as the 9th (rotational) and 10th (divergent) indices of the final matrices.
+"""
+function postprocess_single_pass_results(
+    sums::AbstractMatrix{OT},
+    counts::AbstractMatrix{Int64},
+    distance_bins::AbstractVector{FT3}
+) where {OT, FT3}
+    n_bins = size(sums, 2)
+    final_sums = zeros(OT, 10, n_bins)
+    final_counts = zeros(Int64, 10, n_bins)
+    
+    # Core 8 structure functions are copied unchanged
+    final_sums[1:8, :] .= sums
+    final_counts[1:8, :] .= counts
+    
+    # Calculate bin midpoints from log-spaced edges
+    min_log_dist = log(distance_bins[1])
+    max_log_dist = log(distance_bins[end])
+    log_step = (max_log_dist - min_log_dist) / n_bins
+    
+    bin_mids = zeros(FT3, n_bins)
+    for k in 1:n_bins
+        bin_mids[k] = exp(min_log_dist + (k - 0.5f0) * log_step)
+    end
+    
+    # Compute normalized second-order longitudinal (2) and transverse (3) functions
+    D_LL = sums[2, :] ./ max.(counts[2, :], 1)
+    D_TT = sums[3, :] ./ max.(counts[3, :], 1)
+    
+    # Evaluate cumulative trapezoidal integral
+    I = zeros(OT, n_bins)
+    for k in 2:n_bins
+        F_prev = (D_TT[k-1] - D_LL[k-1]) / bin_mids[k-1]
+        F_curr = (D_TT[k] - D_LL[k]) / bin_mids[k]
+        ds = bin_mids[k] - bin_mids[k-1]
+        I[k] = I[k-1] + 0.5f0 * (F_prev + F_curr) * ds
+    end
+    
+    # Rotational and divergent functions copy the count bounds of the longitudinal function
+    final_counts[9, :] .= final_counts[2, :]
+    final_counts[10, :] .= final_counts[2, :]
+    
+    for k in 1:n_bins
+        D_rot = D_TT[k] + bin_mids[k] * I[k]
+        D_div = D_LL[k] - bin_mids[k] * I[k]
+        
+        final_sums[9, k] = D_rot * final_counts[9, k]
+        final_sums[10, k] = D_div * final_counts[10, k]
+    end
+    
+    return final_sums, final_counts
+end
 
 end

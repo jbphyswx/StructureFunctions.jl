@@ -163,4 +163,72 @@ function SFC.parallel_calculate_structure_function(
     )
 end
 
+"""
+    SFC._dispatch_single_pass(::DistributedBackend, x, u, distance_bins; kwargs...)
+
+Calculates single-pass structure functions utilizing multi-process Distributed execution.
+Uses a process-parallelized loop via `@distributed (+)` and reduces results element-wise.
+"""
+function SFC._dispatch_single_pass(
+    ::SF.DistributedBackend,
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3};
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    OT = promote_type(float(FT1), float(FT2))
+    n_bins = length(distance_bins) - 1
+    n_points = size(x, 2)
+    
+    # We distribute the outer points loop.
+    # The reduction operator `+` works element-wise on the returned Float64 matrix of shape (16, n_bins).
+    combined_reduced = Distributed.@distributed (+) for i in 1:n_points
+        local_combined = zeros(Float64, 16, n_bins)
+        x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
+        u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
+        
+        for j in (i+1):n_points
+            x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
+            
+            dx = SFH.δr(x_i, x_j)
+            r = LA.norm(dx)
+            
+            bin_idx = SFH.digitize(r, distance_bins)
+            
+            if 1 <= bin_idx <= n_bins
+                u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
+                du = u_j - u_i
+                
+                rh = SFH.r̂(x_i, x_j)
+                nh = SFH.n̂(rh)
+                
+                du_L = LA.dot(du, rh)
+                du_T = LA.dot(du, nh)
+                
+                du_L2 = du_L * du_L
+                du_T2 = du_T * du_T
+                
+                local_combined[1, bin_idx] += du_L2 + du_T2
+                local_combined[2, bin_idx] += du_L2
+                local_combined[3, bin_idx] += du_T2
+                local_combined[4, bin_idx] += du_L * (du_L2 + du_T2)
+                local_combined[5, bin_idx] += du_L * du_L2
+                local_combined[6, bin_idx] += du_L2 * du_T
+                local_combined[7, bin_idx] += du_L * du_T2
+                local_combined[8, bin_idx] += du_T * du_T2
+                
+                for t in 9:16
+                    local_combined[t, bin_idx] += 1.0
+                end
+            end
+        end
+        local_combined
+    end
+    
+    sums = OT.(combined_reduced[1:8, :])
+    counts = Int64.(combined_reduced[9:16, :])
+    
+    return SFC.postprocess_single_pass_results(sums, counts, distance_bins)
+end
+
 end

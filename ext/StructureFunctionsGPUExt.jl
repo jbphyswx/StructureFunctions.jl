@@ -453,5 +453,110 @@ function SFSA.gpu_calculate_spectrum(
     return Array(coeffs_dev), ks_phys
 end
 
+# ---------------------------------------------------------------------------
+# Single-Pass GPU Kernel
+# ---------------------------------------------------------------------------
+
+KA.@kernel function _sf_single_pass_kernel!(
+    output_sums,                 # Matrix{FT} of size (8, N_bins-1)
+    output_counts,               # Matrix{FT} of size (8, N_bins-1)
+    @Const(x_mat),               # Matrix{FT} of size (2, N_points)
+    @Const(u_mat),               # Matrix{FT} of size (2, N_points)
+    @Const(distance_bins),       # monotone bin edges, length N_bins
+    N_points::Int,
+    N_bins::Int,
+)
+    I = @index(Global, NTuple)
+    i = I[1]
+    j = I[2]
+    
+    if i < j
+        # Static arrays on stack (using 2D coordinates)
+        X1 = SA.SVector{2}(x_mat[1, i], x_mat[2, i])
+        X2 = SA.SVector{2}(x_mat[1, j], x_mat[2, j])
+        U1 = SA.SVector{2}(u_mat[1, i], u_mat[2, i])
+        U2 = SA.SVector{2}(u_mat[1, j], u_mat[2, j])
+        
+        dX = X2 - X1
+        dist = sqrt(dX[1]^2 + dX[2]^2)
+        
+        bin = SFH.digitize(dist, distance_bins)
+        
+        if 1 <= bin < N_bins
+            dU = U2 - U1
+            r̂ = dX / dist
+            n̂ = SA.SVector{2, eltype(x_mat)}(r̂[2], -r̂[1])
+            
+            du_L = SA.dot(dU, r̂)
+            du_T = SA.dot(dU, n̂)
+            
+            du_L2 = du_L * du_L
+            du_T2 = du_T * du_T
+            
+            # Atomically accumulate the 8 structure functions
+            @atomic output_sums[1, bin] += du_L2 + du_T2
+            @atomic output_sums[2, bin] += du_L2
+            @atomic output_sums[3, bin] += du_T2
+            @atomic output_sums[4, bin] += du_L * (du_L2 + du_T2)
+            @atomic output_sums[5, bin] += du_L * du_L2
+            @atomic output_sums[6, bin] += du_L2 * du_T
+            @atomic output_sums[7, bin] += du_L * du_T2
+            @atomic output_sums[8, bin] += du_T * du_T2
+            
+            for t in 1:8
+                @atomic output_counts[t, bin] += one(eltype(output_counts))
+            end
+        end
+    end
+end
+
+"""
+    SFC._dispatch_single_pass(::GPUBackend, x, u, distance_bins; workgroup_size=64, kwargs...)
+
+Calculates single-pass structure functions utilizing GPU-accelerated computing.
+"""
+function SFC._dispatch_single_pass(
+    gpu_backend::SF.GPUBackend,
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3};
+    workgroup_size::Int = 64,
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    backend = gpu_backend.backend
+    FT = promote_type(float(FT1), float(FT2))
+    N_dims, N_points = size(x)
+    n_bins = length(distance_bins) - 1
+    
+    if N_dims != 2
+        error("GPUExt: single-pass calculation only supports 2D coordinates (got N_dims=$N_dims)")
+    end
+    
+    # Allocate device arrays
+    x_dev = KA.allocate(backend, FT, 2, N_points)
+    u_dev = KA.allocate(backend, FT, 2, N_points)
+    bins_dev = KA.allocate(backend, FT, length(distance_bins))
+    out_sums_dev = KA.zeros(backend, FT, 8, n_bins)
+    out_cnts_dev = KA.zeros(backend, FT, 8, n_bins)
+    
+    copyto!(x_dev, collect(x))
+    copyto!(u_dev, collect(u))
+    copyto!(bins_dev, collect(distance_bins))
+    
+    kernel! = _sf_single_pass_kernel!(backend, workgroup_size)
+    kernel!(
+        out_sums_dev, out_cnts_dev,
+        x_dev, u_dev,
+        bins_dev,
+        N_points, length(distance_bins);
+        ndrange = (N_points, N_points)
+    )
+    KA.synchronize(backend)
+    
+    sums = Array(out_sums_dev)
+    counts = Int64.(Array(out_cnts_dev))
+    
+    return SFC.postprocess_single_pass_results(sums, counts, distance_bins)
+end
 
 end # module GPUExt
