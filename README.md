@@ -25,6 +25,8 @@ StructureFunctions.jl computes structure functions (SFs) from scattered data, ch
 ## Features
 
 - **Structure Functions**: 1st, 2nd, 3rd order; longitudinal & transverse projections in 1D, 2D, 3D
+- **In-place Mutating API**: Pre-allocated mutating functions (`calculate_structure_function!`) for zero-allocation loops (O(n_threads) multi-threaded chunked allocations)
+- **2D Joint-Probability Binning**: Natively accumulates both exact sums and contribution counts across distance and structure function value increment bins (`StructureFunction2D`)
 - **Typed Backend System**: Serial, Threaded, Distributed, GPU, Auto — choose your parallelization strategy
 - **Type-Stable Dispatch**: No runtime overhead from symbolic dispatch; all paths validated with JET
 - **Extensible Architecture**: Optional extensions for parallelization and GPU acceleration
@@ -59,6 +61,31 @@ if nthreads() > 1
     )
 end
 ```
+
+### Pre-allocated In-place Calculation
+
+For high-performance loops (e.g. over timesteps), you can pre-allocate memory buffers and run mutating calculations with zero heap allocation:
+
+```julia
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+
+x = ([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
+u = ([1.0, 1.1, 1.2], [0.0, 0.05, 0.1])
+bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
+sf_type = SFT.L2SFType()
+
+# Pre-allocate output arrays
+n_bins = length(bins)
+sums = zeros(Float64, n_bins)
+counts = zeros(Float64, n_bins)
+
+# Compute in-place (accumulates into provided buffers)
+SFC.calculate_structure_function!(sums, counts, sf_type, x, u, bins; backend=SFC.ThreadedBackend())
+
+# Obtain structure function values via division
+sf_values = sums ./ counts
+```
+
 
 ## Architecture
 
@@ -192,7 +219,9 @@ result = SFC.calculate_structure_function(sf_type, x, u, bins;
 
 ## API Reference
 
-### Main Entry Point
+### Main Entry Points
+
+**1. Standard Allocating API:**
 
 ```julia
 calculate_structure_function(sf_type::AbstractStructureFunctionType,
@@ -206,35 +235,73 @@ calculate_structure_function(sf_type::AbstractStructureFunctionType,
                             show_progress=true) → StructureFunction
 ```
 
-**Arguments**:
-- `sf_type`: Operator instance (e.g., `LongitudinalSecondOrderStructureFunctionType()`)
-- `x`: Position data (Tuple of 1D vectors OR N×M matrix for N dimensions, M points)
-- `u`: Velocity/field data (same shape as `x`)
-- `distance_bins`: Vector of `(r_min, r_max)` tuples defining bins
+**2. 2D Joint-Probability Allocating API:**
 
-**Returns**: `StructureFunction` result container
+```julia
+calculate_structure_function(sf_type::AbstractStructureFunctionType,
+                            x::Union{Tuple, Matrix},
+                            u::Union{Tuple, Matrix},
+                            distance_bins::AbstractVector{<:Tuple},
+                            value_bins::AbstractVector;
+                            backend=SerialBackend(),
+                            distance_metric=Euclidean(),
+                            verbose=true,
+                            show_progress=true) → StructureFunction2D
+```
 
-**See also**: `serial_calculate_structure_function`, `parallel_calculate_structure_function`, `gpu_calculate_structure_function`
+**3. In-place Mutating API (Zero-Allocation):**
+
+```julia
+calculate_structure_function!(sums::AbstractVector,
+                             counts::AbstractVector,
+                             sf_type::AbstractStructureFunctionType,
+                             x::Union{Tuple, Matrix},
+                             u::Union{Tuple, Matrix},
+                             distance_bins::AbstractVector;
+                             backend=SerialBackend(),
+                             distance_metric=Euclidean(),
+                             verbose=true,
+                             show_progress=true) → Nothing
+```
+
+**4. 2D Joint-Probability Mutating API (Zero-Allocation):**
+
+```julia
+calculate_structure_function!(sums_2d::AbstractMatrix,
+                             counts_2d::AbstractMatrix,
+                             sf_type::AbstractStructureFunctionType,
+                             x::Union{Tuple, Matrix},
+                             u::Union{Tuple, Matrix},
+                             distance_bins::AbstractVector,
+                             value_bins::AbstractVector;
+                             backend=SerialBackend(),
+                             distance_metric=Euclidean(),
+                             verbose=true,
+                             show_progress=true) → Nothing
+```
+
+*Note: The mutating APIs accumulate (`+=` and `.+=`) directly into the provided output buffers. The caller is responsible for pre-zeroing the arrays.*
 
 ### Operator Types
 
-All inherit from `AbstractStructureFunctionType`. Instantiate with `()`:
+All inherit from `AbstractStructureFunctionType`. Instantiate with `()` or use shorthands:
 
 ```julia
 SFT.LongitudinalSecondOrderStructureFunctionType()    # 2nd order, longitudinal
 SFT.TransverseSecondOrderStructureFunctionType()      # 2nd order, transverse
 SFT.LongitudinalThirdOrderStructureFunctionType()     # 3rd order, longitudinal
-SFT.TransverseThirdOrderStructureFunctionType()       # 3rd order, transverse
-# ... and other variants (see docs/theory.md)
+# ... shorthands: L2SFType, T2SFType, L3SFType, T3SFType, S2SFType, S3SFType
 ```
 
 Each operator is **callable** (functors):
 ```julia
-sf_op = SFT.LongitudinalSecondOrderStructureFunctionType()
-sf_op(du, rhat)  # Equivalent to: calculate_structure_function(sf_op, ...)
+sf_op = SFT.L2SFType()
+sf_op(du, rhat)  # Computes L2SF increment value
 ```
 
-### Result Container
+### Result Containers
+
+**1. 1D Structure Function Container (`StructureFunction`):**
 
 ```julia
 struct StructureFunction{FT, OT, BT, VT} <: AbstractStructureFunction
@@ -245,12 +312,27 @@ struct StructureFunction{FT, OT, BT, VT} <: AbstractStructureFunction
 end
 ```
 
+**2. 2D Joint-Probability Container (`StructureFunction2D`):**
+
+```julia
+struct StructureFunction2D{FT, OT, BT, VT, MT} <: AbstractStructureFunction
+    operator::OT                   # AbstractStructureFunctionType
+    distance_bins::BT              # AbstractVector of (r_min, r_max)
+    value_bins::VT                 # AbstractVector of value bin edges
+    sums::MT                       # AbstractMatrix{FT} (distance x value)
+    counts::MT                     # AbstractMatrix{FT} (distance x value)
+end
+```
+
 **Access results**:
 ```julia
-result.values       # SF values, one per bin
+# 1D
+result.values         # SF values, one per bin
 result.distance_bins  # Original input bins
-result.operator     # The SF operator used
-result.order        # Order of the SF
+
+# 2D
+result_2d.sums        # Sum of SF values in each 2D cell
+result_2d.counts      # Count of point pairs in each 2D cell
 ```
 
 ## Theory & References
