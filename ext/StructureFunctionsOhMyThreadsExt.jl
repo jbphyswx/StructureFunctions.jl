@@ -346,84 +346,92 @@ function SFC.threaded_calculate_structure_function(
     )
 end
 
-# --- Preservation of the existing _dispatch_single_pass method ---
+# --- Threaded single-pass via OhMyThreads tmapreduce ---
+#
+# IMPORTANT: We use `OMT.tmapreduce` with task-local buffers instead of
+# `OMT.tforeach` + `Threads.threadid()` indexing.
+#
+# Julia tasks are NON-STICKY: they can migrate between OS threads at any yield
+# point. This means `Threads.threadid()` is NOT guaranteed to remain constant
+# within a single task. Using it to index into shared per-thread buffers causes
+# data races → glibc heap corruption (malloc_consolidate / corrupted size).
+#
+# The correct OhMyThreads pattern (used by all other threaded methods above)
+# is to give each chunk its own task-local buffer, then reduce via summation.
+#
+# References:
+#   - OhMyThreads thread-safe storage docs:
+#     https://juliafolds2.github.io/OhMyThreads.jl/stable/literate/tls/tls/
+#   - Julia manual on task migration:
+#     https://docs.julialang.org/en/v1/manual/multi-threading/#man-task-migration
+#   - OhMyThreads FAQ on threadid():
+#     https://juliafolds2.github.io/OhMyThreads.jl/stable/translation/
 
 function SFC._dispatch_single_pass(
     ::SF.ThreadedBackend,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
-    thread_sums = nothing,
-    thread_counts = nothing,
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
-    n_threads = Threads.nthreads()
-    
-    # Check/allocate thread-local reduction heaps
-    ts = isnothing(thread_sums) ? zeros(OT, 8, n_bins, n_threads) : thread_sums
-    tc = isnothing(thread_counts) ? zeros(Int64, 8, n_bins, n_threads) : thread_counts
-    
-    fill!(ts, zero(OT))
-    fill!(tc, 0)
-    
     n_points = size(x, 2)
-    
-    OMT.tforeach(1:n_points) do i
-        tid = Threads.threadid()
-        x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
-        u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
-        
-        for j in (i+1):n_points
-            x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
-            
-            dx = SFH.δr(x_i, x_j)
-            r = LA.norm(dx)
-            
-            bin_idx = SFH.digitize(r, distance_bins)
-            
-            if 1 <= bin_idx <= n_bins
-                u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
-                du = u_j - u_i
-                
-                rh = SFH.r̂(x_i, x_j)
-                nh = SFH.n̂(rh)
-                
-                du_L = LA.dot(du, rh)
-                du_T = LA.dot(du, nh)
-                
-                du_L2 = du_L * du_L
-                du_T2 = du_T * du_T
-                
-                @inbounds ts[1, bin_idx, tid] += du_L2 + du_T2
-                @inbounds ts[2, bin_idx, tid] += du_L2
-                @inbounds ts[3, bin_idx, tid] += du_T2
-                @inbounds ts[4, bin_idx, tid] += du_L * (du_L2 + du_T2)
-                @inbounds ts[5, bin_idx, tid] += du_L * du_L2
-                @inbounds ts[6, bin_idx, tid] += du_L2 * du_T
-                @inbounds ts[7, bin_idx, tid] += du_L * du_T2
-                @inbounds ts[8, bin_idx, tid] += du_T * du_T2
-                
-                for t in 1:8
-                    @inbounds tc[t, bin_idx, tid] += 1
+
+    # tmapreduce: each chunk gets its own task-local (sums, counts) buffers.
+    # The reducer `+` merges partial results via element-wise addition.
+    # This produces O(nthreads) allocations total — not O(n_points).
+    (sums, counts) = OMT.tmapreduce(
+        ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
+        OMT.chunks(1:n_points; n = Threads.nthreads())
+    ) do chunk
+        local_sums = zeros(OT, 8, n_bins)
+        local_counts = zeros(Int64, 8, n_bins)
+
+        for i in chunk
+            x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
+            u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
+
+            for j in (i + 1):n_points
+                x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
+
+                dx = SFH.δr(x_i, x_j)
+                r = LA.norm(dx)
+
+                bin_idx = SFH.digitize(r, distance_bins)
+
+                if 1 <= bin_idx <= n_bins
+                    u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
+                    du = u_j - u_i
+
+                    rh = SFH.r̂(x_i, x_j)
+                    nh = SFH.n̂(rh)
+
+                    du_L = LA.dot(du, rh)
+                    du_T = LA.dot(du, nh)
+
+                    du_L2 = du_L * du_L
+                    du_T2 = du_T * du_T
+
+                    # Accumulate the 8 core physical structure functions:
+                    @inbounds local_sums[1, bin_idx] += du_L2 + du_T2            # S2SF
+                    @inbounds local_sums[2, bin_idx] += du_L2                    # L2SF
+                    @inbounds local_sums[3, bin_idx] += du_T2                    # T2SF
+                    @inbounds local_sums[4, bin_idx] += du_L * (du_L2 + du_T2)   # S3SF
+                    @inbounds local_sums[5, bin_idx] += du_L * du_L2              # L3SF
+                    @inbounds local_sums[6, bin_idx] += du_L2 * du_T              # L2T1SF
+                    @inbounds local_sums[7, bin_idx] += du_L * du_T2              # L1T2SF
+                    @inbounds local_sums[8, bin_idx] += du_T * du_T2              # T3SF
+
+                    for t in 1:8
+                        @inbounds local_counts[t, bin_idx] += 1
+                    end
                 end
             end
         end
+        (local_sums, local_counts)
     end
-    
-    # Reduce thread-local slices
-    sums = zeros(OT, 8, n_bins)
-    counts = zeros(Int64, 8, n_bins)
-    for tid in 1:n_threads
-        for k in 1:n_bins
-            for t in 1:8
-                sums[t, k] += ts[t, k, tid]
-                counts[t, k] += tc[t, k, tid]
-            end
-        end
-    end
-    
+
     return SFC.postprocess_single_pass_results(sums, counts, distance_bins)
 end
 
