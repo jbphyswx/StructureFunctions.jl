@@ -368,6 +368,28 @@ where $\langle \cdot \rangle$ is ensemble/spatial average over all displacement 
 
 **See also**: `docs/theory.md` for detailed mathematical formulations and dimensional projections.
 
+## Example Figures
+
+### 2nd-Order Structure Function — Kolmogorov Scaling
+
+![Structure Function S2](docs/src/assets/sf_kolmogorov.png)
+
+*2nd-order longitudinal structure function on a 2D turbulent field. Dashed line: K41 prediction S₂(r) ~ r^(2/3).*
+
+### Longitudinal vs Transverse Structure Functions
+
+![Longitudinal vs Transverse](docs/src/assets/sf_long_vs_trans.png)
+
+*Comparison of longitudinal (L2SF) and transverse (T2SF) 2nd-order structure functions on the same field.*
+
+### Backend Parity Validation
+
+![Backend Parity](docs/src/assets/sf_backend_parity.png)
+
+*Serial vs Threaded backend results on identical data — differences are at floating-point rounding level.*
+
+---
+
 ## Performance
 
 ### Scaling Characteristics
