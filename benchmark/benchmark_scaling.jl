@@ -18,16 +18,16 @@ CUDA-functional GPU is detected.
 ## How to run
 
     # From the repository root:
-    julia --project=test test/benchmark_scaling.jl
+    julia --project=benchmark benchmark/benchmark_scaling.jl
 
     # Override max thread count (default: min(32, Sys.CPU_THREADS)):
-    MAX_THREADS=16 julia --project=test test/benchmark_scaling.jl
+    MAX_THREADS=16 julia --project=benchmark benchmark/benchmark_scaling.jl
 
     # Override base problem size for strong scaling (default: 4000 points):
-    N_STRONG=6000 julia --project=test test/benchmark_scaling.jl
+    N_STRONG=6000 julia --project=benchmark benchmark/benchmark_scaling.jl
 
     # Override base size per thread for weak scaling (default: 1000 points/thread):
-    N_WEAK_BASE=2000 julia --project=test test/benchmark_scaling.jl
+    N_WEAK_BASE=2000 julia --project=benchmark benchmark/benchmark_scaling.jl
 
 See README.md § "Scaling Benchmarks" for full documentation.
 """
@@ -76,7 +76,7 @@ function run_worker(n_threads::Int, n_points::Int)
     julia_bin = joinpath(Sys.BINDIR, "julia")
     project_dir = joinpath(@__DIR__, "..")
 
-    cmd = `$julia_bin --project=$project_dir/test -t $n_threads $worker_script $n_points`
+    cmd = `$julia_bin --project=$project_dir/benchmark -t $n_threads $worker_script $n_points`
     output = readchomp(cmd)
     lines = filter(!isempty, split(output, '\n'))
     return JSON.parse(last(lines))

@@ -7,9 +7,10 @@
 
 # Data files
 *.DS_Store
-!docs/src/assets/*.png
 # *.nc
 *.png
+!docs/src/assets/*.png
+!examples/*.png
 *.json
 *.in
 *.gz
@@ -43,4 +44,11 @@ __pycache__
 
 # ipynb
 .ipynb_checkpoints/
-.ipynb*test/plots/
+
+# Benchmark outputs (generated at runtime)
+benchmark/benchmark_results/
+benchmark/plots/
+test/benchmark_results/
+test/plots/
+test/ci_log.txt
+test/bench_results.json
