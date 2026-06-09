@@ -420,12 +420,6 @@ where $\langle \cdot \rangle$ is ensemble/spatial average over all displacement 
 
 *Problem size grows as N = N_base × √p so each thread has constant O(N²/p) pair work. Ideal wall-clock time is flat; observed rise reflects inter-socket memory traffic.*
 
-#### Thread Scaling Summary
-
-![Thread Scaling](docs/src/assets/thread_scaling.png)
-
-*Combined speedup and parallel efficiency across thread counts.*
-
 ### Optimization Tips
 
 1. **Use AutoBackend** for deployment (automatic tuning)
