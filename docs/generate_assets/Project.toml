@@ -1,0 +1,15 @@
+[deps]
+StructureFunctions = "e93fee26-4d5e-49c1-899d-490508cfd19b"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
+[compat]
+StructureFunctions = "0.3"
+CairoMakie = "0.15"
+OhMyThreads = "0.8"
+julia = "1.12"
+
+[sources]
+StructureFunctions = { path = "../.." }
