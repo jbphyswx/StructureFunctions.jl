@@ -401,18 +401,30 @@ where $\langle \cdot \rangle$ is ensemble/spatial average over all displacement 
 | D dim's   | CPU ops | ~D² per pair |
 | Threads   | Speedup | ~0.8–0.9× per thread (dims ≤ 3) |
 
-### Benchmarks (v0.3.0, Julia 1.12)
+### Benchmark Figures (v0.3.0, Julia 1.12)
 
-**Setup**: 10K points, 2D, 100 bins, Serial vs Multi-threaded
+> **Hardware:** 2× Intel Xeon Gold 6426Y (16 cores / 32 threads each, 64 logical CPUs total).
+> Benchmarks were run on this machine. Results on other hardware will differ.
+> To regenerate with your own hardware, see [`benchmark/benchmark_scaling.jl`](benchmark/benchmark_scaling.jl).
+> Output figures land in `benchmark/benchmark_results/` (gitignored).
 
-| Backend | Time (ms) | Threads |
-|---------|-----------|---------|
-| Serial  | 120       | 1       |
-| Threaded | 32       | 4       |
-| Threaded | 18       | 8       |
-| (GPU)   | 5–15*    | N/A     |
+#### Strong Scaling — fixed N, increasing threads
 
-*Depends on GPU model and data transfer overhead; for 1M+ points, GPU benefits scale significantly.
+![Strong Scaling](docs/src/assets/strong_scaling.png)
+
+*Fixed problem size (N = 4000 points, 3D, longitudinal 2nd-order SF). Speedup approaches linear up to ~4 threads; NUMA effects reduce efficiency beyond 8 threads on a dual-socket system.*
+
+#### Weak Scaling — N ∝ √p, constant work per thread
+
+![Weak Scaling](docs/src/assets/weak_scaling.png)
+
+*Problem size grows as N = N_base × √p so each thread has constant O(N²/p) pair work. Ideal wall-clock time is flat; observed rise reflects inter-socket memory traffic.*
+
+#### Thread Scaling Summary
+
+![Thread Scaling](docs/src/assets/thread_scaling.png)
+
+*Combined speedup and parallel efficiency across thread counts.*
 
 ### Optimization Tips
 

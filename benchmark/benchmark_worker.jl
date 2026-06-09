@@ -9,7 +9,7 @@ Outputs one JSON line to stdout:
 This file is NOT part of the standard test suite and will NOT be run by `runtests.jl`.
 
 Usage (internal, called automatically by benchmark_scaling.jl):
-    julia --project=test -t 8 test/benchmark_worker.jl 5000
+    julia --project=benchmark -t 8 benchmark/benchmark_worker.jl 5000
 """
 
 using StructureFunctions: StructureFunctions, Calculations as SFC
