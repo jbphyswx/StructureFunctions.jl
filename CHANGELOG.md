@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Performance
+
+- **ThreadedBackend / OhMyThreadsExt**: outer-loop chunks for O(N²) pair kernels now use
+  `OMT.RoundRobin()` instead of the default contiguous split. Fixes ~2× load imbalance
+  when `work(i) ∝ (N - i)` (structure-function and single-pass 2D paths). No API change.
+
 ## [0.3.0] - 2026-03-18
 
 ### Major Features

@@ -1,5 +1,6 @@
 using StructureFunctions:
     StructureFunctions as SF, StructureFunctionTypes as SFT, Calculations as SFC
+using OhMyThreads: OhMyThreads  # load extension for ThreadedBackend / AutoBackend when nthreads() > 1
 using Test: Test
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
