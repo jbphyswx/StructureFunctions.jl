@@ -11,6 +11,17 @@ using StructureFunctions:
     StructureFunctionTypes as SFT,
     HelperFunctions as SFH
 
+"""
+    _triangle_outer_chunks(indices, n_tasks)
+
+Partition outer loop indices for O(N²) pair kernels where work for index `i` is
+`(N - i)`. `OMT.chunks` defaults to `Consecutive()`, which assigns equal-width
+contiguous blocks and severely load-imbalances this loop (~T× skew). Round-robin
+(`OMT.RoundRobin()`) balances pair work across tasks.
+"""
+@inline _triangle_outer_chunks(indices, n_tasks::Integer) =
+    OMT.chunks(indices; n = n_tasks, split = OMT.RoundRobin())
+
 # --- 1D Tuple thread-safe chunked implementation ---
 
 function SFC.threaded_calculate_structure_function!(
@@ -30,7 +41,7 @@ function SFC.threaded_calculate_structure_function!(
     _ = show_progress
 
     # Chunked tmapreduce: O(n_tasks) allocations instead of O(N_points)
-    result = OMT.tmapreduce(+, OMT.chunks(eachindex(x_vecs[1]); n=Threads.nthreads())) do chunk
+    result = OMT.tmapreduce(+, _triangle_outer_chunks(eachindex(x_vecs[1]), Threads.nthreads())) do chunk
         local_output = zeros(OT, length(distance_bins))
         local_counts = zeros(OT, length(distance_bins))
         bin_edges = SFC.flat_bin_edges(distance_bins)
@@ -126,7 +137,7 @@ function SFC.threaded_calculate_structure_function!(
     end
 
     # Chunked tmapreduce to allocate once per thread/task chunk
-    result = OMT.tmapreduce(+, OMT.chunks(axes(x_arr, 2); n=Threads.nthreads())) do chunk
+    result = OMT.tmapreduce(+, _triangle_outer_chunks(axes(x_arr, 2), Threads.nthreads())) do chunk
         local_output = zeros(OT, N3)
         local_counts = zeros(OT, N3)
         for i in chunk
@@ -213,7 +224,7 @@ function SFC.threaded_calculate_structure_function!(
     N4 = length(value_bins_vec) - 1
 
     # Chunked tmapreduce: O(n_tasks) allocations instead of O(N_points)
-    result = OMT.tmapreduce(+, OMT.chunks(eachindex(x_vecs[1]); n=Threads.nthreads())) do chunk
+    result = OMT.tmapreduce(+, _triangle_outer_chunks(eachindex(x_vecs[1]), Threads.nthreads())) do chunk
         local_sums = zeros(OT, N3, N4)
         local_counts = zeros(OT, N3, N4)
         vN = Val(length(x_vecs))
@@ -358,6 +369,8 @@ end
 #
 # The correct OhMyThreads pattern (used by all other threaded methods above)
 # is to give each chunk its own task-local buffer, then reduce via summation.
+# Outer `i` chunks use `_triangle_outer_chunks` (RoundRobin split) because
+# contiguous equal-size blocks imbalance O(N²) triangle pair loops.
 #
 # References:
 #   - OhMyThreads thread-safe storage docs:
@@ -383,7 +396,7 @@ function SFC._dispatch_single_pass(
     # This produces O(nthreads) allocations total — not O(n_points).
     (sums, counts) = OMT.tmapreduce(
         ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
-        OMT.chunks(1:n_points; n = Threads.nthreads())
+        _triangle_outer_chunks(1:n_points, Threads.nthreads())
     ) do chunk
         local_sums = zeros(OT, 8, n_bins)
         local_counts = zeros(Int64, 8, n_bins)
@@ -449,7 +462,7 @@ function SFC._dispatch_single_pass!(
 
     chunk_sums, chunk_counts = OMT.tmapreduce(
         ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
-        OMT.chunks(1:n_points; n = Threads.nthreads()),
+        _triangle_outer_chunks(1:n_points, Threads.nthreads()),
     ) do chunk
         local_sums = zeros(OT, 8, n_bins)
         local_counts = zeros(Int64, 8, n_bins)
@@ -517,7 +530,7 @@ function SFC._dispatch_single_pass_2d(
 
     (sums, counts) = OMT.tmapreduce(
         ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
-        OMT.chunks(1:n_points; n = Threads.nthreads()),
+        _triangle_outer_chunks(1:n_points, Threads.nthreads()),
     ) do chunk
         local_sums = zeros(OT, 8, n_bins, n_val)
         local_counts = zeros(Int64, 8, n_bins, n_val)
@@ -591,7 +604,7 @@ function SFC._dispatch_single_pass_2d!(
 
     chunk_sums, chunk_counts = OMT.tmapreduce(
         ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
-        OMT.chunks(1:n_points; n = Threads.nthreads()),
+        _triangle_outer_chunks(1:n_points, Threads.nthreads()),
     ) do chunk
         local_sums = zeros(OT, 8, n_bins, n_val)
         local_counts = zeros(Int64, 8, n_bins, n_val)

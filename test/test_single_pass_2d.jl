@@ -1,6 +1,7 @@
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionObjects as SFO,
     StructureFunctionTypes as SFT
+using OhMyThreads: OhMyThreads  # load extension for ThreadedBackend / AutoBackend when nthreads() > 1
 using Test
 using Random
 

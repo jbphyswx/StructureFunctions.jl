@@ -65,8 +65,11 @@ Requires the `OhMyThreads.jl` package to be loaded. Use this backend when:
 - Speed is important and shared-memory parallelism is suitable
 - Dataset fits in memory
 
-Controls the parallelization of the outer loop over point pairs. Thread-local reductions
-ensure thread safety without locks.
+Partitions the outer loop index `i` across CPU tasks (via OhMyThreads when loaded).
+For O(N²) pair loops, the threaded extension uses round-robin outer-index chunks
+(`OMT.RoundRobin`) so each task gets ~equal pair work; contiguous equal-size chunks
+would severely load-imbalance this kernel. Thread-local reductions ensure thread safety
+without locks or `threadid()` indexing.
 
 # Examples
 ```julia

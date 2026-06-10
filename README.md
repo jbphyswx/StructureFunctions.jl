@@ -156,9 +156,11 @@ result = SFC.calculate_structure_function(sf_type, x, u, bins;
                                         backend=SFC.ThreadedBackend())
 ```
 
-- **Prerequisites**: `Threads.nthreads() > 1`
-- **Thread-local reductions**: No locks or atomic operations
-- **Speedup**: Near-linear up to ~4 threads; diminishing returns beyond (memory bandwidth limit)
+- **Prerequisites**: `Threads.nthreads() > 1`, OhMyThreads.jl loaded (extension auto-loads)
+- **Thread-local reductions**: No locks or atomic operations; no `threadid()` buffer indexing
+- **Outer-loop scheduling**: Round-robin partition of index `i` for O(N²) pair loops (balanced
+  when inner work per `i` is `(N - i)`; contiguous chunks would skew load ~× number of threads)
+- **Speedup**: Near-linear at low thread count for large N; memory bandwidth limits scaling beyond
 
 ### DistributedBackend (Multi-Process/Cluster)
 
