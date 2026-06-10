@@ -7,7 +7,6 @@ using Distances: Distances as DI
 using ..HelperFunctions: HelperFunctions as SFH
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 using ..StructureFunctionObjects: StructureFunctionObjects as SFO
-
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using Base.Threads: Threads
@@ -19,6 +18,12 @@ export calculate_structure_function, parallel_calculate_structure_function,
     GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend,
     serial_calculate_structure_function, threaded_calculate_structure_function,
     calculate_structure_functions_single_pass,
+    calculate_structure_functions_single_pass!,
+    calculate_structure_functions_single_pass_2d,
+    calculate_structure_functions_single_pass_2d!,
+    serial_calculate_structure_functions_single_pass_2d,
+    postprocess_single_pass_results,
+    ten_type_from_eight_2d,
     serial_calculate_structure_function!, threaded_calculate_structure_function!,
     calculate_structure_function!
 
@@ -2327,16 +2332,8 @@ function parallel_calculate_structure_function end # placeholder for parallel ex
 """
     serial_calculate_structure_functions_single_pass(x, u, distance_bins, sums, counts)
 
-Calculates the core 8 structure function sums and counts on a single CPU thread.
-To achieve absolute maximum performance and eliminate heap allocations:
-1. Spatial coordinate differences are computed via `SFH.δr` and stack-allocated.
-2. Distance binning is determined via the package's optimized `SFH.digitize`.
-3. To avoid redundant projection dot product FLOPs (which would occur if we called the 8 inlined SFT functors independently),
-   we precompute the longitudinal `du_L` and transverse `du_T` increments once per coordinate pair:
-   - `du_L = LA.dot(du, rh)` where `rh = SFH.r̂(x_i, x_j)`
-   - `du_T = LA.dot(du, nh)` where `nh = SFH.n̂(rh)`
-   These projections are mathematically identical to calling `mδu_l` and `mδu_t` in the `ProjectedStructureFunctionType` functors,
-   preserving perfect physical alignment with the package's type hierarchy.
+Zero ``sums``/``counts`` then accumulate eight native 1D structure functions on one thread.
+For allocation-free reuse, prefer [`calculate_structure_functions_single_pass!`](@ref).
 """
 function serial_calculate_structure_functions_single_pass(
     x::AbstractMatrix{FT1},
@@ -2345,54 +2342,67 @@ function serial_calculate_structure_functions_single_pass(
     sums::AbstractMatrix{OT},
     counts::AbstractMatrix{Int64}
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
-    n_points = size(x, 2)
-    n_bins = length(distance_bins) - 1
-    
     fill!(sums, zero(OT))
     fill!(counts, 0)
-    
+    return calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins)
+end
+
+"""Serial pair-loop accumulation into native ``(8, n_bins)`` buffers (no allocation)."""
+function _accumulate_single_pass_1d!(
+    sums::AbstractMatrix{OT},
+    counts::AbstractMatrix{Int64},
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+    n_points = size(x, 2)
+    n_bins = length(distance_bins) - 1
+    size(sums) == (8, n_bins) ||
+        throw(DimensionMismatch("sums must have shape (8, n_bins); got $(size(sums))"))
+    size(counts) == (8, n_bins) ||
+        throw(DimensionMismatch("counts must have shape (8, n_bins); got $(size(counts))"))
+
     for i in 1:n_points
         x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
         u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
-        
-        for j in (i+1):n_points
+
+        for j in (i + 1):n_points
             x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
-            
+
             dx = SFH.δr(x_i, x_j)
             r = LA.norm(dx)
-            
+
             bin_idx = SFH.digitize(r, distance_bins)
-            
+
             if 1 <= bin_idx <= n_bins
                 u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
                 du = u_j - u_i
-                
+
                 rh = SFH.r̂(x_i, x_j)
                 nh = SFH.n̂(rh)
-                
+
                 du_L = LA.dot(du, rh)
                 du_T = LA.dot(du, nh)
-                
+
                 du_L2 = du_L * du_L
                 du_T2 = du_T * du_T
-                
-                # Natively accumulate the 8 core physical structure functions:
-                @inbounds sums[1, bin_idx] += du_L2 + du_T2            # S2SF (Full Vector 2nd-order)
-                @inbounds sums[2, bin_idx] += du_L2                   # L2SF (Longitudinal 2nd-order)
-                @inbounds sums[3, bin_idx] += du_T2                   # T2SF (Transverse 2nd-order)
-                @inbounds sums[4, bin_idx] += du_L * (du_L2 + du_T2)  # S3SF (Full Vector 3rd-order)
-                @inbounds sums[5, bin_idx] += du_L * du_L2             # L3SF (Longitudinal 3rd-order)
-                @inbounds sums[6, bin_idx] += du_L2 * du_T             # L2T1SF (Diagonal Inconsistent)
-                @inbounds sums[7, bin_idx] += du_L * du_T2             # L1T2SF (Off-Diagonal Inconsistent)
-                @inbounds sums[8, bin_idx] += du_T * du_T2             # T3SF (Transverse 3rd-order)
-                
+
+                @inbounds sums[1, bin_idx] += du_L2 + du_T2
+                @inbounds sums[2, bin_idx] += du_L2
+                @inbounds sums[3, bin_idx] += du_T2
+                @inbounds sums[4, bin_idx] += du_L * (du_L2 + du_T2)
+                @inbounds sums[5, bin_idx] += du_L * du_L2
+                @inbounds sums[6, bin_idx] += du_L2 * du_T
+                @inbounds sums[7, bin_idx] += du_L * du_T2
+                @inbounds sums[8, bin_idx] += du_T * du_T2
+
                 for t in 1:8
                     @inbounds counts[t, bin_idx] += 1
                 end
             end
         end
     end
-    
+
     return sums, counts
 end
 
@@ -2401,6 +2411,108 @@ end
 # ---------------------------------------------------------------------------
 
 function _dispatch_single_pass end
+function _dispatch_single_pass! end
+
+"""
+    calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins; backend=SerialBackend(), kwargs...)
+
+Accumulate into pre-allocated ``(8, n_bins)`` buffers using the requested execution backend.
+"""
+function calculate_structure_functions_single_pass!(
+    sums::AbstractMatrix{OT},
+    counts::AbstractMatrix{Int64},
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3};
+    backend::AbstractExecutionBackend = SerialBackend(),
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+    _dispatch_single_pass!(backend, sums, counts, x, u, distance_bins; kwargs...)
+    return sums, counts
+end
+
+function _dispatch_single_pass!(
+    ::SerialBackend,
+    sums::AbstractMatrix,
+    counts::AbstractMatrix,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector;
+    kwargs...
+)
+    return _accumulate_single_pass_1d!(sums, counts, x, u, distance_bins)
+end
+
+function _dispatch_single_pass!(
+    ::ThreadedBackend,
+    sums::AbstractMatrix,
+    counts::AbstractMatrix,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector;
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "Threaded in-place single-pass is unavailable. Load OhMyThreads or use backend=SerialBackend().",
+        ),
+    )
+end
+
+function _dispatch_single_pass!(
+    ::DistributedBackend,
+    sums::AbstractMatrix,
+    counts::AbstractMatrix,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector;
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "Distributed in-place single-pass is unavailable. Load Distributed or use backend=SerialBackend().",
+        ),
+    )
+end
+
+function _dispatch_single_pass!(
+    ::GPUBackend,
+    sums::AbstractMatrix,
+    counts::AbstractMatrix,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector;
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "GPU in-place single-pass is unavailable. Load GPUExt or use backend=SerialBackend().",
+        ),
+    )
+end
+
+function _dispatch_single_pass!(
+    ::AutoBackend,
+    sums::AbstractMatrix,
+    counts::AbstractMatrix,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector;
+    kwargs...
+)
+    if distributed_workers_available(Val(:distributed)) &&
+       _distributed_single_pass_available(x, u, distance_bins)
+        return _dispatch_single_pass!(
+            DistributedBackend(), sums, counts, x, u, distance_bins; kwargs...
+        )
+    end
+    if Threads.nthreads() > 1 && _threaded_single_pass_available(x, u, distance_bins)
+        return _dispatch_single_pass!(
+            ThreadedBackend(), sums, counts, x, u, distance_bins; kwargs...
+        )
+    end
+    return _dispatch_single_pass!(SerialBackend(), sums, counts, x, u, distance_bins; kwargs...)
+end
 
 """
     _dispatch_single_pass(::SerialBackend, x, u, distance_bins; thread_sums=nothing, thread_counts=nothing)
@@ -2529,9 +2641,12 @@ end
 """
     calculate_structure_functions_single_pass(x, u, distance_bins; backend=AutoBackend(), kwargs...)
 
-Primary high-performance pipeline entrypoint for SMODE.
-Calculates all 10 structure functions (the 8 core 2nd/3rd order ones plus the rotational/divergent Helmholtz integrations)
-in a single pass over position differences, dispatching dynamically to the specified `backend`.
+Primary entrypoint for computing eight native structure functions in one pair pass,
+then appending rotational/divergent second-order slots via
+[`postprocess_single_pass_results`](@ref).
+Calculates all 10 structure function slots (eight native pair-level types plus two
+derived isotropic Helmholtz partitions) in a single pass over position differences,
+dispatching dynamically to the specified `backend`.
 
 # Arguments
 - `x::AbstractMatrix`: Spatial positions of shape `(2, N)`.
@@ -2627,6 +2742,393 @@ function postprocess_single_pass_results(
     end
     
     return final_sums, final_counts
+end
+
+"""
+    ten_type_from_eight_2d(sums_8, counts_8, distance_bins)
+
+Marginalize eight native 2D joint histograms to 1D, then append rotational/divergent
+slots via [`postprocess_single_pass_results`](@ref). Returns ``(sums_10, counts_10)``.
+"""
+function ten_type_from_eight_2d(
+    sums_8::AbstractArray{OT, 3},
+    counts_8::AbstractArray{Int64, 3},
+    distance_bins::AbstractVector{FT3},
+) where {OT, FT3}
+    sums_1d = dropdims(sum(sums_8, dims = 3), dims = 3)
+    counts_1d = dropdims(sum(counts_8, dims = 3), dims = 3)
+    return postprocess_single_pass_results(sums_1d, counts_1d, distance_bins)
+end
+
+# ---------------------------------------------------------------------------
+# Single-pass 2D (eight native joint histograms in one O(N²) loop)
+# ---------------------------------------------------------------------------
+
+"""
+    serial_calculate_structure_functions_single_pass_2d(x, u, distance_bins, value_bins_by_type, sums_3d, counts_3d)
+
+Zero output buffers then accumulate eight 2D joint histograms on one thread.
+For allocation-free reuse, prefer [`calculate_structure_functions_single_pass_2d!`](@ref).
+"""
+function serial_calculate_structure_functions_single_pass_2d(
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    value_bins_by_type::AbstractVector{<:AbstractVector},
+    sums_3d::AbstractArray{OT, 3},
+    counts_3d::AbstractArray{Int64, 3},
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+    fill!(sums_3d, zero(OT))
+    fill!(counts_3d, 0)
+    return calculate_structure_functions_single_pass_2d!(
+        sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type
+    )
+end
+
+"""
+    calculate_structure_functions_single_pass_2d!(sums, counts, x, u, distance_bins, value_bins_by_type; backend=...)
+
+Accumulate eight native 2D joint histograms into pre-allocated ``(8, n_bins, n_val)`` buffers.
+``value_bins_by_type`` is a length-8 vector of edge vectors; pad with ``±Inf`` if you need
+catch-all overflow bins at the ends of each edge vector.
+"""
+function calculate_structure_functions_single_pass_2d!(
+    sums_3d::AbstractArray{OT, 3},
+    counts_3d::AbstractArray{Int64, 3},
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    backend::AbstractExecutionBackend = SerialBackend(),
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+    _dispatch_single_pass_2d!(
+        backend, sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type; kwargs...
+    )
+    return sums_3d, counts_3d
+end
+
+"""Serial pair-loop accumulation into native ``(8, n_bins, n_val)`` buffers (no allocation)."""
+function _accumulate_single_pass_2d!(
+    sums_3d::AbstractArray{OT, 3},
+    counts_3d::AbstractArray{Int64, 3},
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    value_bins_by_type::AbstractVector{<:AbstractVector},
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+    length(value_bins_by_type) == 8 ||
+        throw(DimensionMismatch("value_bins_by_type must contain exactly 8 edge vectors (got $(length(value_bins_by_type)))"))
+
+    n_points = size(x, 2)
+    n_bins = length(distance_bins) - 1
+    n_val = size(sums_3d, 3)
+    size(sums_3d, 1) == 8 && size(sums_3d, 2) == n_bins ||
+        throw(DimensionMismatch("sums must have shape (8, n_bins, n_val); got $(size(sums_3d))"))
+    size(counts_3d) == size(sums_3d) ||
+        throw(DimensionMismatch("counts and sums must have the same shape"))
+
+    for i in 1:n_points
+        x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
+        u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
+
+        for j in (i + 1):n_points
+            x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
+
+            dx = SFH.δr(x_i, x_j)
+            r = LA.norm(dx)
+
+            bin_idx = SFH.digitize(r, distance_bins)
+
+            if 1 <= bin_idx <= n_bins
+                u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
+                du = u_j - u_i
+
+                rh = SFH.r̂(x_i, x_j)
+                nh = SFH.n̂(rh)
+
+                du_L = LA.dot(du, rh)
+                du_T = LA.dot(du, nh)
+
+                du_L2 = du_L * du_L
+                du_T2 = du_T * du_T
+
+                vals = (
+                    du_L2 + du_T2,
+                    du_L2,
+                    du_T2,
+                    du_L * (du_L2 + du_T2),
+                    du_L * du_L2,
+                    du_L2 * du_T,
+                    du_L * du_T2,
+                    du_T * du_T2,
+                )
+
+                for t in 1:8
+                    vbin = SFH.digitize(vals[t], value_bins_by_type[t])
+                    n_val_t = length(value_bins_by_type[t]) - 1
+                    if 1 <= vbin <= n_val_t && vbin <= n_val
+                        @inbounds sums_3d[t, bin_idx, vbin] += vals[t]
+                        @inbounds counts_3d[t, bin_idx, vbin] += 1
+                    end
+                end
+            end
+        end
+    end
+
+    return sums_3d, counts_3d
+end
+
+function _validate_value_bins_by_type(value_bins_by_type, n_val::Int)
+    length(value_bins_by_type) == 8 ||
+        throw(DimensionMismatch("value_bins_by_type must contain exactly 8 edge vectors"))
+    for (t, vb) in enumerate(value_bins_by_type)
+        n_vt = length(vb) - 1
+        n_vt == n_val ||
+            throw(DimensionMismatch("All value bin vectors must have $(n_val + 1) edges; type $t has $(length(vb))"))
+    end
+end
+
+function _dispatch_single_pass_2d end
+function _dispatch_single_pass_2d! end
+
+function _dispatch_single_pass_2d!(
+    ::SerialBackend,
+    sums_3d::AbstractArray,
+    counts_3d::AbstractArray,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector,
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    kwargs...
+)
+    return _accumulate_single_pass_2d!(sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type)
+end
+
+function _dispatch_single_pass_2d!(
+    ::ThreadedBackend,
+    sums_3d::AbstractArray,
+    counts_3d::AbstractArray,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector,
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "Threaded in-place 2D single-pass is unavailable. Load OhMyThreads or use backend=SerialBackend().",
+        ),
+    )
+end
+
+function _dispatch_single_pass_2d!(
+    ::DistributedBackend,
+    sums_3d::AbstractArray,
+    counts_3d::AbstractArray,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector,
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "Distributed in-place 2D single-pass is unavailable. Load Distributed or use backend=SerialBackend().",
+        ),
+    )
+end
+
+function _dispatch_single_pass_2d!(
+    ::GPUBackend,
+    sums_3d::AbstractArray,
+    counts_3d::AbstractArray,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector,
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "GPU in-place 2D single-pass is unavailable. Load GPUExt or use backend=SerialBackend().",
+        ),
+    )
+end
+
+function _dispatch_single_pass_2d!(
+    ::AutoBackend,
+    sums_3d::AbstractArray,
+    counts_3d::AbstractArray,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector,
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    kwargs...
+)
+    if distributed_workers_available(Val(:distributed)) &&
+       _distributed_single_pass_2d_available(x, u, distance_bins, value_bins_by_type)
+        return _dispatch_single_pass_2d!(
+            DistributedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type;
+            kwargs...
+        )
+    end
+    if Threads.nthreads() > 1 &&
+       _threaded_single_pass_2d_available(x, u, distance_bins, value_bins_by_type)
+        return _dispatch_single_pass_2d!(
+            ThreadedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type;
+            kwargs...
+        )
+    end
+    return _dispatch_single_pass_2d!(
+        SerialBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type; kwargs...
+    )
+end
+
+function _dispatch_single_pass_2d(
+    ::SerialBackend,
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    thread_sums = nothing,
+    thread_counts = nothing,
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    OT = promote_type(float(FT1), float(FT2))
+    n_bins = length(distance_bins) - 1
+    n_val = length(value_bins_by_type[1]) - 1
+    _validate_value_bins_by_type(value_bins_by_type, n_val)
+
+    ts = isnothing(thread_sums) ? zeros(OT, 8, n_bins, n_val) : thread_sums
+    tc = isnothing(thread_counts) ? zeros(Int64, 8, n_bins, n_val) : thread_counts
+
+    return serial_calculate_structure_functions_single_pass_2d(
+        x, u, distance_bins, value_bins_by_type, ts, tc
+    )
+end
+
+function _dispatch_single_pass_2d(
+    ::ThreadedBackend,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector,
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "Threaded 2D single-pass backend is unavailable. Load the OhMyThreads extension or use backend=SerialBackend().",
+        ),
+    )
+end
+
+function _dispatch_single_pass_2d(
+    ::DistributedBackend,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector,
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "Distributed 2D single-pass backend is unavailable. Load the Distributed extension or use backend=SerialBackend().",
+        ),
+    )
+end
+
+function _dispatch_single_pass_2d(
+    ::GPUBackend,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector,
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    kwargs...
+)
+    throw(
+        ArgumentError(
+            "GPU 2D single-pass backend is unavailable. Load the GPUExt extension or use backend=SerialBackend().",
+        ),
+    )
+end
+
+_threaded_single_pass_2d_available(x, u, distance_bins, value_bins_by_type) = hasmethod(
+    _dispatch_single_pass_2d,
+    Tuple{
+        ThreadedBackend,
+        typeof(x),
+        typeof(u),
+        typeof(distance_bins),
+        typeof(value_bins_by_type),
+    },
+)
+
+_distributed_single_pass_2d_available(x, u, distance_bins, value_bins_by_type) = hasmethod(
+    _dispatch_single_pass_2d,
+    Tuple{
+        DistributedBackend,
+        typeof(x),
+        typeof(u),
+        typeof(distance_bins),
+        typeof(value_bins_by_type),
+    },
+)
+
+function _dispatch_single_pass_2d(
+    ::AutoBackend,
+    x::AbstractMatrix,
+    u::AbstractMatrix,
+    distance_bins::AbstractVector,
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    kwargs...
+)
+    if distributed_workers_available(Val(:distributed)) &&
+       _distributed_single_pass_2d_available(x, u, distance_bins, value_bins_by_type)
+        return _dispatch_single_pass_2d(
+            DistributedBackend(), x, u, distance_bins, value_bins_by_type; kwargs...
+        )
+    end
+
+    if Threads.nthreads() > 1 &&
+       _threaded_single_pass_2d_available(x, u, distance_bins, value_bins_by_type)
+        return _dispatch_single_pass_2d(
+            ThreadedBackend(), x, u, distance_bins, value_bins_by_type; kwargs...
+        )
+    end
+
+    return _dispatch_single_pass_2d(
+        SerialBackend(), x, u, distance_bins, value_bins_by_type; kwargs...
+    )
+end
+
+"""
+    calculate_structure_functions_single_pass_2d(
+        x, u, distance_bins, value_bins_by_type;
+        backend=AutoBackend(), kwargs...
+    )
+
+Compute eight native 2D joint histograms (distance × structure-function increment value)
+in a single O(N²) pair loop. Returns ``(sums, counts)`` arrays of shape
+``(8, n_distance_bins, n_value_bins)``.
+
+``value_bins_by_type`` must be a length-8 vector of edge vectors (one per native type in
+single-pass order). For complete overlap with 1D SFs, ensure the edges are padded with ``-Inf`` / ``Inf`` for catch-all overflow bins.
+
+Rotational and divergent structure functions are **not** accumulated here; use
+[`ten_type_from_eight_2d`](@ref) or marginalize then [`postprocess_single_pass_results`](@ref).
+"""
+function calculate_structure_functions_single_pass_2d(
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    backend::AbstractExecutionBackend = AutoBackend(),
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    return _dispatch_single_pass_2d(
+        backend, x, u, distance_bins, value_bins_by_type; kwargs...
+    )
 end
 
 end

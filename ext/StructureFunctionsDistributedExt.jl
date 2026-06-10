@@ -374,4 +374,72 @@ function SFC.parallel_calculate_structure_function!(
     )
 end
 
+function SFC._dispatch_single_pass_2d(
+    ::SF.DistributedBackend,
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    OT = promote_type(float(FT1), float(FT2))
+    n_bins = length(distance_bins) - 1
+    n_val = length(value_bins_by_type[1]) - 1
+    n_points = size(x, 2)
+
+    combined_reduced = Distributed.@distributed (+) for i in 1:n_points
+        local_combined = zeros(Float64, 16, n_bins, n_val)
+        x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
+        u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
+
+        for j in (i + 1):n_points
+            x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
+
+            dx = SFH.δr(x_i, x_j)
+            r = LA.norm(dx)
+
+            bin_idx = SFH.digitize(r, distance_bins)
+
+            if 1 <= bin_idx <= n_bins
+                u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
+                du = u_j - u_i
+
+                rh = SFH.r̂(x_i, x_j)
+                nh = SFH.n̂(rh)
+
+                du_L = LA.dot(du, rh)
+                du_T = LA.dot(du, nh)
+
+                du_L2 = du_L * du_L
+                du_T2 = du_T * du_T
+
+                vals = (
+                    du_L2 + du_T2,
+                    du_L2,
+                    du_T2,
+                    du_L * (du_L2 + du_T2),
+                    du_L * du_L2,
+                    du_L2 * du_T,
+                    du_L * du_T2,
+                    du_T * du_T2,
+                )
+
+                for t in 1:8
+                    vbin = SFH.digitize(vals[t], value_bins_by_type[t])
+                    n_val_t = length(value_bins_by_type[t]) - 1
+                    if 1 <= vbin <= n_val_t && vbin <= n_val
+                        local_combined[t, bin_idx, vbin] += vals[t]
+                        local_combined[t + 8, bin_idx, vbin] += 1.0
+                    end
+                end
+            end
+        end
+        local_combined
+    end
+
+    sums = OT.(combined_reduced[1:8, :, :])
+    counts = Int64.(combined_reduced[9:16, :, :])
+    return sums, counts
+end
+
 end

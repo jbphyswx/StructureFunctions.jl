@@ -2,7 +2,7 @@ module StructureFunctionObjects
 
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 
-export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2D
+export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2D, marginalize
 
 """
     AbstractStructureFunction
@@ -185,6 +185,23 @@ end
 
 function Base.Float64(sf::StructureFunction)
     return StructureFunction(sf.operator, sf.distance, Float64.(sf.values))
+end
+
+"""
+    marginalize(sf2d::StructureFunction2D)
+
+Sum ``sums`` and ``counts`` over the value-bin axis to produce a 1D
+``StructureFunctionSumsAndCounts`` (mass-conserving reduction of a 2D joint histogram).
+"""
+function marginalize(sf2d::StructureFunction2D)
+    sums_1d = vec(sum(sf2d.sums, dims = 2))
+    counts_1d = vec(sum(sf2d.counts, dims = 2))
+    return StructureFunctionSumsAndCounts(
+        sf2d.operator,
+        sf2d.distance_bins,
+        sums_1d,
+        counts_1d,
+    )
 end
 
 end # module
