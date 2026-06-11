@@ -110,7 +110,7 @@ end
     ND::Int = length(r_hat)
 
     if ND == 2
-        return LA.normalize(SA.SVector{2, FT}(r_hat[2], -r_hat[1]))
+        return SA.SVector{2, FT}(r_hat[2], -r_hat[1]) # assume normalized
     elseif ND == 3
         k_hat = SA.SVector{3, FT}(0, 0, 1)
         # Lindberg and Cho defined this order in NH and opposite in SH but we're just doing the same for both
