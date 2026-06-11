@@ -88,6 +88,20 @@ Each operator stores:
 - **Order** (n=2, 3, 4, ...) — which structure function order
 - **Projection** (if applicable) — which component to analyze
 
+### Bin Edges (AbstractBinEdges)
+
+To eliminate the $O(\log N)$ binary search overhead in distance binning, StructureFunctions.jl provides custom, fast, zero-allocation collections subtyping `AbstractBinEdges{T}`:
+
+```
+AbstractBinEdges (abstract)
+├── BinEdges           [fallback wrapper for standard vectors]
+├── LinearBinEdges     [O(1) FMA-based search for uniform ranges]
+├── LogBinEdges        [O(1) Exponent LUT Hybrid search for log ranges]
+└── InfPaddedBinEdges  [wrapper to append/prepend ±∞ boundaries]
+```
+
+These types implement custom `Base.searchsortedfirst` overrides, enabling highly efficient $O(1)$-like bin lookups within core calculations.
+
 ### Result Containers
 
 StructureFunctions.jl decouples raw accumulation, processed 1D structure functions, and 2D joint-probability binning into separate parametric result types inheriting from `AbstractStructureFunction`:
