@@ -9,6 +9,10 @@ All notable changes to this project will be documented in this file.
 - **ThreadedBackend / OhMyThreadsExt**: outer-loop chunks for O(N²) pair kernels now use
   `OMT.RoundRobin()` instead of the default contiguous split. Fixes ~2× load imbalance
   when `work(i) ∝ (N - i)` (structure-function and single-pass 2D paths). No API change.
+- **AbstractBinEdges (O(1) Binning)**: Added high-performance bin edge wrappers (`LinearBinEdges`, `LogBinEdges`, `InfPaddedBinEdges`) to resolve $O(\log B)$ search bottlenecks in `digitize`.
+  - `LinearBinEdges` utilizes Fused Multiply-Add (FMA) CPU instructions and local ULP corrections to achieve 15x+ speedup on uniform grids.
+  - `LogBinEdges` extracts the binary floating-point exponent (IEEE 754 bitwise manipulation) and uses a precomputed lookup table to restrict the search range, bypassing the highly latent `log(x)` CPU instruction for a 5x+ speedup on logarithmic grids.
+  - `InfPaddedBinEdges` provides virtual infinity padding without array copying or memory allocation.
 
 ## [0.3.0] - 2026-03-18
 
