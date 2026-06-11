@@ -28,15 +28,15 @@ FT = Float64
 x = (rand(FT, N_points), rand(FT, N_points), rand(FT, N_points))  # 3D positions
 u = (rand(FT, N_points), rand(FT, N_points), rand(FT, N_points))  # velocity
 
-sft = LongitudinalSecondOrderStructureFunction
-n_bins = 20
+sft = StructureFunctions.LongitudinalSecondOrderStructureFunction
+bins = range(0.0, 1.5, length=21)
 
 # Warmup (avoid counting compile time)
-SFC.calculate_structure_function(sft, x, u, n_bins; verbose = false, show_progress = false)
+SFC.calculate_structure_function(sft, x, u, bins; backend = SFC.ThreadedBackend(), verbose = false, show_progress = false)
 
 # Timed run
 t_start = time()
-SFC.calculate_structure_function(sft, x, u, n_bins; verbose = false, show_progress = false)
+SFC.calculate_structure_function(sft, x, u, bins; backend = SFC.ThreadedBackend(), verbose = false, show_progress = false)
 elapsed = time() - t_start
 
 result = Dict("threads" => N_threads, "N_points" => N_points, "elapsed_s" => elapsed)
