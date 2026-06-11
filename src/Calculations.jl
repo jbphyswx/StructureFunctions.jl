@@ -7,6 +7,7 @@ using Distances: Distances as DI
 using ..HelperFunctions: HelperFunctions as SFH
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 using ..StructureFunctionObjects: StructureFunctionObjects as SFO
+using ..StructureFunctions: AbstractBinEdges, LinearBinEdges, LogBinEdges
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using Base.Threads: Threads
@@ -1863,10 +1864,11 @@ function calculate_structure_function(
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::Int;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    bin_spacing = :logarithmic,
+    bin_spacing::Type{<:AbstractBinEdges} = LogBinEdges,
     verbose::Bool = true,
     show_progress::Bool = true,
     return_sums_and_counts::Bool = false,
+    kwargs...,
 ) where {T1, T2}
     N = length(x_vecs)
     """
@@ -1894,16 +1896,16 @@ function calculate_structure_function(
     end
 
     min_distance = prevfloat(min_distance) # go to the next smallest float from the min distance to make sure the true smallest distance can fit in the first bin (note this is needed so things matching min_distance don't get assigned bin '0', alternative is to check for bin 0 every time... which sounds slower
-    if bin_spacing == :linear
+    if bin_spacing === LinearBinEdges
         distance_bins = range(min_distance, max_distance, length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
-    elseif bin_spacing ∈ (:logarithmic, :log)
+    elseif bin_spacing === LogBinEdges
         distance_bins =
             10 .^
             range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
         distance_bins[1] = min_distance # combat floating point errors (may have rounded up or down during operations)
         distance_bins[end] = max_distance # combat floating point errors (may have rounded up or down during operations)
     else
-        error("bin_spacing must be :linear or :logarithmic/:log")
+        throw(ArgumentError("bin_spacing must be LinearBinEdges or LogBinEdges"))
     end
     FT3 = eltype(distance_bins)
     distance_bins = SA.SVector{n_distance_bins, Tuple{FT3, FT3}}(
@@ -1918,6 +1920,7 @@ function calculate_structure_function(
         verbose = verbose,
         show_progress = show_progress,
         return_sums_and_counts = return_sums_and_counts,
+        kwargs...,
     )
 end
 
@@ -2176,10 +2179,11 @@ function calculate_structure_function(
     u_arr::AbstractArray{FT2},
     distance_bins::Int;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    bin_spacing = :logarithmic,
+    bin_spacing::Type{<:AbstractBinEdges} = LogBinEdges,
     verbose::Bool = true,
     show_progress::Bool = true,
     return_sums_and_counts::Bool = false,
+    kwargs...,
 ) where {FT1 <: Number, FT2 <: Number}
     """
     Here we assume that the distance bins are evenly spaced
@@ -2207,16 +2211,16 @@ function calculate_structure_function(
     end
 
     min_distance = prevfloat(min_distance) # go to the next smallest float from the min distance to make sure the true smallest distance can fit in the first bin (note this is needed so things matching min_distance don't get assigned bin '0', alternative is to check for bin 0 every time... which sounds slower
-    if bin_spacing == :linear
+    if bin_spacing === LinearBinEdges
         distance_bins = range(min_distance, max_distance, length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
-    elseif bin_spacing ∈ (:logarithmic, :log)
+    elseif bin_spacing === LogBinEdges
         distance_bins =
             10 .^
             range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
         distance_bins[1] = min_distance # combat floating point errors (may have rounded up or down during operations)
         distance_bins[end] = max_distance # combat floating point errors (may have rounded up or down during operations)
     else
-        error("bin_spacing must be :linear or :logarithmic/:log")
+        throw(ArgumentError("bin_spacing must be LinearBinEdges or LogBinEdges"))
     end
     FT3 = eltype(distance_bins)
     distance_bins = SA.SVector{n_distance_bins, Tuple{FT3, FT3}}(
@@ -2231,6 +2235,7 @@ function calculate_structure_function(
         verbose = verbose,
         show_progress = show_progress,
         return_sums_and_counts = return_sums_and_counts,
+        kwargs...,
     )
 end
 
