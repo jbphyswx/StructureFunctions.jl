@@ -1,5 +1,6 @@
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    LogBinEdges, LinearBinEdges
 using Test: Test
 using StaticArrays: StaticArrays as SA
 using Distributed: Distributed
@@ -11,7 +12,8 @@ if Distributed.nprocs() == 1
 end
 
 Distributed.@everywhere using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    LogBinEdges, LinearBinEdges
 Distributed.@everywhere using StaticArrays: StaticArrays as SA
 Distributed.@everywhere using SharedArrays: SharedArrays
 
@@ -72,5 +74,33 @@ Test.@testset "Parallel Equivalence Verification" begin
         Test.@test out_serial[1] ≈ out_dist[1]
         Test.@test out_serial[2] ≈ out_dist[2]
         Test.@test counts_serial == counts_dist
+    end
+
+    # 4. Distributed with bin count (Int) and LogBinEdges
+    res_dist_int = SFC.parallel_calculate_structure_function(
+        sf_type,
+        sx,
+        su,
+        2;  # n_bins = 2
+        bin_spacing = LogBinEdges,
+        verbose = false,
+        show_progress = false,
+        return_sums_and_counts = true,
+    )
+
+    res_serial_int = SFC.calculate_structure_function(
+        sf_type,
+        x,
+        u,
+        2;
+        bin_spacing = LogBinEdges,
+        verbose = false,
+        show_progress = false,
+        return_sums_and_counts = true,
+    )
+
+    Test.@testset "Serial vs Distributed (Int/LogBinEdges)" begin
+        Test.@test res_serial_int.sums ≈ res_dist_int.sums
+        Test.@test res_serial_int.counts == res_dist_int.counts
     end
 end

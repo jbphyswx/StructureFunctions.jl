@@ -10,7 +10,8 @@ using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using SharedArrays: SharedArrays
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
-    HelperFunctions as SFH, StructureFunctionTypes as SFT
+    HelperFunctions as SFH, StructureFunctionTypes as SFT,
+    AbstractBinEdges, LinearBinEdges, LogBinEdges
 
 
 export parallel_calculate_structure_function
@@ -100,10 +101,11 @@ function SFC.parallel_calculate_structure_function(
     u_vecs::Tuple,
     distance_bins::Int;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    bin_spacing = :logarithmic,
+    bin_spacing::Type{<:AbstractBinEdges} = LogBinEdges,
     verbose = true,
     show_progress = true,
     return_sums_and_counts::Bool = false,
+    kwargs...,
 )
     N = length(x_vecs)
     """
@@ -134,16 +136,16 @@ function SFC.parallel_calculate_structure_function(
 
 
     min_distance = prevfloat(min_distance) # go to the next smallest float from the min distance to make sure the true smallest distance can fit in the first bin (note this is needed so things matching min_distance don't get assigned bin '0', alternative is to check for bin 0 every time... which sounds slower
-    if bin_spacing == :linear
+    if bin_spacing === LinearBinEdges
         distance_bins = range(min_distance, max_distance, length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
-    elseif bin_spacing ∈ (:logarithmic, :log)
+    elseif bin_spacing === LogBinEdges
         distance_bins =
             10 .^
             range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
         distance_bins[1] = min_distance # combat floating point errors (may have rounded up or down during operations)
         distance_bins[end] = max_distance # combat floating point errors (may have rounded up or down during operations)
     else
-        error("bin_spacing must be :linear or :logarithmic/:log")
+        throw(ArgumentError("bin_spacing must be LinearBinEdges or LogBinEdges"))
     end
     FT3 = eltype(distance_bins)
     distance_bins = SA.SVector{n_distance_bins, Tuple{FT3, FT3}}(
@@ -160,6 +162,7 @@ function SFC.parallel_calculate_structure_function(
         verbose = verbose,
         show_progress = show_progress,
         return_sums_and_counts = return_sums_and_counts,
+        kwargs...,
     )
 end
 
