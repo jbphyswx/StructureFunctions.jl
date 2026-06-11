@@ -7,6 +7,7 @@ using LinearAlgebra: LinearAlgebra as LA
 import LinearAlgebra: normalize # import directly ONLY if extending
 
 using StaticArrays: StaticArrays as SA
+using Distances: Distances as DI
 @inline create_svector(x) = SA.SVector{length(x)}(x) # helper function to create a static vector from a vector without splatting
 
 
@@ -99,6 +100,11 @@ end
     """
     return LA.normalize(δr(x1, x2))
 end
+
+@inline r̂(x1, x2, ::DI.Euclidean, distance) = δr(x1, x2) / distance
+# NOTE: LA.normalize is fast here because the vector is a StaticArray.SVector.
+# If dynamic Vectors are ever used, LA.normalize would be ~2.5x slower due to scaling checks.
+@inline r̂(x1, x2, ::DI.PreMetric, distance) = LA.normalize(δr(x1, x2))
 
 
 @inline function n̂(r_hat::AbstractVector{FT}) where {FT}

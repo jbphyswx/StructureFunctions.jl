@@ -1716,7 +1716,9 @@ function calculate_structure_function_2d_i!(
         distance = distance_metric(X1, X2)
         dist_bin = SFH.digitize(distance, distance_bins_vec)
         if 1 <= dist_bin < N3
-            val = structure_function_type(U2 - U1, SFH.r̂(X1, X2))
+            
+            rh = SFH.r̂(X1, X2, distance_metric, distance) # Use multiple dispatch to avoid duplicate vector subtraction and sqrt/norm where possible
+            val = structure_function_type(U2 - U1, rh)
             val_bin = SFH.digitize(val, value_bins_vec)
             
             if 1 <= val_bin < N4
@@ -1801,7 +1803,9 @@ function calculate_structure_function_i!(
         distance = distance_metric(X1, X2)
         bin = SFH.digitize(distance, distance_bins_vec)
         if 1 <= bin < N3
-            @inbounds output[bin] += structure_function_type(U2 - U1, SFH.r̂(X1, X2))
+            # Use multiple dispatch to avoid duplicate vector subtraction and sqrt/norm where possible
+            rh = SFH.r̂(X1, X2, distance_metric, distance)
+            @inbounds output[bin] += structure_function_type(U2 - U1, rh)
             @inbounds counts[bin] += 1
         end
     end
@@ -2155,7 +2159,9 @@ function calculate_structure_function_i!(
         distance = distance_metric(X1, X2)
         bin = SFH.digitize(distance, distance_bins_vec)
         if 1 <= bin < N3
-            @inbounds output[bin] += structure_function_type(U2 - U1, SFH.r̂(X1, X2))
+            # Use multiple dispatch to avoid duplicate vector subtraction and sqrt/norm where possible
+            rh = SFH.r̂(X1, X2, distance_metric, distance)
+            @inbounds output[bin] += structure_function_type(U2 - U1, rh)
             @inbounds counts[bin] += 1
         end
     end
@@ -2343,11 +2349,12 @@ function serial_calculate_structure_functions_single_pass(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
     sums::AbstractMatrix{OT},
-    counts::AbstractMatrix{Int64}
+    counts::AbstractMatrix{Int64};
+    kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
     fill!(sums, zero(OT))
     fill!(counts, 0)
-    return calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins)
+    return calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins; kwargs...)
 end
 
 """Serial pair-loop accumulation into native ``(8, n_bins)`` buffers (no allocation)."""
@@ -2356,7 +2363,8 @@ function _accumulate_single_pass_1d!(
     counts::AbstractMatrix{Int64},
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
-    distance_bins::AbstractVector{FT3},
+    distance_bins::AbstractVector{FT3};
+    distance_metric::DI.PreMetric = DI.Euclidean(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
     n_points = size(x, 2)
     n_bins = length(distance_bins) - 1
@@ -2372,16 +2380,15 @@ function _accumulate_single_pass_1d!(
         for j in (i + 1):n_points
             x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
 
-            dx = SFH.δr(x_i, x_j)
-            r = LA.norm(dx)
-
+            r = distance_metric(x_i, x_j)
             bin_idx = SFH.digitize(r, distance_bins)
 
             if 1 <= bin_idx <= n_bins
                 u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
                 du = u_j - u_i
 
-                rh = SFH.r̂(x_i, x_j)
+                # Use multiple dispatch to avoid duplicate vector subtraction and sqrt/norm where possible
+                rh = SFH.r̂(x_i, x_j, distance_metric, r)
                 nh = SFH.n̂(rh)
 
                 du_L = LA.dot(du, rh)
@@ -2537,7 +2544,7 @@ function _dispatch_single_pass(
     ts = isnothing(thread_sums) ? zeros(OT, 8, n_bins) : thread_sums
     tc = isnothing(thread_counts) ? zeros(Int64, 8, n_bins) : thread_counts
     
-    sums, counts = serial_calculate_structure_functions_single_pass(x, u, distance_bins, ts, tc)
+    sums, counts = serial_calculate_structure_functions_single_pass(x, u, distance_bins, ts, tc; kwargs...)
     return postprocess_single_pass_results(sums, counts, distance_bins)
 end
 
@@ -2779,12 +2786,13 @@ function serial_calculate_structure_functions_single_pass_2d(
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector},
     sums_3d::AbstractArray{OT, 3},
-    counts_3d::AbstractArray{Int64, 3},
+    counts_3d::AbstractArray{Int64, 3};
+    kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
     fill!(sums_3d, zero(OT))
     fill!(counts_3d, 0)
     return calculate_structure_functions_single_pass_2d!(
-        sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type
+        sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type; kwargs...
     )
 end
 
@@ -2818,7 +2826,8 @@ function _accumulate_single_pass_2d!(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector},
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    distance_metric::DI.PreMetric = DI.Euclidean(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
     length(value_bins_by_type) == 8 ||
         throw(DimensionMismatch("value_bins_by_type must contain exactly 8 edge vectors (got $(length(value_bins_by_type)))"))
@@ -2838,16 +2847,15 @@ function _accumulate_single_pass_2d!(
         for j in (i + 1):n_points
             x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
 
-            dx = SFH.δr(x_i, x_j)
-            r = LA.norm(dx)
-
+            r = distance_metric(x_i, x_j)
             bin_idx = SFH.digitize(r, distance_bins)
 
             if 1 <= bin_idx <= n_bins
                 u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
                 du = u_j - u_i
 
-                rh = SFH.r̂(x_i, x_j)
+                # Use multiple dispatch to avoid duplicate vector subtraction and sqrt/norm where possible
+                rh = SFH.r̂(x_i, x_j, distance_metric, r)
                 nh = SFH.n̂(rh)
 
                 du_L = LA.dot(du, rh)
@@ -2905,7 +2913,7 @@ function _dispatch_single_pass_2d!(
     value_bins_by_type::AbstractVector{<:AbstractVector};
     kwargs...
 )
-    return _accumulate_single_pass_2d!(sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type)
+    return _accumulate_single_pass_2d!(sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type; kwargs...)
 end
 
 function _dispatch_single_pass_2d!(

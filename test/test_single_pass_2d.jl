@@ -100,3 +100,82 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     Test.@test t_sums ≈ sums_2d
     Test.@test t_counts == counts_2d
 end
+
+Test.@testset "Single-Pass 2D with Custom Distance Metric (Cityblock)" begin
+    using Distances: Distances as DI
+
+    Random.seed!(42)
+    n_points = 40
+    x = rand(n_points, 2)' .* 50000.0
+    u = randn(2, n_points) .* 0.5
+
+    distance_bins = exp.(range(log(1000.0), log(50000.0), length = 6))
+    value_bins_by_type = _synthetic_value_bins_by_type(10; pad_infinite = true)
+    n_val = length(value_bins_by_type[1]) - 1
+    n_bins = length(distance_bins) - 1
+    metric = DI.Cityblock()
+
+    sums_2d = zeros(Float64, 8, n_bins, n_val)
+    counts_2d = zeros(Int64, 8, n_bins, n_val)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_2d, counts_2d, x, u, distance_bins, value_bins_by_type;
+        backend = SFC.SerialBackend(),
+        distance_metric = metric
+    )
+
+    sft_types = [
+        SFT.SecondOrderStructureFunctionType(),
+        SFT.LongitudinalSecondOrderStructureFunctionType(),
+        SFT.TransverseSecondOrderStructureFunctionType(),
+        SFT.ThirdOrderStructureFunctionType(),
+        SFT.DiagonalConsistentThirdOrderStructureFunctionType(),
+        SFT.DiagonalInconsistentThirdOrderStructureFunctionType(),
+        SFT.OffDiagonalInconsistentThirdOrderStructureFunctionType(),
+        SFT.OffDiagonalConsistentThirdOrderStructureFunctionType(),
+    ]
+
+    x_tuple = (x[1, :], x[2, :])
+    u_tuple = (u[1, :], u[2, :])
+    bins_tuples = [(distance_bins[i], distance_bins[i + 1]) for i in 1:n_bins]
+
+    # Slot 4 is δu_L·|δu|²; ThirdOrderStructureFunctionType accumulates |δu|³ instead.
+    per_type_indices = (1, 2, 3, 5, 6, 7, 8)
+
+    for t in per_type_indices
+        sf2d = SFC.calculate_structure_function(
+            sft_types[t],
+            x_tuple,
+            u_tuple,
+            bins_tuples,
+            value_bins_by_type[t];
+            backend = SFC.SerialBackend(),
+            distance_metric = metric,
+            verbose = false,
+            show_progress = false,
+        )
+        Test.@test sums_2d[t, :, :] ≈ sf2d.sums
+        Test.@test counts_2d[t, :, :] ≈ sf2d.counts
+    end
+
+    sums_1d, counts_1d = SFC.calculate_structure_functions_single_pass(
+        x, u, distance_bins;
+        backend = SFC.SerialBackend(),
+        distance_metric = metric
+    )
+
+    for t in 1:8
+        marg_sums = vec(dropdims(sum(sums_2d[t:t, :, :], dims = 3), dims = 1))
+        marg_counts = vec(dropdims(sum(counts_2d[t:t, :, :], dims = 3), dims = 1))
+        Test.@test marg_sums ≈ vec(sums_1d[t, :])
+        Test.@test marg_counts == vec(counts_1d[t, :])
+    end
+
+    # Compare ThreadedBackend with SerialBackend
+    t_sums, t_counts = SFC.calculate_structure_functions_single_pass_2d(
+        x, u, distance_bins, value_bins_by_type;
+        backend = SFC.AutoBackend(),
+        distance_metric = metric
+    )
+    Test.@test t_sums ≈ sums_2d
+    Test.@test t_counts == counts_2d
+end
