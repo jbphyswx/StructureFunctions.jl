@@ -174,6 +174,7 @@ function SFC._dispatch_single_pass(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
     OT = promote_type(float(FT1), float(FT2))
@@ -190,16 +191,14 @@ function SFC._dispatch_single_pass(
         for j in (i+1):n_points
             x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
             
-            dx = SFH.δr(x_i, x_j)
-            r = LA.norm(dx)
-            
+            r = distance_metric(x_i, x_j)
             bin_idx = SFH.digitize(r, distance_bins)
             
             if 1 <= bin_idx <= n_bins
                 u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
                 du = u_j - u_i
                 
-                rh = SFH.r̂(x_i, x_j)
+                rh = SFH.r̂(x_i, x_j, distance_metric, r)
                 nh = SFH.n̂(rh)
                 
                 du_L = LA.dot(du, rh)
@@ -380,6 +379,7 @@ function SFC._dispatch_single_pass_2d(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
     OT = promote_type(float(FT1), float(FT2))
@@ -395,16 +395,14 @@ function SFC._dispatch_single_pass_2d(
         for j in (i + 1):n_points
             x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
 
-            dx = SFH.δr(x_i, x_j)
-            r = LA.norm(dx)
-
+            r = distance_metric(x_i, x_j)
             bin_idx = SFH.digitize(r, distance_bins)
 
             if 1 <= bin_idx <= n_bins
                 u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
                 du = u_j - u_i
 
-                rh = SFH.r̂(x_i, x_j)
+                rh = SFH.r̂(x_i, x_j, distance_metric, r)
                 nh = SFH.n̂(rh)
 
                 du_L = LA.dot(du, rh)
