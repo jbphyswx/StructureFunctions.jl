@@ -7,6 +7,7 @@ using PrecompileTools: PrecompileTools
 # @everywhere include("ParallelCalculations.jl") # this works w/ include("src/StructureFunctions.jl") but not w/ using StructureFunctions, and the former dumps directly into Main...
 # using NaNStatistics # consider making this a strong dependency for easier use, needed for parallel but I'm sure we'll need it once we work with real data...
 
+include("BinEdges.jl")
 include("HelperFunctions.jl")
 include("StructureFunctionTypes.jl")
 include("StructureFunctionObjects.jl")
@@ -23,6 +24,7 @@ using .Calculations
 using .SpectralAnalysis
 
 # Re-export key APIs
+export AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges, InfPaddedBinEdges
 export calculate_structure_function, calculate_structure_function!, calculate_structure_functions_single_pass,
     calculate_structure_functions_single_pass!, calculate_structure_functions_single_pass_2d,
     calculate_structure_functions_single_pass_2d!, postprocess_single_pass_results, ten_type_from_eight_2d

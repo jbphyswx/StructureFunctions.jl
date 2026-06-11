@@ -25,7 +25,8 @@ function main()
     u = randn(FT, 2, N)
 
     # 50 log-spaced bin edges (length 51)
-    distance_bins = collect(exp.(range(log(0.01), log(10.0), length=51)))
+    distance_bins_raw = collect(exp.(range(log(0.01), log(10.0), length=51)))
+    distance_bins = LogBinEdges(distance_bins_raw)
 
     # 2. Warmup run (excludes compilation time from profile)
     println("Running warmup calculations to trigger JIT compilation...")

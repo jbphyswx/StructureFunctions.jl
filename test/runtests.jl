@@ -11,6 +11,9 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Helpers Test ---")
     include("test_helpers.jl")
 
+    println("--- Running BinEdges Test ---")
+    include("test_bin_edges.jl")
+
     println("--- Running Core Correctness Test ---")
     include("test_core_correctness.jl")
 

@@ -2450,7 +2450,7 @@ function _dispatch_single_pass!(
     distance_bins::AbstractVector;
     kwargs...
 )
-    return _accumulate_single_pass_1d!(sums, counts, x, u, distance_bins)
+    return _accumulate_single_pass_1d!(sums, counts, x, u, distance_bins; kwargs...)
 end
 
 function _dispatch_single_pass!(
@@ -3015,7 +3015,7 @@ function _dispatch_single_pass_2d(
     tc = isnothing(thread_counts) ? zeros(Int64, 8, n_bins, n_val) : thread_counts
 
     return serial_calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, value_bins_by_type, ts, tc
+        x, u, distance_bins, value_bins_by_type, ts, tc; kwargs...
     )
 end
 
