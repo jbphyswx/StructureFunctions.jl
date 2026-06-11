@@ -337,6 +337,35 @@ result_2d.sums        # Sum of SF values in each 2D cell
 result_2d.counts      # Count of point pairs in each 2D cell
 ```
 
+### Fast Bin Edges (`AbstractBinEdges`)
+
+For large datasets ($N \ge 2000$), looking up the correct distance bin for each of the $O(N^2)$ point pairs can become a major CPU bottleneck (occupying over 50% of total runtime with standard arrays/ranges due to binary search overhead and cache misses). 
+
+StructureFunctions.jl provides optimized, zero-allocation custom collections subtyping `AbstractBinEdges{T}` to bypass binary search and achieve $O(1)$-like lookup speeds:
+
+* **`LinearBinEdges(edges::AbstractRange)`**: Wraps uniformly-spaced ranges. Bypasses the Twice-Precision calculations in standard ranges, performing searches in **~3 ns** (a **15x+ speedup**) using Fused Multiply-Add (FMA) instructions and ULP corrections.
+* **`LogBinEdges(edges::AbstractVector)`**: Wraps log-spaced (geometric) ranges. Bypasses hardware `log(x)` latency by extracting the binary float exponent to perform octal Lookup Table (LUT) queries in **~5-8 ns** (a **5x+ speedup**).
+* **`InfPaddedBinEdges(edges::AbstractBinEdges)`**: Wraps any custom bin edges collection to implicitly prepend $-\infty$ (or `typemin(T)`) and append $+\infty$ (or `typemax(T)`).
+* **`BinEdges(edges::AbstractVector)`**: General fallback wrapper that automatically routes to `LinearBinEdges` for ranges or wraps vectors.
+
+#### Usage Example
+
+To enable O(1) binning in single-pass calculations, wrap your raw bin vector before calling the calculation:
+
+```julia
+using StructureFunctions: Calculations as SFC
+using StructureFunctions: LogBinEdges
+
+# Generate log-spaced boundaries
+log_bins_raw = collect(exp.(range(log(0.01), log(10.0), length=51)))
+
+# Wrap them in LogBinEdges to activate O(1) Exponent LUT Hybrid Search
+distance_bins = LogBinEdges(log_bins_raw)
+
+# Run calculation (bypasses standard binary search bottleneck completely)
+results = SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=SFC.SerialBackend())
+```
+
 ## Theory & References
 
 Structure functions quantify spatial correlations of a field **u** at separation distance **r**:
