@@ -63,7 +63,8 @@ function _parallel_calculate_structure_function_core(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
-) where {RSAC}
+    count_eltype::Type{CT} = UInt32,
+) where {RSAC, CT}
     if verbose
         @info("calculating structure function (distributed reduction)")
     end
@@ -81,6 +82,7 @@ function _parallel_calculate_structure_function_core(
                 u_vecs,
                 distance_bins;
                 distance_metric = distance_metric,
+                count_eltype = count_eltype,
             )
         end
 
@@ -242,7 +244,8 @@ function SFC.parallel_calculate_structure_function(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
-)
+    count_eltype::Type{CT} = UInt32,
+) where {CT}
     if verbose
         @info("calculating 2D joint structure function (distributed reduction)")
     end
@@ -257,6 +260,7 @@ function SFC.parallel_calculate_structure_function(
                 distance_bins,
                 value_bins;
                 distance_metric = distance_metric,
+                count_eltype = count_eltype,
             )
         end
     return sums_and_counts
@@ -285,13 +289,13 @@ end
 
 function SFC.parallel_calculate_structure_function!(
     sums::AbstractVector{OT},
-    counts::AbstractVector{OT},
+    counts::AbstractVector{CT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector;
     kwargs...,
-) where {OT}
+) where {OT, CT}
     result = SFC.parallel_calculate_structure_function(
         structure_function_type,
         x_vecs,
@@ -307,13 +311,13 @@ end
 
 function SFC.parallel_calculate_structure_function!(
     sums::AbstractVector{OT},
-    counts::AbstractVector{OT},
+    counts::AbstractVector{CT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector{Tuple{FT3, FT3}};
     kwargs...,
-) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, CT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
     N_dims = size(x_arr, 1)
     x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
     u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
@@ -330,14 +334,14 @@ end
 
 function SFC.parallel_calculate_structure_function!(
     sums_2d::AbstractMatrix{OT},
-    counts_2d::AbstractMatrix{OT},
+    counts_2d::AbstractMatrix{CT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
     kwargs...,
-) where {OT}
+) where {OT, CT}
     result = SFC.parallel_calculate_structure_function(
         structure_function_type,
         x_vecs,
@@ -353,14 +357,14 @@ end
 
 function SFC.parallel_calculate_structure_function!(
     sums_2d::AbstractMatrix{OT},
-    counts_2d::AbstractMatrix{OT},
+    counts_2d::AbstractMatrix{CT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector{Tuple{FT3, FT3}},
     value_bins::AbstractVector;
     kwargs...,
-) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, CT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
     N_dims = size(x_arr, 1)
     x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
     u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)

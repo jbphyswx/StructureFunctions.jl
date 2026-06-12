@@ -36,7 +36,7 @@ end
 """
     StructureFunctionSumsAndCounts{FT, OT, BT, VT}
 
-Intermediate result object containing raw sums and contribution counts.
+Intermediate result object containing raw sums and per-bin pair counts (integer).
 Useful for aggregating measurements before final averaging.
 """
 struct StructureFunctionSumsAndCounts{
@@ -44,21 +44,22 @@ struct StructureFunctionSumsAndCounts{
     OT <: SFT.AbstractStructureFunctionType,
     BT,
     VT,
+    CT,
 } <: AbstractStructureFunction
     operator::OT
     distance::BT
     sums::VT
-    counts::VT
+    counts::CT
 
     function StructureFunctionSumsAndCounts(
         operator::OT,
         distance::BT,
         sums::VT,
-        counts::VT,
-    ) where {OT, BT, VT}
+        counts::CT,
+    ) where {OT, BT, VT, CT}
         ((length(distance) == length(sums)) && (length(sums) == length(counts))) || throw(DimensionMismatch("Containers must have the same length (got distance: $(length(distance)), sums: $(length(sums)), counts: $(length(counts)))"))
-        FT = eltype(VT)
-        return new{FT, OT, BT, VT}(operator, distance, sums, counts)
+        FT = eltype(sums)
+        return new{FT, OT, BT, VT, CT}(operator, distance, sums, counts)
     end
 end
 
@@ -80,23 +81,24 @@ struct StructureFunction2D{
     BT,
     VT,
     MT,
+    CT,
 } <: AbstractStructureFunction
     operator::OT
     distance_bins::BT
     value_bins::VT
     sums::MT
-    counts::MT
+    counts::CT
 
     function StructureFunction2D(
         operator::OT,
         distance_bins::BT,
         value_bins::VT,
         sums::MT,
-        counts::MT,
-    ) where {OT, BT, VT, MT}
+        counts::CT,
+    ) where {OT, BT, VT, MT, CT}
         (size(sums) == size(counts)) || throw(DimensionMismatch("Sums and counts matrices must have identical shape (got sums: $(size(sums)), counts: $(size(counts)))"))
         FT = eltype(sums)
-        return new{FT, OT, BT, VT, MT}(operator, distance_bins, value_bins, sums, counts)
+        return new{FT, OT, BT, VT, MT, CT}(operator, distance_bins, value_bins, sums, counts)
     end
 end
 
