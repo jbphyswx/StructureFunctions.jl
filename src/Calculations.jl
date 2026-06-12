@@ -14,7 +14,8 @@ using Base.Threads: Threads
 using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or replace with Polyester/SIMD as part of modernization
 
 export calculate_structure_function, parallel_calculate_structure_function,
-    gpu_calculate_structure_function, calculate_structure_function_from_file,
+    gpu_calculate_structure_function, gpu_calculate_structure_function!,
+    calculate_structure_function_from_file,
     AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
     GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend,
     serial_calculate_structure_function, threaded_calculate_structure_function,
@@ -26,7 +27,7 @@ export calculate_structure_function, parallel_calculate_structure_function,
     postprocess_single_pass_results,
     ten_type_from_eight_2d,
     serial_calculate_structure_function!, threaded_calculate_structure_function!,
-    calculate_structure_function!
+    gpu_calculate_structure_function!, calculate_structure_function!
 
 abstract type AbstractExecutionBackend end
 
@@ -363,15 +364,25 @@ end
 
 function _dispatch_execution_backend!(
     backend::GPUBackend,
-    sums,
-    counts,
+    sums::AbstractVector{OT},
+    counts::AbstractVector{CT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     x,
     u,
     distance_bins;
     kwargs...,
-)
-    throw(ArgumentError("In-place calculate_structure_function! is not supported on GPU backend."))
+) where {OT, CT}
+    gpu_calculate_structure_function!(
+        sums,
+        counts,
+        structure_function_type,
+        backend.backend,
+        x,
+        u,
+        distance_bins;
+        kwargs...,
+    )
+    return nothing
 end
 
 function _dispatch_execution_backend!(
@@ -1134,6 +1145,21 @@ This stub exists so the extension can legally extend this function.
 """
 function gpu_calculate_structure_function end
 
+"""
+    gpu_calculate_structure_function!(output_sums, output_counts, ...)
+
+In-place GPU structure function reduction. Requires the `GPUExt` extension.
+Accumulates into caller-owned `output_sums` and `output_counts` (same contract as
+`serial_calculate_structure_function!` / `threaded_calculate_structure_function!`).
+"""
+function gpu_calculate_structure_function!(args...; kwargs...)
+    throw(
+        ArgumentError(
+            "GPU in-place backend is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
+        ),
+    )
+end
+
 # Stub for file extensions
 function calculate_structure_function_from_file end
 
@@ -1466,7 +1492,7 @@ end
 
 function serial_calculate_structure_function!(
     output::AbstractVector{OT},
-    counts::AbstractVector{OT},
+    counts::AbstractVector{CT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
@@ -1474,7 +1500,7 @@ function serial_calculate_structure_function!(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose::Bool = true,
     show_progress::Bool = true,
-) where {OT, T1, T2, FT3}
+) where {OT, CT, T1, T2, FT3}
     N = length(x_vecs)
     N3 = length(distance_bins)
 
@@ -1514,14 +1540,15 @@ function serial_calculate_structure_function(
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
     ::Val{RSAC};
+    count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {T1, T2, FT3, RSAC}
+) where {T1, T2, FT3, RSAC, CT}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
     OT = promote_type(float(FT1), float(FT2))
     N3 = length(distance_bins)
     output = zeros(OT, N3)
-    counts = zeros(OT, N3)
+    counts = zeros(CT, N3)
 
     serial_calculate_structure_function!(
         output,
@@ -1541,7 +1568,6 @@ function serial_calculate_structure_function(
             counts,
         )
     else # do the mean in each bin.
-        # Use explicit loop instead of broadcast to satisfy JET and avoid Makie dispatch
         output_div = similar(output)
         for k in eachindex(output)
             c = counts[k]
@@ -1568,7 +1594,7 @@ end
 
 function serial_calculate_structure_function!(
     sums_2d::AbstractMatrix{OT},
-    counts_2d::AbstractMatrix{OT},
+    counts_2d::AbstractMatrix{CT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
@@ -1577,7 +1603,7 @@ function serial_calculate_structure_function!(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose::Bool = true,
     show_progress::Bool = true,
-) where {OT, T1, T2, FT3}
+) where {OT, CT, T1, T2, FT3}
     distance_bins_vec = flat_bin_edges(distance_bins)
     value_bins_vec = flat_bin_edges(value_bins)
 
@@ -1611,8 +1637,9 @@ function serial_calculate_structure_function(
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
     value_bins::AbstractVector;
+    count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {T1, T2, FT3}
+) where {T1, T2, FT3, CT}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
     OT = promote_type(float(FT1), float(FT2))
@@ -1621,7 +1648,7 @@ function serial_calculate_structure_function(
     N4 = length(value_bins_vec) - 1
 
     sums_2d = zeros(OT, N3, N4)
-    counts_2d = zeros(OT, N3, N4)
+    counts_2d = zeros(CT, N3, N4)
 
     serial_calculate_structure_function!(
         sums_2d,
@@ -1645,7 +1672,7 @@ end
 
 function serial_calculate_structure_function!(
     sums_2d::AbstractMatrix{OT},
-    counts_2d::AbstractMatrix{OT},
+    counts_2d::AbstractMatrix,
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
@@ -1691,7 +1718,7 @@ end
 
 function calculate_structure_function_2d_i!(
     sums_2d::AbstractMatrix{OT},
-    counts_2d::AbstractMatrix{OT},
+    counts_2d::AbstractMatrix,
     ::Val{N},
     structure_function_type::SFT.AbstractStructureFunctionType,
     i::Int,
@@ -1739,7 +1766,8 @@ function calculate_structure_function_2d_i(
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-)
+    count_eltype::Type{CT} = UInt32,
+) where {CT}
     N = length(x_vecs)
     FT1 = eltype(x_vecs[1])
     FT2 = eltype(u_vecs[1])
@@ -1751,7 +1779,7 @@ function calculate_structure_function_2d_i(
 
     OT = promote_type(float(FT1), float(FT2))
     local_sums = zeros(OT, N3, N4)
-    local_counts = zeros(OT, N3, N4)
+    local_counts = zeros(CT, N3, N4)
 
     vN = Val(N)
     calculate_structure_function_2d_i!(
@@ -1780,7 +1808,7 @@ end
 
 function calculate_structure_function_i!(
     output::AbstractVector{OT},
-    counts::AbstractVector{OT},
+    counts::AbstractVector,
     ::Val{N},
     structure_function_type::SFT.AbstractStructureFunctionType,
     i::Int,
@@ -1827,11 +1855,12 @@ function calculate_structure_function_i(
     u_vecs::Tuple,
     distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-)
+    count_eltype::Type{CT} = UInt32,
+) where {CT}
     OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
     N3 = length(distance_bins)
     local_output = zeros(OT, N3)
-    local_counts = zeros(OT, N3)
+    local_counts = zeros(CT, N3)
 
     # Kernel expects edges
     FT3 = eltype(eltype(distance_bins))
@@ -2024,7 +2053,7 @@ end
 
 function serial_calculate_structure_function!(
     output::AbstractVector{OT},
-    counts::AbstractVector{OT},
+    counts::AbstractVector{CT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
@@ -2032,7 +2061,7 @@ function serial_calculate_structure_function!(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose::Bool = true,
     show_progress::Bool = true,
-) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, CT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
     N3 = length(distance_bins)
 
     # Create a stable Vector for bins edges
@@ -2102,12 +2131,13 @@ function serial_calculate_structure_function(
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector{Tuple{FT3, FT3}},
     ::Val{RSAC};
+    count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC, CT}
     OT = promote_type(float(FT1), float(FT2))
     N3 = length(distance_bins)
     output = zeros(OT, N3)
-    counts = zeros(OT, N3)
+    counts = zeros(CT, N3)
 
     serial_calculate_structure_function!(
         output,
@@ -2127,7 +2157,6 @@ function serial_calculate_structure_function(
             counts,
         )
     else # do the mean in each bin.
-        # Use explicit loop instead of broadcast to satisfy JET and avoid Makie dispatch
         output_div = similar(output)
         for k in eachindex(output)
             c = counts[k]
@@ -2138,8 +2167,8 @@ function serial_calculate_structure_function(
 end
 
 function calculate_structure_function_i!(
-    output::AbstractVector{FT},
-    counts::AbstractVector{FT},
+    output::AbstractVector{OT},
+    counts::AbstractVector,
     ::Val{N},
     structure_function_type::SFT.AbstractStructureFunctionType,
     i::Int,
@@ -2147,7 +2176,7 @@ function calculate_structure_function_i!(
     u_arr::AbstractArray{FT2},
     distance_bins_vec::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {FT, N, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, N, FT1 <: Number, FT2 <: Number, FT3 <: Number}
     N3 = length(distance_bins_vec)
     iter_inds = axes(x_arr, 2)
 
