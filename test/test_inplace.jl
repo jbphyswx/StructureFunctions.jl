@@ -34,7 +34,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         )
 
         sums = zeros(Float64, n_dist)
-        counts = zeros(Float64, n_dist)
+        counts = zeros(UInt32, n_dist)
 
         # Mutate
         SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_tuple, u_tuple, distance_bins; verbose=false, show_progress=false)
@@ -55,7 +55,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         )
 
         sums = zeros(Float64, n_dist)
-        counts = zeros(Float64, n_dist)
+        counts = zeros(UInt32, n_dist)
 
         SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins; verbose=false, show_progress=false)
         @test sums == bas.sums
@@ -74,7 +74,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         )
 
         sums_tup = zeros(Float64, n_dist, n_vals)
-        counts_tup = zeros(Float64, n_dist, n_vals)
+        counts_tup = zeros(UInt32, n_dist, n_vals)
 
         # Mutate Tuple
         SFC.serial_calculate_structure_function!(sums_tup, counts_tup, SFT.L2SF, x_tuple, u_tuple, distance_bins, value_bins; verbose=false, show_progress=false)
@@ -88,7 +88,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 
         # Mutate Array
         sums_arr = zeros(Float64, n_dist, n_vals)
-        counts_arr = zeros(Float64, n_dist, n_vals)
+        counts_arr = zeros(UInt32, n_dist, n_vals)
         SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; verbose=false, show_progress=false)
         @test sums_arr == bas_tup.sums
         @test counts_arr == bas_tup.counts
@@ -98,11 +98,11 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     @testset "1D & 2D Threaded Mutating Parity & Low Allocation" begin
         # 1D Tuple Threaded
         sums_ser = zeros(Float64, n_dist)
-        counts_ser = zeros(Float64, n_dist)
+        counts_ser = zeros(UInt32, n_dist)
         SFC.serial_calculate_structure_function!(sums_ser, counts_ser, SFT.L2SF, x_tuple, u_tuple, distance_bins; verbose=false, show_progress=false)
 
         sums_thr = zeros(Float64, n_dist)
-        counts_thr = zeros(Float64, n_dist)
+        counts_thr = zeros(UInt32, n_dist)
         SFC.threaded_calculate_structure_function!(sums_thr, counts_thr, SFT.L2SF, x_tuple, u_tuple, distance_bins; verbose=false, show_progress=false)
 
         @test sums_ser ≈ sums_thr
@@ -110,18 +110,18 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 
         # 1D Array Threaded
         sums_thr_arr = zeros(Float64, n_dist)
-        counts_thr_arr = zeros(Float64, n_dist)
+        counts_thr_arr = zeros(UInt32, n_dist)
         SFC.threaded_calculate_structure_function!(sums_thr_arr, counts_thr_arr, SFT.L2SF, x_mat, u_mat, distance_bins; verbose=false, show_progress=false)
         @test sums_ser ≈ sums_thr_arr
         @test counts_ser == counts_thr_arr
 
         # 2D Tuple Threaded
         sums_2d_ser = zeros(Float64, n_dist, n_vals)
-        counts_2d_ser = zeros(Float64, n_dist, n_vals)
+        counts_2d_ser = zeros(UInt32, n_dist, n_vals)
         SFC.serial_calculate_structure_function!(sums_2d_ser, counts_2d_ser, SFT.L2SF, x_tuple, u_tuple, distance_bins, value_bins; verbose=false, show_progress=false)
 
         sums_2d_thr = zeros(Float64, n_dist, n_vals)
-        counts_2d_thr = zeros(Float64, n_dist, n_vals)
+        counts_2d_thr = zeros(UInt32, n_dist, n_vals)
         SFC.threaded_calculate_structure_function!(sums_2d_thr, counts_2d_thr, SFT.L2SF, x_tuple, u_tuple, distance_bins, value_bins; verbose=false, show_progress=false)
 
         @test sums_2d_ser ≈ sums_2d_thr
@@ -138,11 +138,11 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     @testset "Public Entrypoints & Backend Dispatch" begin
         # 1D Public AutoBackend (resolves to threaded or serial)
         sums_pub = zeros(Float64, n_dist)
-        counts_pub = zeros(Float64, n_dist)
+        counts_pub = zeros(UInt32, n_dist)
         SF.calculate_structure_function!(sums_pub, counts_pub, SFT.L2SF, x_tuple, u_tuple, distance_bins; backend=SF.AutoBackend(), verbose=false, show_progress=false)
 
         sums_bas = zeros(Float64, n_dist)
-        counts_bas = zeros(Float64, n_dist)
+        counts_bas = zeros(UInt32, n_dist)
         SFC.serial_calculate_structure_function!(sums_bas, counts_bas, SFT.L2SF, x_tuple, u_tuple, distance_bins; verbose=false, show_progress=false)
 
         @test sums_pub ≈ sums_bas
@@ -150,11 +150,11 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 
         # 2D Public AutoBackend
         sums_2d_pub = zeros(Float64, n_dist, n_vals)
-        counts_2d_pub = zeros(Float64, n_dist, n_vals)
+        counts_2d_pub = zeros(UInt32, n_dist, n_vals)
         SF.calculate_structure_function!(sums_2d_pub, counts_2d_pub, SFT.L2SF, x_tuple, u_tuple, distance_bins, value_bins; backend=SF.AutoBackend(), verbose=false, show_progress=false)
 
         sums_2d_bas = zeros(Float64, n_dist, n_vals)
-        counts_2d_bas = zeros(Float64, n_dist, n_vals)
+        counts_2d_bas = zeros(UInt32, n_dist, n_vals)
         SFC.serial_calculate_structure_function!(sums_2d_bas, counts_2d_bas, SFT.L2SF, x_tuple, u_tuple, distance_bins, value_bins; verbose=false, show_progress=false)
 
         @test sums_2d_pub ≈ sums_2d_bas
