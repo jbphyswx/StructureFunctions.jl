@@ -60,6 +60,9 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running GPU Parity Test ---")
     include("test_gpu_parity.jl")
 
+    println("--- Running GPU Tiled Parity Test ---")
+    include("test_gpu_tiled_parity.jl")
+
     println("--- Running 2D Joint-Probability Binning Test ---")
     include("test_2d_binning.jl")
 

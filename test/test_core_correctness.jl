@@ -28,13 +28,13 @@ Test.@testset "Core Correctness - Block A" begin
 
         res = SFC.calculate_structure_function(sf_type, x, u, bins;
             verbose = false, show_progress = false, return_sums_and_counts = true)
-        Test.@test sum(res.counts) == 3.0
+        Test.@test sum(res.counts) == 3
 
         # N=4 points -> 4*3/2 = 6 pairs
         x4 = ([0.0, 1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 0.0])
         res4 = SFC.calculate_structure_function(sf_type, x4, (zeros(4), zeros(4)), bins;
             verbose = false, show_progress = false, return_sums_and_counts = true)
-        Test.@test sum(res4.counts) == 6.0
+        Test.@test sum(res4.counts) == 6
     end
 
     Test.@testset "Numerical reference (Tiny case)" begin
