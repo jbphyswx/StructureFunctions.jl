@@ -26,7 +26,7 @@ Test.@testset "Single-Pass Core Correctness & Helmholtz Parity" begin
     Test.@test size(sums) == (10, 2)
     Test.@test size(counts) == (10, 2)
     Test.@test sums isa Matrix{Float64}
-    Test.@test counts isa Matrix{Int64}
+    Test.@test counts isa Matrix{UInt32}
     
     # 2. Test equivalence against standard multi-pass structure function calls
     distance_bins_ref = Float64[0.1, 1.0, 2.0]

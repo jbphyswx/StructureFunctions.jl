@@ -2322,9 +2322,9 @@ function serial_calculate_structure_functions_single_pass(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
     sums::AbstractMatrix{OT},
-    counts::AbstractMatrix{Int64};
+    counts::AbstractMatrix{CT};
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     fill!(sums, zero(OT))
     fill!(counts, 0)
     return calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins; kwargs...)
@@ -2333,12 +2333,12 @@ end
 """Serial pair-loop accumulation into native ``(8, n_bins)`` buffers (no allocation)."""
 function _accumulate_single_pass_1d!(
     sums::AbstractMatrix{OT},
-    counts::AbstractMatrix{Int64},
+    counts::AbstractMatrix{CT},
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     n_points = size(x, 2)
     n_bins = length(distance_bins) - 1
     size(sums) == (8, n_bins) ||
@@ -2403,13 +2403,13 @@ Accumulate into pre-allocated ``(8, n_bins)`` buffers using the requested execut
 """
 function calculate_structure_functions_single_pass!(
     sums::AbstractMatrix{OT},
-    counts::AbstractMatrix{Int64},
+    counts::AbstractMatrix{CT},
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
     backend::AbstractExecutionBackend = SerialBackend(),
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     _dispatch_single_pass!(backend, sums, counts, x, u, distance_bins; kwargs...)
     return sums, counts
 end
@@ -2509,13 +2509,14 @@ function _dispatch_single_pass(
     distance_bins::AbstractVector{FT3};
     thread_sums = nothing,
     thread_counts = nothing,
+    count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
     
     ts = isnothing(thread_sums) ? zeros(OT, 8, n_bins) : thread_sums
-    tc = isnothing(thread_counts) ? zeros(Int64, 8, n_bins) : thread_counts
+    tc = isnothing(thread_counts) ? zeros(CT, 8, n_bins) : thread_counts
     
     sums, counts = serial_calculate_structure_functions_single_pass(x, u, distance_bins, ts, tc; kwargs...)
     return postprocess_single_pass_results(sums, counts, distance_bins)
@@ -2646,9 +2647,14 @@ function calculate_structure_functions_single_pass(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
     backend::AbstractExecutionBackend = AutoBackend(),
+    count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
-    return _dispatch_single_pass(backend, x, u, distance_bins; kwargs...)
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
+    return _dispatch_single_pass(
+        backend, x, u, distance_bins;
+        count_eltype = count_eltype,
+        kwargs...,
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -2678,12 +2684,12 @@ The derived structure functions are returned as the 9th (rotational) and 10th (d
 """
 function postprocess_single_pass_results(
     sums::AbstractMatrix{OT},
-    counts::AbstractMatrix{Int64},
-    distance_bins::AbstractVector{FT3}
-) where {OT, FT3}
+    counts::AbstractMatrix{CT},
+    distance_bins::AbstractVector{FT3},
+) where {OT, CT, FT3}
     n_bins = size(sums, 2)
     final_sums = zeros(OT, 10, n_bins)
-    final_counts = zeros(Int64, 10, n_bins)
+    final_counts = zeros(CT, 10, n_bins)
     
     # Core 8 structure functions are copied unchanged
     final_sums[1:8, :] .= sums
@@ -2735,9 +2741,9 @@ slots via [`postprocess_single_pass_results`](@ref). Returns ``(sums_10, counts_
 """
 function ten_type_from_eight_2d(
     sums_8::AbstractArray{OT, 3},
-    counts_8::AbstractArray{Int64, 3},
+    counts_8::AbstractArray{CT, 3},
     distance_bins::AbstractVector{FT3},
-) where {OT, FT3}
+) where {OT, CT, FT3}
     sums_1d = dropdims(sum(sums_8, dims = 3), dims = 3)
     counts_1d = dropdims(sum(counts_8, dims = 3), dims = 3)
     return postprocess_single_pass_results(sums_1d, counts_1d, distance_bins)
@@ -2759,9 +2765,9 @@ function serial_calculate_structure_functions_single_pass_2d(
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector},
     sums_3d::AbstractArray{OT, 3},
-    counts_3d::AbstractArray{Int64, 3};
+    counts_3d::AbstractArray{CT, 3};
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     fill!(sums_3d, zero(OT))
     fill!(counts_3d, 0)
     return calculate_structure_functions_single_pass_2d!(
@@ -2778,14 +2784,14 @@ catch-all overflow bins at the ends of each edge vector.
 """
 function calculate_structure_functions_single_pass_2d!(
     sums_3d::AbstractArray{OT, 3},
-    counts_3d::AbstractArray{Int64, 3},
+    counts_3d::AbstractArray{CT, 3},
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
     backend::AbstractExecutionBackend = SerialBackend(),
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     _dispatch_single_pass_2d!(
         backend, sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type; kwargs...
     )
@@ -2795,13 +2801,13 @@ end
 """Serial pair-loop accumulation into native ``(8, n_bins, n_val)`` buffers (no allocation)."""
 function _accumulate_single_pass_2d!(
     sums_3d::AbstractArray{OT, 3},
-    counts_3d::AbstractArray{Int64, 3},
+    counts_3d::AbstractArray{CT, 3},
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     length(value_bins_by_type) == 8 ||
         throw(DimensionMismatch("value_bins_by_type must contain exactly 8 edge vectors (got $(length(value_bins_by_type)))"))
 
@@ -2977,15 +2983,16 @@ function _dispatch_single_pass_2d(
     value_bins_by_type::AbstractVector{<:AbstractVector};
     thread_sums = nothing,
     thread_counts = nothing,
+    count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
     n_val = length(value_bins_by_type[1]) - 1
     _validate_value_bins_by_type(value_bins_by_type, n_val)
 
     ts = isnothing(thread_sums) ? zeros(OT, 8, n_bins, n_val) : thread_sums
-    tc = isnothing(thread_counts) ? zeros(Int64, 8, n_bins, n_val) : thread_counts
+    tc = isnothing(thread_counts) ? zeros(CT, 8, n_bins, n_val) : thread_counts
 
     return serial_calculate_structure_functions_single_pass_2d(
         x, u, distance_bins, value_bins_by_type, ts, tc; kwargs...
@@ -3107,10 +3114,13 @@ function calculate_structure_functions_single_pass_2d(
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
     backend::AbstractExecutionBackend = AutoBackend(),
+    count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     return _dispatch_single_pass_2d(
-        backend, x, u, distance_bins, value_bins_by_type; kwargs...
+        backend, x, u, distance_bins, value_bins_by_type;
+        count_eltype = count_eltype,
+        kwargs...,
     )
 end
 

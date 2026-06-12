@@ -29,7 +29,7 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     n_bins = length(distance_bins) - 1
 
     sums_2d = zeros(Float64, 8, n_bins, n_val)
-    counts_2d = zeros(Int64, 8, n_bins, n_val)
+    counts_2d = zeros(UInt32, 8, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_2d, counts_2d, x, u, distance_bins, value_bins_by_type;
         backend = SFC.SerialBackend(),
@@ -115,7 +115,7 @@ Test.@testset "Single-Pass 2D with Custom Distance Metric (Cityblock)" begin
     metric = DI.Cityblock()
 
     sums_2d = zeros(Float64, 8, n_bins, n_val)
-    counts_2d = zeros(Int64, 8, n_bins, n_val)
+    counts_2d = zeros(UInt32, 8, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_2d, counts_2d, x, u, distance_bins, value_bins_by_type;
         backend = SFC.SerialBackend(),
@@ -188,7 +188,7 @@ Test.@testset "Single-Pass 2D GPU (KA.CPU) parity vs Serial" begin
     n_bins = length(distance_bins) - 1
 
     sums_ref = zeros(Float64, 8, n_bins, n_val)
-    counts_ref = zeros(Int64, 8, n_bins, n_val)
+    counts_ref = zeros(UInt32, 8, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_ref, counts_ref, x, u, distance_bins, value_bins_by_type;
         backend = SFC.SerialBackend(),
@@ -202,7 +202,7 @@ Test.@testset "Single-Pass 2D GPU (KA.CPU) parity vs Serial" begin
     Test.@test counts_gpu == counts_ref
 
     sums_gpu2 = zeros(Float64, 8, n_bins, n_val)
-    counts_gpu2 = zeros(Int64, 8, n_bins, n_val)
+    counts_gpu2 = zeros(UInt32, 8, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_gpu2, counts_gpu2, x, u, distance_bins, value_bins_by_type;
         backend = SF.GPUBackend(KA.CPU()),
