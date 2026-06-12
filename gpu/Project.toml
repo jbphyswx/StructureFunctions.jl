@@ -1,0 +1,18 @@
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+StructureFunctions = "e93fee26-4d5e-49c1-899d-490508cfd19b"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+StructureFunctions = { path = ".." }
+
+[compat]
+KernelAbstractions = "0.9"
+OhMyThreads = "0.8"
+StaticArrays = "1.9"
+julia = "1.12"
