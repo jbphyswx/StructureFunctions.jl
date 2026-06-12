@@ -22,9 +22,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     u_tuple = (u_coords, v_coords)
     u_mat = [u_coords'; v_coords']
 
-    # Distance bins (Tuples)
-    distance_bins = [(0.0, 10000.0), (10000.0, 20000.0), (20000.0, 30000.0), (30000.0, 50000.0)]
-    n_dist = length(distance_bins)
+    distance_bins = [0.0, 10000.0, 20000.0, 30000.0, 50000.0]
+    n_dist = length(distance_bins) - 1
 
     # Use extremely wide value bins to verify exact mathematical mass conservation (no clipping)
     l2_value_bins = range(0.0, 1000.0, length = 11) # 10 bins

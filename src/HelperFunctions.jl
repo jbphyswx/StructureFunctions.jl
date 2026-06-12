@@ -59,12 +59,14 @@ end
 end
 
 """
-    midpoints(bins)
+    midpoints(edges::AbstractVector{<:Number})
 
-Convert a collection of bin edges (tuples) to their midpoints. Internal helper.
+Bin midpoints from flat edges `[e₀, e₁, …, eₙ]` (length `n+1` → `n` midpoints).
 """
-midpoints(bins) = map(b -> (b[1] + b[2]) / 2, bins)
-midpoints(v::AbstractVector{<:Number}) = v
+function midpoints(edges::AbstractVector{<:Number})
+    n = length(edges) - 1
+    return [(edges[i] + edges[i + 1]) / 2 for i in 1:n]
+end
 
 @inline function digitize(x::AbstractVector, bins::AbstractVector)
     """
@@ -74,13 +76,7 @@ midpoints(v::AbstractVector{<:Number}) = v
     digitize.(x, Ref(bins))
 end
 
-@inline function digitize(x::AbstractVector, bins::Tuple)
-    """
-    Return the indices of the bins that x belongs to
-    (see np.digitize and https://discourse.julialang.org/t/find-the-index-of-a-bin-where-a-value-between-two-bin-value/32080/2?u=jbphyswx )
-    """
-    digitize.(x, Ref(bins))
-end
+## `digitize` dispatches on `AbstractBinEdges` via `searchsortedfirst` overrides in `BinEdges.jl`.
 
 
 

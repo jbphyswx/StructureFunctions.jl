@@ -24,7 +24,8 @@ using .Calculations
 using .SpectralAnalysis
 
 # Re-export key APIs
-export AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges, InfPaddedBinEdges
+export AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges, InfPaddedBinEdges,
+    n_histogram_bins
 export calculate_structure_function, calculate_structure_function!, calculate_structure_functions_single_pass,
     calculate_structure_functions_single_pass!, calculate_structure_functions_single_pass_2d,
     calculate_structure_functions_single_pass_2d!, postprocess_single_pass_results, ten_type_from_eight_2d

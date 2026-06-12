@@ -1,6 +1,7 @@
-using StructureFunctions: StructureFunctions as SF
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using Test: Test
 using Distances: Distances as DI
+using Random: Random
 
 Test.@testset "BinEdges Tests" begin
     for T in (Float64, Float32)
@@ -134,5 +135,41 @@ Test.@testset "BinEdges Tests" begin
         Test.@test double_padded[2] == T(1.0)
         Test.@test double_padded[3] == T(2.0)
         Test.@test double_padded[4] == typemax(T)
+    end
+
+    Test.@testset "calculate_structure_function uses AbstractBinEdges in hot loop" begin
+        Random.seed!(42)
+        n = 40
+        x = (rand(n), rand(n))
+        u = (randn(n), randn(n))
+        lin_range = range(0.01, 2.0, length = 11)
+        log_vec = exp.(range(log(0.01), log(2.0), length = 11))
+        sft = SFT.L2SF
+
+        ref_lin = SFC.calculate_structure_function(
+            sft, x, u, SF.LinearBinEdges(lin_range);
+            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            return_sums_and_counts = true,
+        )
+        via_range = SFC.calculate_structure_function(
+            sft, x, u, collect(lin_range);
+            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            return_sums_and_counts = true,
+        )
+        Test.@test via_range.sums ≈ ref_lin.sums
+        Test.@test via_range.counts == ref_lin.counts
+
+        ref_log = SFC.calculate_structure_function(
+            sft, x, u, SF.LogBinEdges(log_vec);
+            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            return_sums_and_counts = true,
+        )
+        via_log_vec = SFC.calculate_structure_function(
+            sft, x, u, log_vec;
+            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            return_sums_and_counts = true,
+        )
+        Test.@test via_log_vec.sums ≈ ref_log.sums
+        Test.@test via_log_vec.counts == ref_log.counts
     end
 end

@@ -28,7 +28,7 @@ Test.@testset "E2E: Structure Function E2E Suite" begin
     vals = (u, v)
 
     # Target binning
-    r_bins = SA.SVector{5}([(0.1 + (i - 1) * 0.4, 0.1 + i * 0.4) for i in 1:5])
+    r_bins = collect(0.1 + (0:5) .* 0.4)
 
     Test.@testset "Basic Execution" begin
         sf_type = SFT.SecondOrderStructureFunction
@@ -63,9 +63,7 @@ Test.@testset "E2E: Structure Function E2E Suite" begin
         u32 = Float32.(u)
         v32 = Float32.(v)
         # Use exact bin types
-        r32 = SA.SVector{5, Tuple{Float32, Float32}}([
-            (Float32(b[1]), Float32(b[2])) for b in r_bins
-        ])
+        r32 = Float32.(r_bins)
 
         sf64 = SFC.calculate_structure_function(
             SFT.SecondOrderStructureFunction,

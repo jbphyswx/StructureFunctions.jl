@@ -138,9 +138,6 @@ end
 @inline Base.searchsorted(v::LinearBinEdges, x) = searchsorted(v.edges, x)
 @inline Base.searchsorted(v::LinearBinEdges, x, o::Base.Order.Ordering) = searchsorted(v.edges, x, o)
 
-# Auto-convert to LinearBinEdges if user constructs BinEdges around a range
-BinEdges(edges::AbstractRange{T}) where {T} = LinearBinEdges(edges)
-
 # ========================================================================= #
 # 3. Log-Uniform Spacing (Exponent LUT Hybrid Search)
 # ========================================================================= #
@@ -383,3 +380,21 @@ end
 
 @inline Base.searchsorted(v::InfPaddedBinEdges, x) = searchsortedfirst(v, x):searchsortedlast(v, x)
 @inline Base.searchsorted(v::InfPaddedBinEdges, x, o::Base.Order.Ordering) = searchsortedfirst(v, x, o):searchsortedlast(v, x, o)
+
+"""
+    n_histogram_bins(edges::AbstractVector) -> Int
+
+Number of histogram bins for flat edges (`length == N + 1` → `N` bins).
+"""
+@inline n_histogram_bins(edges::AbstractVector) = length(edges) - 1
+
+"""
+    BinEdges(edges)
+
+Normalize flat edge input to [`AbstractBinEdges`](@ref) for hot-loop `digitize`:
+- existing `AbstractBinEdges` → unchanged
+- `AbstractRange` → [`LinearBinEdges`](@ref)
+- other `AbstractVector` → wrapped via the default [`BinEdges`](@ref) struct constructor (generic binary search)
+"""
+BinEdges(edges::AbstractBinEdges) = edges
+BinEdges(edges::AbstractRange) = LinearBinEdges(edges)

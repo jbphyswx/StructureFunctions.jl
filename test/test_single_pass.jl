@@ -29,7 +29,7 @@ Test.@testset "Single-Pass Core Correctness & Helmholtz Parity" begin
     Test.@test counts isa Matrix{Int64}
     
     # 2. Test equivalence against standard multi-pass structure function calls
-    bins_tuples = SA.SVector(((0.1, 1.0), (1.0, 2.0)))
+    distance_bins_ref = Float64[0.1, 1.0, 2.0]
     
     # Let's map single-pass index -> SFT type
     sft_types = [
@@ -49,7 +49,7 @@ Test.@testset "Single-Pass Core Correctness & Helmholtz Parity" begin
     for t in 1:8
         # Standard calculation
         res = SFC.calculate_structure_function(
-            sft_types[t], x_tuple, u_tuple, bins_tuples;
+            sft_types[t], x_tuple, u_tuple, distance_bins_ref;
             verbose = false, show_progress = false, return_sums_and_counts = true
         )
         # Compare sums with an absolute tolerance for floating-point underflow differences
@@ -105,7 +105,7 @@ Test.@testset "Single-Pass with Custom Distance Metric (Cityblock)" begin
     )
 
     # 2. Test equivalence against standard multi-pass structure function calls with Cityblock
-    bins_tuples = SA.SVector(((0.1, 1.0), (1.0, 2.0)))
+    distance_bins_ref = Float64[0.1, 1.0, 2.0]
     
     sft_types = [
         SFT.SecondOrderStructureFunctionType(),
@@ -124,7 +124,7 @@ Test.@testset "Single-Pass with Custom Distance Metric (Cityblock)" begin
     for t in 1:8
         # Standard calculation with distance_metric
         res = SFC.calculate_structure_function(
-            sft_types[t], x_tuple, u_tuple, bins_tuples;
+            sft_types[t], x_tuple, u_tuple, distance_bins_ref;
             distance_metric = metric,
             verbose = false, show_progress = false, return_sums_and_counts = true
         )

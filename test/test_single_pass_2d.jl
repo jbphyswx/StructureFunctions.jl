@@ -2,6 +2,7 @@ using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionObjects as SFO,
     StructureFunctionTypes as SFT
 using OhMyThreads: OhMyThreads  # load extension for ThreadedBackend / AutoBackend when nthreads() > 1
+using KernelAbstractions: KernelAbstractions as KA
 using Test
 using Random
 
@@ -50,8 +51,6 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
 
     x_tuple = (x[1, :], x[2, :])
     u_tuple = (u[1, :], u[2, :])
-    bins_tuples = [(distance_bins[i], distance_bins[i + 1]) for i in 1:n_bins]
-
     # Slot 4 is δu_L·|δu|²; ThirdOrderStructureFunctionType accumulates |δu|³ instead.
     per_type_indices = (1, 2, 3, 5, 6, 7, 8)
 
@@ -60,7 +59,7 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
             sft_types[t],
             x_tuple,
             u_tuple,
-            bins_tuples,
+            distance_bins,
             value_bins_by_type[t];
             backend = SFC.SerialBackend(),
             verbose = false,
@@ -136,8 +135,6 @@ Test.@testset "Single-Pass 2D with Custom Distance Metric (Cityblock)" begin
 
     x_tuple = (x[1, :], x[2, :])
     u_tuple = (u[1, :], u[2, :])
-    bins_tuples = [(distance_bins[i], distance_bins[i + 1]) for i in 1:n_bins]
-
     # Slot 4 is δu_L·|δu|²; ThirdOrderStructureFunctionType accumulates |δu|³ instead.
     per_type_indices = (1, 2, 3, 5, 6, 7, 8)
 
@@ -146,7 +143,7 @@ Test.@testset "Single-Pass 2D with Custom Distance Metric (Cityblock)" begin
             sft_types[t],
             x_tuple,
             u_tuple,
-            bins_tuples,
+            distance_bins,
             value_bins_by_type[t];
             backend = SFC.SerialBackend(),
             distance_metric = metric,
@@ -178,4 +175,38 @@ Test.@testset "Single-Pass 2D with Custom Distance Metric (Cityblock)" begin
     )
     Test.@test t_sums ≈ sums_2d
     Test.@test t_counts == counts_2d
+end
+
+Test.@testset "Single-Pass 2D GPU (KA.CPU) parity vs Serial" begin
+    Random.seed!(42)
+    n_points = 40
+    x = rand(n_points, 2)' .* 50000.0
+    u = randn(2, n_points) .* 0.5
+    distance_bins = exp.(range(log(1000.0), log(50000.0), length = 6))
+    value_bins_by_type = _synthetic_value_bins_by_type(10; pad_infinite = true)
+    n_val = length(value_bins_by_type[1]) - 1
+    n_bins = length(distance_bins) - 1
+
+    sums_ref = zeros(Float64, 8, n_bins, n_val)
+    counts_ref = zeros(Int64, 8, n_bins, n_val)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_ref, counts_ref, x, u, distance_bins, value_bins_by_type;
+        backend = SFC.SerialBackend(),
+    )
+
+    sums_gpu, counts_gpu = SFC.calculate_structure_functions_single_pass_2d(
+        x, u, distance_bins, value_bins_by_type;
+        backend = SF.GPUBackend(KA.CPU()),
+    )
+    Test.@test sums_gpu ≈ sums_ref
+    Test.@test counts_gpu == counts_ref
+
+    sums_gpu2 = zeros(Float64, 8, n_bins, n_val)
+    counts_gpu2 = zeros(Int64, 8, n_bins, n_val)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_gpu2, counts_gpu2, x, u, distance_bins, value_bins_by_type;
+        backend = SF.GPUBackend(KA.CPU()),
+    )
+    Test.@test sums_gpu2 ≈ sums_ref
+    Test.@test counts_gpu2 == counts_ref
 end
