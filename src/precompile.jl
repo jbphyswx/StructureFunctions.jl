@@ -4,7 +4,7 @@ PrecompileTools.@compile_workload begin
     dims = [1, 2, 3]
 
     for FT in FTs
-        bins = [(FT(0), FT(1)), (FT(1), FT(2))]
+        bins = [FT(0), FT(1), FT(2)]
         sfs = [
             LongitudinalSecondOrderStructureFunction,
             TransverseSecondOrderStructureFunction,

@@ -27,7 +27,7 @@ struct StructureFunction{FT, OT <: SFT.AbstractStructureFunctionType, BT, VT} <:
     values::VT
 
     function StructureFunction(operator::OT, distance::BT, values::VT) where {OT, BT, VT}
-        (length(distance) == length(values)) || throw(DimensionMismatch("Distance and values must have the same length (got $(length(distance)) and $(length(values)))"))
+        (length(distance) == length(values) + 1) || throw(DimensionMismatch("Flat distance edges must have length one greater than values (got edges=$(length(distance)), values=$(length(values)))"))
         FT = eltype(VT)
         return new{FT, OT, BT, VT}(operator, distance, values)
     end
@@ -57,7 +57,7 @@ struct StructureFunctionSumsAndCounts{
         sums::VT,
         counts::CT,
     ) where {OT, BT, VT, CT}
-        ((length(distance) == length(sums)) && (length(sums) == length(counts))) || throw(DimensionMismatch("Containers must have the same length (got distance: $(length(distance)), sums: $(length(sums)), counts: $(length(counts)))"))
+        ((length(distance) == length(sums) + 1) && (length(sums) == length(counts))) || throw(DimensionMismatch("Flat distance edges must satisfy length(distance) == length(sums) + 1 (got edges=$(length(distance)), sums=$(length(sums)), counts=$(length(counts)))"))
         FT = eltype(sums)
         return new{FT, OT, BT, VT, CT}(operator, distance, sums, counts)
     end
@@ -97,6 +97,8 @@ struct StructureFunction2D{
         counts::CT,
     ) where {OT, BT, VT, MT, CT}
         (size(sums) == size(counts)) || throw(DimensionMismatch("Sums and counts matrices must have identical shape (got sums: $(size(sums)), counts: $(size(counts)))"))
+        (size(sums, 1) == length(distance_bins) - 1) || throw(DimensionMismatch("distance_bins must have length size(sums,1)+1 (got $(length(distance_bins)) edges, $(size(sums,1)) distance bins)"))
+        (size(sums, 2) == length(value_bins) - 1) || throw(DimensionMismatch("value_bins must have length size(sums,2)+1 (got $(length(value_bins)) edges, $(size(sums,2)) value bins)"))
         FT = eltype(sums)
         return new{FT, OT, BT, VT, MT, CT}(operator, distance_bins, value_bins, sums, counts)
     end
@@ -108,9 +110,9 @@ end
 
 import Base: show, length, +
 
-Base.length(sf::StructureFunction) = length(sf.distance)
-Base.length(sf::StructureFunctionSumsAndCounts) = length(sf.distance)
-Base.length(sf::StructureFunction2D) = length(sf.distance_bins)
+Base.length(sf::StructureFunction) = length(sf.values)
+Base.length(sf::StructureFunctionSumsAndCounts) = length(sf.sums)
+Base.length(sf::StructureFunction2D) = length(sf.distance_bins) - 1
 
 function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSumsAndCounts)
     (sf1.operator == sf2.operator) || throw(ArgumentError("Cannot add results with different operators: got $(sf1.operator) and $(sf2.operator)"))

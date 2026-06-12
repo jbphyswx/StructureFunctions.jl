@@ -139,21 +139,17 @@ function SFC.parallel_calculate_structure_function(
 
     min_distance = prevfloat(min_distance) # go to the next smallest float from the min distance to make sure the true smallest distance can fit in the first bin (note this is needed so things matching min_distance don't get assigned bin '0', alternative is to check for bin 0 every time... which sounds slower
     if bin_spacing === LinearBinEdges
-        distance_bins = range(min_distance, max_distance, length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
+        distance_bins = LinearBinEdges(range(min_distance, max_distance, length = n_distance_bins + 1))
     elseif bin_spacing === LogBinEdges
-        distance_bins =
+        edge_vec =
             10 .^
-            range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
-        distance_bins[1] = min_distance # combat floating point errors (may have rounded up or down during operations)
-        distance_bins[end] = max_distance # combat floating point errors (may have rounded up or down during operations)
+            range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1)
+        edge_vec[1] = min_distance
+        edge_vec[end] = max_distance
+        distance_bins = LogBinEdges(edge_vec)
     else
         throw(ArgumentError("bin_spacing must be LinearBinEdges or LogBinEdges"))
     end
-    FT3 = eltype(distance_bins)
-    distance_bins = SA.SVector{n_distance_bins, Tuple{FT3, FT3}}(
-        [(distance_bins[i], distance_bins[i + 1]) for i in 1:n_distance_bins]...,
-    )
-
 
     return SFC.parallel_calculate_structure_function(
         structure_function_type,
@@ -270,10 +266,10 @@ function SFC.parallel_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     value_bins::AbstractVector;
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number}
     N_dims = size(x_arr, 1)
     x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
     u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
@@ -315,9 +311,9 @@ function SFC.parallel_calculate_structure_function!(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}};
+    distance_bins::AbstractVector;
     kwargs...,
-) where {OT, CT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, CT, FT1 <: Number, FT2 <: Number}
     N_dims = size(x_arr, 1)
     x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
     u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
@@ -361,10 +357,10 @@ function SFC.parallel_calculate_structure_function!(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     value_bins::AbstractVector;
     kwargs...,
-) where {OT, CT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, CT, FT1 <: Number, FT2 <: Number}
     N_dims = size(x_arr, 1)
     x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
     u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)

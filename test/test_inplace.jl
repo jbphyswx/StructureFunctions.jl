@@ -20,8 +20,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     u_tuple = (u_coords, v_coords)
     u_mat = [u_coords'; v_coords']
 
-    distance_bins = [(0.0, 10000.0), (10000.0, 20000.0), (20000.0, 30000.0), (30000.0, 50000.0)]
-    n_dist = length(distance_bins)
+    distance_bins = [0.0, 10000.0, 20000.0, 30000.0, 50000.0]
+    n_dist = length(distance_bins) - 1
     value_bins = range(-1.0, 1.0, length = 11)
     n_vals = length(value_bins) - 1
 

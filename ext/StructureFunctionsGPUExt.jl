@@ -425,114 +425,6 @@ end
 function SFC.gpu_calculate_structure_function(
     sf_type::SFT.AbstractStructureFunctionType,
     backend::KA.Backend,
-    x_vecs::Tuple{T, Vararg{T}},
-    u_vecs::Tuple{U, Vararg{U}},
-    distance_bins::AbstractVector{<:Tuple};
-    return_sums_and_counts::Bool = false,
-    kwargs...,
-) where {T <: AbstractVector, U <: AbstractVector}
-    return SFC.gpu_calculate_structure_function(
-        sf_type,
-        backend,
-        x_vecs,
-        u_vecs,
-        distance_bins,
-        Val(return_sums_and_counts);
-        kwargs...,
-    )
-end
-
-function SFC.gpu_calculate_structure_function(
-    sf_type::SFT.AbstractStructureFunctionType,
-    backend::KA.Backend,
-    x_vecs::Tuple{T, Vararg{T}},
-    u_vecs::Tuple{U, Vararg{U}},
-    distance_bins::AbstractVector{<:Tuple},
-    ::Val{RSAC};
-    kwargs...,
-) where {T <: AbstractVector, U <: AbstractVector, RSAC}
-    N_dims = length(x_vecs)
-    N_points = length(x_vecs[1])
-    TX = eltype(T)
-    TU = eltype(U)
-    FT = promote_type(float(TX), float(TU))
-
-    x_mat = Matrix{FT}(undef, N_dims, N_points)
-    u_mat = Matrix{FT}(undef, N_dims, N_points)
-    for k in 1:N_dims
-        @views x_mat[k, :] .= x_vecs[k]
-        @views u_mat[k, :] .= u_vecs[k]
-    end
-
-    n_bins = length(distance_bins)
-    bin_edges = Vector{FT}(undef, n_bins + 1)
-    for k in 1:n_bins
-        bin_edges[k] = distance_bins[k][1]
-    end
-    bin_edges[end] = distance_bins[end][2]
-
-    return SFC.gpu_calculate_structure_function(
-        sf_type,
-        backend,
-        x_mat,
-        u_mat,
-        bin_edges,
-        Val(RSAC);
-        kwargs...,
-    )
-end
-
-function SFC.gpu_calculate_structure_function(
-    sf_type::SFT.AbstractStructureFunctionType,
-    backend::KA.Backend,
-    x_mat::AbstractMatrix{FT1},
-    u_mat::AbstractMatrix{FT2},
-    distance_bins::AbstractVector{<:Tuple};
-    return_sums_and_counts::Bool = false,
-    kwargs...,
-) where {FT1 <: Number, FT2 <: Number}
-    return SFC.gpu_calculate_structure_function(
-        sf_type,
-        backend,
-        x_mat,
-        u_mat,
-        distance_bins,
-        Val(return_sums_and_counts);
-        kwargs...,
-    )
-end
-
-function SFC.gpu_calculate_structure_function(
-    sf_type::SFT.AbstractStructureFunctionType,
-    backend::KA.Backend,
-    x_mat::AbstractMatrix{FT1},
-    u_mat::AbstractMatrix{FT2},
-    distance_bins::AbstractVector{<:Tuple},
-    ::Val{RSAC};
-    kwargs...,
-) where {FT1 <: Number, FT2 <: Number, RSAC}
-    FT = promote_type(float(FT1), float(FT2))
-    n_bins = length(distance_bins)
-    bin_edges = Vector{FT}(undef, n_bins + 1)
-    for k in 1:n_bins
-        bin_edges[k] = distance_bins[k][1]
-    end
-    bin_edges[end] = distance_bins[end][2]
-
-    return SFC.gpu_calculate_structure_function(
-        sf_type,
-        backend,
-        x_mat,
-        u_mat,
-        bin_edges,
-        Val(RSAC);
-        kwargs...,
-    )
-end
-
-function SFC.gpu_calculate_structure_function(
-    sf_type::SFT.AbstractStructureFunctionType,
-    backend::KA.Backend,
     x_mat::AbstractMatrix{FT},
     u_mat::AbstractMatrix{FT},
     distance_bins::AbstractVector{FT},
@@ -780,69 +672,6 @@ function SFC.gpu_calculate_structure_function!(
     return nothing
 end
 
-function SFC.gpu_calculate_structure_function!(
-    output_sums::AbstractVector{OT},
-    output_counts::AbstractVector{CT},
-    sf_type::SFT.AbstractStructureFunctionType,
-    backend::KA.Backend,
-    x_vecs::Tuple{T, Vararg{T}},
-    u_vecs::Tuple{U, Vararg{U}},
-    distance_bins::AbstractVector{<:Tuple};
-    kwargs...,
-) where {OT, CT, T <: AbstractVector, U <: AbstractVector}
-    N_dims = length(x_vecs)
-    N_points = length(x_vecs[1])
-    TX = eltype(T)
-    TU = eltype(U)
-    FT = promote_type(float(TX), float(TU))
-
-    x_mat = Matrix{FT}(undef, N_dims, N_points)
-    u_mat = Matrix{FT}(undef, N_dims, N_points)
-    for k in 1:N_dims
-        @views x_mat[k, :] .= x_vecs[k]
-        @views u_mat[k, :] .= u_vecs[k]
-    end
-
-    n_bins = length(distance_bins)
-    bin_edges = Vector{FT}(undef, n_bins + 1)
-    for k in 1:n_bins
-        bin_edges[k] = distance_bins[k][1]
-    end
-    bin_edges[end] = distance_bins[end][2]
-
-    return SFC.gpu_calculate_structure_function!(
-        output_sums, output_counts, sf_type, backend, x_mat, u_mat, bin_edges;
-        kwargs...,
-    )
-end
-
-function SFC.gpu_calculate_structure_function!(
-    output_sums::AbstractVector{OT},
-    output_counts::AbstractVector{CT},
-    sf_type::SFT.AbstractStructureFunctionType,
-    backend::KA.Backend,
-    x_arr::AbstractMatrix{FT1},
-    u_arr::AbstractMatrix{FT2},
-    distance_bins::AbstractVector{<:Tuple};
-    kwargs...,
-) where {OT, CT, FT1 <: Number, FT2 <: Number}
-    FT = promote_type(float(FT1), float(FT2))
-    n_bins = length(distance_bins)
-    bin_edges = Vector{FT}(undef, n_bins + 1)
-    for k in 1:n_bins
-        bin_edges[k] = distance_bins[k][1]
-    end
-    bin_edges[end] = distance_bins[end][2]
-
-    x_mat = FT === FT1 && x_arr isa Matrix{FT1} ? x_arr : Matrix{FT}(x_arr)
-    u_mat = FT === FT2 && u_arr isa Matrix{FT2} ? u_arr : Matrix{FT}(u_arr)
-
-    return SFC.gpu_calculate_structure_function!(
-        output_sums, output_counts, sf_type, backend, x_mat, u_mat, bin_edges;
-        kwargs...,
-    )
-end
-
 function _gpu_calculate_structure_function_core(
     sf_type::SFT.AbstractStructureFunctionType,
     backend::KA.Backend,
@@ -862,20 +691,15 @@ function _gpu_calculate_structure_function_core(
     N_bins = length(edges_host)
     output, counts = _download_gpu_sf_results(out_dev, cnt_dev, FT, CT)
 
-    # Convert distance_bins edges to tuples for SF objects
-    bin_tuples = SA.SVector{N_bins - 1, Tuple{FT, FT}}(
-        [(edges_host[i], edges_host[i + 1]) for i in 1:(N_bins - 1)]...,
-    )
-
     if RSAC
-        return SF.StructureFunctionSumsAndCounts(sf_type, bin_tuples, output, counts)
+        return SF.StructureFunctionSumsAndCounts(sf_type, edges_host, output, counts)
     else
         output_div = similar(output)
         for k in eachindex(output)
             c = counts[k]
             output_div[k] = c == 0 ? FT(NaN) : output[k] / c
         end
-        return SF.StructureFunction(sf_type, bin_tuples, output_div)
+        return SF.StructureFunction(sf_type, edges_host, output_div)
     end
 end
 
@@ -1214,6 +1038,620 @@ function _launch_single_pass_kernel!(
     return nothing
 end
 
+# ---------------------------------------------------------------------------
+# Joint 2D SF kernels (one sf_type, distance × value histogram)
+# ---------------------------------------------------------------------------
+
+KA.@kernel function _sf_joint_2d_kernel_linear!(
+    output_sums,
+    output_counts,
+    @Const(x_mat),
+    @Const(u_mat),
+    @Const(value_edges),
+    sf_type,
+    N_points::Int,
+    N_dist_bins::Int,
+    N_val_edges::Int,
+    first_edge::FT,
+    last_edge::FT,
+    inv_step::FT,
+    offset::FT,
+    step_val::FT,
+) where {FT}
+    I = @index(Global, NTuple)
+    i, j = I[1], I[2]
+    if i < j
+        X1 = SA.SVector{2}(x_mat[1, i], x_mat[2, i])
+        X2 = SA.SVector{2}(x_mat[1, j], x_mat[2, j])
+        U1 = SA.SVector{2}(u_mat[1, i], u_mat[2, i])
+        U2 = SA.SVector{2}(u_mat[1, j], u_mat[2, j])
+        dX = X2 - X1
+        dist = sqrt(dX[1]^2 + dX[2]^2)
+        dbin = _gpu_digitize_linear(
+            dist, first_edge, last_edge, inv_step, offset, step_val, N_dist_bins,
+        )
+        if 1 <= dbin < N_dist_bins
+            r̂ = dX / dist
+            val = sf_type(U2 - U1, r̂)
+            vbin = _gpu_digitize_general(val, value_edges, N_val_edges)
+            if 1 <= vbin < N_val_edges
+                @atomic output_sums[dbin, vbin] += val
+                @atomic output_counts[dbin, vbin] += one(eltype(output_counts))
+            end
+        end
+    end
+end
+
+KA.@kernel function _sf_joint_2d_kernel_log!(
+    output_sums,
+    output_counts,
+    @Const(x_mat),
+    @Const(u_mat),
+    @Const(edges),
+    @Const(lut),
+    @Const(value_edges),
+    sf_type,
+    N_points::Int,
+    N_dist_bins::Int,
+    N_val_edges::Int,
+    e_min::Int,
+)
+    I = @index(Global, NTuple)
+    i, j = I[1], I[2]
+    if i < j
+        X1 = SA.SVector{2}(x_mat[1, i], x_mat[2, i])
+        X2 = SA.SVector{2}(x_mat[1, j], x_mat[2, j])
+        U1 = SA.SVector{2}(u_mat[1, i], u_mat[2, i])
+        U2 = SA.SVector{2}(u_mat[1, j], u_mat[2, j])
+        dX = X2 - X1
+        dist = sqrt(dX[1]^2 + dX[2]^2)
+        dbin = _gpu_digitize_log(dist, edges, lut, e_min, N_dist_bins)
+        if 1 <= dbin < N_dist_bins
+            dU = U2 - U1
+            r̂ = dX / dist
+            val = sf_type(dU, r̂)
+            vbin = _gpu_digitize_general(val, value_edges, N_val_edges)
+            if 1 <= vbin < N_val_edges
+                @atomic output_sums[dbin, vbin] += val
+                @atomic output_counts[dbin, vbin] += one(eltype(output_counts))
+            end
+        end
+    end
+end
+
+KA.@kernel function _sf_joint_2d_kernel!(
+    output_sums,
+    output_counts,
+    @Const(x_mat),
+    @Const(u_mat),
+    @Const(distance_edges),
+    @Const(value_edges),
+    sf_type,
+    N_points::Int,
+    N_dist_bins::Int,
+    N_val_edges::Int,
+)
+    I = @index(Global, NTuple)
+    i, j = I[1], I[2]
+    if i < j
+        X1 = SA.SVector{2}(x_mat[1, i], x_mat[2, i])
+        X2 = SA.SVector{2}(x_mat[1, j], x_mat[2, j])
+        U1 = SA.SVector{2}(u_mat[1, i], u_mat[2, i])
+        U2 = SA.SVector{2}(u_mat[1, j], u_mat[2, j])
+        dX = X2 - X1
+        dist = sqrt(dX[1]^2 + dX[2]^2)
+        dbin = _gpu_digitize_general(dist, distance_edges, N_dist_bins)
+        if 1 <= dbin < N_dist_bins
+            dU = U2 - U1
+            r̂ = dX / dist
+            val = sf_type(dU, r̂)
+            vbin = _gpu_digitize_general(val, value_edges, N_val_edges)
+            if 1 <= vbin < N_val_edges
+                @atomic output_sums[dbin, vbin] += val
+                @atomic output_counts[dbin, vbin] += one(eltype(output_counts))
+            end
+        end
+    end
+end
+
+function _launch_joint_2d_kernel!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    value_edges_dev,
+    sf_type,
+    dist_layout::_GPUBinLayout,
+    N_points::Int,
+    n_dist_edges::Int,
+    n_val_edges::Int,
+)
+    bins = _gpu_active_bins(dist_layout)
+    return _launch_joint_2d_kernel!(
+        backend, workgroup_size, out_sums_dev, out_cnts_dev,
+        x_dev, u_dev, value_edges_dev, sf_type, bins,
+        N_points, n_dist_edges, n_val_edges,
+    )
+end
+
+function _launch_joint_2d_kernel!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    value_edges_dev,
+    sf_type,
+    lbe::LinearBinEdges,
+    N_points::Int,
+    n_dist_edges::Int,
+    n_val_edges::Int,
+)
+    kernel! = _sf_joint_2d_kernel_linear!(backend, workgroup_size)
+    kernel!(
+        out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev, sf_type,
+        N_points, n_dist_edges, n_val_edges,
+        lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val;
+        ndrange = (N_points, N_points),
+    )
+    return nothing
+end
+
+function _launch_joint_2d_kernel!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    value_edges_dev,
+    sf_type,
+    lbe::LogBinEdges,
+    N_points::Int,
+    n_dist_edges::Int,
+    n_val_edges::Int,
+)
+    FT = eltype(lbe.edges)
+    edges_dev = KA.allocate(backend, FT, n_dist_edges)
+    lut_dev = KA.allocate(backend, Int32, length(lbe.lut))
+    copyto!(edges_dev, collect(lbe.edges))
+    copyto!(lut_dev, Int32.(lbe.lut))
+    kernel! = _sf_joint_2d_kernel_log!(backend, workgroup_size)
+    kernel!(
+        out_sums_dev, out_cnts_dev, x_dev, u_dev,
+        edges_dev, lut_dev, value_edges_dev, sf_type,
+        N_points, n_dist_edges, n_val_edges, lbe.e_min;
+        ndrange = (N_points, N_points),
+    )
+    return nothing
+end
+
+function _launch_joint_2d_kernel!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    value_edges_dev,
+    sf_type,
+    edges::Vector{FT},
+    N_points::Int,
+    n_dist_edges::Int,
+    n_val_edges::Int,
+) where {FT}
+    dist_dev = KA.allocate(backend, FT, n_dist_edges)
+    copyto!(dist_dev, edges)
+    kernel! = _sf_joint_2d_kernel!(backend, workgroup_size)
+    kernel!(
+        out_sums_dev, out_cnts_dev, x_dev, u_dev,
+        dist_dev, value_edges_dev, sf_type,
+        N_points, n_dist_edges, n_val_edges;
+        ndrange = (N_points, N_points),
+    )
+    return nothing
+end
+
+"""
+    gpu_calculate_structure_function_2d(sf_type, backend, x_mat, u_mat, distance_bins, value_bins; kwargs...)
+
+Compute one 2D joint histogram (distance × SF value) for `sf_type` on `backend`.
+Returns [`StructureFunction2D`](@ref) with the same flat edge vectors passed in.
+"""
+function SFC.gpu_calculate_structure_function_2d(
+    sf_type::SFT.AbstractStructureFunctionType,
+    backend::KA.Backend,
+    x_mat::AbstractMatrix{FT1},
+    u_mat::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    value_bins::AbstractVector{FT4};
+    count_eltype::Type{CT} = UInt32,
+    workgroup_size::Int = 64,
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, FT4 <: Number, CT}
+    FT = promote_type(float(FT1), float(FT2), float(FT3), float(FT4))
+    N_dims, N_points = size(x_mat)
+    size(u_mat) == (N_dims, N_points) ||
+        throw(DimensionMismatch("x_mat and u_mat must have the same shape"))
+    N_dims == 2 ||
+        error("GPUExt: 2D joint structure functions require N_dims == 2 (got N_dims=$N_dims)")
+
+    n_dist = length(distance_bins) - 1
+    n_val = length(value_bins) - 1
+    n_dist > 0 && n_val > 0 ||
+        throw(ArgumentError("distance_bins and value_bins must each have at least two edges"))
+
+    dist_layout = _resolve_gpu_bin_layout(distance_bins)
+    val_layout = _resolve_gpu_bin_layout(value_bins)
+    n_dist_edges = length(_layout_edge_vector(dist_layout))
+    n_val_edges = length(_layout_edge_vector(val_layout))
+    value_host = _layout_edge_vector(val_layout)
+
+    x_dev = KA.allocate(backend, FT, 2, N_points)
+    u_dev = KA.allocate(backend, FT, 2, N_points)
+    value_edges_dev = KA.allocate(backend, FT, n_val_edges)
+    out_sums_dev = KA.zeros(backend, FT, n_dist, n_val)
+    out_cnts_dev = KA.zeros(backend, FT, n_dist, n_val)
+
+    copyto!(x_dev, collect(x_mat))
+    copyto!(u_dev, collect(u_mat))
+    copyto!(value_edges_dev, value_host)
+
+    _launch_joint_2d_kernel!(
+        backend, workgroup_size,
+        out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
+        sf_type, dist_layout, N_points, n_dist_edges, n_val_edges,
+    )
+    KA.synchronize(backend)
+
+    sums = Array(out_sums_dev)
+    raw_counts = Array(out_cnts_dev)
+    counts = CT === UInt32 ? UInt32.(raw_counts) : CT.(raw_counts)
+    return SF.StructureFunction2D(sf_type, distance_bins, value_bins, sums, counts)
+end
+
+# ---------------------------------------------------------------------------
+# Single-pass 2D GPU kernels (eight distance × value joint histograms)
+# ---------------------------------------------------------------------------
+
+"""Stack eight value-bin edge vectors as `(n_edges, 8)` for column-wise device digitize."""
+function _gpu_pack_value_edges(value_bins_by_type::AbstractVector{<:AbstractVector})
+    length(value_bins_by_type) == 8 ||
+        throw(ArgumentError("value_bins_by_type must have length 8 (got $(length(value_bins_by_type)))"))
+    n_edges = length(value_bins_by_type[1])
+    FT = promote_type(eltype.(value_bins_by_type)...)
+    mat = Matrix{FT}(undef, n_edges, 8)
+    for t in 1:8
+        length(value_bins_by_type[t]) == n_edges ||
+            throw(DimensionMismatch("all value bin vectors must share edge length"))
+        @inbounds mat[:, t] .= value_bins_by_type[t]
+    end
+    return mat
+end
+
+@inline function _gpu_digitize_general_col(
+    x::T,
+    edges,
+    col::Int,
+    n_edges::Int,
+) where {T}
+    low = 1
+    high = n_edges
+    while low <= high
+        mid = (low + high) >>> 1
+        @inbounds edge_mid = edges[mid, col]
+        if edge_mid < x
+            low = mid + 1
+        else
+            high = mid - 1
+        end
+    end
+    return low - 1
+end
+
+@inline function _gpu_accumulate_single_pass_2d_pair!(
+    output_sums,
+    output_counts,
+    value_edges,
+    bin::Int,
+    du_L,
+    du_T,
+    du_L2,
+    du_T2,
+    N_val_edges::Int,
+)
+    FT = eltype(output_sums)
+    vals = SA.SVector(
+        du_L2 + du_T2,
+        du_L2,
+        du_T2,
+        du_L * (du_L2 + du_T2),
+        du_L * du_L2,
+        du_L2 * du_T,
+        du_L * du_T2,
+        du_T * du_T2,
+    )
+    for t in 1:8
+        vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
+        if 1 <= vbin < N_val_edges
+            @atomic output_sums[t, bin, vbin] += vals[t]
+            @atomic output_counts[t, bin, vbin] += one(FT)
+        end
+    end
+    return nothing
+end
+
+KA.@kernel function _sf_single_pass_2d_kernel_linear!(
+    output_sums,
+    output_counts,
+    @Const(x_mat),
+    @Const(u_mat),
+    @Const(value_edges),
+    N_points::Int,
+    N_bins::Int,
+    N_val_edges::Int,
+    first_edge::FT,
+    last_edge::FT,
+    inv_step::FT,
+    offset::FT,
+    step_val::FT,
+) where {FT}
+    I = @index(Global, NTuple)
+    i, j = I[1], I[2]
+    if i < j
+        X1 = SA.SVector{2}(x_mat[1, i], x_mat[2, i])
+        X2 = SA.SVector{2}(x_mat[1, j], x_mat[2, j])
+        U1 = SA.SVector{2}(u_mat[1, i], u_mat[2, i])
+        U2 = SA.SVector{2}(u_mat[1, j], u_mat[2, j])
+        dX = X2 - X1
+        dist = sqrt(dX[1]^2 + dX[2]^2)
+        bin = _gpu_digitize_linear(
+            dist, first_edge, last_edge, inv_step, offset, step_val, N_bins,
+        )
+        if 1 <= bin < N_bins
+            dU = U2 - U1
+            r̂ = dX / dist
+            n̂ = SA.SVector{2, FT}(r̂[2], -r̂[1])
+            du_L = SA.dot(dU, r̂)
+            du_T = SA.dot(dU, n̂)
+            du_L2 = du_L * du_L
+            du_T2 = du_T * du_T
+            _gpu_accumulate_single_pass_2d_pair!(
+                output_sums, output_counts, value_edges, bin,
+                du_L, du_T, du_L2, du_T2, N_val_edges,
+            )
+        end
+    end
+end
+
+KA.@kernel function _sf_single_pass_2d_kernel_log!(
+    output_sums,
+    output_counts,
+    @Const(x_mat),
+    @Const(u_mat),
+    @Const(edges),
+    @Const(lut),
+    @Const(value_edges),
+    N_points::Int,
+    N_bins::Int,
+    N_val_edges::Int,
+    e_min::Int,
+)
+    I = @index(Global, NTuple)
+    i, j = I[1], I[2]
+    if i < j
+        X1 = SA.SVector{2}(x_mat[1, i], x_mat[2, i])
+        X2 = SA.SVector{2}(x_mat[1, j], x_mat[2, j])
+        U1 = SA.SVector{2}(u_mat[1, i], u_mat[2, i])
+        U2 = SA.SVector{2}(u_mat[1, j], u_mat[2, j])
+        dX = X2 - X1
+        dist = sqrt(dX[1]^2 + dX[2]^2)
+        bin = _gpu_digitize_log(dist, edges, lut, e_min, N_bins)
+        if 1 <= bin < N_bins
+            dU = U2 - U1
+            r̂ = dX / dist
+            FT = eltype(x_mat)
+            n̂ = SA.SVector{2, FT}(r̂[2], -r̂[1])
+            du_L = SA.dot(dU, r̂)
+            du_T = SA.dot(dU, n̂)
+            du_L2 = du_L * du_L
+            du_T2 = du_T * du_T
+            _gpu_accumulate_single_pass_2d_pair!(
+                output_sums, output_counts, value_edges, bin,
+                du_L, du_T, du_L2, du_T2, N_val_edges,
+            )
+        end
+    end
+end
+
+KA.@kernel function _sf_single_pass_2d_kernel!(
+    output_sums,
+    output_counts,
+    @Const(x_mat),
+    @Const(u_mat),
+    @Const(distance_bins),
+    @Const(value_edges),
+    N_points::Int,
+    N_bins::Int,
+    N_val_edges::Int,
+)
+    I = @index(Global, NTuple)
+    i, j = I[1], I[2]
+    if i < j
+        X1 = SA.SVector{2}(x_mat[1, i], x_mat[2, i])
+        X2 = SA.SVector{2}(x_mat[1, j], x_mat[2, j])
+        U1 = SA.SVector{2}(u_mat[1, i], u_mat[2, i])
+        U2 = SA.SVector{2}(u_mat[1, j], u_mat[2, j])
+        dX = X2 - X1
+        dist = sqrt(dX[1]^2 + dX[2]^2)
+        bin = _gpu_digitize_general(dist, distance_bins, N_bins)
+        if 1 <= bin < N_bins
+            dU = U2 - U1
+            r̂ = dX / dist
+            FT = eltype(x_mat)
+            n̂ = SA.SVector{2, FT}(r̂[2], -r̂[1])
+            du_L = SA.dot(dU, r̂)
+            du_T = SA.dot(dU, n̂)
+            du_L2 = du_L * du_L
+            du_T2 = du_T * du_T
+            _gpu_accumulate_single_pass_2d_pair!(
+                output_sums, output_counts, value_edges, bin,
+                du_L, du_T, du_L2, du_T2, N_val_edges,
+            )
+        end
+    end
+end
+
+function _launch_single_pass_2d_kernel!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    value_edges_dev,
+    dist_layout::_GPUBinLayout,
+    N_points::Int,
+    n_dist_edges::Int,
+    n_val_edges::Int,
+)
+    bins = _gpu_active_bins(dist_layout)
+    return _launch_single_pass_2d_kernel!(
+        backend, workgroup_size, out_sums_dev, out_cnts_dev,
+        x_dev, u_dev, value_edges_dev, bins,
+        N_points, n_dist_edges, n_val_edges,
+    )
+end
+
+function _launch_single_pass_2d_kernel!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    value_edges_dev,
+    lbe::LinearBinEdges,
+    N_points::Int,
+    n_dist_edges::Int,
+    n_val_edges::Int,
+)
+    kernel! = _sf_single_pass_2d_kernel_linear!(backend, workgroup_size)
+    kernel!(
+        out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
+        N_points, n_dist_edges, n_val_edges,
+        lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val;
+        ndrange = (N_points, N_points),
+    )
+    return nothing
+end
+
+function _launch_single_pass_2d_kernel!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    value_edges_dev,
+    lbe::LogBinEdges,
+    N_points::Int,
+    n_dist_edges::Int,
+    n_val_edges::Int,
+)
+    FT = eltype(lbe.edges)
+    edges_dev = KA.allocate(backend, FT, n_dist_edges)
+    lut_dev = KA.allocate(backend, Int32, length(lbe.lut))
+    copyto!(edges_dev, collect(lbe.edges))
+    copyto!(lut_dev, Int32.(lbe.lut))
+    kernel! = _sf_single_pass_2d_kernel_log!(backend, workgroup_size)
+    kernel!(
+        out_sums_dev, out_cnts_dev, x_dev, u_dev,
+        edges_dev, lut_dev, value_edges_dev,
+        N_points, n_dist_edges, n_val_edges, lbe.e_min;
+        ndrange = (N_points, N_points),
+    )
+    return nothing
+end
+
+function _launch_single_pass_2d_kernel!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    value_edges_dev,
+    edges::Vector{FT},
+    N_points::Int,
+    n_dist_edges::Int,
+    n_val_edges::Int,
+) where {FT}
+    bins_dev = KA.allocate(backend, FT, n_dist_edges)
+    copyto!(bins_dev, edges)
+    kernel! = _sf_single_pass_2d_kernel!(backend, workgroup_size)
+    kernel!(
+        out_sums_dev, out_cnts_dev, x_dev, u_dev,
+        bins_dev, value_edges_dev, N_points, n_dist_edges, n_val_edges;
+        ndrange = (N_points, N_points),
+    )
+    return nothing
+end
+
+function _gpu_run_single_pass_2d!(
+    gpu_backend::SF.GPUBackend,
+    sums_3d::AbstractArray{OT, 3},
+    counts_3d::AbstractArray{Int64, 3},
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    workgroup_size::Int = 64,
+) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    backend = gpu_backend.backend
+    FT = promote_type(float(FT1), float(FT2), float(FT3))
+    N_dims, N_points = size(x)
+    N_dims == 2 ||
+        error("GPUExt: single-pass 2D calculation only supports 2D coordinates (got N_dims=$N_dims)")
+
+    n_val = length(value_bins_by_type[1]) - 1
+    SFC._validate_value_bins_by_type(value_bins_by_type, n_val)
+    n_bins = length(distance_bins) - 1
+    size(sums_3d) == (8, n_bins, n_val) ||
+        throw(DimensionMismatch("sums must have shape (8, n_bins, n_val); got $(size(sums_3d))"))
+    size(counts_3d) == size(sums_3d) ||
+        throw(DimensionMismatch("counts and sums must have the same shape"))
+
+    dist_layout = _resolve_gpu_bin_layout(distance_bins)
+    n_dist_edges = length(_layout_edge_vector(dist_layout))
+    n_val_edges = n_val + 1
+    value_host = _gpu_pack_value_edges(value_bins_by_type)
+
+    x_dev = KA.allocate(backend, FT, 2, N_points)
+    u_dev = KA.allocate(backend, FT, 2, N_points)
+    value_edges_dev = KA.allocate(backend, FT, n_val_edges, 8)
+    out_sums_dev = KA.zeros(backend, FT, 8, n_bins, n_val)
+    out_cnts_dev = KA.zeros(backend, FT, 8, n_bins, n_val)
+
+    copyto!(x_dev, collect(x))
+    copyto!(u_dev, collect(u))
+    copyto!(value_edges_dev, value_host)
+
+    _launch_single_pass_2d_kernel!(
+        backend, workgroup_size,
+        out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
+        dist_layout, N_points, n_dist_edges, n_val_edges,
+    )
+    KA.synchronize(backend)
+
+    copyto!(sums_3d, Array(out_sums_dev))
+    copyto!(counts_3d, Int64.(Array(out_cnts_dev)))
+    return sums_3d, counts_3d
+end
+
 """
     SFC._dispatch_single_pass(::GPUBackend, x, u, distance_bins; workgroup_size=64, kwargs...)
 
@@ -1258,6 +1696,52 @@ function SFC._dispatch_single_pass(
     counts = Int64.(Array(out_cnts_dev))
 
     return SFC.postprocess_single_pass_results(sums, counts, edges_host)
+end
+
+"""
+    SFC.gpu_calculate_structure_functions_single_pass_2d(backend, x, u, distance_bins, value_bins_by_type; ...)
+
+Eight native distance × value joint histograms in one GPU pair pass. Returns
+``(sums, counts)`` arrays of shape ``(8, n_distance_bins, n_value_bins)``.
+"""
+function SFC.gpu_calculate_structure_functions_single_pass_2d(
+    backend::KA.Backend,
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    workgroup_size::Int = 64,
+    kwargs...
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    OT = promote_type(float(FT1), float(FT2))
+    n_bins = length(distance_bins) - 1
+    n_val = length(value_bins_by_type[1]) - 1
+    SFC._validate_value_bins_by_type(value_bins_by_type, n_val)
+    sums = zeros(OT, 8, n_bins, n_val)
+    counts = zeros(Int64, 8, n_bins, n_val)
+    return _gpu_run_single_pass_2d!(
+        SF.GPUBackend(backend), sums, counts, x, u, distance_bins, value_bins_by_type;
+        workgroup_size = workgroup_size,
+    )
+end
+
+function SFC.gpu_calculate_structure_functions_single_pass_2d!(
+    sums_3d::AbstractArray{OT, 3},
+    counts_3d::AbstractArray{Int64, 3},
+    backend::KA.Backend,
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
+    value_bins_by_type::AbstractVector{<:AbstractVector};
+    workgroup_size::Int = 64,
+    kwargs...
+) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    fill!(sums_3d, zero(OT))
+    fill!(counts_3d, 0)
+    return _gpu_run_single_pass_2d!(
+        SF.GPUBackend(backend), sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type;
+        workgroup_size = workgroup_size,
+    )
 end
 
 end # module GPUExt

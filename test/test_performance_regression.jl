@@ -67,7 +67,7 @@ Test.@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
     xm = randn(2, N)
     um = randn(2, N)
 
-    bins = [(0.0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 2.0)]
+    bins = [0.0, 0.5, 1.0, 1.5, 2.0]
 
     sf_2nd_long = LongitudinalSecondOrderStructureFunction
     sf_2nd_trans = TransverseSecondOrderStructureFunction

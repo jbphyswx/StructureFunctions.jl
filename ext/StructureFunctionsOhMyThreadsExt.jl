@@ -9,7 +9,9 @@ using StructureFunctions:
     Calculations as SFC,
     StructureFunctionObjects as SFO,
     StructureFunctionTypes as SFT,
-    HelperFunctions as SFH
+    HelperFunctions as SFH,
+    BinEdges,
+    n_histogram_bins
 
 """
     _triangle_outer_chunks(indices, n_tasks)
@@ -41,10 +43,11 @@ function SFC.threaded_calculate_structure_function!(
     _ = show_progress
 
     # Chunked tmapreduce: O(n_tasks) allocations instead of O(N_points)
+    n_bins = n_histogram_bins(distance_bins)
+    distance_bins = BinEdges(distance_bins)
     result = OMT.tmapreduce(+, _triangle_outer_chunks(eachindex(x_vecs[1]), Threads.nthreads())) do chunk
-        local_output = zeros(OT, length(distance_bins))
-        local_counts = zeros(CT, length(distance_bins))
-        bin_edges = SFC.flat_bin_edges(distance_bins)
+        local_output = zeros(OT, n_bins)
+        local_counts = zeros(CT, n_bins)
         vN = Val(length(x_vecs))
         for i in chunk
             SFC.calculate_structure_function_i!(
@@ -55,7 +58,7 @@ function SFC.threaded_calculate_structure_function!(
                 i,
                 x_vecs,
                 u_vecs,
-                bin_edges;
+                distance_bins;
                 distance_metric = distance_metric,
             )
         end
@@ -78,7 +81,7 @@ function SFC.threaded_calculate_structure_function(
     FT1 = eltype(x_vecs[1])
     FT2 = eltype(u_vecs[1])
     OT = promote_type(float(FT1), float(FT2))
-    N3 = length(distance_bins)
+    N3 = n_histogram_bins(distance_bins)
     output = zeros(OT, N3)
     counts = zeros(CT, N3)
 
@@ -121,22 +124,18 @@ function SFC.threaded_calculate_structure_function!(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}};
+    distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
-) where {OT, CT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, CT, FT1 <: Number, FT2 <: Number}
     if verbose
         @info("calculating structure function (threaded reduction via OhMyThreads)")
     end
     _ = show_progress
 
-    N3 = length(distance_bins)
-    distance_bins_vec = Vector{FT3}(undef, N3 + 1)
-    for k in 1:N3
-        distance_bins_vec[k] = distance_bins[k][1]
-    end
-    distance_bins_vec[end] = distance_bins[end][2]
+    N3 = n_histogram_bins(distance_bins)
+    distance_bins = BinEdges(distance_bins)
 
     N = size(x_arr, 1)
     if !(N in (1, 2, 3))
@@ -156,7 +155,7 @@ function SFC.threaded_calculate_structure_function!(
                 i,
                 x_arr,
                 u_arr,
-                distance_bins_vec;
+                distance_bins;
                 distance_metric = distance_metric,
             )
         end
@@ -172,13 +171,13 @@ function SFC.threaded_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     ::Val{RSAC};
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC, CT}
+) where {FT1 <: Number, FT2 <: Number, RSAC, CT}
     OT = promote_type(float(FT1), float(FT2))
-    N3 = length(distance_bins)
+    N3 = n_histogram_bins(distance_bins)
     output = zeros(OT, N3)
     counts = zeros(CT, N3)
 
@@ -232,10 +231,10 @@ function SFC.threaded_calculate_structure_function!(
     end
     _ = show_progress
 
-    distance_bins_vec = SFC.flat_bin_edges(distance_bins)
-    value_bins_vec = SFC.flat_bin_edges(value_bins)
-    N3 = length(distance_bins)
-    N4 = length(value_bins_vec) - 1
+    distance_bins = BinEdges(distance_bins)
+    value_bins = BinEdges(value_bins)
+    N3 = n_histogram_bins(distance_bins)
+    N4 = n_histogram_bins(value_bins)
 
     # Chunked tmapreduce: O(n_tasks) allocations instead of O(N_points)
     result = OMT.tmapreduce(+, _triangle_outer_chunks(eachindex(x_vecs[1]), Threads.nthreads())) do chunk
@@ -251,8 +250,8 @@ function SFC.threaded_calculate_structure_function!(
                 i,
                 x_vecs,
                 u_vecs,
-                distance_bins_vec,
-                value_bins_vec;
+                distance_bins,
+                value_bins;
                 distance_metric = distance_metric,
             )
         end
@@ -282,9 +281,8 @@ function SFC.threaded_calculate_structure_function(
     FT1 = eltype(x_vecs[1])
     FT2 = eltype(u_vecs[1])
     OT = promote_type(float(FT1), float(FT2))
-    N3 = length(distance_bins)
-    value_bins_vec = SFC.flat_bin_edges(value_bins)
-    N4 = length(value_bins_vec) - 1
+    N3 = n_histogram_bins(distance_bins)
+    N4 = n_histogram_bins(value_bins)
 
     sums_2d = zeros(OT, N3, N4)
     counts_2d = zeros(CT, N3, N4)
@@ -317,10 +315,10 @@ function SFC.threaded_calculate_structure_function!(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     value_bins::AbstractVector;
     kwargs...,
-) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, FT1 <: Number, FT2 <: Number}
     N_dims = size(x_arr, 1)
     x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
     u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
@@ -340,15 +338,14 @@ function SFC.threaded_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     value_bins::AbstractVector;
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
+) where {FT1 <: Number, FT2 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
-    N3 = length(distance_bins)
-    value_bins_vec = SFC.flat_bin_edges(value_bins)
-    N4 = length(value_bins_vec) - 1
+    N3 = n_histogram_bins(distance_bins)
+    N4 = n_histogram_bins(value_bins)
 
     sums_2d = zeros(OT, N3, N4)
     counts_2d = zeros(CT, N3, N4)

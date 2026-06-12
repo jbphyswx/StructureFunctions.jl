@@ -24,16 +24,13 @@ Test.@testset "Real Data Extensions Verification" begin
 
     # Reference calculation (memory-based)
     bin_edges = collect(range(0.0, stop = 1.0, length = 11))
-    bin_tuples = SA.SVector{10, Tuple{FT, FT}}(
-        [(bin_edges[i], bin_edges[i + 1]) for i in 1:(length(bin_edges) - 1)]...,
-    )
     sft = SFT.L2SFType()
 
     ref_sf = SFC.calculate_structure_function(
         sft,
         x,
         u,
-        bin_tuples;
+        bin_edges;
         verbose = false,
         show_progress = false,
     )
@@ -48,7 +45,7 @@ Test.@testset "Real Data Extensions Verification" begin
             sf = SFC.calculate_structure_function(
                 sft,
                 fpath,
-                bin_tuples;
+                bin_edges;
                 x_key = "x",
                 u_key = "u",
                 verbose = false,
@@ -62,7 +59,7 @@ Test.@testset "Real Data Extensions Verification" begin
             df = DataFrame(x1 = x[1], x2 = x[2], u1 = u[1], u2 = u[2])
             CSV.write(fpath, df)
 
-            sf = SFC.calculate_structure_function(sft, fpath, bin_tuples;
+            sf = SFC.calculate_structure_function(sft, fpath, bin_edges;
                 x_key = ("x1", "x2"), u_key = ("u1", "u2"), verbose = false,
                 show_progress = false)
             Test.@test sf.values ≈ ref_sf.values
@@ -93,13 +90,13 @@ Test.@testset "Real Data Extensions Verification" begin
                 sft,
                 SFH.flatten_data(x_nc),
                 SFH.flatten_data(u_nc),
-                bin_tuples;
+                bin_edges;
                 verbose = false,
                 show_progress = false,
             )
 
             # Test extension with automatic expansion
-            sf_nc = SFC.calculate_structure_function(sft, fpath, bin_tuples;
+            sf_nc = SFC.calculate_structure_function(sft, fpath, bin_edges;
                 x_key = ("lon", "lat"), u_key = ("u", "v"), verbose = false,
                 show_progress = false)
 
@@ -118,7 +115,7 @@ Test.@testset "Real Data Extensions Verification" begin
             zu2 = Zarr.zcreate(FT, zg, "u2", N)
             zu2[:] = u[2]
 
-            sf = SFC.calculate_structure_function(sft, fpath, bin_tuples;
+            sf = SFC.calculate_structure_function(sft, fpath, bin_edges;
                 x_key = ("x1", "x2"), u_key = ("u1", "u2"), verbose = false,
                 show_progress = false)
             Test.@test sf.values ≈ ref_sf.values
@@ -133,7 +130,7 @@ Test.@testset "Real Data Extensions Verification" begin
                 file["u2"] = u[2]
             end
 
-            sf = SFC.calculate_structure_function(sft, fpath, bin_tuples;
+            sf = SFC.calculate_structure_function(sft, fpath, bin_edges;
                 x_key = ("x1", "x2"), u_key = ("u1", "u2"), verbose = false,
                 show_progress = false)
             Test.@test sf.values ≈ ref_sf.values
@@ -153,7 +150,7 @@ Test.@testset "Real Data Extensions Verification" begin
                 sft,
                 x_c,
                 u_c,
-                bin_tuples;
+                bin_edges;
                 verbose = false,
                 show_progress = false,
             )
@@ -164,7 +161,7 @@ Test.@testset "Real Data Extensions Verification" begin
             sf_nan = SFC.calculate_structure_function(
                 sft,
                 fpath,
-                bin_tuples;
+                bin_edges;
                 verbose = false,
                 show_progress = false,
             )

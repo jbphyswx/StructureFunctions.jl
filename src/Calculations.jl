@@ -7,7 +7,8 @@ using Distances: Distances as DI
 using ..HelperFunctions: HelperFunctions as SFH
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 using ..StructureFunctionObjects: StructureFunctionObjects as SFO
-using ..StructureFunctions: AbstractBinEdges, LinearBinEdges, LogBinEdges
+using ..StructureFunctions: AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges,
+    n_histogram_bins
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using Base.Threads: Threads
@@ -15,6 +16,9 @@ using LoopVectorization: LoopVectorization as LV # TODO: Move to extension or re
 
 export calculate_structure_function, parallel_calculate_structure_function,
     gpu_calculate_structure_function, gpu_calculate_structure_function!,
+    gpu_calculate_structure_function_2d,
+    gpu_calculate_structure_functions_single_pass_2d,
+    gpu_calculate_structure_functions_single_pass_2d!,
     calculate_structure_function_from_file,
     AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
     GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend,
@@ -50,7 +54,7 @@ using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 sf_type = SFT.LongitudinalSecondOrderStructureFunctionType()
 x = ([1.0, 2.0, 3.0], [0.0, 0.0, 0.0])
 u = ([0.1, 0.2, 0.3], [0.0, 0.0, 0.0])
-bins = [(0.0, 1.0), (1.0, 2.0)]
+bins = [0.0, 1.0, 2.0]
 
 result = SFC.calculate_structure_function(sf_type, x, u, bins; backend=SFC.SerialBackend())
 ```
@@ -557,16 +561,9 @@ function _dispatch_execution_backend!(
     distance_bins;
     kwargs...,
 )
-    return _dispatch_execution_backend!(
-        SerialBackend(),
-        sums,
-        counts,
-        structure_function_type,
-        x,
-        u,
-        distance_bins;
-        kwargs...,
-    )
+    throw(ArgumentError(
+        "calculate_structure_function! is not implemented for backend $(typeof(backend)).",
+    ))
 end
 
 function _dispatch_execution_backend!(
@@ -580,17 +577,9 @@ function _dispatch_execution_backend!(
     value_bins::AbstractVector;
     kwargs...,
 )
-    return _dispatch_execution_backend!(
-        SerialBackend(),
-        sums_2d,
-        counts_2d,
-        structure_function_type,
-        x,
-        u,
-        distance_bins,
-        value_bins;
-        kwargs...,
-    )
+    throw(ArgumentError(
+        "calculate_structure_function! with distance_bins and value_bins is not implemented for backend $(typeof(backend)).",
+    ))
 end
 
 function _dispatch_execution_backend(
@@ -1146,6 +1135,35 @@ This stub exists so the extension can legally extend this function.
 function gpu_calculate_structure_function end
 
 """
+    gpu_calculate_structure_function_2d(sf_type, backend, x_mat, u_mat, distance_bins, value_bins; kwargs...)
+
+GPU 2D joint structure function (distance × SF value histogram) for one `sf_type`.
+Requires loading `KernelAbstractions.jl` to activate the `GPUExt` extension.
+"""
+function gpu_calculate_structure_function_2d end
+
+"""
+    gpu_calculate_structure_functions_single_pass_2d(backend, x, u, distance_bins, value_bins_by_type; kwargs...)
+
+Eight native distance × value joint histograms on a KernelAbstractions backend.
+Requires loading `KernelAbstractions.jl` to activate the `GPUExt` extension.
+"""
+function gpu_calculate_structure_functions_single_pass_2d end
+
+"""
+    gpu_calculate_structure_functions_single_pass_2d!(sums, counts, backend, x, u, distance_bins, value_bins_by_type; kwargs...)
+
+In-place GPU 2D single-pass accumulation. Requires the `GPUExt` extension.
+"""
+function gpu_calculate_structure_functions_single_pass_2d!(args...; kwargs...)
+    throw(
+        ArgumentError(
+            "GPU in-place 2D single-pass is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
+        ),
+    )
+end
+
+"""
     gpu_calculate_structure_function!(output_sums, output_counts, ...)
 
 In-place GPU structure function reduction. Requires the `GPUExt` extension.
@@ -1195,31 +1213,6 @@ function (::Type{T})(
     return calculate_structure_function(T(), x, u, bins, Val(RSAC); kwargs...)
 end
 
-"""
-    calculate_structure_function(sf_type, x, u, bin_edges::AbstractVector{<:Number}, ...)
-
-Convenience method that converts a vector of bin edges `[e1, e2, e3]` into 
-adjacent bins `[(e1, e2), (e2, e3)]` and calls the core calculation.
-"""
-function calculate_structure_function(
-    structure_function_type::SFT.AbstractStructureFunctionType,
-    x::Union{Tuple, AbstractArray},
-    u::Union{Tuple, AbstractArray},
-    bin_edges::AbstractVector{<:Number},
-    args...;
-    kwargs...,
-)
-    bin_tuples = [(bin_edges[i], bin_edges[i + 1]) for i in 1:(length(bin_edges) - 1)]
-    return calculate_structure_function(
-        structure_function_type,
-        x,
-        u,
-        bin_tuples,
-        args...;
-        kwargs...,
-    )
-end
-
 ###########
 # Core Calculation Methods
 ########
@@ -1243,7 +1236,7 @@ operator for each pair, binning results by distance.
   - `Tuple{T1, Vararg{T1}}`: Tuple of 1D position vectors, e.g., `(x_coords, y_coords)` for 2D
   - `AbstractArray{FT}`: Matrix where columns are points, e.g., `[x1 x2 x3; y1 y2 y3]` (2×3 for 3 2D points)
 - `u::Union{Tuple, AbstractArray}`: Velocity/field data with same structure as `x`
-- `distance_bins::AbstractVector{<:Tuple}`: Distance bin edges as tuples `[(r_min₁, r_max₁), ...]`
+- `distance_bins`: Flat edges `[r₀, r₁, …]` (length `N+1` for `N` bins) or [`AbstractBinEdges`](@ref)
 
 # Keyword Arguments
 
@@ -1272,8 +1265,8 @@ using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 x = ([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
 u = ([1.0, 1.1, 1.2], [0.0, 0.05, 0.1])
 
-# Define distance bins in physical units
-bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
+# Define distance bin edges in physical units (length N+1 for N bins)
+bins = [0.0, 1.0, 2.0, 3.0]
 
 # Calculate 2nd-order longitudinal structure function
 sf_type = SFT.LongitudinalSecondOrderStructureFunctionType()
@@ -1293,10 +1286,10 @@ function calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}};
+    distance_bins::AbstractVector;
     return_sums_and_counts::Bool = false,
     kwargs...,
-) where {T1, T2, FT3}
+) where {T1, T2}
     return calculate_structure_function(
         structure_function_type,
         x_vecs,
@@ -1311,11 +1304,11 @@ function calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     ::Val{RSAC};
     backend::AbstractExecutionBackend = SerialBackend(),
     kwargs...,
-) where {T1, T2, FT3, RSAC}
+) where {T1, T2, RSAC}
     return _dispatch_execution_backend(
         backend,
         structure_function_type,
@@ -1331,11 +1324,11 @@ function calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     value_bins::AbstractVector;
     backend::AbstractExecutionBackend = SerialBackend(),
     kwargs...,
-) where {T1, T2, FT3}
+) where {T1, T2}
     return _dispatch_execution_backend(
         backend,
         structure_function_type,
@@ -1459,9 +1452,9 @@ function _dispatch_execution_backend(
     value_bins::AbstractVector;
     kwargs...,
 )
-    return _dispatch_execution_backend(
-        SerialBackend(),
+    return gpu_calculate_structure_function_2d(
         structure_function_type,
+        backend.backend,
         x,
         u,
         distance_bins,
@@ -1479,15 +1472,9 @@ function _dispatch_execution_backend(
     value_bins::AbstractVector;
     kwargs...,
 )
-    return _dispatch_execution_backend(
-        SerialBackend(),
-        structure_function_type,
-        x,
-        u,
-        distance_bins,
-        value_bins;
-        kwargs...,
-    )
+    throw(ArgumentError(
+        "calculate_structure_function with distance_bins and value_bins is not implemented for backend $(typeof(backend)).",
+    ))
 end
 
 function serial_calculate_structure_function!(
@@ -1496,20 +1483,12 @@ function serial_calculate_structure_function!(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}};
+    distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose::Bool = true,
     show_progress::Bool = true,
-) where {OT, CT, T1, T2, FT3}
-    N = length(x_vecs)
-    N3 = length(distance_bins)
-
-    # Create a stable Vector for bins edges
-    distance_bins_vec = Vector{FT3}(undef, N3 + 1)
-    for k in 1:N3
-        distance_bins_vec[k] = distance_bins[k][1]
-    end
-    distance_bins_vec[end] = distance_bins[end][2]
+) where {OT, CT, T1, T2}
+    distance_bins = BinEdges(distance_bins)
 
     if verbose
         @info("calculating structure function (serial reduction)")
@@ -1527,7 +1506,7 @@ function serial_calculate_structure_function!(
             i,
             x_vecs,
             u_vecs,
-            distance_bins_vec;
+            distance_bins;
             distance_metric = distance_metric,
         )
     end
@@ -1538,15 +1517,15 @@ function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     ::Val{RSAC};
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {T1, T2, FT3, RSAC, CT}
+) where {T1, T2, RSAC, CT}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
     OT = promote_type(float(FT1), float(FT2))
-    N3 = length(distance_bins)
+    N3 = n_histogram_bins(distance_bins)
     output = zeros(OT, N3)
     counts = zeros(CT, N3)
 
@@ -1579,33 +1558,20 @@ end
 
 
 
-@inline function flat_bin_edges(bins::AbstractVector{<:Tuple})
-    N = length(bins)
-    FT = eltype(bins[1])
-    vec = Vector{FT}(undef, N + 1)
-    for k in 1:N
-        vec[k] = bins[k][1]
-    end
-    vec[end] = bins[end][2]
-    return vec
-end
-
-@inline flat_bin_edges(bins::AbstractVector{<:Number}) = bins
-
 function serial_calculate_structure_function!(
     sums_2d::AbstractMatrix{OT},
     counts_2d::AbstractMatrix{CT},
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     value_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose::Bool = true,
     show_progress::Bool = true,
-) where {OT, CT, T1, T2, FT3}
-    distance_bins_vec = flat_bin_edges(distance_bins)
-    value_bins_vec = flat_bin_edges(value_bins)
+) where {OT, CT, T1, T2}
+    distance_bins = BinEdges(distance_bins)
+    value_bins = BinEdges(value_bins)
 
     if verbose
         @info("calculating 2D joint structure function (serial reduction)")
@@ -1623,8 +1589,8 @@ function serial_calculate_structure_function!(
             i,
             x_vecs,
             u_vecs,
-            distance_bins_vec,
-            value_bins_vec;
+            distance_bins,
+            value_bins;
             distance_metric = distance_metric,
         )
     end
@@ -1635,17 +1601,16 @@ function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     value_bins::AbstractVector;
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {T1, T2, FT3, CT}
+) where {T1, T2, CT}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
     OT = promote_type(float(FT1), float(FT2))
-    N3 = length(distance_bins)
-    value_bins_vec = flat_bin_edges(value_bins)
-    N4 = length(value_bins_vec) - 1
+    N3 = n_histogram_bins(distance_bins)
+    N4 = n_histogram_bins(value_bins)
 
     sums_2d = zeros(OT, N3, N4)
     counts_2d = zeros(CT, N3, N4)
@@ -1676,10 +1641,10 @@ function serial_calculate_structure_function!(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     value_bins::AbstractVector;
     kwargs...,
-) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, FT1 <: Number, FT2 <: Number}
     N_dims = size(x_arr, 1)
     x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
     u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
@@ -1699,10 +1664,10 @@ function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     value_bins::AbstractVector;
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number}
     N_dims = size(x_arr, 1)
     x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
     u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
@@ -1724,14 +1689,14 @@ function calculate_structure_function_2d_i!(
     i::Int,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins_vec::AbstractVector{FT3},
-    value_bins_vec::AbstractVector{FT4};
+    distance_bins::AbstractVector,
+    value_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {OT, N, T1, T2, FT3, FT4}
+) where {OT, N, T1, T2}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
-    N3 = length(distance_bins_vec)
-    N4 = length(value_bins_vec)
+    N3 = length(distance_bins)
+    N4 = length(value_bins)
 
     X1 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][i], Val(N)))
     U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val(N)))
@@ -1742,12 +1707,12 @@ function calculate_structure_function_2d_i!(
         U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
 
         distance = distance_metric(X1, X2)
-        dist_bin = SFH.digitize(distance, distance_bins_vec)
+        dist_bin = SFH.digitize(distance, distance_bins)
         if 1 <= dist_bin < N3
             
             rh = SFH.r̂(X1, X2, distance_metric, distance) # Use multiple dispatch to avoid duplicate vector subtraction and sqrt/norm where possible
             val = structure_function_type(U2 - U1, rh)
-            val_bin = SFH.digitize(val, value_bins_vec)
+            val_bin = SFH.digitize(val, value_bins)
             
             if 1 <= val_bin < N4
                 @inbounds sums_2d[dist_bin, val_bin] += val
@@ -1771,12 +1736,8 @@ function calculate_structure_function_2d_i(
     N = length(x_vecs)
     FT1 = eltype(x_vecs[1])
     FT2 = eltype(u_vecs[1])
-    N3 = length(distance_bins)
-    
-    distance_bins_vec = flat_bin_edges(distance_bins)
-    value_bins_vec = flat_bin_edges(value_bins)
-    N4 = length(value_bins_vec) - 1
-
+    N3 = n_histogram_bins(distance_bins)
+    N4 = n_histogram_bins(value_bins)
     OT = promote_type(float(FT1), float(FT2))
     local_sums = zeros(OT, N3, N4)
     local_counts = zeros(CT, N3, N4)
@@ -1790,8 +1751,8 @@ function calculate_structure_function_2d_i(
         i,
         x_vecs,
         u_vecs,
-        distance_bins_vec,
-        value_bins_vec;
+        BinEdges(distance_bins),
+        BinEdges(value_bins);
         distance_metric = distance_metric,
     )
 
@@ -1814,12 +1775,12 @@ function calculate_structure_function_i!(
     i::Int,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins_vec::AbstractVector{FT3};
+    distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {OT, N, T1, T2, FT3}
+) where {OT, N, T1, T2}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
-    N3 = length(distance_bins_vec)
+    N3 = length(distance_bins)
 
     X1 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][i], Val(N)))
     U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val(N)))
@@ -1830,7 +1791,7 @@ function calculate_structure_function_i!(
         U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
 
         distance = distance_metric(X1, X2)
-        bin = SFH.digitize(distance, distance_bins_vec)
+        bin = SFH.digitize(distance, distance_bins)
         if 1 <= bin < N3
             # Use multiple dispatch to avoid duplicate vector subtraction and sqrt/norm where possible
             rh = SFH.r̂(X1, X2, distance_metric, distance)
@@ -1858,22 +1819,13 @@ function calculate_structure_function_i(
     count_eltype::Type{CT} = UInt32,
 ) where {CT}
     OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
-    N3 = length(distance_bins)
+    N3 = n_histogram_bins(distance_bins)
     local_output = zeros(OT, N3)
     local_counts = zeros(CT, N3)
-
-    # Kernel expects edges
-    FT3 = eltype(eltype(distance_bins))
-    bin_edges = Vector{FT3}(undef, N3 + 1)
-    for k in 1:N3
-        bin_edges[k] = distance_bins[k][1]
-    end
-    bin_edges[end] = distance_bins[end][2]
-
     calculate_structure_function_i!(
         local_output, local_counts,
         Val(length(x_vecs)),
-        structure_function_type, i, x_vecs, u_vecs, bin_edges;
+        structure_function_type, i, x_vecs, u_vecs, BinEdges(distance_bins);
         distance_metric = distance_metric,
     )
     return SFO.StructureFunctionSumsAndCounts(
@@ -1926,20 +1878,17 @@ function calculate_structure_function(
 
     min_distance = prevfloat(min_distance) # go to the next smallest float from the min distance to make sure the true smallest distance can fit in the first bin (note this is needed so things matching min_distance don't get assigned bin '0', alternative is to check for bin 0 every time... which sounds slower
     if bin_spacing === LinearBinEdges
-        distance_bins = range(min_distance, max_distance, length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
+        distance_bins = LinearBinEdges(range(min_distance, max_distance, length = n_distance_bins + 1))
     elseif bin_spacing === LogBinEdges
-        distance_bins =
+        edge_vec =
             10 .^
-            range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
-        distance_bins[1] = min_distance # combat floating point errors (may have rounded up or down during operations)
-        distance_bins[end] = max_distance # combat floating point errors (may have rounded up or down during operations)
+            range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1)
+        edge_vec[1] = min_distance
+        edge_vec[end] = max_distance
+        distance_bins = LogBinEdges(edge_vec)
     else
         throw(ArgumentError("bin_spacing must be LinearBinEdges or LogBinEdges"))
     end
-    FT3 = eltype(distance_bins)
-    distance_bins = SA.SVector{n_distance_bins, Tuple{FT3, FT3}}(
-        [(distance_bins[i], distance_bins[i + 1]) for i in 1:n_distance_bins]...,
-    ) # convert to tuples of the bin edges
     return calculate_structure_function(
         structure_function_type,
         x_vecs,
@@ -1996,10 +1945,10 @@ function calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}};
+    distance_bins::AbstractVector;
     return_sums_and_counts::Bool = false,
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number}
     return calculate_structure_function(
         structure_function_type,
         x_arr,
@@ -2014,11 +1963,11 @@ function calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     ::Val{RSAC};
     backend::AbstractExecutionBackend = SerialBackend(),
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC}
+) where {FT1 <: Number, FT2 <: Number, RSAC}
     return _dispatch_execution_backend(
         backend,
         structure_function_type,
@@ -2034,11 +1983,11 @@ function calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     value_bins::AbstractVector;
     backend::AbstractExecutionBackend = SerialBackend(),
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number}
     return _dispatch_execution_backend(
         backend,
         structure_function_type,
@@ -2057,19 +2006,12 @@ function serial_calculate_structure_function!(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{<:Tuple{FT3, FT3}};
+    distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose::Bool = true,
     show_progress::Bool = true,
-) where {OT, CT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
-    N3 = length(distance_bins)
-
-    # Create a stable Vector for bins edges
-    distance_bins_vec = Vector{FT3}(undef, N3 + 1)
-    for k in 1:N3
-        distance_bins_vec[k] = distance_bins[k][1]
-    end
-    distance_bins_vec[end] = distance_bins[end][2]
+) where {OT, CT, FT1 <: Number, FT2 <: Number}
+    distance_bins = BinEdges(distance_bins)
 
     if verbose
         @info("calculating structure function (serial reduction)")
@@ -2087,7 +2029,7 @@ function serial_calculate_structure_function!(
                 i,
                 x_arr,
                 u_arr,
-                distance_bins_vec;
+                distance_bins;
                 distance_metric = distance_metric,
             )
         end
@@ -2101,7 +2043,7 @@ function serial_calculate_structure_function!(
                 i,
                 x_arr,
                 u_arr,
-                distance_bins_vec;
+                distance_bins;
                 distance_metric = distance_metric,
             )
         end
@@ -2115,7 +2057,7 @@ function serial_calculate_structure_function!(
                 i,
                 x_arr,
                 u_arr,
-                distance_bins_vec;
+                distance_bins;
                 distance_metric = distance_metric,
             )
         end
@@ -2129,13 +2071,13 @@ function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractStructureFunctionType,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins::AbstractVector{Tuple{FT3, FT3}},
+    distance_bins::AbstractVector,
     ::Val{RSAC};
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, RSAC, CT}
+) where {FT1 <: Number, FT2 <: Number, RSAC, CT}
     OT = promote_type(float(FT1), float(FT2))
-    N3 = length(distance_bins)
+    N3 = n_histogram_bins(distance_bins)
     output = zeros(OT, N3)
     counts = zeros(CT, N3)
 
@@ -2174,10 +2116,10 @@ function calculate_structure_function_i!(
     i::Int,
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
-    distance_bins_vec::AbstractVector{FT3};
+    distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {OT, N, FT1 <: Number, FT2 <: Number, FT3 <: Number}
-    N3 = length(distance_bins_vec)
+) where {OT, N, FT1 <: Number, FT2 <: Number}
+    N3 = length(distance_bins)
     iter_inds = axes(x_arr, 2)
 
     X1 = SA.SVector{N, FT1}(ntuple(k -> x_arr[k, i], Val(N)))
@@ -2189,7 +2131,7 @@ function calculate_structure_function_i!(
         U2 = SA.SVector{N, FT2}(ntuple(k -> u_arr[k, j], Val(N)))
 
         distance = distance_metric(X1, X2)
-        bin = SFH.digitize(distance, distance_bins_vec)
+        bin = SFH.digitize(distance, distance_bins)
         if 1 <= bin < N3
             # Use multiple dispatch to avoid duplicate vector subtraction and sqrt/norm where possible
             rh = SFH.r̂(X1, X2, distance_metric, distance)
@@ -2241,20 +2183,17 @@ function calculate_structure_function(
 
     min_distance = prevfloat(min_distance) # go to the next smallest float from the min distance to make sure the true smallest distance can fit in the first bin (note this is needed so things matching min_distance don't get assigned bin '0', alternative is to check for bin 0 every time... which sounds slower
     if bin_spacing === LinearBinEdges
-        distance_bins = range(min_distance, max_distance, length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
+        distance_bins = LinearBinEdges(range(min_distance, max_distance, length = n_distance_bins + 1))
     elseif bin_spacing === LogBinEdges
-        distance_bins =
+        edge_vec =
             10 .^
-            range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1) # +1 to get the right number of bins since these are the edges
-        distance_bins[1] = min_distance # combat floating point errors (may have rounded up or down during operations)
-        distance_bins[end] = max_distance # combat floating point errors (may have rounded up or down during operations)
+            range(log10(min_distance), log10(max_distance), length = n_distance_bins + 1)
+        edge_vec[1] = min_distance
+        edge_vec[end] = max_distance
+        distance_bins = LogBinEdges(edge_vec)
     else
         throw(ArgumentError("bin_spacing must be LinearBinEdges or LogBinEdges"))
     end
-    FT3 = eltype(distance_bins)
-    distance_bins = SA.SVector{n_distance_bins, Tuple{FT3, FT3}}(
-        [(distance_bins[i], distance_bins[i + 1]) for i in 1:n_distance_bins]...,
-    ) # convert to tuples of the bin edges
     return calculate_structure_function(
         structure_function_type,
         x_arr,
@@ -2985,20 +2924,20 @@ function _dispatch_single_pass_2d!(
 end
 
 function _dispatch_single_pass_2d!(
-    ::GPUBackend,
+    backend::GPUBackend,
     sums_3d::AbstractArray,
     counts_3d::AbstractArray,
-    x::AbstractMatrix,
-    u::AbstractMatrix,
-    distance_bins::AbstractVector,
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
-    kwargs...
-)
-    throw(
-        ArgumentError(
-            "GPU in-place 2D single-pass is unavailable. Load GPUExt or use backend=SerialBackend().",
-        ),
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    gpu_calculate_structure_functions_single_pass_2d!(
+        sums_3d, counts_3d, backend.backend, x, u, distance_bins, value_bins_by_type;
+        kwargs...,
     )
+    return sums_3d, counts_3d
 end
 
 function _dispatch_single_pass_2d!(
@@ -3084,17 +3023,16 @@ function _dispatch_single_pass_2d(
 end
 
 function _dispatch_single_pass_2d(
-    ::GPUBackend,
-    x::AbstractMatrix,
-    u::AbstractMatrix,
-    distance_bins::AbstractVector,
+    backend::GPUBackend,
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
-    kwargs...
-)
-    throw(
-        ArgumentError(
-            "GPU 2D single-pass backend is unavailable. Load the GPUExt extension or use backend=SerialBackend().",
-        ),
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+    return gpu_calculate_structure_functions_single_pass_2d(
+        backend.backend, x, u, distance_bins, value_bins_by_type;
+        kwargs...,
     )
 end
 

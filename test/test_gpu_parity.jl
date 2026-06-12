@@ -18,20 +18,13 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
     # Bin edges (monotone)
     bin_edges = collect(FT, range(0.0, 1.4, length = 11))   # 10 bins
 
-    # CPU reference requires Tuple-pair format: [(lo, hi), ...]
-    bin_tuples = SA.SVector{10, Tuple{FT, FT}}(
-        [(bin_edges[i], bin_edges[i + 1]) for i in 1:(length(bin_edges) - 1)]...,
-    )
-
     sft = SFT.L2SFType()
 
-    # Create Tuple format for CPU reference
     x_tup = (x[1, :], x[2, :])
     u_tup = (u[1, :], u[2, :])
 
-    # --- Reference: existing CPU implementation ---
     res_ref = SFC.calculate_structure_function(
-        sft, x_tup, u_tup, bin_tuples;
+        sft, x_tup, u_tup, bin_edges;
         verbose = false, show_progress = false, return_sums_and_counts = true,
     )
     ref_vals = res_ref.sums
