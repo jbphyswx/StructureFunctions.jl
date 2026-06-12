@@ -176,8 +176,9 @@ function SFC._dispatch_single_pass(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
     n_points = size(x, 2)
@@ -226,8 +227,8 @@ function SFC._dispatch_single_pass(
     end
     
     sums = OT.(combined_reduced[1:8, :])
-    counts = Int64.(combined_reduced[9:16, :])
-    
+    counts = CT.(combined_reduced[9:16, :])
+
     return SFC.postprocess_single_pass_results(sums, counts, distance_bins)
 end
 
@@ -383,8 +384,9 @@ function SFC._dispatch_single_pass_2d(
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
     n_val = length(value_bins_by_type[1]) - 1
@@ -439,7 +441,7 @@ function SFC._dispatch_single_pass_2d(
     end
 
     sums = OT.(combined_reduced[1:8, :, :])
-    counts = Int64.(combined_reduced[9:16, :, :])
+    counts = CT.(combined_reduced[9:16, :, :])
     return sums, counts
 end
 
