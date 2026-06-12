@@ -399,8 +399,9 @@ function SFC._dispatch_single_pass(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
     n_points = size(x, 2)
@@ -413,7 +414,7 @@ function SFC._dispatch_single_pass(
         _triangle_outer_chunks(1:n_points, Threads.nthreads())
     ) do chunk
         local_sums = zeros(OT, 8, n_bins)
-        local_counts = zeros(Int64, 8, n_bins)
+        local_counts = zeros(CT, 8, n_bins)
 
         for i in chunk
             x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
@@ -463,13 +464,13 @@ end
 function SFC._dispatch_single_pass!(
     ::SF.ThreadedBackend,
     sums::AbstractMatrix{OT},
-    counts::AbstractMatrix{Int64},
+    counts::AbstractMatrix{CT},
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     n_bins = length(distance_bins) - 1
     n_points = size(x, 2)
 
@@ -478,7 +479,7 @@ function SFC._dispatch_single_pass!(
         _triangle_outer_chunks(1:n_points, Threads.nthreads()),
     ) do chunk
         local_sums = zeros(OT, 8, n_bins)
-        local_counts = zeros(Int64, 8, n_bins)
+        local_counts = zeros(CT, 8, n_bins)
 
         for i in chunk
             x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
@@ -533,8 +534,9 @@ function SFC._dispatch_single_pass_2d(
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
     n_val = length(value_bins_by_type[1]) - 1
@@ -545,7 +547,7 @@ function SFC._dispatch_single_pass_2d(
         _triangle_outer_chunks(1:n_points, Threads.nthreads()),
     ) do chunk
         local_sums = zeros(OT, 8, n_bins, n_val)
-        local_counts = zeros(Int64, 8, n_bins, n_val)
+        local_counts = zeros(CT, 8, n_bins, n_val)
 
         for i in chunk
             x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
@@ -601,14 +603,14 @@ end
 function SFC._dispatch_single_pass_2d!(
     ::SF.ThreadedBackend,
     sums_3d::AbstractArray{OT, 3},
-    counts_3d::AbstractArray{Int64, 3},
+    counts_3d::AbstractArray{CT, 3},
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     n_bins = length(distance_bins) - 1
     n_val = size(sums_3d, 3)
     n_points = size(x, 2)
@@ -618,7 +620,7 @@ function SFC._dispatch_single_pass_2d!(
         _triangle_outer_chunks(1:n_points, Threads.nthreads()),
     ) do chunk
         local_sums = zeros(OT, 8, n_bins, n_val)
-        local_counts = zeros(Int64, 8, n_bins, n_val)
+        local_counts = zeros(CT, 8, n_bins, n_val)
 
         for i in chunk
             x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])

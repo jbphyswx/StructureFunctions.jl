@@ -652,6 +652,23 @@ function _download_gpu_sf_results(out_dev, cnt_dev, ::Type{FT}, ::Type{CT}) wher
     return output, counts
 end
 
+"""Download device ``UInt32`` count buffer to host array of ``count_eltype``."""
+function _download_gpu_counts(cnt_dev, ::Type{CT}) where {CT}
+    tmp_c = Array(cnt_dev)
+    return CT === UInt32 ? tmp_c : CT.(tmp_c)
+end
+
+"""Copy device ``UInt32`` counts into a pre-allocated host buffer (``count_eltype``)."""
+function _copy_gpu_counts!(host_counts, cnt_dev, ::Type{CT}) where {CT}
+    tmp_c = Array(cnt_dev)
+    if CT === eltype(host_counts)
+        copyto!(host_counts, tmp_c)
+    else
+        copyto!(host_counts, CT.(tmp_c))
+    end
+    return host_counts
+end
+
 function SFC.gpu_calculate_structure_function!(
     output_sums::AbstractVector{OT},
     output_counts::AbstractVector{CT},
@@ -1294,7 +1311,7 @@ function SFC.gpu_calculate_structure_function_2d(
     u_dev = KA.allocate(backend, FT, 2, N_points)
     value_edges_dev = KA.allocate(backend, FT, n_val_edges)
     out_sums_dev = KA.zeros(backend, FT, n_dist, n_val)
-    out_cnts_dev = KA.zeros(backend, FT, n_dist, n_val)
+    out_cnts_dev = KA.zeros(backend, UInt32, n_dist, n_val)
 
     copyto!(x_dev, collect(x_mat))
     copyto!(u_dev, collect(u_mat))
@@ -1308,8 +1325,7 @@ function SFC.gpu_calculate_structure_function_2d(
     KA.synchronize(backend)
 
     sums = Array(out_sums_dev)
-    raw_counts = Array(out_cnts_dev)
-    counts = CT === UInt32 ? UInt32.(raw_counts) : CT.(raw_counts)
+    counts = _download_gpu_counts(out_cnts_dev, CT)
     return SF.StructureFunction2D(sf_type, distance_bins, value_bins, sums, counts)
 end
 
@@ -1378,7 +1394,7 @@ end
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
             @atomic output_sums[t, bin, vbin] += vals[t]
-            @atomic output_counts[t, bin, vbin] += one(FT)
+            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
         end
     end
     return nothing
@@ -1604,13 +1620,13 @@ end
 function _gpu_run_single_pass_2d!(
     gpu_backend::SF.GPUBackend,
     sums_3d::AbstractArray{OT, 3},
-    counts_3d::AbstractArray{Int64, 3},
+    counts_3d::AbstractArray{CT, 3},
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
     workgroup_size::Int = 64,
-) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, CT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
     backend = gpu_backend.backend
     FT = promote_type(float(FT1), float(FT2), float(FT3))
     N_dims, N_points = size(x)
@@ -1634,7 +1650,7 @@ function _gpu_run_single_pass_2d!(
     u_dev = KA.allocate(backend, FT, 2, N_points)
     value_edges_dev = KA.allocate(backend, FT, n_val_edges, 8)
     out_sums_dev = KA.zeros(backend, FT, 8, n_bins, n_val)
-    out_cnts_dev = KA.zeros(backend, FT, 8, n_bins, n_val)
+    out_cnts_dev = KA.zeros(backend, UInt32, 8, n_bins, n_val)
 
     copyto!(x_dev, collect(x))
     copyto!(u_dev, collect(u))
@@ -1648,7 +1664,7 @@ function _gpu_run_single_pass_2d!(
     KA.synchronize(backend)
 
     copyto!(sums_3d, Array(out_sums_dev))
-    copyto!(counts_3d, Int64.(Array(out_cnts_dev)))
+    _copy_gpu_counts!(counts_3d, out_cnts_dev, CT)
     return sums_3d, counts_3d
 end
 
@@ -1663,8 +1679,9 @@ function SFC._dispatch_single_pass(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
     workgroup_size::Int = 64,
+    count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     backend = gpu_backend.backend
     FT = promote_type(float(FT1), float(FT2))
     N_dims, N_points = size(x)
@@ -1680,7 +1697,7 @@ function SFC._dispatch_single_pass(
     x_dev = KA.allocate(backend, FT, 2, N_points)
     u_dev = KA.allocate(backend, FT, 2, N_points)
     out_sums_dev = KA.zeros(backend, FT, 8, n_bins)
-    out_cnts_dev = KA.zeros(backend, FT, 8, n_bins)
+    out_cnts_dev = KA.zeros(backend, UInt32, 8, n_bins)
 
     copyto!(x_dev, collect(x))
     copyto!(u_dev, collect(u))
@@ -1693,7 +1710,7 @@ function SFC._dispatch_single_pass(
     KA.synchronize(backend)
 
     sums = Array(out_sums_dev)
-    counts = Int64.(Array(out_cnts_dev))
+    counts = _download_gpu_counts(out_cnts_dev, CT)
 
     return SFC.postprocess_single_pass_results(sums, counts, edges_host)
 end
@@ -1711,14 +1728,15 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d(
     distance_bins::AbstractVector{FT3},
     value_bins_by_type::AbstractVector{<:AbstractVector};
     workgroup_size::Int = 64,
+    count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
     n_val = length(value_bins_by_type[1]) - 1
     SFC._validate_value_bins_by_type(value_bins_by_type, n_val)
     sums = zeros(OT, 8, n_bins, n_val)
-    counts = zeros(Int64, 8, n_bins, n_val)
+    counts = zeros(CT, 8, n_bins, n_val)
     return _gpu_run_single_pass_2d!(
         SF.GPUBackend(backend), sums, counts, x, u, distance_bins, value_bins_by_type;
         workgroup_size = workgroup_size,
@@ -1727,7 +1745,7 @@ end
 
 function SFC.gpu_calculate_structure_functions_single_pass_2d!(
     sums_3d::AbstractArray{OT, 3},
-    counts_3d::AbstractArray{Int64, 3},
+    counts_3d::AbstractArray{CT, 3},
     backend::KA.Backend,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
@@ -1735,7 +1753,7 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d!(
     value_bins_by_type::AbstractVector{<:AbstractVector};
     workgroup_size::Int = 64,
     kwargs...
-) where {OT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
+) where {OT, CT, FT1 <: Number, FT2 <: Number, FT3 <: Number}
     fill!(sums_3d, zero(OT))
     fill!(counts_3d, 0)
     return _gpu_run_single_pass_2d!(
