@@ -8,8 +8,8 @@ Clarifies which 2D GPU paths are block-local vs global-atomic.
   block-local when `n_dist * n_val ≤ 4096` (`_gpu_joint_2d_tiled_eligible`).
 
 **Eight-type single-pass 2D** (`gpu_calculate_structure_functions_single_pass_2d!`):
-  always global atomics into `(8, n_dist, n_val)` when tiled — bin grid size
-  does NOT switch to block-local (see `TiledSinglePass2DKernels.jl` header).
+  HTP-EJ privatized path — shared strip histogram + block-private slab (not the
+  legacy global-atomic tiled kernel). Strip bucket must fit 48 KiB static smem.
 
 Run on GPU:
 
@@ -98,7 +98,7 @@ function main()
         sums, counts, backend, x, u, dist, value_bins; workspace = ws_sp,
     )
     t_sp2d = _bench(sp_run, warmup, repeat_)
-    @printf("sp2d (8 SF types)         %8.3f ms  [global atomics — NOT block-local]\n", 1_000t_sp2d)
+    @printf("sp2d (8 SF types)         %8.3f ms  [HTP-EJ priv strip + block slab]\n", 1_000t_sp2d)
 
     # --- reference: 8-type sp1d same distance bins ---
     ws_sp1 = SFC.GPUSFWorkspace(backend, dist; kind = :single_pass)
