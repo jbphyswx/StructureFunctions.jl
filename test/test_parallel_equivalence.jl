@@ -22,7 +22,7 @@ Test.@testset "Parallel Equivalence Verification" begin
     N = 50
     x = ([rand() for _ in 1:N], [rand() for _ in 1:N])
     u = ([rand() for _ in 1:N], [rand() for _ in 1:N])
-    bins = SA.SVector(((0.0, 0.5), (0.5, 1.0)))
+    bins = SA.SVector(0.0, 0.5, 1.0)
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
     # 1. Serial

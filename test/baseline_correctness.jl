@@ -8,7 +8,7 @@ Test.@testset "Baseline Correctness" begin
     # If the blocker is present, this should throw an ErrorException
     x = ([0.0, 1.0], [0.0, 0.0]) # NTuple of vectors
     u = ([1.0, 2.0], [0.0, 0.0])
-    bins = SA.SVector(((0.0, 2.0),))
+    bins = SA.SVector(0.0, 2.0)
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
     val = SFC.calculate_structure_function(

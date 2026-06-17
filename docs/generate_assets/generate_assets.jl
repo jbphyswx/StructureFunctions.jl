@@ -5,14 +5,18 @@ Run from the repo root:
     julia --project=docs/generate_assets docs/generate_assets/generate_assets.jl
 """
 
-using StructureFunctions: StructureFunctions as SF
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC
 using OhMyThreads: OhMyThreads   # loads StructureFunctionsOhMyThreadsExt → enables ThreadedBackend
+using KernelAbstractions: KernelAbstractions as KA
 using CairoMakie: CairoMakie as CM
 using Statistics: Statistics
 using Random: Random
 
 const ASSETS_DIR = joinpath(@__DIR__, "..", "src", "assets")
 mkpath(ASSETS_DIR)
+
+"""Bin midpoints from flat edge vector `[e₀, e₁, …, eₙ]` (N edges → N−1 midpoints)."""
+bin_midpoints(edges) = [(edges[i] + edges[i + 1]) / 2 for i in 1:(length(edges) - 1)]
 
 # ─── Shared synthetic field ────────────────────────────────────────────────
 
@@ -46,15 +50,14 @@ function generate_kolmogorov_figure()
     x, u = make_synthetic_field(N=1500)
 
     r_min, r_max = 5.0, 400.0
-    edges = exp.(range(log(r_min), log(r_max); length=29))
-    bins  = [(edges[i], edges[i+1]) for i in 1:length(edges)-1]
+    bins = exp.(range(log(r_min), log(r_max); length=29))
 
     op = SF.SecondOrderStructureFunctionType()
     result = SF.calculate_structure_function(op, x, u, bins;
         backend=SF.SerialBackend(), show_progress=false, verbose=false)
 
     sf2   = result.values
-    rdist = [(t[1]+t[2])/2 for t in result.distance]
+    rdist = bin_midpoints(result.distance)
     valid = sf2 .> 0
 
     fig = CM.Figure(size=(820, 520), fontsize=14)
@@ -98,8 +101,7 @@ function generate_long_vs_trans_figure()
     x, u = make_synthetic_field(N=1500)
 
     r_min, r_max = 5.0, 400.0
-    edges = exp.(range(log(r_min), log(r_max); length=29))
-    bins  = [(edges[i], edges[i+1]) for i in 1:length(edges)-1]
+    bins = exp.(range(log(r_min), log(r_max); length=29))
 
     op_L = SF.LongitudinalSecondOrderStructureFunctionType()
     op_T = SF.TransverseSecondOrderStructureFunctionType()
@@ -111,7 +113,7 @@ function generate_long_vs_trans_figure()
 
     sf_L = res_L.values
     sf_T = res_T.values
-    rd   = [(t[1]+t[2])/2 for t in res_L.distance]
+    rd   = bin_midpoints(res_L.distance)
     vL   = sf_L .> 0
     vT   = sf_T .> 0
 
@@ -143,8 +145,7 @@ function generate_parity_figure()
     N = 800
     x = Random.rand(2, N) .* 500.0
     u = randn(2, N)
-    edges = exp.(range(log(5.0), log(200.0); length=21))
-    bins  = [(edges[i], edges[i+1]) for i in 1:length(edges)-1]
+    bins = exp.(range(log(5.0), log(200.0); length=21))
 
     op = SF.SecondOrderStructureFunctionType()
 
@@ -156,7 +157,7 @@ function generate_parity_figure()
 
     sf_s = res_serial.values
     sf_t = res_thread.values
-    rd   = [(t[1]+t[2])/2 for t in res_serial.distance]
+    rd   = bin_midpoints(res_serial.distance)
     diff = abs.(sf_s .- sf_t)
     rel  = diff ./ (abs.(sf_s) .+ 1e-300)
 
@@ -188,10 +189,68 @@ function generate_parity_figure()
     println("Saved: $outpath")
 end
 
+# ─── Figure 4: GPU kernel parity (Serial vs KA.CPU) ───────────────────────
+
+function generate_gpu_parity_figure()
+    Random.seed!(7)
+    N = 80
+    FT = Float64
+    x = rand(FT, 2, N)
+    u = rand(FT, 2, N)
+    bin_edges = collect(FT, range(0.0, 1.4; length = 11))
+    sft = SF.L2SFType()
+    x_tup = (x[1, :], x[2, :])
+    u_tup = (u[1, :], u[2, :])
+
+    res_serial = SFC.calculate_structure_function(
+        sft, x_tup, u_tup, bin_edges;
+        verbose = false, show_progress = false, return_sums_and_counts = true,
+    )
+    res_gpu = SFC.gpu_calculate_structure_function(
+        sft, KA.CPU(), x, u, bin_edges; return_sums_and_counts = true,
+    )
+
+    rd = [(bin_edges[i] + bin_edges[i + 1]) / 2 for i in 1:(length(bin_edges) - 1)]
+    sf_s = res_serial.sums ./ max.(res_serial.counts, 1)
+    sf_g = res_gpu.sums ./ max.(res_gpu.counts, 1)
+    rel = abs.(sf_s .- sf_g) ./ (abs.(sf_s) .+ 1e-300)
+
+    fig = CM.Figure(size = (1100, 480), fontsize = 14)
+    CM.Label(fig[0, 1:2],
+        "GPU Kernel Parity: Serial CPU vs KA.CPU()",
+        fontsize = 16, font = :bold)
+
+    ax1 = CM.Axis(fig[1, 1],
+        xlabel = "Bin center", ylabel = "Mean SF sample",
+        title = "Per-bin means (overlapping)")
+    CM.lines!(ax1, rd, sf_s, label = "Serial CPU", color = :steelblue, linewidth = 2)
+    CM.lines!(ax1, rd, sf_g, label = "KA.CPU GPU kernel", color = :crimson,
+        linewidth = 1.5, linestyle = :dash)
+    CM.axislegend(ax1, position = :lt)
+
+    ax2 = CM.Axis(fig[1, 2],
+        xlabel = "Bin center", ylabel = "|Serial − KA.CPU| / |Serial|",
+        title = "Relative difference (should be ≈ 0)")
+    CM.scatterlines!(ax2, rd, rel, color = :darkorange, markersize = 6, linewidth = 1)
+    CM.hlines!(ax2, [1e-12]; color = :black, linewidth = 0.8, linestyle = :dot)
+
+    outpath = joinpath(ASSETS_DIR, "sf_gpu_parity.png")
+    CM.save(outpath, fig)
+    println("Saved: $outpath")
+end
+
 # ─── Execute ──────────────────────────────────────────────────────────────
 
 println("Generating StructureFunctions.jl figure assets...")
 generate_kolmogorov_figure()
 generate_long_vs_trans_figure()
 generate_parity_figure()
+generate_gpu_parity_figure()
+
+const GPU_JSON = joinpath(@__DIR__, "..", "..", "gpu", "benchmark_results", "assets_latest.json")
+if isfile(GPU_JSON)
+    println("Found GPU benchmark JSON — run generate_gpu_figures.jl for scaling plots.")
+else
+    @warn "No gpu/benchmark_results/assets_latest.json — skip GPU scaling figures (run collect_benchmark_assets.jl on GPU)"
+end
 println("Done.")

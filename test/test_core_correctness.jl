@@ -7,7 +7,7 @@ Test.@testset "Core Correctness - Block A" begin
     Test.@testset "Blocked path regression" begin
         x = ([0.0, 1.0], [0.0, 0.0])
         u = ([1.0, 2.0], [0.0, 0.0])
-        bins = SA.SVector(((0.0, 2.0),))
+        bins = SA.SVector(0.0, 2.0)
         sf_type = SFT.LongitudinalSecondOrderStructureFunction
         Test.@test_nowarn SFC.calculate_structure_function(
             sf_type,
@@ -23,7 +23,7 @@ Test.@testset "Core Correctness - Block A" begin
         # N=3 points -> N(N-1)/2 = 3 pairs
         x = ([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
         u = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
-        bins = SA.SVector(((0.0, 3.0),))
+        bins = SA.SVector(0.0, 3.0)
         sf_type = SFT.SecondOrderStructureFunction
 
         res = SFC.calculate_structure_function(sf_type, x, u, bins;
@@ -44,7 +44,7 @@ Test.@testset "Core Correctness - Block A" begin
         # SecondOrderLongitudinal: (du . rhat)^2 = 1^2 = 1.0
         x = ([0.0, 1.0], [0.0, 0.0])
         u = ([1.0, 2.0], [0.0, 0.0])
-        bins = SA.SVector(((0.0, 2.0),))
+        bins = SA.SVector(0.0, 2.0)
         sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
         val = SFC.calculate_structure_function(
@@ -84,7 +84,7 @@ Test.@testset "Core Correctness - Block A" begin
         # Velocities: (0,1) and (0,2) -> du = (0,1) [Transverse]
         x = ([0.0, 1.0], [0.0, 0.0])
         u = ([0.0, 0.0], [1.0, 2.0])
-        bins = SA.SVector(((0.0, 2.0),))
+        bins = SA.SVector(0.0, 2.0)
 
         # Longitudinal Second Order: (du.rhat)^2 = 0^2 = 0
         Test.@test SFC.calculate_structure_function(
@@ -141,7 +141,7 @@ end
 Test.@testset "Type Stability and Performance - Block C" begin
     x = ([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
     u = ([1.0, 2.0, 3.0], [0.0, 0.0, 0.0])
-    bins = SA.SVector(((0.0, 3.0),))
+    bins = SA.SVector(0.0, 3.0)
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
     # Test inference of the core kernel call

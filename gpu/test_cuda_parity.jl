@@ -169,7 +169,7 @@ Test.@testset "CUDA single-pass 2D parity" begin
     value_bins_by_type = _cuda_synthetic_value_bins_by_type(10, FT)
 
     sums_ref = zeros(Float64, 8, length(distance_bins) - 1, length(value_bins_by_type[1]) - 1)
-    counts_ref = zeros(Int64, size(sums_ref))
+    counts_ref = zeros(UInt32, size(sums_ref))
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_ref, counts_ref, x_cpu, u_cpu, distance_bins, value_bins_by_type;
         backend = SFC.SerialBackend(),

@@ -8,7 +8,7 @@ Test.@testset "Stability Verification" begin
     FT = Float64
     x = ([rand(FT) for _ in 1:N], [rand(FT) for _ in 1:N])
     u = ([rand(FT) for _ in 1:N], [rand(FT) for _ in 1:N])
-    bins = SA.SVector{1}(((0.0, 1.4),))
+    bins = SA.SVector(0.0, 1.4)
     sft = SFT.LongitudinalSecondOrderStructureFunction
 
     # 1. Core Positional Stability Check (Tuple variant)

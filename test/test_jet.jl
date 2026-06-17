@@ -10,7 +10,7 @@ Test.@testset "JET Stability Audit" begin
 
     x = ([0.0, 1.0], [0.0, 0.0])
     u = ([1.0, 2.0], [0.0, 0.0])
-    bins = SA.SVector(((0.0, 2.0),))
+    bins = SA.SVector(0.0, 2.0)
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
     Test.@testset "calculate_structure_function (Tuple input)" begin

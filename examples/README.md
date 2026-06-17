@@ -64,33 +64,34 @@ JULIA_NUM_THREADS=auto julia examples/threaded_calculation.jl
 
 ### 3. GPU Acceleration (`gpu_acceleration.jl`)
 
-**Best for**: Large datasets (>500M points), with GPU hardware
+**Best for**: GPU hardware or KA.CPU smoke test; workspace reuse
 
 ```bash
-# Requires CUDA.jl + KernelAbstractions.jl
-julia --project -e 'using Pkg; Pkg.add(["CUDA", "KernelAbstractions"])'
-
-# Run example
-julia examples/gpu_acceleration.jl
+julia --project=examples examples/gpu_acceleration.jl
+# With CUDA:
+julia --project=gpu examples/gpu_acceleration.jl
 ```
 
 **What it does**:
-- Generates 1 billion points (or 10M if GPU unavailable)
-- Uses GPUBackend for computation
-- Measures memory efficiency of Float32 vs Float64
-- Estimates speedup
+- Computes longitudinal 2nd-order SF on ~2k 3D points
+- Compares fresh alloc vs `GPUSFWorkspace`
+- Falls back to `KA.CPU()` when CUDA unavailable
 
-**Expected results**:
-- NVIDIA A100: 20–50x faster than single CPU
-- RTX 4090: 10–30x faster than CPU
-- AMD MI250X: 15–80x faster than CPU
+**Learn next**: [`docs/gpu.md`](../docs/gpu.md), [`docs/backends.md#gpubackend`](../docs/backends.md#gpubackend)
 
-**Key insights**:
-- Float32 sufficient for turbulence (saves 50% memory)
-- GPU shines for >1B points
-- Kernel compilation amortized over many calls
+---
 
-**Learn next**: `docs/backends.md#gpubackend`, `docs/real_data.md#performance-tips`
+### 3b. GPU Time Slices (`gpu_time_slices.jl`)
+
+**Best for**: Time-series / batch slice API
+
+```bash
+julia --project=examples examples/gpu_time_slices.jl
+```
+
+**What it does**:
+- Builds `(3, N, T)` batch and calls `gpu_calculate_structure_function_slices!`
+- Validates slice 1 against serial CPU
 
 ---
 

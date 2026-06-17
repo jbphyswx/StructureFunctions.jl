@@ -28,7 +28,7 @@ Test.@testset "E2E: Structure Function E2E Suite" begin
     vals = (u, v)
 
     # Target binning
-    r_bins = collect(0.1 + (0:5) .* 0.4)
+    r_bins = collect(0.1 .+ (0:5) .* 0.4)
 
     Test.@testset "Basic Execution" begin
         sf_type = SFT.SecondOrderStructureFunction

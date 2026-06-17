@@ -1,17 +1,22 @@
 """
     gpu_acceleration.jl
 
-GPU backend example with strict qualified imports.
+Single-snapshot GPU structure function with optional `GPUSFWorkspace`.
 
 Run from package root:
     julia --project=examples examples/gpu_acceleration.jl
+
+With CUDA (recommended on GPU allocation):
+    julia --project=gpu -e 'include("examples/gpu_acceleration.jl")'
 """
 
-using StructureFunctions: StructureFunctions as SF
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC
+using KernelAbstractions: KernelAbstractions as KA
+
+using Random: Random
 
 use_cuda = false
 CUDA_mod = nothing
-
 try
     @eval using CUDA: CUDA
     use_cuda = CUDA.functional()
@@ -20,28 +25,33 @@ catch
     use_cuda = false
 end
 
-N = use_cuda ? 500_000 : 50_000
-x_cpu = randn(Float32, N, 2)
-u_cpu = randn(Float32, N, 2)
+const N = 2_000
+const FT = Float32
+backend = use_cuda ? CUDA_mod.CUDABackend() : KA.CPU()
 
+Random.seed!(42)
+x_cpu = rand(FT, 3, N)
+u_cpu = rand(FT, 3, N)
 x = use_cuda ? CUDA_mod.cu(x_cpu) : x_cpu
 u = use_cuda ? CUDA_mod.cu(u_cpu) : u_cpu
 
-operator = SF.FullVectorStructureFunctionType{Float32}(order = 2)
-bins = collect(Float32, 10.0:25.0:2000.0)
+bins = collect(FT, range(0.0f0, 1.5f0; length = 21))
+sft = SF.LongitudinalSecondOrderStructureFunctionType()
 
-backend = SF.GPUBackend()
+println("Backend: ", typeof(backend))
+println("N = $N  bins = $(length(bins) - 1)")
 
-result = @time SF.calculate_structure_function(
-    operator,
-    x,
-    u,
-    bins;
-    backend = backend,
-    show_progress = true,
-    verbose = true,
+ws = SFC.GPUSFWorkspace(backend, bins)
+
+result_fresh = @time SFC.gpu_calculate_structure_function(
+    sft, backend, x, u, bins; return_sums_and_counts = true,
+)
+result_ws = @time SFC.gpu_calculate_structure_function(
+    sft, backend, x, u, bins; return_sums_and_counts = true, workspace = ws,
 )
 
-println("Computed bins: $(length(result.distance))")
-println("First SF value: $(result.structure_function[1, 1])")
-println("Mode: $(use_cuda ? "CUDA" : "CPU fallback")")
+println("Counts match (fresh vs workspace): ", result_fresh.counts == result_ws.counts)
+println("Total pairs (approx): ", sum(result_ws.counts))
+println("Mode: ", use_cuda ? "CUDA" : "KA.CPU() smoke")
+
+SFC.release!(ws)

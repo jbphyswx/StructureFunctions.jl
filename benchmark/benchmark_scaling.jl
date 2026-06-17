@@ -258,36 +258,10 @@ catch
 end
 
 if gpu_available
-    # TODO (H5): GPU strong sizing benchmark.
-    #
-    # Benchmark `gpu_calculate_structure_function` across N, compare to best
-    # threaded CPU time.  Replace the code below with real benchmarks.
-    #
-    # using KernelAbstractions, CUDA
-    #
-    # N_gpu_sizes = [1_000, 5_000, 10_000, 50_000, 100_000]
-    # sft         = StructureFunctions.LongitudinalSecondOrderStructureFunction()
-    # bin_edges   = collect(Float64, range(0.0, 1.5, length = 21))
-    #
-    # for N in N_gpu_sizes
-    #     x_dev = CUDA.rand(Float64, 3, N)
-    #     u_dev = CUDA.rand(Float64, 3, N)
-    #
-    #     # Warmup
-    #     gpu_calculate_structure_function(CUDA.CUDABackend(), x_dev, u_dev, bin_edges, sft)
-    #     CUDA.synchronize()
-    #
-    #     elapsed = @elapsed begin
-    #         gpu_calculate_structure_function(CUDA.CUDABackend(), x_dev, u_dev, bin_edges, sft)
-    #         CUDA.synchronize()
-    #     end
-    #     push!(gpu_results, Dict("N_points" => N, "elapsed_s" => elapsed))
-    # end
-    #
-    # # Compare GPU vs. CPU best at each N and plot. Save to scaling_results_gpu.json
-    # ...
-
-    println("  [GPU skeleton present — fill in TODO above when on a CUDA machine]")
+    println("  Run doc-asset collector: julia --project=gpu gpu/collect_benchmark_assets.jl")
+    println("  Then plot: julia --project=docs/generate_assets docs/generate_assets/generate_gpu_figures.jl")
+else
+    println("  ✗ CUDA.jl not installed or not available — skipping GPU benchmark")
 end
 
 # ─────────────────────────────────────────────────────────────────────────────

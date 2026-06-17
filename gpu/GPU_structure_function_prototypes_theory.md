@@ -365,16 +365,16 @@ Host staging (`_stage_host_to_device`): pads 2D→3×N, allocates device buffers
 
 ---
 
-## 9. Production integration recommendation (not yet implemented)
+## 9. Production integration (GPUSFWorkspace)
 
-For **linear bins**, **`N_dims == 2`**, large `N`:
+For repeated calls over many time slices `(N_dims, N_points, T)`:
 
-1. **Kernel:** `tiled128` upper-triangle tile schedule, **2D distance**, **UInt32 counts**, Float32 sums, shared-memory block histogram + global flush.
-2. **Do not use:** global `(N,N)` Float32 atomics; global grid-stride for large `N`; Float32 counts.
-3. **Sum validation:** compare to **f64 CPU serial** (or device f64 if added), `atol ≈ 500`, not f32 serial gold.
-4. **Log / general bins:** still on old ext path until ported with same scheduling ideas + existing `_GPUBinLayout` digitize kernels.
+1. **Kernel:** tiled128 upper-triangle schedule (1D linear/log/general; 2D joint when `n_dist × n_val ≤ 4096`).
+2. **Device reuse:** construct one `GPUSFWorkspace` per `(backend, distance_bins[, value_bins])` and pass `workspace=ws` to `gpu_calculate_structure_function(!)` or the slice-batch drivers (`calculate_structure_function_slices!`, etc.). This eliminates per-call `KA.zeros(out_dev/cnt_dev)`, repeated log/general edge uploads, and (for slice drivers) redundant H2D of the full `(N_dims, N_points, T)` stack.
+3. **Slice batch:** upload `x`, `u` once; launch with `synchronize=false` for `t = 1:T-1`; one `KA.synchronize(backend)` after the last slice.
+4. **Benchmark:** run `gpu/benchmark_workspace.jl` (single snapshot) and `gpu/benchmark_slices.jl` (time batch `T`) on a GPU node.
 
-Expected kernel: **~0.0045 s** at `N=20k` vs **~0.096 s** today (~**21×**).
+Prototype kernel-only time (~0.0045 s on A100 for 1D tiled, `N=20k`) remains the floor; workspace removes the ~0.05 s class API/allocation overhead documented for the old production path.
 
 ---
 
@@ -394,9 +394,9 @@ Expected kernel: **~0.0045 s** at `N=20k` vs **~0.096 s** today (~**21×**).
 ## 11. Open issues
 
 1. **Per-bin off-by-3** on tiled/blockshared u32 — audit tile partial boundaries; add CPU tiled gold.
-2. **Integrate tiled128 2d u32** into `StructureFunctionsGPUExt.jl` for linear + 2D.
-3. **Device-resident buffers** in production API (prototype `private_*_device_resident` shows staging win).
-4. **Log-spaced bins** on GPU with tile schedule (digitize already in ext; pair schedule not).
+2. ~~**Integrate tiled128 2d u32** into `StructureFunctionsGPUExt.jl` for linear + 2D.~~ Done (1D + 2D joint tiled128).
+3. ~~**Device-resident buffers** in production API~~ — **`GPUSFWorkspace`** + slice drivers (see §9).
+4. **Log-spaced bins** on GPU with tile schedule (digitize in ext; pair schedule shared with linear tiled path).
 5. **Tiled regpriv on CUDA** — needs warp-level or shared-memory privatization without 128KB smem or `MVector` spill; research item.
 
 ---
