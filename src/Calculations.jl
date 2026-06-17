@@ -31,7 +31,11 @@ export calculate_structure_function, parallel_calculate_structure_function,
     postprocess_single_pass_results,
     ten_type_from_eight_2d,
     serial_calculate_structure_function!, threaded_calculate_structure_function!,
-    gpu_calculate_structure_function!, calculate_structure_function!
+    gpu_calculate_structure_function!, calculate_structure_function!,
+    GPUSFWorkspace, reset_histogram!, release!, flatten_grid_slices,
+    calculate_structure_function_slices!, calculate_structure_function_2d_slices!,
+    calculate_structure_functions_single_pass_slices!,
+    calculate_structure_functions_single_pass_2d_slices!
 
 abstract type AbstractExecutionBackend end
 
@@ -1124,11 +1128,48 @@ function SFO.StructureFunction(
 end
 
 """
+    GPUSFWorkspace(backend, distance_bins; kind=:sf1d)
+
+Reusable GPU device histogram workspace. Requires the `GPUExt` extension
+(`using KernelAbstractions`). Pass to `gpu_calculate_structure_function(!)` or
+slice drivers to avoid per-call device allocation.
+
+See also [`reset_histogram!`](@ref), [`release!`](@ref).
+"""
+function GPUSFWorkspace end
+
+"""Zero device histogram buffers in a [`GPUSFWorkspace`](@ref) before the next launch."""
+function reset_histogram! end
+
+"""Release device buffers held by a [`GPUSFWorkspace`](@ref) (optional explicit free)."""
+function release! end
+
+"""
+    flatten_grid_slices(x, u)
+
+Reshape `(N_dims, Ny, Nx, T)` grid snapshots to `(N_dims, Ny*Nx, T)` column-major
+flattened point index (matches the matrix layout expected by slice-batch APIs).
+"""
+function flatten_grid_slices(x::AbstractArray{T, 4}, u::AbstractArray{T, 4}) where {T}
+    N_dims, Ny, Nx, T_len = size(x)
+    size(u) == (N_dims, Ny, Nx, T_len) ||
+        throw(DimensionMismatch("u must match x shape $(size(x)); got $(size(u))"))
+    N_pts = Ny * Nx
+    x_out = reshape(x, N_dims, N_pts, T_len)
+    u_out = reshape(u, N_dims, N_pts, T_len)
+    return x_out, u_out
+end
+
+"""
     gpu_calculate_structure_function(...)
 
 GPU-accelerated structure function calculation. Requires loading `KernelAbstractions.jl`
 to activate the `GPUExt` extension. The backend can be `KernelAbstractions.CPU()`
 (for testing parity) or any GPU backend like `CUDABackend()` from `CUDA.jl`.
+
+Device histogram buffers are `UInt32`; `count_eltype` (default `UInt32`) selects the
+host count type after download. Pass `workspace=GPUSFWorkspace(...)` to reuse device
+histogram buffers across repeated calls (see [`GPUSFWorkspace`](@ref)).
 
 This stub exists so the extension can legally extend this function.
 """
@@ -1139,6 +1180,7 @@ function gpu_calculate_structure_function end
 
 GPU 2D joint structure function (distance × SF value histogram) for one `sf_type`.
 Requires loading `KernelAbstractions.jl` to activate the `GPUExt` extension.
+Device counts are `UInt32`; `count_eltype` selects the host matrix type after download.
 """
 function gpu_calculate_structure_function_2d end
 
@@ -1147,6 +1189,7 @@ function gpu_calculate_structure_function_2d end
 
 Eight native distance × value joint histograms on a KernelAbstractions backend.
 Requires loading `KernelAbstractions.jl` to activate the `GPUExt` extension.
+Device counts are `UInt32`; `count_eltype` selects the host array type after download.
 """
 function gpu_calculate_structure_functions_single_pass_2d end
 
@@ -1169,6 +1212,8 @@ end
 In-place GPU structure function reduction. Requires the `GPUExt` extension.
 Accumulates into caller-owned `output_sums` and `output_counts` (same contract as
 `serial_calculate_structure_function!` / `threaded_calculate_structure_function!`).
+Reuses **host** buffers only; pass `workspace=GPUSFWorkspace(...)` to reuse **device**
+histogram buffers across calls.
 """
 function gpu_calculate_structure_function!(args...; kwargs...)
     throw(
@@ -1176,6 +1221,225 @@ function gpu_calculate_structure_function!(args...; kwargs...)
             "GPU in-place backend is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
         ),
     )
+end
+
+"""
+    gpu_calculate_structure_function_slices!(sums, counts, sf_type, backend, x, u, distance_bins; workspace=nothing, ...)
+
+GPU slice batch over `(N_dims, N_points, T)`; host outputs `(NB, T)`. Requires `GPUExt`.
+"""
+function gpu_calculate_structure_function_slices!(args...; kwargs...)
+    throw(
+        ArgumentError(
+            "GPU slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
+        ),
+    )
+end
+
+"""GPU 2D joint slice batch; outputs `(n_dist, n_val, T)`. Requires `GPUExt`."""
+function gpu_calculate_structure_function_2d_slices!(args...; kwargs...)
+    throw(
+        ArgumentError(
+            "GPU 2D joint slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
+        ),
+    )
+end
+
+"""GPU single-pass slice batch; outputs `(8, NB, T)`. Requires `GPUExt`."""
+function gpu_calculate_structure_functions_single_pass_slices!(args...; kwargs...)
+    throw(
+        ArgumentError(
+            "GPU single-pass slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
+        ),
+    )
+end
+
+"""GPU single-pass 2D slice batch; outputs `(8, NB, n_val, T)`. Requires `GPUExt`."""
+function gpu_calculate_structure_functions_single_pass_2d_slices!(args...; kwargs...)
+    throw(
+        ArgumentError(
+            "GPU single-pass 2D slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
+        ),
+    )
+end
+
+"""
+    calculate_structure_function_slices!(sums, counts, sf_type, x, u, distance_bins; backend=..., workspace=nothing, ...)
+
+Batch structure functions over the third dimension of matrix inputs `(N_dims, N_points, T)`.
+Host `sums`, `counts` must have shape `(NB, T)` where `NB = length(distance_bins) - 1`.
+
+GPU: fully implemented via `GPUBackend` when `KernelAbstractions` is loaded.
+CPU backends: not yet implemented (use a loop over `t` with `calculate_structure_function!`).
+"""
+function calculate_structure_function_slices!(
+    sums, counts, sf_type, x, u, distance_bins;
+    backend = SerialBackend(), kwargs...
+)
+    _dispatch_slices!(backend, sums, counts, sf_type, x, u, distance_bins; kwargs...)
+    return nothing
+end
+
+function _dispatch_slices!(
+    ::SerialBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...,
+)
+    throw(
+        ArgumentError(
+            "CPU slice batch driver is not implemented yet. Loop over time slices with calculate_structure_function! or use backend=GPUBackend(...).",
+        ),
+    )
+end
+
+function _dispatch_slices!(
+    ::ThreadedBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...,
+)
+    throw(
+        ArgumentError(
+            "Threaded slice batch driver is not implemented yet. Loop over time slices or use backend=GPUBackend(...).",
+        ),
+    )
+end
+
+function _dispatch_slices!(
+    ::DistributedBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...,
+)
+    throw(
+        ArgumentError(
+            "Distributed slice batch driver is not implemented yet. Loop over time slices or use backend=GPUBackend(...).",
+        ),
+    )
+end
+
+function _dispatch_slices!(
+    backend::GPUBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...,
+)
+    gpu_calculate_structure_function_slices!(
+        sums, counts, sf_type, backend.backend, x, u, distance_bins; kwargs...,
+    )
+    return nothing
+end
+
+"""
+    calculate_structure_function_2d_slices!(sums, counts, sf_type, x, u, distance_bins, value_bins; backend=..., ...)
+
+Batch 2D joint histograms over `(N_dims, N_points, T)`; outputs `(n_dist, n_val, T)`.
+"""
+function calculate_structure_function_2d_slices!(
+    sums, counts, sf_type, x, u, distance_bins, value_bins;
+    backend = SerialBackend(), kwargs...,
+)
+    _dispatch_slices_2d!(backend, sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...)
+    return nothing
+end
+
+function _dispatch_slices_2d!(
+    ::SerialBackend, sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...,
+)
+    throw(ArgumentError("CPU 2D joint slice batch not implemented yet; use GPUBackend or loop over t."))
+end
+
+function _dispatch_slices_2d!(
+    ::ThreadedBackend, args...; kwargs...,
+)
+    throw(ArgumentError("Threaded 2D joint slice batch not implemented yet; use GPUBackend or loop over t."))
+end
+
+function _dispatch_slices_2d!(
+    ::DistributedBackend, args...; kwargs...,
+)
+    throw(ArgumentError("Distributed 2D joint slice batch not implemented yet; use GPUBackend or loop over t."))
+end
+
+function _dispatch_slices_2d!(
+    backend::GPUBackend, sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...,
+)
+    gpu_calculate_structure_function_2d_slices!(
+        sums, counts, sf_type, backend.backend, x, u, distance_bins, value_bins; kwargs...,
+    )
+    return nothing
+end
+
+"""
+    calculate_structure_functions_single_pass_slices!(sums, counts, x, u, distance_bins; backend=..., ...)
+
+Batch eight 1D distance histograms over `(N_dims, N_points, T)`; outputs `(8, NB, T)`.
+"""
+function calculate_structure_functions_single_pass_slices!(
+    sums, counts, x, u, distance_bins;
+    backend = SerialBackend(), kwargs...,
+)
+    _dispatch_single_pass_slices!(backend, sums, counts, x, u, distance_bins; kwargs...)
+    return nothing
+end
+
+function _dispatch_single_pass_slices!(
+    ::SerialBackend, sums, counts, x, u, distance_bins; kwargs...,
+)
+    throw(ArgumentError("CPU single-pass slice batch not implemented yet; use GPUBackend or loop over t."))
+end
+
+function _dispatch_single_pass_slices!(
+    ::ThreadedBackend, args...; kwargs...,
+)
+    throw(ArgumentError("Threaded single-pass slice batch not implemented yet; use GPUBackend or loop over t."))
+end
+
+function _dispatch_single_pass_slices!(
+    ::DistributedBackend, args...; kwargs...,
+)
+    throw(ArgumentError("Distributed single-pass slice batch not implemented yet; use GPUBackend or loop over t."))
+end
+
+function _dispatch_single_pass_slices!(
+    backend::GPUBackend, sums, counts, x, u, distance_bins; kwargs...,
+)
+    gpu_calculate_structure_functions_single_pass_slices!(
+        sums, counts, backend.backend, x, u, distance_bins; kwargs...,
+    )
+    return nothing
+end
+
+"""
+    calculate_structure_functions_single_pass_2d_slices!(sums, counts, x, u, distance_bins, value_bins_by_type; backend=..., ...)
+
+Batch eight distance × value joint histograms over `(N_dims, N_points, T)`;
+outputs `(8, NB, n_val, T)`.
+"""
+function calculate_structure_functions_single_pass_2d_slices!(
+    sums, counts, x, u, distance_bins, value_bins_by_type;
+    backend = SerialBackend(), kwargs...,
+)
+    _dispatch_single_pass_2d_slices!(
+        backend, sums, counts, x, u, distance_bins, value_bins_by_type; kwargs...,
+    )
+    return nothing
+end
+
+function _dispatch_single_pass_2d_slices!(
+    ::SerialBackend, sums, counts, x, u, distance_bins, value_bins_by_type; kwargs...,
+)
+    throw(ArgumentError("CPU single-pass 2D slice batch not implemented yet; use GPUBackend or loop over t."))
+end
+
+function _dispatch_single_pass_2d_slices!(
+    ::ThreadedBackend, args...; kwargs...,
+)
+    throw(ArgumentError("Threaded single-pass 2D slice batch not implemented yet; use GPUBackend or loop over t."))
+end
+
+function _dispatch_single_pass_2d_slices!(
+    ::DistributedBackend, args...; kwargs...,
+)
+    throw(ArgumentError("Distributed single-pass 2D slice batch not implemented yet; use GPUBackend or loop over t."))
+end
+
+function _dispatch_single_pass_2d_slices!(
+    backend::GPUBackend, sums, counts, x, u, distance_bins, value_bins_by_type; kwargs...,
+)
+    gpu_calculate_structure_functions_single_pass_2d_slices!(
+        sums, counts, backend.backend, x, u, distance_bins, value_bins_by_type; kwargs...,
+    )
+    return nothing
 end
 
 # Stub for file extensions
@@ -1250,6 +1514,9 @@ operator for each pair, binning results by distance.
 - `distance_metric::PreMetric=Euclidean()`: Distance metric (default: Euclidean)
 - `verbose::Bool=true`: Print informational messages
 - `show_progress::Bool=true`: Display progress bar during computation
+- `count_eltype::Type=UInt32`: Integer type of histogram count arrays in returned
+  or caller-owned buffers. On `GPUBackend`, device histograms are always `UInt32`;
+  this keyword selects the host type after download (CPU backends use it directly).
 
 # Returns
 
@@ -2641,6 +2908,8 @@ dispatching dynamically to the specified `backend`.
 # Reusable Buffers (Keyword Arguments)
 - `thread_sums`: Optional pre-allocated buffer of shape `(8, n_bins, n_threads)` for ThreadedBackend, or `(8, n_bins)` for SerialBackend.
 - `thread_counts`: Optional pre-allocated buffer of shape `(8, n_bins, n_threads)` for ThreadedBackend, or `(8, n_bins)` for SerialBackend.
+- `count_eltype::Type=UInt32`: Integer type of count arrays (default `UInt32`). On `GPUBackend`,
+  device histograms are `UInt32`; this selects the host type after download.
 """
 function calculate_structure_functions_single_pass(
     x::AbstractMatrix{FT1},
@@ -2781,6 +3050,7 @@ end
 Accumulate eight native 2D joint histograms into pre-allocated ``(8, n_bins, n_val)`` buffers.
 ``value_bins_by_type`` is a length-8 vector of edge vectors; pad with ``±Inf`` if you need
 catch-all overflow bins at the ends of each edge vector.
+On `GPUBackend`, device histograms are `UInt32`; pass `count_eltype` for the host buffer type.
 """
 function calculate_structure_functions_single_pass_2d!(
     sums_3d::AbstractArray{OT, 3},

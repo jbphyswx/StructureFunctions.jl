@@ -1,8 +1,8 @@
-Experimental CUDA kernels and benchmarks for structure-function evaluation.
-**Not wired into the main package yet** — production code still lives in
-`ext/StructureFunctionsGPUExt.jl` (global-atomic `(N,N)` launch).
+CUDA validation, doc-asset benchmarks, and prototype kernel research for structure-function evaluation.
+Production GPU code is in `ext/StructureFunctionsGPUExt.jl` (tiled kernels, workspace, slice batches).
 
-**Full research writeup (math, correctness proofs, all variants, A100 timings):**
+**User guide:** [`docs/gpu.md`](../docs/gpu.md)  
+**Full research writeup:**
 [`GPU_structure_function_prototypes_theory.md`](GPU_structure_function_prototypes_theory.md)
 
 Run benchmarks inside a GPU SLURM allocation. **Start Julia once** (precompile is expensive;
@@ -66,7 +66,8 @@ include(joinpath(SF_REPO, "gpu", "gpu_full_benchmark.jl"))
 | `diagnose_counts.jl` | **CPU gold vs GPU paths** — run before trusting any kernel |
 | `benchmark_cuda.jl` | Simple production-ext vs CPU threading comparison |
 | `GPU_timings_and_theory.md` | Auto-generated report from `gpu_full_benchmark.jl` |
-| `runtests.jl` / `test_cuda_parity.jl` | Parity smoke tests |
+| `runtests.jl` / `test_cuda_parity.jl` / `test_workspace_cuda.jl` | Tier-2 CUDA parity (not in default `Pkg.test()`) |
+| `collect_benchmark_assets.jl` | Doc/README scaling JSON (`assets_latest.json`) |
 | `open_issues.md` | Follow-ups before operationalizing |
 
 ---

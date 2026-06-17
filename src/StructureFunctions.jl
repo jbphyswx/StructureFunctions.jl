@@ -28,7 +28,10 @@ export AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges, InfPaddedBinEdge
     n_histogram_bins
 export calculate_structure_function, calculate_structure_function!, calculate_structure_functions_single_pass,
     calculate_structure_functions_single_pass!, calculate_structure_functions_single_pass_2d,
-    calculate_structure_functions_single_pass_2d!, postprocess_single_pass_results, ten_type_from_eight_2d
+    calculate_structure_functions_single_pass_2d!, postprocess_single_pass_results, ten_type_from_eight_2d,
+    calculate_structure_function_slices!, calculate_structure_function_2d_slices!,
+    calculate_structure_functions_single_pass_slices!, calculate_structure_functions_single_pass_2d_slices!,
+    flatten_grid_slices, GPUSFWorkspace, reset_histogram!, release!
 export marginalize
 export AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
     GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend

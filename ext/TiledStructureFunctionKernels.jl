@@ -1,6 +1,9 @@
 # Six production tiled128 SF histogram kernels (2D/3D × linear/log/general).
 # Included from StructureFunctionsGPUExt.jl — no macro codegen.
 #
+# Block-local `shared_cnts` is `@localmem UInt32` (compile-time fixed width).
+# Global `counts` is also device UInt32 at launch; `count_eltype` applies on host only.
+#
 # KA CPU lowering splits the body at each @synchronize; index variables and tile
 # metadata must be re-established in every segment (see ext module docstring).
 

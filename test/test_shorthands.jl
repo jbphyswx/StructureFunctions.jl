@@ -8,7 +8,7 @@ Test.@testset "Shorthands Verification" begin
     FT = Float64
     x = ([rand(FT) for _ in 1:N], [rand(FT) for _ in 1:N])
     u = ([rand(FT) for _ in 1:N], [rand(FT) for _ in 1:N])
-    bins = SA.SVector{1}(((0.0, 1.4),))
+    bins = SA.SVector(0.0, 1.4)
 
     # 1. Functor call shorthand
     println("Testing functor call shorthand (L2SF)...")

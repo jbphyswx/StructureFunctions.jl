@@ -7,14 +7,20 @@
 
 using Pkg: Pkg
 
-root = dirname(@__DIR__)
-dirs = (
-    root,
-    joinpath(root, "test"),
-    joinpath(root, ".dev"),
-)
+using PkgDevTools: PkgDevTools
 
-for dir in dirs
-    Pkg.activate(dir)
-    Pkg.update()
-end
+root = dirname(@__DIR__)
+
+PkgDevTools.update_deps(root; auto_all = true)
+
+# root = dirname(@__DIR__)
+# dirs = (
+#     root,
+#     joinpath(root, "test"),
+#     joinpath(root, ".dev"),
+# )
+
+# for dir in dirs
+#     Pkg.activate(dir)
+#     Pkg.update()
+# end

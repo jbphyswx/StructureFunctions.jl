@@ -247,85 +247,87 @@ srun julia -p $((${SLURM_NNODES} * ${SLURM_CPUS_PER_TASK})) compute_sf.jl
 ## GPUBackend
 
 ### Definition
-GPU-accelerated computation using KernelAbstractions.jl. Fully portable kernels run on NVIDIA (CUDA), AMD (ROCm), or CPU fallback.
+GPU-accelerated computation using KernelAbstractions.jl. Production kernels live in
+`StructureFunctionsGPUExt` (tiled pair histograms, UInt32 counts). See **[gpu.md](gpu.md)**
+for workspace reuse, slice batches, testing tiers, and benchmark regeneration.
 
 ### When to Use
-- ✅ **Massive datasets**: >1 billion points
+- ✅ **Large datasets**: roughly **few×10³ points and up** (see committed GPU scaling JSON)
 - ✅ **GPUs available**: NVIDIA A100, RTX 4090, AMD MI200, etc.
-- ✅ **Extreme speed needed**: 10–100x speedup possible
+- ✅ **Repeated calls or time series**: `GPUSFWorkspace` and `calculate_structure_function_slices!`
 - ✅ **Research clusters**: Many HPC centers provide GPUs
 
 ### When NOT to Use
-- ❌ No GPU: CPU fallback is actually slower than ThreadedBackend
-- ❌ Data doesn't fit on GPU memory: Requires redistribution logic (future work)
-- ❌ GPU unavailable in environment: Installation complexity
+- ❌ No GPU: `KA.CPU()` fallback is slower than `ThreadedBackend`
+- ❌ Data doesn't fit on GPU memory
+- ❌ Very small N: CPU threading wins
 
 ### Requirements
 
 ```toml
-# GPU execution requires one of:
-# - CUDA.jl (NVIDIA GPUs)
-# - AMDGPU.jl (AMD GPUs)
-# - Metal.jl (Apple Silicon)
+[weakdeps]
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 
-[extras]
-KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1f7f1"
-CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"  # For NVIDIA
+# Plus one of: CUDA.jl, AMDGPU.jl, Metal.jl
 ```
 
-### Example: NVIDIA GPU
+### Example: single snapshot + workspace
 
 ```julia
-using StructureFunctions
-using CUDA
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC
+using KernelAbstractions: KernelAbstractions as KA
+using CUDA: CUDA
 
-# Ensure GPU is available
-@assert CUDA.functional() "CUDA not available"
+backend = CUDA.CUDABackend()
+N = 20_000
+FT = Float32
+x = CUDA.CuArray{FT}(rand(FT, 3, N))
+u = CUDA.CuArray{FT}(rand(FT, 3, N))
+bins = collect(FT, range(0.0f0, 1.5f0; length = 21))
+sft = SF.LongitudinalSecondOrderStructureFunctionType()
 
-# Large dataset
-N = 1_000_000_000  # 1 billion points
-x_cpu = randn(Float32, N, 2)  # Float32 for GPU memory efficiency
-u_cpu = randn(Float32, N, 2)
-
-# Move to GPU
-x_gpu = cu(x_cpu)
-u_gpu = cu(u_cpu)
-
-backend = GPUBackend()
-bins = 10:10:5000
-
-@time result = calculate_structure_function(
-    FullVectorStructureFunction{Float32}(order=2),
-    x_gpu, u_gpu, bins;
-    backend=backend,
-    show_progress=true
+ws = SFC.GPUSFWorkspace(backend, bins)
+result = SFC.gpu_calculate_structure_function(
+    sft, backend, x, u, bins; workspace = ws, return_sums_and_counts = true,
 )
-
-# Results automatically transferred back to CPU
-println(typeof(result.structure_function))  # ::Matrix{Float32}
+SFC.release!(ws)
 ```
 
-### Performance Comparison
+### Example: time-slice batch `(N_dims, N, T)`
 
-Measured on NVIDIA A100 GPU vs. CPU (48-core Xeon):
+```julia
+T = 100
+x_batch = CUDA.CuArray{FT}(rand(FT, 3, N, T))
+u_batch = CUDA.CuArray{FT}(rand(FT, 3, N, T))
+sums = zeros(FT, length(bins) - 1, T)
+counts = zeros(UInt32, length(bins) - 1, T)
+SFC.gpu_calculate_structure_function_slices!(
+    sums, counts, sft, backend, x_batch, u_batch, bins; workspace = ws,
+)
+```
 
-| N | CPU (s) | A100-40GB (s) | Speedup |
-|---|---------|---------------|---------|
-| 100M | 50 | 2.5 | 20x |
-| 500M | 250 | 10 | 25x |
-| 1B | 500 | 18 | 28x |
+### Performance
 
-**Notes**:
-- Overhead: Kernel compilation ~500ms (amortized if many calls)
-- Memory: 1B Float32 points ≈ 4 GB GPU memory
-- Precision: Float32 sufficient for most applications (precision ~1e-6)
+Committed timings: `gpu/benchmark_results/assets_latest.json` and README GPU figures.
+Regenerate on a GPU allocation with `julia --project=gpu gpu/collect_benchmark_assets.jl`.
+Doc assets measure **problem-size scaling** (1 GPU vs **serial CPU**, sweep N) and
+**slice-batch scaling** (sweep T) — same bins/SF as
+[`benchmark/scaling_config.jl`](../benchmark/scaling_config.jl). This is not multi-GPU
+strong/weak scaling; see [`gpu/collect_multi_gpu_scaling.jl`](../gpu/collect_multi_gpu_scaling.jl).
+
+### Testing
+
+| Tier | Command |
+|------|---------|
+| Default CI | `Pkg.test()` — `KA.CPU()` parity only |
+| CUDA smoke | `julia --project=gpu gpu/runtests.jl` — on GPU allocation |
+
+See [gpu.md — Testing tiers](gpu.md#testing-tiers).
 
 ### Kernel Details
 
-GPUBackend executes distance-pair calculations in massively parallel kernels:
-- Each GPU thread processes one distance-pair bin
-- Tree reduction for combining results
-- Zero-copy result transfer via unified memory (Ampere+)
+GPU kernels use tiled upper-triangle pair loops with block-local UInt32 histograms,
+then merge to global bins. See [`gpu/GPU_structure_function_prototypes_theory.md`](../gpu/GPU_structure_function_prototypes_theory.md).
 
 ---
 
