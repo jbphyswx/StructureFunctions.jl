@@ -1,6 +1,6 @@
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionObjects as SFO,
-    StructureFunctionTypes as SFT
+    StructureFunctionTypes as SFT, InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 using OhMyThreads: OhMyThreads  # load extension for ThreadedBackend / AutoBackend when nthreads() > 1
 using KernelAbstractions: KernelAbstractions as KA
 using Test
@@ -8,13 +8,13 @@ using Random
 
 """Wide synthetic value-bin edges for unit tests only."""
 function _synthetic_value_bins(n_bins::Int; pad_infinite::Bool = true)
-    edges = collect(range(-1.0, 2.0, length = n_bins + 1))
-    return pad_infinite ? vcat(-Inf, edges, Inf) : edges
+    inner = LinearBinEdges(range(-1.0, 2.0, length = n_bins + 1))
+    return pad_infinite ? InfPaddedBinEdges(inner) : inner
 end
 
-function _synthetic_value_bins_by_type(n_bins::Int; pad_infinite::Bool = true)
+function _synthetic_value_bins_ntuple(n_bins::Int; pad_infinite::Bool = true)
     template = _synthetic_value_bins(n_bins; pad_infinite = pad_infinite)
-    return [copy(template) for _ in 1:8]
+    return ntuple(_ -> copy(template), 8)
 end
 
 Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
@@ -23,15 +23,15 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     x = rand(n_points, 2)' .* 50000.0
     u = randn(2, n_points) .* 0.5
 
-    distance_bins = exp.(range(log(1000.0), log(50000.0), length = 6))
-    value_bins_by_type = _synthetic_value_bins_by_type(10; pad_infinite = true)
-    n_val = length(value_bins_by_type[1]) - 1
+    distance_bins = LogBinEdges(collect(exp.(range(log(1000.0), log(50000.0), length = 6))))
+    value_bins = _synthetic_value_bins(10; pad_infinite = true)
+    n_val = length(value_bins) - 1
     n_bins = length(distance_bins) - 1
 
     sums_2d = zeros(Float64, 8, n_bins, n_val)
     counts_2d = zeros(UInt32, 8, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
-        sums_2d, counts_2d, x, u, distance_bins, value_bins_by_type;
+        sums_2d, counts_2d, x, u, distance_bins, value_bins;
         backend = SFC.SerialBackend(),
     )
 
@@ -55,12 +55,13 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     per_type_indices = (1, 2, 3, 5, 6, 7, 8)
 
     for t in per_type_indices
+        vb = value_bins isa Tuple ? value_bins[t] : value_bins
         sf2d = SFC.calculate_structure_function(
             sft_types[t],
             x_tuple,
             u_tuple,
             distance_bins,
-            value_bins_by_type[t];
+            vb;
             backend = SFC.SerialBackend(),
             verbose = false,
             show_progress = false,
@@ -89,11 +90,11 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     fill!(sums_2d, 0.0)
     fill!(counts_2d, 0)
     SFC.calculate_structure_functions_single_pass_2d!(
-        sums_2d, counts_2d, x, u, distance_bins, value_bins_by_type;
+        sums_2d, counts_2d, x, u, distance_bins, value_bins;
         backend = SFC.AutoBackend(),
     )
     t_sums, t_counts = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, value_bins_by_type;
+        x, u, distance_bins, value_bins;
         backend = SFC.AutoBackend(),
     )
     Test.@test t_sums ≈ sums_2d
@@ -108,16 +109,16 @@ Test.@testset "Single-Pass 2D with Custom Distance Metric (Cityblock)" begin
     x = rand(n_points, 2)' .* 50000.0
     u = randn(2, n_points) .* 0.5
 
-    distance_bins = exp.(range(log(1000.0), log(50000.0), length = 6))
-    value_bins_by_type = _synthetic_value_bins_by_type(10; pad_infinite = true)
-    n_val = length(value_bins_by_type[1]) - 1
+    distance_bins = LogBinEdges(collect(exp.(range(log(1000.0), log(50000.0), length = 6))))
+    value_bins = _synthetic_value_bins(10; pad_infinite = true)
+    n_val = length(value_bins) - 1
     n_bins = length(distance_bins) - 1
     metric = DI.Cityblock()
 
     sums_2d = zeros(Float64, 8, n_bins, n_val)
     counts_2d = zeros(UInt32, 8, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
-        sums_2d, counts_2d, x, u, distance_bins, value_bins_by_type;
+        sums_2d, counts_2d, x, u, distance_bins, value_bins;
         backend = SFC.SerialBackend(),
         distance_metric = metric
     )
@@ -139,12 +140,13 @@ Test.@testset "Single-Pass 2D with Custom Distance Metric (Cityblock)" begin
     per_type_indices = (1, 2, 3, 5, 6, 7, 8)
 
     for t in per_type_indices
+        vb = value_bins isa Tuple ? value_bins[t] : value_bins
         sf2d = SFC.calculate_structure_function(
             sft_types[t],
             x_tuple,
             u_tuple,
             distance_bins,
-            value_bins_by_type[t];
+            vb;
             backend = SFC.SerialBackend(),
             distance_metric = metric,
             verbose = false,
@@ -169,7 +171,7 @@ Test.@testset "Single-Pass 2D with Custom Distance Metric (Cityblock)" begin
 
     # Compare ThreadedBackend with SerialBackend
     t_sums, t_counts = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, value_bins_by_type;
+        x, u, distance_bins, value_bins;
         backend = SFC.AutoBackend(),
         distance_metric = metric
     )
@@ -182,20 +184,20 @@ Test.@testset "Single-Pass 2D GPU (KA.CPU) parity vs Serial" begin
     n_points = 40
     x = rand(n_points, 2)' .* 50000.0
     u = randn(2, n_points) .* 0.5
-    distance_bins = exp.(range(log(1000.0), log(50000.0), length = 6))
-    value_bins_by_type = _synthetic_value_bins_by_type(10; pad_infinite = true)
-    n_val = length(value_bins_by_type[1]) - 1
+    distance_bins = LogBinEdges(collect(exp.(range(log(1000.0), log(50000.0), length = 6))))
+    value_bins = _synthetic_value_bins(10; pad_infinite = true)
+    n_val = length(value_bins) - 1
     n_bins = length(distance_bins) - 1
 
     sums_ref = zeros(Float64, 8, n_bins, n_val)
     counts_ref = zeros(UInt32, 8, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
-        sums_ref, counts_ref, x, u, distance_bins, value_bins_by_type;
+        sums_ref, counts_ref, x, u, distance_bins, value_bins;
         backend = SFC.SerialBackend(),
     )
 
     sums_gpu, counts_gpu = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, value_bins_by_type;
+        x, u, distance_bins, value_bins;
         backend = SF.GPUBackend(KA.CPU()),
     )
     Test.@test sums_gpu ≈ sums_ref
@@ -204,7 +206,7 @@ Test.@testset "Single-Pass 2D GPU (KA.CPU) parity vs Serial" begin
     sums_gpu2 = zeros(Float64, 8, n_bins, n_val)
     counts_gpu2 = zeros(UInt32, 8, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
-        sums_gpu2, counts_gpu2, x, u, distance_bins, value_bins_by_type;
+        sums_gpu2, counts_gpu2, x, u, distance_bins, value_bins;
         backend = SF.GPUBackend(KA.CPU()),
     )
     Test.@test sums_gpu2 ≈ sums_ref

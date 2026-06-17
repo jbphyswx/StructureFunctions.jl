@@ -63,6 +63,12 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running GPU Tiled Parity Test ---")
     include("test_gpu_tiled_parity.jl")
 
+    println("--- Running GPU Single-Pass Tiled Parity Test ---")
+    include("test_gpu_single_pass_tiled.jl")
+
+    println("--- Running GPU sp2d HTP-EJ Priv Test ---")
+    include("test_gpu_sp2d_priv.jl")
+
     println("--- Running GPU Workspace & Slice Batch Test ---")
     include("test_gpu_workspace.jl")
 

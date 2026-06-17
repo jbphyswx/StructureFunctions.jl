@@ -152,10 +152,10 @@ Test.@testset "CUDA joint 2D log distance bins" begin
 end
 
 """Wide synthetic value-bin edges (matches test/test_single_pass_2d.jl)."""
-function _cuda_synthetic_value_bins_by_type(n_bins::Int, ::Type{FT}) where {FT}
+function _cuda_synthetic_value_bins_ntuple(n_bins::Int, ::Type{FT}) where {FT}
     edges = collect(FT, range(-1.0, 2.0; length = n_bins + 1))
     template = vcat(FT(-Inf), edges, FT(Inf))
-    return [copy(template) for _ in 1:8]
+    return ntuple(_ -> copy(template), 8)
 end
 
 Test.@testset "CUDA single-pass 2D parity" begin
@@ -166,17 +166,17 @@ Test.@testset "CUDA single-pass 2D parity" begin
     x_cpu = rand(FT, 2, N) .* FT(50000)
     u_cpu = randn(FT, 2, N) .* FT(0.5)
     distance_bins = exp.(range(log(FT(1000)), log(FT(50000)); length = 6))
-    value_bins_by_type = _cuda_synthetic_value_bins_by_type(10, FT)
+    value_bins = _cuda_synthetic_value_bins_ntuple(10, FT)
 
-    sums_ref = zeros(Float64, 8, length(distance_bins) - 1, length(value_bins_by_type[1]) - 1)
+    sums_ref = zeros(Float64, 8, length(distance_bins) - 1, length(value_bins[1]) - 1)
     counts_ref = zeros(UInt32, size(sums_ref))
     SFC.calculate_structure_functions_single_pass_2d!(
-        sums_ref, counts_ref, x_cpu, u_cpu, distance_bins, value_bins_by_type;
+        sums_ref, counts_ref, x_cpu, u_cpu, distance_bins, value_bins;
         backend = SFC.SerialBackend(),
     )
 
     sums_gpu, counts_gpu = SFC.calculate_structure_functions_single_pass_2d(
-        x_cpu, u_cpu, distance_bins, value_bins_by_type;
+        x_cpu, u_cpu, distance_bins, value_bins;
         backend = SF.GPUBackend(CUDA.CUDABackend()),
     )
     CUDA.synchronize()

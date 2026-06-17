@@ -532,14 +532,15 @@ function SFC._dispatch_single_pass_2d(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SFC.SinglePass2DValueBins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     count_eltype::Type{CT} = UInt32,
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
-    n_val = length(value_bins_by_type[1]) - 1
+    vb0 = SFC._sp2d_value_bin_at(value_bins, 1)
+    n_val = length(vb0) - 1
     n_points = size(x, 2)
 
     (sums, counts) = OMT.tmapreduce(
@@ -584,8 +585,9 @@ function SFC._dispatch_single_pass_2d(
                     )
 
                     for t in 1:8
-                        vbin = SFH.digitize(vals[t], value_bins_by_type[t])
-                        n_val_t = length(value_bins_by_type[t]) - 1
+                        vb = SFC._sp2d_value_bin_at(value_bins, t)
+                        vbin = SFH.digitize(vals[t], vb)
+                        n_val_t = length(vb) - 1
                         if 1 <= vbin <= n_val_t && vbin <= n_val
                             @inbounds local_sums[t, bin_idx, vbin] += vals[t]
                             @inbounds local_counts[t, bin_idx, vbin] += 1
@@ -607,7 +609,7 @@ function SFC._dispatch_single_pass_2d!(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SFC.SinglePass2DValueBins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
@@ -657,8 +659,9 @@ function SFC._dispatch_single_pass_2d!(
                     )
 
                     for t in 1:8
-                        vbin = SFH.digitize(vals[t], value_bins_by_type[t])
-                        n_val_t = length(value_bins_by_type[t]) - 1
+                        vb = SFC._sp2d_value_bin_at(value_bins, t)
+                        vbin = SFH.digitize(vals[t], vb)
+                        n_val_t = length(vb) - 1
                         if 1 <= vbin <= n_val_t && vbin <= n_val
                             @inbounds local_sums[t, bin_idx, vbin] += vals[t]
                             @inbounds local_counts[t, bin_idx, vbin] += 1

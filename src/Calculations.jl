@@ -8,7 +8,7 @@ using ..HelperFunctions: HelperFunctions as SFH
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 using ..StructureFunctionObjects: StructureFunctionObjects as SFO
 using ..StructureFunctions: AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges,
-    n_histogram_bins
+    InfPaddedBinEdges, n_histogram_bins
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using Base.Threads: Threads
@@ -1185,7 +1185,7 @@ Device counts are `UInt32`; `count_eltype` selects the host matrix type after do
 function gpu_calculate_structure_function_2d end
 
 """
-    gpu_calculate_structure_functions_single_pass_2d(backend, x, u, distance_bins, value_bins_by_type; kwargs...)
+    gpu_calculate_structure_functions_single_pass_2d(backend, x, u, distance_bins, value_bins; kwargs...)
 
 Eight native distance × value joint histograms on a KernelAbstractions backend.
 Requires loading `KernelAbstractions.jl` to activate the `GPUExt` extension.
@@ -1194,7 +1194,7 @@ Device counts are `UInt32`; `count_eltype` selects the host array type after dow
 function gpu_calculate_structure_functions_single_pass_2d end
 
 """
-    gpu_calculate_structure_functions_single_pass_2d!(sums, counts, backend, x, u, distance_bins, value_bins_by_type; kwargs...)
+    gpu_calculate_structure_functions_single_pass_2d!(sums, counts, backend, x, u, distance_bins, value_bins; kwargs...)
 
 In-place GPU 2D single-pass accumulation. Requires the `GPUExt` extension.
 """
@@ -1359,6 +1359,42 @@ function _dispatch_slices_2d!(
     return nothing
 end
 
+# ---------------------------------------------------------------------------
+# Single-pass 2D value-axis types (defined before slice drivers that annotate them)
+# ---------------------------------------------------------------------------
+
+"""Value-axis specification for [`calculate_structure_functions_single_pass_2d`](@ref)."""
+const SinglePass2DValueBins = Union{
+    LinearBinEdges,
+    LogBinEdges,
+    InfPaddedBinEdges,
+    NTuple{8, LinearBinEdges},
+    NTuple{8, LogBinEdges},
+    NTuple{8, InfPaddedBinEdges},
+    NTuple{8, Vector},
+}
+
+@inline _sp2d_value_bin_at(value_bins, t::Int) =
+    value_bins isa Tuple ? value_bins[t] : value_bins
+
+function _validate_value_bins!(value_bins, n_val::Int)
+    if value_bins isa Tuple
+        for t in 1:8
+            n_edges = length(value_bins[t])
+            n_edges >= n_val + 1 ||
+                throw(DimensionMismatch(
+                    "value_bins[$t] needs at least $(n_val + 1) edges for n_val=$n_val (got $n_edges)",
+                ))
+        end
+    else
+        length(value_bins) >= n_val + 1 ||
+            throw(DimensionMismatch(
+                "value_bins needs at least $(n_val + 1) edges for n_val=$n_val (got $(length(value_bins)))",
+            ))
+    end
+    return nothing
+end
+
 """
     calculate_structure_functions_single_pass_slices!(sums, counts, x, u, distance_bins; backend=..., ...)
 
@@ -1400,23 +1436,24 @@ function _dispatch_single_pass_slices!(
 end
 
 """
-    calculate_structure_functions_single_pass_2d_slices!(sums, counts, x, u, distance_bins, value_bins_by_type; backend=..., ...)
+    calculate_structure_functions_single_pass_2d_slices!(sums, counts, x, u, distance_bins, value_bins; backend=..., ...)
 
 Batch eight distance × value joint histograms over `(N_dims, N_points, T)`;
-outputs `(8, NB, n_val, T)`.
+outputs `(8, NB, n_val, T)`. Pass shared bin types or `NTuple{8,...}`; use `Tuple(v...)`
+if you have a length-8 vector of bin objects.
 """
 function calculate_structure_functions_single_pass_2d_slices!(
-    sums, counts, x, u, distance_bins, value_bins_by_type;
+    sums, counts, x, u, distance_bins, value_bins::SinglePass2DValueBins;
     backend = SerialBackend(), kwargs...,
 )
     _dispatch_single_pass_2d_slices!(
-        backend, sums, counts, x, u, distance_bins, value_bins_by_type; kwargs...,
+        backend, sums, counts, x, u, distance_bins, value_bins; kwargs...,
     )
     return nothing
 end
 
 function _dispatch_single_pass_2d_slices!(
-    ::SerialBackend, sums, counts, x, u, distance_bins, value_bins_by_type; kwargs...,
+    ::SerialBackend, sums, counts, x, u, distance_bins, value_bins::SinglePass2DValueBins; kwargs...,
 )
     throw(ArgumentError("CPU single-pass 2D slice batch not implemented yet; use GPUBackend or loop over t."))
 end
@@ -1434,10 +1471,10 @@ function _dispatch_single_pass_2d_slices!(
 end
 
 function _dispatch_single_pass_2d_slices!(
-    backend::GPUBackend, sums, counts, x, u, distance_bins, value_bins_by_type; kwargs...,
+    backend::GPUBackend, sums, counts, x, u, distance_bins, value_bins::SinglePass2DValueBins; kwargs...,
 )
     gpu_calculate_structure_functions_single_pass_2d_slices!(
-        sums, counts, backend.backend, x, u, distance_bins, value_bins_by_type; kwargs...,
+        sums, counts, backend.backend, x, u, distance_bins, value_bins; kwargs...,
     )
     return nothing
 end
@@ -3022,17 +3059,11 @@ end
 # Single-pass 2D (eight native joint histograms in one O(N²) loop)
 # ---------------------------------------------------------------------------
 
-"""
-    serial_calculate_structure_functions_single_pass_2d(x, u, distance_bins, value_bins_by_type, sums_3d, counts_3d)
-
-Zero output buffers then accumulate eight 2D joint histograms on one thread.
-For allocation-free reuse, prefer [`calculate_structure_functions_single_pass_2d!`](@ref).
-"""
 function serial_calculate_structure_functions_single_pass_2d(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector},
+    value_bins::SinglePass2DValueBins,
     sums_3d::AbstractArray{OT, 3},
     counts_3d::AbstractArray{CT, 3};
     kwargs...
@@ -3040,17 +3071,18 @@ function serial_calculate_structure_functions_single_pass_2d(
     fill!(sums_3d, zero(OT))
     fill!(counts_3d, 0)
     return calculate_structure_functions_single_pass_2d!(
-        sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type; kwargs...
+        sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...
     )
 end
 
 """
-    calculate_structure_functions_single_pass_2d!(sums, counts, x, u, distance_bins, value_bins_by_type; backend=...)
+    calculate_structure_functions_single_pass_2d!(sums, counts, x, u, distance_bins, value_bins; backend=...)
 
 Accumulate eight native 2D joint histograms into pre-allocated ``(8, n_bins, n_val)`` buffers.
-``value_bins_by_type`` is a length-8 vector of edge vectors; pad with ``±Inf`` if you need
-catch-all overflow bins at the ends of each edge vector.
-On `GPUBackend`, device histograms are `UInt32`; pass `count_eltype` for the host buffer type.
+
+Pass one shared [`LinearBinEdges`](@ref), [`LogBinEdges`](@ref), or [`InfPaddedBinEdges`](@ref)
+when all eight SF types share the same value grid, or `NTuple{8,...}` when columns may differ.
+Use `Tuple(v...)` at the call site if you have a length-8 vector of bin objects.
 """
 function calculate_structure_functions_single_pass_2d!(
     sums_3d::AbstractArray{OT, 3},
@@ -3058,12 +3090,12 @@ function calculate_structure_functions_single_pass_2d!(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     backend::AbstractExecutionBackend = SerialBackend(),
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     _dispatch_single_pass_2d!(
-        backend, sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type; kwargs...
+        backend, sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...
     )
     return sums_3d, counts_3d
 end
@@ -3075,12 +3107,9 @@ function _accumulate_single_pass_2d!(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
-    length(value_bins_by_type) == 8 ||
-        throw(DimensionMismatch("value_bins_by_type must contain exactly 8 edge vectors (got $(length(value_bins_by_type)))"))
-
     n_points = size(x, 2)
     n_bins = length(distance_bins) - 1
     n_val = size(sums_3d, 3)
@@ -3088,6 +3117,7 @@ function _accumulate_single_pass_2d!(
         throw(DimensionMismatch("sums must have shape (8, n_bins, n_val); got $(size(sums_3d))"))
     size(counts_3d) == size(sums_3d) ||
         throw(DimensionMismatch("counts and sums must have the same shape"))
+    _validate_value_bins!(value_bins, n_val)
 
     for i in 1:n_points
         x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
@@ -3103,7 +3133,6 @@ function _accumulate_single_pass_2d!(
                 u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
                 du = u_j - u_i
 
-                # Use multiple dispatch to avoid duplicate vector subtraction and sqrt/norm where possible
                 rh = SFH.r̂(x_i, x_j, distance_metric, r)
                 nh = SFH.n̂(rh)
 
@@ -3125,8 +3154,9 @@ function _accumulate_single_pass_2d!(
                 )
 
                 for t in 1:8
-                    vbin = SFH.digitize(vals[t], value_bins_by_type[t])
-                    n_val_t = length(value_bins_by_type[t]) - 1
+                    vb = _sp2d_value_bin_at(value_bins, t)
+                    vbin = SFH.digitize(vals[t], vb)
+                    n_val_t = length(vb) - 1
                     if 1 <= vbin <= n_val_t && vbin <= n_val
                         @inbounds sums_3d[t, bin_idx, vbin] += vals[t]
                         @inbounds counts_3d[t, bin_idx, vbin] += 1
@@ -3139,19 +3169,6 @@ function _accumulate_single_pass_2d!(
     return sums_3d, counts_3d
 end
 
-function _validate_value_bins_by_type(value_bins_by_type, n_val::Int)
-    length(value_bins_by_type) == 8 ||
-        throw(DimensionMismatch("value_bins_by_type must contain exactly 8 edge vectors"))
-    for (t, vb) in enumerate(value_bins_by_type)
-        n_vt = length(vb) - 1
-        n_vt == n_val ||
-            throw(DimensionMismatch("All value bin vectors must have $(n_val + 1) edges; type $t has $(length(vb))"))
-    end
-end
-
-function _dispatch_single_pass_2d end
-function _dispatch_single_pass_2d! end
-
 function _dispatch_single_pass_2d!(
     ::SerialBackend,
     sums_3d::AbstractArray,
@@ -3159,10 +3176,10 @@ function _dispatch_single_pass_2d!(
     x::AbstractMatrix,
     u::AbstractMatrix,
     distance_bins::AbstractVector,
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     kwargs...
 )
-    return _accumulate_single_pass_2d!(sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type; kwargs...)
+    return _accumulate_single_pass_2d!(sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
 end
 
 function _dispatch_single_pass_2d!(
@@ -3172,7 +3189,7 @@ function _dispatch_single_pass_2d!(
     x::AbstractMatrix,
     u::AbstractMatrix,
     distance_bins::AbstractVector,
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     kwargs...
 )
     throw(
@@ -3189,7 +3206,7 @@ function _dispatch_single_pass_2d!(
     x::AbstractMatrix,
     u::AbstractMatrix,
     distance_bins::AbstractVector,
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     kwargs...
 )
     throw(
@@ -3206,11 +3223,11 @@ function _dispatch_single_pass_2d!(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
     gpu_calculate_structure_functions_single_pass_2d!(
-        sums_3d, counts_3d, backend.backend, x, u, distance_bins, value_bins_by_type;
+        sums_3d, counts_3d, backend.backend, x, u, distance_bins, value_bins;
         kwargs...,
     )
     return sums_3d, counts_3d
@@ -3223,25 +3240,25 @@ function _dispatch_single_pass_2d!(
     x::AbstractMatrix,
     u::AbstractMatrix,
     distance_bins::AbstractVector,
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     kwargs...
 )
     if distributed_workers_available(Val(:distributed)) &&
-       _distributed_single_pass_2d_available(x, u, distance_bins, value_bins_by_type)
+       _distributed_single_pass_2d_available(x, u, distance_bins, value_bins)
         return _dispatch_single_pass_2d!(
-            DistributedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type;
+            DistributedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins;
             kwargs...
         )
     end
     if Threads.nthreads() > 1 &&
-       _threaded_single_pass_2d_available(x, u, distance_bins, value_bins_by_type)
+       _threaded_single_pass_2d_available(x, u, distance_bins, value_bins)
         return _dispatch_single_pass_2d!(
-            ThreadedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type;
+            ThreadedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins;
             kwargs...
         )
     end
     return _dispatch_single_pass_2d!(
-        SerialBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins_by_type; kwargs...
+        SerialBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...
     )
 end
 
@@ -3250,7 +3267,7 @@ function _dispatch_single_pass_2d(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     thread_sums = nothing,
     thread_counts = nothing,
     count_eltype::Type{CT} = UInt32,
@@ -3258,14 +3275,14 @@ function _dispatch_single_pass_2d(
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
-    n_val = length(value_bins_by_type[1]) - 1
-    _validate_value_bins_by_type(value_bins_by_type, n_val)
+    n_val = length(value_bins isa Tuple ? value_bins[1] : value_bins) - 1
+    _validate_value_bins!(value_bins, n_val)
 
     ts = isnothing(thread_sums) ? zeros(OT, 8, n_bins, n_val) : thread_sums
     tc = isnothing(thread_counts) ? zeros(CT, 8, n_bins, n_val) : thread_counts
 
     return serial_calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, value_bins_by_type, ts, tc; kwargs...
+        x, u, distance_bins, value_bins, ts, tc; kwargs...
     )
 end
 
@@ -3274,7 +3291,7 @@ function _dispatch_single_pass_2d(
     x::AbstractMatrix,
     u::AbstractMatrix,
     distance_bins::AbstractVector,
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     kwargs...
 )
     throw(
@@ -3289,7 +3306,7 @@ function _dispatch_single_pass_2d(
     x::AbstractMatrix,
     u::AbstractMatrix,
     distance_bins::AbstractVector,
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     kwargs...
 )
     throw(
@@ -3304,35 +3321,23 @@ function _dispatch_single_pass_2d(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number}
     return gpu_calculate_structure_functions_single_pass_2d(
-        backend.backend, x, u, distance_bins, value_bins_by_type;
+        backend.backend, x, u, distance_bins, value_bins;
         kwargs...,
     )
 end
 
-_threaded_single_pass_2d_available(x, u, distance_bins, value_bins_by_type) = hasmethod(
+_threaded_single_pass_2d_available(x, u, distance_bins, value_bins) = hasmethod(
     _dispatch_single_pass_2d,
-    Tuple{
-        ThreadedBackend,
-        typeof(x),
-        typeof(u),
-        typeof(distance_bins),
-        typeof(value_bins_by_type),
-    },
+    Tuple{ThreadedBackend, typeof(x), typeof(u), typeof(distance_bins), typeof(value_bins)},
 )
 
-_distributed_single_pass_2d_available(x, u, distance_bins, value_bins_by_type) = hasmethod(
+_distributed_single_pass_2d_available(x, u, distance_bins, value_bins) = hasmethod(
     _dispatch_single_pass_2d,
-    Tuple{
-        DistributedBackend,
-        typeof(x),
-        typeof(u),
-        typeof(distance_bins),
-        typeof(value_bins_by_type),
-    },
+    Tuple{DistributedBackend, typeof(x), typeof(u), typeof(distance_bins), typeof(value_bins)},
 )
 
 function _dispatch_single_pass_2d(
@@ -3340,57 +3345,38 @@ function _dispatch_single_pass_2d(
     x::AbstractMatrix,
     u::AbstractMatrix,
     distance_bins::AbstractVector,
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     kwargs...
 )
     if distributed_workers_available(Val(:distributed)) &&
-       _distributed_single_pass_2d_available(x, u, distance_bins, value_bins_by_type)
+       _distributed_single_pass_2d_available(x, u, distance_bins, value_bins)
         return _dispatch_single_pass_2d(
-            DistributedBackend(), x, u, distance_bins, value_bins_by_type; kwargs...
+            DistributedBackend(), x, u, distance_bins, value_bins; kwargs...
         )
     end
-
     if Threads.nthreads() > 1 &&
-       _threaded_single_pass_2d_available(x, u, distance_bins, value_bins_by_type)
+       _threaded_single_pass_2d_available(x, u, distance_bins, value_bins)
         return _dispatch_single_pass_2d(
-            ThreadedBackend(), x, u, distance_bins, value_bins_by_type; kwargs...
+            ThreadedBackend(), x, u, distance_bins, value_bins; kwargs...
         )
     end
-
     return _dispatch_single_pass_2d(
-        SerialBackend(), x, u, distance_bins, value_bins_by_type; kwargs...
+        SerialBackend(), x, u, distance_bins, value_bins; kwargs...
     )
 end
 
-"""
-    calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, value_bins_by_type;
-        backend=AutoBackend(), kwargs...
-    )
-
-Compute eight native 2D joint histograms (distance × structure-function increment value)
-in a single O(N²) pair loop. Returns ``(sums, counts)`` arrays of shape
-``(8, n_distance_bins, n_value_bins)``.
-
-``value_bins_by_type`` must be a length-8 vector of edge vectors (one per native type in
-single-pass order). For complete overlap with 1D SFs, ensure the edges are padded with ``-Inf`` / ``Inf`` for catch-all overflow bins.
-
-Rotational and divergent structure functions are **not** accumulated here; use
-[`ten_type_from_eight_2d`](@ref) or marginalize then [`postprocess_single_pass_results`](@ref).
-"""
 function calculate_structure_functions_single_pass_2d(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::SinglePass2DValueBins;
     backend::AbstractExecutionBackend = AutoBackend(),
     count_eltype::Type{CT} = UInt32,
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     return _dispatch_single_pass_2d(
-        backend, x, u, distance_bins, value_bins_by_type;
-        count_eltype = count_eltype,
-        kwargs...,
+        backend, x, u, distance_bins, value_bins;
+        count_eltype = count_eltype, kwargs...,
     )
 end
 

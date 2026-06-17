@@ -11,9 +11,9 @@ function _synthetic_value_bins(n_bins::Int)
     return collect(range(-1.0, 2.0, length = n_bins + 1))
 end
 
-function _synthetic_value_bins_by_type(n_bins::Int)
+function _synthetic_value_bins_ntuple(n_bins::Int)
     template = _synthetic_value_bins(n_bins)
-    return [copy(template) for _ in 1:8]
+    return ntuple(_ -> copy(template), 8)
 end
 
 Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
@@ -28,7 +28,7 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     linear_bins = collect(FT, range(0.0, 1.5, length = 11))
     log_bins = exp.(range(log(FT(0.01)), log(FT(1.5)), length = 11))
     value_bins = collect(FT, range(0.0, 2.0, length = 9))
-    value_bins_by_type = _synthetic_value_bins_by_type(8)
+    value_bins_ntuple = _synthetic_value_bins_ntuple(8)
 
     sft = SFT.L2SFType()
     backend = KA.CPU()
@@ -89,18 +89,18 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     Test.@test ref_counts_sp[1:8, :] ≈ out_counts_sp[1:8, :]
 
     # --- single_pass_2d ---
-    n_val = length(value_bins_by_type[1]) - 1
+    n_val = length(value_bins_ntuple[1]) - 1
     sums_sp2d = zeros(FT, 8, NB, n_val)
     counts_sp2d = zeros(UInt32, 8, NB, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
-        sums_sp2d, counts_sp2d, x2, u2, linear_bins, value_bins_by_type;
+        sums_sp2d, counts_sp2d, x2, u2, linear_bins, value_bins_ntuple;
         backend = SFC.SerialBackend(),
     )
-    ws_sp2d = SFC.GPUSFWorkspace(backend, linear_bins, value_bins_by_type)
+    ws_sp2d = SFC.GPUSFWorkspace(backend, linear_bins, value_bins_ntuple)
     sums_gpu = zeros(FT, 8, NB, n_val)
     counts_gpu = zeros(UInt32, 8, NB, n_val)
     SFC.gpu_calculate_structure_functions_single_pass_2d!(
-        sums_gpu, counts_gpu, backend, x2, u2, linear_bins, value_bins_by_type;
+        sums_gpu, counts_gpu, backend, x2, u2, linear_bins, value_bins_ntuple;
         workspace = ws_sp2d,
     )
     Test.@test sums_gpu ≈ sums_sp2d atol = 1e-10
@@ -194,7 +194,7 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
         st = zeros(FT, 8, NB, n_val)
         ct = zeros(UInt32, 8, NB, n_val)
         SFC.calculate_structure_functions_single_pass_2d!(
-            st, ct, x_batch[:, :, t], u_batch[:, :, t], linear_bins, value_bins_by_type;
+            st, ct, x_batch[:, :, t], u_batch[:, :, t], linear_bins, value_bins_ntuple;
             backend = SFC.SerialBackend(),
         )
         sums_sp2d_ref[:, :, :, t] .= st
@@ -204,7 +204,7 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     counts_sp2d_drv = zeros(UInt32, 8, NB, n_val, T)
     SFC.gpu_calculate_structure_functions_single_pass_2d_slices!(
         sums_sp2d_drv, counts_sp2d_drv, backend, x_batch, u_batch,
-        linear_bins, value_bins_by_type; workspace = ws_sp2d,
+        linear_bins, value_bins_ntuple; workspace = ws_sp2d,
     )
     Test.@test sums_sp2d_drv ≈ sums_sp2d_ref atol = 1e-10
     Test.@test counts_sp2d_drv ≈ counts_sp2d_ref

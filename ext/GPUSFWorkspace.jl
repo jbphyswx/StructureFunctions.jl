@@ -1,5 +1,5 @@
 # GPUSFWorkspace — device-resident histogram buffers and cached bin edges for GPU SF paths.
-# Included from StructureFunctionsGPUExt.jl (uses _GPUBinLayout, _resolve_gpu_bin_layout, etc.).
+# Included from StructureFunctionsGPUExt.jl (uses _gpu_normalize_bins, etc.).
 
 """
     GPUSFWorkspace
@@ -13,7 +13,9 @@ per-call `KA.zeros` allocation and repeated edge uploads.
 - `:sf1d` — 1D distance histogram (`out_dev`, `cnt_dev` vectors)
 - `:joint2d` — distance × value joint histogram
 - `:single_pass` — eight 1D distance histograms `(8, NB)`
-- `:single_pass_2d` — eight distance × value joint histograms `(8, NB, n_val)`
+- `:single_pass_2d` — eight distance × value joint histograms `(8, NB, n_val)`;
+  HTP-EJ privatized accumulation uses `priv_sums_dev` / `priv_cnts_dev` `(8, NB, n_val, n_tile_blocks)`
+  plus [`SP2DPrivConfig`](@ref) strip metadata logged at construct.
 
 Use the matching constructor overload; `reset_histogram!(ws)` zeroes device outputs
 before each launch.
@@ -22,16 +24,14 @@ mutable struct GPUSFWorkspace
     backend::KA.Backend
     FT::Type
     kind::Symbol
-    dist_layout::_GPUBinLayout
-    val_layout::Union{_GPUBinLayout, Nothing}
+    dist_bins
+    val_bins::Union{Nothing, Any}
     out_dev
     cnt_dev
     out_sums_dev
     out_cnts_dev
     value_edges_dev
     value_edges_sp2d_dev
-    dist_log_edges_dev
-    dist_log_lut_dev
     dist_general_edges_dev
     NB::Int
     n_bins::Int
@@ -40,33 +40,37 @@ mutable struct GPUSFWorkspace
     n_val_edges::Int
     host_sums_scratch
     host_counts_scratch
+    x_dev_cache
+    u_dev_cache
+    x_dev_3d_cache
+    u_dev_3d_cache
+    val_plan::Union{Nothing, GPUValueDigitizePlan}
+    sp2d_priv_config::Union{Nothing, SP2DPrivConfig}
+    priv_sums_dev
+    priv_cnts_dev
+    priv_n_tile_blocks::Int
 end
 
-"""Upload distance-bin edge tables into workspace fields (log LUT or general edges)."""
-function _workspace_upload_dist_edges!(ws::GPUSFWorkspace, layout::_GPUBinLayout, n_edges::Int)
-    ws.dist_log_edges_dev = nothing
-    ws.dist_log_lut_dev = nothing
+"""Log-spaced distance bins use host-side FMA params only; no device edge upload."""
+function _workspace_upload_dist_edges!(ws::GPUSFWorkspace, ::LogBinEdges, ::Int)
     ws.dist_general_edges_dev = nothing
-    if layout.log !== nothing
-        lbe = layout.log
-        FT = eltype(lbe.edges)
-        edges_dev = KA.allocate(ws.backend, FT, n_edges)
-        lut_dev = KA.allocate(ws.backend, Int32, length(lbe.lut))
-        copyto!(edges_dev, collect(lbe.edges))
-        copyto!(lut_dev, Int32.(lbe.lut))
-        ws.dist_log_edges_dev = edges_dev
-        ws.dist_log_lut_dev = lut_dev
-    elseif layout.general_edges !== nothing
-        edges = layout.general_edges
-        FT = eltype(edges)
-        bins_dev = KA.allocate(ws.backend, FT, n_edges)
-        copyto!(bins_dev, edges)
-        ws.dist_general_edges_dev = bins_dev
-    end
     return ws
 end
 
-function _workspace_check_nb!(layout::_GPUBinLayout, n_bins::Int)
+function _workspace_upload_dist_edges!(ws::GPUSFWorkspace, ::LinearBinEdges, ::Int)
+    ws.dist_general_edges_dev = nothing
+    return ws
+end
+
+function _workspace_upload_dist_edges!(ws::GPUSFWorkspace, bins::Vector{FT}, n_edges::Int) where {FT}
+    ws.dist_general_edges_dev = nothing
+    bins_dev = KA.allocate(ws.backend, FT, n_edges)
+    copyto!(bins_dev, bins)
+    ws.dist_general_edges_dev = bins_dev
+    return ws
+end
+
+function _workspace_check_nb!(n_bins::Int)
     NB = n_bins - 1
     NB > SF_GPU_MAX_BINS &&
         error("GPUSFWorkspace: at most $SF_GPU_MAX_BINS distance bins (got NB=$NB)")
@@ -86,8 +90,9 @@ function SFC.GPUSFWorkspace(
 ) where {FT}
     kind in (:sf1d, :single_pass) ||
         throw(ArgumentError("GPUSFWorkspace(...; kind=:sf1d|:single_pass); got kind=$kind"))
-    layout = _resolve_gpu_bin_layout(distance_bins)
-    NB, n_bins = _workspace_check_nb!(layout, length(_layout_edge_vector(layout)))
+    n_bins = _gpu_n_edges(distance_bins)
+    dist_bins = _gpu_normalize_bins(distance_bins)
+    NB, n_bins = _workspace_check_nb!(n_bins)
 
     if kind == :sf1d
         out_dev = KA.zeros(backend, FT, NB)
@@ -102,13 +107,16 @@ function SFC.GPUSFWorkspace(
     end
 
     ws = GPUSFWorkspace(
-        backend, FT, kind, layout, nothing,
+        backend, FT, kind, dist_bins, nothing,
         out_dev, cnt_dev, out_sums_dev, out_cnts_dev,
-        nothing, nothing, nothing, nothing, nothing,
+        nothing, nothing, nothing,
         NB, n_bins, NB, 0, 0,
         Vector{FT}(undef, NB), Vector{UInt32}(undef, NB),
+        nothing, nothing, nothing, nothing,
+        nothing,
+        nothing, nothing, nothing, 0,
     )
-    return _workspace_upload_dist_edges!(ws, layout, n_bins)
+    return _workspace_upload_dist_edges!(ws, dist_bins, n_bins)
 end
 
 """
@@ -125,17 +133,17 @@ function SFC.GPUSFWorkspace(
     kind == :joint2d ||
         throw(ArgumentError("three-argument GPUSFWorkspace expects kind=:joint2d (got $kind)"))
     FT = promote_type(FT1, FT2)
-    dist_layout = _resolve_gpu_bin_layout(distance_bins)
-    val_layout = _resolve_gpu_bin_layout(value_bins)
-    n_dist_edges = length(_layout_edge_vector(dist_layout))
-    n_val_edges = length(_layout_edge_vector(val_layout))
-    NB, n_bins = _workspace_check_nb!(dist_layout, n_dist_edges)
+    n_dist_edges = _gpu_n_edges(distance_bins)
+    n_val_edges = _gpu_n_edges(value_bins)
+    dist_bins = _gpu_normalize_bins(distance_bins)
+    val_bins = _gpu_normalize_bins(value_bins)
+    NB, n_bins = _workspace_check_nb!(n_dist_edges)
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
     n_dist > 0 && n_val > 0 ||
         throw(ArgumentError("distance_bins and value_bins must each have at least two edges"))
 
-    value_host = _layout_edge_vector(val_layout)
+    value_host = _gpu_host_edge_vector(value_bins)
     value_edges_dev = KA.allocate(backend, FT, n_val_edges)
     copyto!(value_edges_dev, value_host)
 
@@ -143,51 +151,119 @@ function SFC.GPUSFWorkspace(
     out_cnts_dev = KA.zeros(backend, UInt32, n_dist, n_val)
 
     ws = GPUSFWorkspace(
-        backend, FT, :joint2d, dist_layout, val_layout,
+        backend, FT, :joint2d, dist_bins, val_bins,
         nothing, nothing, out_sums_dev, out_cnts_dev,
-        value_edges_dev, nothing, nothing, nothing, nothing,
+        value_edges_dev, nothing, nothing,
         NB, n_bins, n_dist, n_val, n_val_edges,
         Vector{FT}(undef, n_dist * n_val), Vector{UInt32}(undef, n_dist * n_val),
+        nothing, nothing, nothing, nothing,
+        nothing,
+        nothing, nothing, nothing, 0,
     )
-    return _workspace_upload_dist_edges!(ws, dist_layout, n_dist_edges)
+    return _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
 end
 
 """
-    GPUSFWorkspace(backend, distance_bins, value_bins_by_type; kind=:single_pass_2d)
+    GPUSFWorkspace(backend, distance_bins, value_bins; kind=:single_pass_2d)
 
 Workspace for eight distance × value joint histograms (single-pass 2D).
+Pass one shared edge object or `NTuple{8,...}` when columns may differ.
 """
+function _sp2d_value_eltype(value_bins::LinearBinEdges, FT3)
+    return promote_type(FT3, eltype(value_bins.edges))
+end
+function _sp2d_value_eltype(value_bins::LogBinEdges, FT3)
+    return promote_type(FT3, eltype(value_bins.log_edges))
+end
+function _sp2d_value_eltype(value_bins::InfPaddedBinEdges, FT3)
+    return _sp2d_value_eltype(value_bins.edges, FT3)
+end
+function _sp2d_value_eltype(value_bins::NTuple{8}, FT3)
+    return promote_type(FT3, (_sp2d_value_eltype(value_bins[t], FT3) for t in 1:8)...)
+end
+function _sp2d_value_eltype(v::Vector{FT}, FT3) where {FT}
+    return promote_type(FT3, FT)
+end
+
 function SFC.GPUSFWorkspace(
     backend::KA.Backend,
     distance_bins::AbstractVector{FT3},
-    value_bins_by_type::AbstractVector{<:AbstractVector};
+    value_bins::Union{
+        LinearBinEdges,
+        LogBinEdges,
+        InfPaddedBinEdges,
+        NTuple{8, LinearBinEdges},
+        NTuple{8, LogBinEdges},
+        NTuple{8, InfPaddedBinEdges},
+        NTuple{8, Vector{FT3}},
+    };
     kind::Symbol = :single_pass_2d,
+    n_val::Union{Nothing, Int} = nothing,
 ) where {FT3}
     kind == :single_pass_2d ||
-        throw(ArgumentError("vector-of-vectors GPUSFWorkspace expects kind=:single_pass_2d (got $kind)"))
-    dist_layout = _resolve_gpu_bin_layout(distance_bins)
-    n_dist_edges = length(_layout_edge_vector(dist_layout))
-    NB, n_bins = _workspace_check_nb!(dist_layout, n_dist_edges)
-    n_val = length(value_bins_by_type[1]) - 1
-    SFC._validate_value_bins_by_type(value_bins_by_type, n_val)
-    n_val_edges = n_val + 1
-    FT = promote_type(FT3, eltype.(value_bins_by_type)...)
+        throw(ArgumentError("single-pass 2D GPUSFWorkspace expects kind=:single_pass_2d (got $kind)"))
+    n_dist_edges = _gpu_n_edges(distance_bins)
+    dist_bins = _gpu_normalize_bins(distance_bins)
+    NB, n_bins = _workspace_check_nb!(n_dist_edges)
+    edge_n_val = _sp2d_n_val_edges(value_bins) - 1
+    hist_n_val = n_val === nothing ? edge_n_val : n_val
+    _validate_gpu_value_bins!(value_bins, hist_n_val)
+    n_val_edges = _sp2d_n_val_edges(value_bins)
+    FT = _sp2d_value_eltype(value_bins, FT3)
+    val_plan = _gpu_build_value_digitize_plan(backend, value_bins)
+    value_edges_sp2d_dev = val_plan isa GPUValueVectorCols ? val_plan.edges_dev : nothing
 
-    value_host = _gpu_pack_value_edges(value_bins_by_type)
-    value_edges_sp2d_dev = KA.allocate(backend, FT, n_val_edges, 8)
-    copyto!(value_edges_sp2d_dev, value_host)
-
-    out_sums_dev = KA.zeros(backend, FT, 8, NB, n_val)
-    out_cnts_dev = KA.zeros(backend, UInt32, 8, NB, n_val)
+    out_sums_dev = KA.zeros(backend, FT, 8, NB, hist_n_val)
+    out_cnts_dev = KA.zeros(backend, UInt32, 8, NB, hist_n_val)
+    priv_config = _sp2d_priv_config(NB, hist_n_val, FT)
 
     ws = GPUSFWorkspace(
-        backend, FT, :single_pass_2d, dist_layout, nothing,
+        backend, FT, :single_pass_2d, dist_bins, value_bins,
         nothing, nothing, out_sums_dev, out_cnts_dev,
-        nothing, value_edges_sp2d_dev, nothing, nothing, nothing,
-        NB, n_bins, NB, n_val, n_val_edges,
-        Vector{FT}(undef, 8 * NB * n_val), Vector{UInt32}(undef, 8 * NB * n_val),
+        nothing, value_edges_sp2d_dev, nothing,
+        NB, n_bins, NB, hist_n_val, n_val_edges,
+        Vector{FT}(undef, 8 * NB * hist_n_val), Vector{UInt32}(undef, 8 * NB * hist_n_val),
+        nothing, nothing, nothing, nothing,
+        val_plan,
+        priv_config, nothing, nothing, 0,
     )
-    return _workspace_upload_dist_edges!(ws, dist_layout, n_dist_edges)
+    return _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
+end
+
+"""
+Ensure block-private HTP-EJ slabs are allocated for `n_tile_blocks` CUDA tile blocks.
+Reallocates when `N_points` (hence tile-block count) grows.
+"""
+function _ensure_sp2d_priv_bufs!(
+    ws::GPUSFWorkspace,
+    n_tile_blocks::Int,
+)
+    ws.kind == :single_pass_2d ||
+        throw(ArgumentError("_ensure_sp2d_priv_bufs! requires kind=:single_pass_2d"))
+    cfg = ws.sp2d_priv_config
+    cfg === nothing && throw(ArgumentError("single_pass_2d workspace missing sp2d_priv_config"))
+    if ws.priv_sums_dev === nothing ||
+       ws.priv_cnts_dev === nothing ||
+       ws.priv_n_tile_blocks < n_tile_blocks
+        FT = ws.FT
+        ws.priv_sums_dev = KA.zeros(ws.backend, FT, 8, ws.n_dist, ws.n_val, n_tile_blocks)
+        ws.priv_cnts_dev = KA.zeros(ws.backend, UInt32, 8, ws.n_dist, ws.n_val, n_tile_blocks)
+        ws.priv_n_tile_blocks = n_tile_blocks
+    end
+    return ws.priv_sums_dev, ws.priv_cnts_dev
+end
+
+"""Allocate ephemeral privatization slabs when no workspace is provided."""
+function _alloc_sp2d_priv_bufs(
+    backend::KA.Backend,
+    FT::Type,
+    n_dist::Int,
+    n_val::Int,
+    n_tile_blocks::Int,
+)
+  priv_sums = KA.zeros(backend, FT, 8, n_dist, n_val, n_tile_blocks)
+  priv_cnts = KA.zeros(backend, UInt32, 8, n_dist, n_val, n_tile_blocks)
+  return priv_sums, priv_cnts
 end
 
 """Zero device histogram buffers in `ws` (call before each kernel launch)."""
@@ -199,6 +275,10 @@ function SFC.reset_histogram!(ws::GPUSFWorkspace)
     else
         fill!(ws.out_sums_dev, zero(FT))
         fill!(ws.out_cnts_dev, zero(UInt32))
+        if ws.kind == :single_pass_2d && ws.priv_sums_dev !== nothing
+            fill!(ws.priv_sums_dev, zero(FT))
+            fill!(ws.priv_cnts_dev, zero(UInt32))
+        end
     end
     return ws
 end
@@ -206,7 +286,10 @@ end
 """Optional explicit release of device buffers (fields are cleared; GC reclaims memory)."""
 function SFC.release!(ws::GPUSFWorkspace)
     for f in fieldnames(typeof(ws))
-        if f ∉ (:backend, :FT, :kind, :dist_layout, :val_layout, :NB, :n_bins, :n_dist, :n_val, :n_val_edges)
+        if f ∉ (
+            :backend, :FT, :kind, :dist_bins, :val_bins, :NB, :n_bins, :n_dist, :n_val,
+            :n_val_edges, :sp2d_priv_config, :priv_n_tile_blocks,
+        )
             setfield!(ws, f, nothing)
         end
     end
@@ -217,7 +300,8 @@ function _validate_gpu_workspace!(
     ws::GPUSFWorkspace,
     backend::KA.Backend,
     kind::Symbol,
-    NB::Int,
+    NB::Int;
+    n_val::Union{Nothing, Int} = nothing,
 )
     ws.backend == backend ||
         throw(ArgumentError("GPUSFWorkspace belongs to a different backend"))
@@ -225,11 +309,14 @@ function _validate_gpu_workspace!(
         throw(ArgumentError("GPUSFWorkspace kind $(ws.kind) incompatible with requested $kind"))
     ws.NB == NB ||
         throw(ArgumentError("GPUSFWorkspace NB=$(ws.NB) incompatible with requested NB=$NB"))
+    if n_val !== nothing && ws.n_val != n_val
+        throw(ArgumentError("GPUSFWorkspace n_val=$(ws.n_val) incompatible with requested n_val=$n_val"))
+    end
     return ws
 end
 
-"""Return cached log/general distance edge device buffers for tiled launches."""
+"""Return cached general distance edge device buffer for tiled launches."""
 function _workspace_dist_edge_bufs(ws::Union{GPUSFWorkspace, Nothing})
     ws === nothing && return nothing, nothing, nothing
-    return ws.dist_log_edges_dev, ws.dist_log_lut_dev, ws.dist_general_edges_dev
+    return nothing, nothing, ws.dist_general_edges_dev
 end
