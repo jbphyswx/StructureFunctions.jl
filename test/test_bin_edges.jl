@@ -43,30 +43,37 @@ Test.@testset "BinEdges Tests" begin
         end
         
         # =====================================================================
-        # 3. LogBinEdges (Exponent LUT Hybrid Spacing)
+        # 3. LogBinEdges (log(q) + LinearBinEdges on log grid)
         # =====================================================================
-        log_range = range(log(T(1.0)), log(T(100.0)), length=15)
+        log_range = range(log(T(1.0)), log(T(100.0)), length = 15)
         log_vec = exp.(log_range)
         log_be = SF.LogBinEdges(log_vec)
-        
+        log_be_from_log = SF.LogBinEdges_from_log_edges(log_range)
+        log_lin_ref = SF.LinearBinEdges(log_range)
+
         Test.@test log_be isa SF.LogBinEdges
+        Test.@test log_be_from_log isa SF.LogBinEdges
         Test.@test length(log_be) == 15
+        Test.@test length(log_be_from_log) == 15
         Test.@test log_be[1] == log_vec[1]
         Test.@test log_be[15] == log_vec[15]
-        
-        # Verify correctness with random queries in the range
+        Test.@test log_be_from_log.log_edges == log_range
+        Test.@test [log_be_from_log[i] for i in 1:15] ≈ log_vec
+        Test.@test SF.physical_edges_vector(log_be_from_log) ≈ log_vec
+        Test.@test_throws ArgumentError SF.LogBinEdges(range(T(1.0), T(100.0); length = 15))
+
         queries = rand(T, 500) .* T(120.0)
-        # Include boundary queries
         push!(queries, T(0.0), T(0.5), T(1.0), T(100.0), T(150.0))
         for i in 1:length(log_vec)
             push!(queries, log_vec[i])
             push!(queries, log_vec[i] - eps(log_vec[i]))
             push!(queries, log_vec[i] + eps(log_vec[i]))
         end
-        
+
         for q in queries
-            ref = searchsortedfirst(log_vec, q)
+            ref = q <= zero(T) ? 1 : searchsortedfirst(log_lin_ref, log(q))
             Test.@test searchsortedfirst(log_be, q) == ref
+            Test.@test searchsortedfirst(log_be_from_log, q) == ref
         end
 
         # =====================================================================
@@ -119,11 +126,13 @@ Test.@testset "BinEdges Tests" begin
         Test.@test padded_log_be[1] == typemin(T)
         Test.@test padded_log_be[17] == typemax(T)
         for q in queries
-            ref_idx = searchsortedfirst(log_vec, q) + 1
             if q <= typemin(T)
                 ref_idx = 1
-            elseif q > last(log_vec)
-                ref_idx = length(log_vec) + 2
+            elseif q > last(log_be)
+                ref_idx = length(log_be) + 2
+            else
+                inner = q <= zero(T) ? 1 : searchsortedfirst(log_lin_ref, log(q))
+                ref_idx = inner + 1
             end
             Test.@test searchsortedfirst(padded_log_be, q) == ref_idx
         end

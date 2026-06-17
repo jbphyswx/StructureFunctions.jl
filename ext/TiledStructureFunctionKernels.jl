@@ -291,10 +291,11 @@ KA.@kernel function _sf_kernel_tiled128_2d_log_u32!(
     N_dims::Int,
     N_bins::Int,
     NB::Int,
-    edge_anchor::FT,
-    @Const(edges),
-    @Const(lut),
-    e_min::Int,
+    first_edge::FT,
+    last_edge::FT,
+    inv_step::FT,
+    offset::FT,
+    step_val::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
@@ -384,7 +385,7 @@ KA.@kernel function _sf_kernel_tiled128_2d_log_u32!(
                 dX = X2 - X1
                 dist_sq = dX[1]^2 + dX[2]^2
                 dist = sqrt(dist_sq)
-                bin = _gpu_digitize_log(dist, edges, lut, e_min, N_bins)
+                bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, offset, step_val, N_bins)
                 if 1 <= bin < N_bins
                     r̂ = dX / dist
                     val = sf_type(U2 - U1, r̂)
@@ -422,10 +423,11 @@ KA.@kernel function _sf_kernel_tiled128_3d_log_u32!(
     N_dims::Int,
     N_bins::Int,
     NB::Int,
-    edge_anchor::FT,
-    @Const(edges),
-    @Const(lut),
-    e_min::Int,
+    first_edge::FT,
+    last_edge::FT,
+    inv_step::FT,
+    offset::FT,
+    step_val::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
@@ -519,7 +521,7 @@ KA.@kernel function _sf_kernel_tiled128_3d_log_u32!(
                 dX = X2 - X1
                 dist_sq = dX[1]^2 + dX[2]^2 + dX[3]^2
                 dist = sqrt(dist_sq)
-                bin = _gpu_digitize_log(dist, edges, lut, e_min, N_bins)
+                bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, offset, step_val, N_bins)
                 if 1 <= bin < N_bins
                     r̂ = SFH.r̂(X1, X2)
                     val = sf_type(U2 - U1, r̂)

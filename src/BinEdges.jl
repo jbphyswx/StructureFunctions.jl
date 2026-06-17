@@ -15,10 +15,19 @@ For large \$N\$, this binary search becomes the dominant CPU bottleneck, causing
 cache misses. Subtypes of `AbstractBinEdges` bypass the standard binary search by implementing custom 
 `Base.searchsortedfirst` overrides that execute in \$O(1)\$ time:
 - `LinearBinEdges` utilizes Fused Multiply-Add (FMA) arithmetic for uniformly-spaced bins.
-- `LogBinEdges` uses an IEEE 754 exponent extraction Lookup Table (LUT) for logarithmically-spaced bins.
+- `LogBinEdges` maps physical queries via `log(q)` then the same FMA path on the log-space grid.
 
 Wrapping standard arrays in these subtypes allows `digitize` to execute 5x to 15x faster, resolving the 
 primary computational bottleneck in the package.
+
+## Bin edges and backends
+
+- Plain `AbstractVector` bin edges are valid everywhere but use generic `searchsortedfirst` / binary search.
+- Pass [`LinearBinEdges`](@ref), [`LogBinEdges`](@ref), or [`InfPaddedBinEdges`](@ref) for O(1) CPU digitize
+  and matching GPU tiled kernels (see `StructureFunctionsGPUExt`).
+- [`InfPaddedBinEdges`](@ref) adds implicit catch-all under/overflow bins; do not `vcat(-Inf, …, Inf)` manually.
+- Classic serial/threaded pair-loop paths normalize once via [`BinEdges`](@ref); single-pass APIs expect callers
+  to choose edge types explicitly (no auto-wrap on GPU).
 """
 abstract type AbstractBinEdges{T} <: AbstractVector{T} end
 
@@ -61,25 +70,22 @@ Base.getindex(v::BinEdges, i::Int) = v.edges[i]
 High-performance wrapper for uniformly-spaced ranges (linear spacing).
 
 ### Mathematical Theory
-A standard binary search takes \$O(\\log B)\$ steps. With a uniformly spaced range of bin edges \$v\$, any 
-query value \$x\$ can be directly mapped to an index in \$O(1)\$ time by calculating:
-\$\\text{index}(x) = \\text{round}(\\text{Int}, \\frac{x - v_1}{\\delta}) + 1 = \\text{round}(\\text{Int}, x \\cdot \\frac{1}{\\delta} + (1 - \\frac{v_1}{\\delta}))\$
-where \$\\delta\$ is the step size and \$v_1\$ is the first edge value.
+A standard binary search takes \$O(\\log B)\$ steps. With a uniformly spaced range of bin edges \$v_i = v_1 + (i-1)\\delta\$,
+`searchsortedfirst(v, x)` is the smallest index \$i\$ with \$v_i \\ge x\$:
+\$\$
+i^*(x) = \\min\\{ i : v_1 + (i-1)\\delta \\ge x \\}
+     = \\left\\lfloor \\frac{x - v_1}{\\delta} \\right\\rfloor + 1
+     = \\lceil \\frac{x - v_1}{\\delta} + 1 \\rceil .
+\$\$
+The discrete operator is **ceiling / floor+1**, not `round` (which answers a different question).
 
-To minimize floating-point operations at runtime, we precompute:
-- `inv_step` = \$1 / \\delta\$
-- `offset` = \$1 - v_1 / \\delta\$
+Precompute `inv_step = 1/δ` and at query time one FMA gives \$t = (x-v_1)/\\delta\$:
+`t = muladd(x, inv_step, -v_1 * inv_step)` then `idx = floor(Int, t) + 1`.
 
-We then compute the index using a Fused Multiply-Add (FMA) operation:
-`idx_approx = round(Int, muladd(x, inv_step, offset))`
-This is executed as a single instruction cycle on modern CPUs, minimizing rounding errors.
-
-### Float Boundary Correction
-Due to the finite precision of floating-point representations, the index calculated via FMA can occasionally 
-be off by \$\\pm 1\$ ULP (Unit in the Last Place) near bin boundaries. To guarantee absolute mathematical parity 
-with `searchsortedfirst`, we reconstruct the boundary value:
-`edge_val = muladd(T(idx_approx - 1), step, v_1)`
-If `edge_val < x`, the query lies in the next bin, so we return `idx_approx + 1`; otherwise, we return `idx_approx`.
+### Float boundary correction
+`t` and reconstructed edges are inexact. After clamping `idx`, compare the reconstructed left edge
+`u_idx = v_1 + (idx-1)δ`; if `u_idx < x`, return `idx + 1`. One comparison fixes the at-most-one-bin FP
+error without a second downward correction.
 
 ### Performance
 Bypasses the Twice-Precision arithmetic of Julia's standard `StepRangeLen` search. 
@@ -111,17 +117,17 @@ Base.getindex(v::LinearBinEdges, i::Int) = v.edges[i]
         return 1
     end
     l = v.last_edge
+    n = length(v.edges)
     if x > l
-        return length(v.edges) + 1
+        return n + 1
     end
-    
-    # O(1) FMA-based index approximation
-    idx = round(Int, muladd(x, v.inv_step, v.offset))
-    idx = clamp(idx, 1, length(v.edges))
-    
-    # 1-ULP boundary correction check to guarantee 100% numerical parity with searchsortedfirst
-    @inbounds edge_val = muladd(T(idx - 1), v.step_val, f)
-    return edge_val < x ? idx + 1 : idx
+
+    # i* = floor((x - f)/δ) + 1  — one FMA for (x - f)/δ
+    t = muladd(x, v.inv_step, -f * v.inv_step)
+    idx = clamp(floor(Int, t) + 1, 1, n)
+
+    @inbounds u = muladd(T(idx - 1), v.step_val, f)
+    return u < x ? idx + 1 : idx
 end
 
 @inline function Base.searchsortedfirst(v::LinearBinEdges, x, o::Base.Order.Ordering)
@@ -139,145 +145,102 @@ end
 @inline Base.searchsorted(v::LinearBinEdges, x, o::Base.Order.Ordering) = searchsorted(v.edges, x, o)
 
 # ========================================================================= #
-# 3. Log-Uniform Spacing (Exponent LUT Hybrid Search)
+# 3. Log-uniform spacing (log(q) + LinearBinEdges on log grid)
 # ========================================================================= #
 
 """
     LogBinEdges(edges::AbstractVector{T})
+    LogBinEdges_from_log_edges(log_edges)
 
-High-performance wrapper for log-spaced bin edges (geometric spacing).
+Log-spaced (geometric) bin edges: uniform grid in log-space.
 
-### Algorithmic Theory (Exponent LUT Hybrid Search)
-Log-spaced bins typically satisfy \$x_i = \\exp(u_1 + (i-1) \\delta_u)\$ where \$u\$ is linear space. 
-A naive mathematical mapping requires computing \$\\ln(x)\$ at runtime to map \$x\$ to log-space. However, 
-the hardware `log` or `ln` instruction is extremely slow (occupying 20-40 CPU cycles).
+### Digitize semantics
 
-To bypass `log(x)` entirely, `LogBinEdges` leverages the binary floating-point representation defined by 
-the IEEE 754 standard:
-- Any float \$x > 0\$ is stored as \$m \\cdot 2^e\$, where \$e\$ is the binary exponent.
-- The `exponent(x)` function extracts \$e\$ in \$< 0.5\$ ns using cheap hardware bit shifts and masking, 
-  without performing any floating-point arithmetic or transcendental evaluations.
-- Since \$x\$ lies in the binary octave \$[2^e, 2^{e+1})\$, we can precalculate which bin indices intersect 
-  with this octave.
+`log_edges` is the authoritative grid. A physical query `q > 0` maps to
+`searchsortedfirst(LinearBinEdges(log_edges), log(q))`. See
+[`docs/UNIFORM_BIN_DIGITIZE.md`](@ref) and `benchmark/LOG_BIN_EDGES_BENCHMARK.md`.
 
-### Lookup Table (LUT) Construction
-During construction, we define:
-- `e_min` = exponent of the first edge
-- `e_max` = exponent of the last edge
-We allocate a Lookup Table (LUT) where:
-`lut[e - e_min + 1] = searchsortedfirst(edges, 2.0^e)`
-This precomputed index indicates the first edge that is \$\\ge 2^e\$.
-
-### Search Algorithm
-When querying \$x\$:
-1. Extract the binary exponent: `e = exponent(x)`.
-2. Look up the index bounds:
-   `idx_start = lut[e - e_min + 1]`
-   `idx_end = lut[e - e_min + 2]`
-   This restricts the search domain to the subset of edges falling within the octave \$[2^e, 2^{e+1})\$.
-3. Perform a hybrid search over this restricted subrange:
-   - If the subrange is small (\$\\le 8\$ elements), perform a fast, cache-friendly, and branch-free 
-     linear scan.
-   - Otherwise, perform a localized binary search on the restricted subrange.
+[`LogBinEdges`](@ref) from a physical vector builds the same log grid from
+`range(log(first), log(last); length)`. [`LogBinEdges_from_log_edges`](@ref) accepts
+the log grid directly.
 
 ### Performance
-Bypasses the CPU `log(x)` bottleneck. Executes in **~5 ns** to **~8 ns** depending on N, providing a 
-5x+ speedup over generic binary search.
+
+One `log(q)` (~6 ns) plus O(1) FMA digitize (~2.5 ns) on the log grid. See benchmark log.
 """
-struct LogBinEdges{T, RT <: AbstractRange, VT <: AbstractVector} <: AbstractBinEdges{T}
-    log_edges::RT
-    edges::VT
-    lut::Vector{Int}
-    e_min::Int
-    e_max::Int
-    inv_step::T
-    offset::T
+struct LogBinEdges{T, LRT <: AbstractRange{T}, LBET <: LinearBinEdges{T}} <: AbstractBinEdges{T}
+    log_edges::LRT
+    log_linear::LBET
+end
+
+function _LogBinEdges_core(log_edges::AbstractRange{T}) where {T}
+    log_linear = LinearBinEdges(log_edges)
+    return LogBinEdges{T, typeof(log_edges), typeof(log_linear)}(log_edges, log_linear)
 end
 
 function LogBinEdges(edges::AbstractVector{T}) where {T}
     any(x -> x <= zero(T), edges) && throw(ArgumentError("Log-spaced bin edges must be strictly positive."))
-    
-    log_start = log(first(edges))
-    log_stop = log(last(edges))
-    log_edges = range(log_start, log_stop, length=length(edges))
-    
-    e_min = exponent(first(edges))
-    e_max = exponent(last(edges))
-    lut_size = e_max - e_min + 2
-    lut = Vector{Int}(undef, lut_size)
-    
-    # Pre-populate the lookup table mapping octave boundaries to edge indices
-    for e in e_min:(e_max+1)
-        val = T(2.0^e)
-        lut[e - e_min + 1] = searchsortedfirst(edges, val)
-    end
-    
-    inv_step = inv(step(log_edges))
-    offset = T(1.0) - first(log_edges) * inv_step
-    
-    return LogBinEdges{T, typeof(log_edges), typeof(edges)}(
-        log_edges, edges, lut, e_min, e_max, inv_step, offset
-    )
+    log_edges = range(log(first(edges)), log(last(edges)); length=length(edges))
+    return _LogBinEdges_core(log_edges)
 end
 
-Base.size(v::LogBinEdges) = size(v.edges)
-Base.getindex(v::LogBinEdges, i::Int) = v.edges[i]
+"""
+    LogBinEdges_from_log_edges(log_edges)
+
+Build log-uniform bins from log-space edges (`u` with physical edge `exp(u)`).
+"""
+LogBinEdges_from_log_edges(log_edges::AbstractRange{T}) where {T} =
+    _LogBinEdges_core(log_edges)
+LogBinEdges_from_log_edges(log_edges::AbstractVector{T}) where {T} =
+    _LogBinEdges_core(range(first(log_edges), last(log_edges); length=length(log_edges)))
+
+"""
+    physical_edges_vector(bins::LogBinEdges) -> Vector
+
+Materialize physical bin edges `exp(log_edges[i])` for display or legacy consumers.
+Not used on the digitize hot path.
+"""
+function physical_edges_vector(bins::LogBinEdges{T}) where {T}
+    return T[exp(bins.log_edges[i]) for i in 1:length(bins.log_edges)]
+end
+
+function LogBinEdges(::AbstractRange{T}) where {T}
+    throw(ArgumentError("LogBinEdges does not support AbstractRange input. Use LogBinEdges_from_log_edges() instead."))
+end
+
+Base.size(v::LogBinEdges) = (length(v.log_edges),)
+Base.getindex(v::LogBinEdges, i::Int) = exp(v.log_edges[i])
 
 @inline function Base.searchsortedfirst(v::LogBinEdges{T}, x) where {T}
-    f = first(v.edges)
-    if x <= f
-        return 1
-    end
-    l = last(v.edges)
-    if x > l
-        return length(v.edges) + 1
-    end
-    
-    # 1. Fast exponent extraction (IEEE 754 bit-manipulation)
-    e = exponent(x)
-    
-    # 2. Restrict the search boundaries to the binary octave via the precomputed LUT
-    e_idx = clamp(e - v.e_min + 1, 1, length(v.lut))
-    idx_start = @inbounds v.lut[e_idx]
-    idx_end = (e_idx < length(v.lut)) ? @inbounds(v.lut[e_idx+1]) : length(v.edges)
-    
-    # 3. Hybrid search strategy based on search space size
-    if idx_end - idx_start <= 8
-        # Cache-friendly localized linear scan for tiny intervals
-        idx = idx_start
-        @inbounds while idx <= idx_end && v.edges[idx] < x
-            idx += 1
-        end
-        return idx
-    else
-        # Restrict standard binary search to the precomputed octave subrange
-        low = idx_start
-        high = idx_end
-        @inbounds while low <= high
-            mid = (low + high) >>> 1
-            if v.edges[mid] < x
-                low = mid + 1
-            else
-                high = mid - 1
-            end
-        end
-        return low
-    end
+    x <= zero(T) && return 1
+    return searchsortedfirst(v.log_linear, log(x))
 end
 
 @inline function Base.searchsortedfirst(v::LogBinEdges, x, o::Base.Order.Ordering)
-    # Fast path for forward ordering (default), fallback for custom ordering
     if o isa Base.Order.ForwardOrdering
         return searchsortedfirst(v, x)
     else
-        return searchsortedfirst(v.edges, x, o)
+        return searchsortedfirst(physical_edges_vector(v), x, o)
     end
 end
 
-@inline Base.searchsortedlast(v::LogBinEdges, x) = searchsortedlast(v.edges, x)
-@inline Base.searchsortedlast(v::LogBinEdges, x, o::Base.Order.Ordering) = searchsortedlast(v.edges, x, o)
-@inline Base.searchsorted(v::LogBinEdges, x) = searchsorted(v.edges, x)
-@inline Base.searchsorted(v::LogBinEdges, x, o::Base.Order.Ordering) = searchsorted(v.edges, x, o)
+@inline function Base.searchsortedlast(v::LogBinEdges{T}, x) where {T}
+    x < zero(T) && return 0
+    return searchsortedlast(v.log_linear, log(x))
+end
+
+@inline function Base.searchsortedlast(v::LogBinEdges, x, o::Base.Order.Ordering)
+    if o isa Base.Order.ForwardOrdering
+        return searchsortedlast(v, x)
+    else
+        return searchsortedlast(physical_edges_vector(v), x, o)
+    end
+end
+
+@inline Base.searchsorted(v::LogBinEdges, x) = searchsortedfirst(v, x):searchsortedlast(v, x)
+@inline function Base.searchsorted(v::LogBinEdges, x, o::Base.Order.Ordering)
+    searchsortedfirst(v, x, o):searchsortedlast(v, x, o)
+end
 
 # ========================================================================= #
 # 4. Infinity Padded Wrapper

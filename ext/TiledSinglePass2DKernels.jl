@@ -1,24 +1,282 @@
-# Tiled128 joint 2D SF histogram kernels (distance × value, linear/log/general distance).
-# Included from StructureFunctionsGPUExt.jl — block-local flat histogram in
-# `@localmem` (max `SF_GPU_MAX_2D_HIST` cells), same tile schedule as 1D tiled128.
+# Tiled128 eight-type single-pass 2D joint histogram kernels.
+# Tile schedule matches 1D tiled128; histogram `(8, n_dist, n_val)` uses global atomics.
 
-KA.@kernel function _sf2d_kernel_tiled128_linear_u32!(
+@inline function _gpu_accumulate_single_pass_2d_pair_global!(
+    output_sums,
+    output_counts,
+    value_edges,
+    bin::Int,
+    du_L,
+    du_T,
+    du_L2,
+    du_T2,
+    N_val_edges::Int,
+)
+    vals = SA.SVector(
+        du_L2 + du_T2,
+        du_L2,
+        du_T2,
+        du_L * (du_L2 + du_T2),
+        du_L * du_L2,
+        du_L2 * du_T,
+        du_L * du_T2,
+        du_T * du_T2,
+    )
+    for t in 1:8
+        vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
+        if 1 <= vbin < N_val_edges
+            @atomic output_sums[t, bin, vbin] += vals[t]
+            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+        end
+    end
+    return nothing
+end
+
+@inline function _gpu_accumulate_single_pass_2d_pair_global_linear_val!(
+    output_sums,
+    output_counts,
+    bin::Int,
+    du_L,
+    du_T,
+    du_L2,
+    du_T2,
+    N_val_edges::Int,
+    val_first::FT,
+    val_last::FT,
+    val_inv_step::FT,
+    val_offset::FT,
+    val_step::FT,
+) where {FT}
+    vals = SA.SVector(
+        du_L2 + du_T2,
+        du_L2,
+        du_T2,
+        du_L * (du_L2 + du_T2),
+        du_L * du_L2,
+        du_L2 * du_T,
+        du_L * du_T2,
+        du_T * du_T2,
+    )
+    for t in 1:8
+        vbin = _gpu_digitize_linear(
+            vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
+        )
+        if 1 <= vbin < N_val_edges
+            @atomic output_sums[t, bin, vbin] += vals[t]
+            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+        end
+    end
+    return nothing
+end
+
+@inline function _gpu_accumulate_single_pass_2d_pair_global_linear_val_cols!(
+    output_sums,
+    output_counts,
+    val_first,
+    val_last,
+    val_inv_step,
+    val_offset,
+    val_step,
+    bin::Int,
+    du_L,
+    du_T,
+    du_L2,
+    du_T2,
+    N_val_edges::Int,
+)
+    FT = eltype(output_sums)
+    vals = SA.SVector(
+        du_L2 + du_T2,
+        du_L2,
+        du_T2,
+        du_L * (du_L2 + du_T2),
+        du_L * du_L2,
+        du_L2 * du_T,
+        du_L * du_T2,
+        du_T * du_T2,
+    )
+    for t in 1:8
+        vbin = _gpu_digitize_linear(
+            vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
+            N_val_edges,
+        )
+        if 1 <= vbin < N_val_edges
+            @atomic output_sums[t, bin, vbin] += vals[t]
+            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+        end
+    end
+    return nothing
+end
+
+@inline function _gpu_accumulate_single_pass_2d_pair_global_inflinear_val!(
+    output_sums,
+    output_counts,
+    bin::Int,
+    du_L,
+    du_T,
+    du_L2,
+    du_T2,
+    N_val_edges::Int,
+    val_first::FT,
+    val_last::FT,
+    val_inv_step::FT,
+    val_offset::FT,
+    val_step::FT,
+    n_inner_edges::Int,
+    inner_last::FT,
+) where {FT}
+    vals = SA.SVector(
+        du_L2 + du_T2,
+        du_L2,
+        du_T2,
+        du_L * (du_L2 + du_T2),
+        du_L * du_L2,
+        du_L2 * du_T,
+        du_L * du_T2,
+        du_T * du_T2,
+    )
+    for t in 1:8
+        vbin = _gpu_digitize_inf_padded_linear(
+            vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
+            n_inner_edges, inner_last,
+        )
+        if 1 <= vbin < N_val_edges
+            @atomic output_sums[t, bin, vbin] += vals[t]
+            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+        end
+    end
+    return nothing
+end
+
+@inline function _gpu_accumulate_single_pass_2d_pair_global_inflinear_val_cols!(
+    output_sums,
+    output_counts,
+    val_first,
+    val_last,
+    val_inv_step,
+    val_offset,
+    val_step,
+    inner_last,
+    bin::Int,
+    du_L,
+    du_T,
+    du_L2,
+    du_T2,
+    n_inner_edges::Int,
+    N_val_edges::Int,
+)
+    vals = SA.SVector(
+        du_L2 + du_T2,
+        du_L2,
+        du_T2,
+        du_L * (du_L2 + du_T2),
+        du_L * du_L2,
+        du_L2 * du_T,
+        du_L * du_T2,
+        du_T * du_T2,
+    )
+    for t in 1:8
+        vbin = _gpu_digitize_inf_padded_linear(
+            vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
+            n_inner_edges, inner_last[t],
+        )
+        if 1 <= vbin < N_val_edges
+            @atomic output_sums[t, bin, vbin] += vals[t]
+            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+        end
+    end
+    return nothing
+end
+
+@inline function _gpu_accumulate_single_pass_2d_pair_global_log_val!(
+    output_sums,
+    output_counts,
+    val_first::FT,
+    val_last::FT,
+    val_inv_step::FT,
+    val_offset::FT,
+    val_step::FT,
+    bin::Int,
+    du_L,
+    du_T,
+    du_L2,
+    du_T2,
+    N_val_edges::Int,
+) where {FT}
+    vals = SA.SVector(
+        du_L2 + du_T2,
+        du_L2,
+        du_T2,
+        du_L * (du_L2 + du_T2),
+        du_L * du_L2,
+        du_L2 * du_T,
+        du_L * du_T2,
+        du_T * du_T2,
+    )
+    for t in 1:8
+        vbin = _gpu_digitize_log_spaced(vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges)
+        if 1 <= vbin < N_val_edges
+            @atomic output_sums[t, bin, vbin] += vals[t]
+            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+        end
+    end
+    return nothing
+end
+
+@inline function _gpu_accumulate_single_pass_2d_pair_global_log_val_cols!(
+    output_sums,
+    output_counts,
+    val_first,
+    val_last,
+    val_inv_step,
+    val_offset,
+    val_step,
+    bin::Int,
+    du_L,
+    du_T,
+    du_L2,
+    du_T2,
+    N_val_edges::Int,
+)
+    vals = SA.SVector(
+        du_L2 + du_T2,
+        du_L2,
+        du_T2,
+        du_L * (du_L2 + du_T2),
+        du_L * du_L2,
+        du_L2 * du_T,
+        du_L * du_T2,
+        du_T * du_T2,
+    )
+    for t in 1:8
+        vbin = _gpu_digitize_log_spaced_col(vals[t], val_first, val_last, val_inv_step, val_offset, val_step, t, N_val_edges)
+        if 1 <= vbin < N_val_edges
+            @atomic output_sums[t, bin, vbin] += vals[t]
+            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+        end
+    end
+    return nothing
+end
+
+KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_linear_u32!(
     output_sums,
     output_counts,
     x_mat,
     u_mat,
-    @Const(value_edges),
-    sf_type,
     N_points::Int,
-    N_dist_edges::Int,
+    N_bins::Int,
+    NB::Int,
     N_val_edges::Int,
-    NV::Int,
-    NB2::Int,
-    first_edge::FT,
-    last_edge::FT,
-    inv_step::FT,
-    offset::FT,
-    step_val::FT,
+    dist_first::FT,
+    dist_last::FT,
+    dist_inv_step::FT,
+    dist_offset::FT,
+    dist_step::FT,
+    val_first::FT,
+    val_last::FT,
+    val_inv_step::FT,
+    val_offset::FT,
+    val_step::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
@@ -27,18 +285,6 @@ KA.@kernel function _sf2d_kernel_tiled128_linear_u32!(
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
-    shared_sums = @localmem FT (SF_GPU_MAX_2D_HIST,)
-    shared_cnts = @localmem UInt32 (SF_GPU_MAX_2D_HIST,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    if lid == 1
-        @inbounds for b in 1:NB2
-            shared_sums[b] = zero(FT)
-            shared_cnts[b] = UInt32(0)
-        end
-    end
-    @synchronize
 
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1
@@ -107,54 +353,39 @@ KA.@kernel function _sf2d_kernel_tiled128_linear_u32!(
                 end
                 dX = X2 - X1
                 dist = sqrt(dX[1]^2 + dX[2]^2)
-                dbin = _gpu_digitize_linear(
-                    dist, first_edge, last_edge, inv_step, offset, step_val, N_dist_edges,
+                bin = _gpu_digitize_linear(
+                    dist, dist_first, dist_last, dist_inv_step, dist_offset, dist_step, N_bins,
                 )
-                if 1 <= dbin < N_dist_edges
+                if 1 <= bin < N_bins
+                    dU = U2 - U1
                     r̂ = dX / dist
-                    val = sf_type(U2 - U1, r̂)
-                    vbin = _gpu_digitize_general(val, value_edges, N_val_edges)
-                    if 1 <= vbin < N_val_edges
-                        idx = (dbin - 1) * NV + vbin
-                        @atomic shared_sums[idx] += val
-                        @atomic shared_cnts[idx] += UInt32(1)
-                    end
+                    n̂ = SA.SVector{2, FT}(r̂[2], -r̂[1])
+                    du_L = SA.dot(dU, r̂)
+                    du_T = SA.dot(dU, n̂)
+                    du_L2 = du_L * du_L
+                    du_T2 = du_T * du_T
+                    _gpu_accumulate_single_pass_2d_pair_global_linear_val!(
+                        output_sums, output_counts, bin,
+                        du_L, du_T, du_L2, du_T2, N_val_edges,
+                        val_first, val_last, val_inv_step, val_offset, val_step,
+                    )
                 end
                 p += workgroup_size
             end
         end
     end
-    @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
-    if bid <= n_tile_blocks
-        b = lid
-        while b <= NB2
-            dbin = (b - 1) ÷ NV + 1
-            vbin = b - (dbin - 1) * NV
-            @atomic output_sums[dbin, vbin] += shared_sums[b]
-            if shared_cnts[b] != UInt32(0)
-                @atomic output_counts[dbin, vbin] += shared_cnts[b]
-            end
-            b += workgroup_size
-        end
-    end
 end
 
-KA.@kernel function _sf2d_kernel_tiled128_log_u32!(
+KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_general_u32!(
     output_sums,
     output_counts,
     x_mat,
     u_mat,
     @Const(value_edges),
-    sf_type,
     N_points::Int,
-    N_dist_edges::Int,
+    N_bins::Int,
+    NB::Int,
     N_val_edges::Int,
-    NV::Int,
-    NB2::Int,
     dist_first::FT,
     dist_last::FT,
     dist_inv_step::FT,
@@ -168,18 +399,6 @@ KA.@kernel function _sf2d_kernel_tiled128_log_u32!(
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
-    shared_sums = @localmem FT (SF_GPU_MAX_2D_HIST,)
-    shared_cnts = @localmem UInt32 (SF_GPU_MAX_2D_HIST,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    if lid == 1
-        @inbounds for b in 1:NB2
-            shared_sums[b] = zero(FT)
-            shared_cnts[b] = UInt32(0)
-        end
-    end
-    @synchronize
 
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1
@@ -248,54 +467,45 @@ KA.@kernel function _sf2d_kernel_tiled128_log_u32!(
                 end
                 dX = X2 - X1
                 dist = sqrt(dX[1]^2 + dX[2]^2)
-                dbin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_offset, dist_step, N_dist_edges)
-                if 1 <= dbin < N_dist_edges
+                bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_offset, dist_step, N_bins)
+                if 1 <= bin < N_bins
+                    dU = U2 - U1
                     r̂ = dX / dist
-                    val = sf_type(U2 - U1, r̂)
-                    vbin = _gpu_digitize_general(val, value_edges, N_val_edges)
-                    if 1 <= vbin < N_val_edges
-                        idx = (dbin - 1) * NV + vbin
-                        @atomic shared_sums[idx] += val
-                        @atomic shared_cnts[idx] += UInt32(1)
-                    end
+                    n̂ = SA.SVector{2, FT}(r̂[2], -r̂[1])
+                    du_L = SA.dot(dU, r̂)
+                    du_T = SA.dot(dU, n̂)
+                    du_L2 = du_L * du_L
+                    du_T2 = du_T * du_T
+                    _gpu_accumulate_single_pass_2d_pair_global!(
+                        output_sums, output_counts, value_edges, bin,
+                        du_L, du_T, du_L2, du_T2, N_val_edges,
+                    )
                 end
                 p += workgroup_size
             end
         end
     end
-    @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
-    if bid <= n_tile_blocks
-        b = lid
-        while b <= NB2
-            dbin = (b - 1) ÷ NV + 1
-            vbin = b - (dbin - 1) * NV
-            @atomic output_sums[dbin, vbin] += shared_sums[b]
-            if shared_cnts[b] != UInt32(0)
-                @atomic output_counts[dbin, vbin] += shared_cnts[b]
-            end
-            b += workgroup_size
-        end
-    end
 end
 
-KA.@kernel function _sf2d_kernel_tiled128_general_u32!(
+KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_linear_val_u32!(
     output_sums,
     output_counts,
     x_mat,
     u_mat,
-    @Const(distance_edges),
-    @Const(value_edges),
-    sf_type,
     N_points::Int,
-    N_dist_edges::Int,
+    N_bins::Int,
+    NB::Int,
     N_val_edges::Int,
-    NV::Int,
-    NB2::Int,
-    edge_anchor::FT,
+    dist_first::FT,
+    dist_last::FT,
+    dist_inv_step::FT,
+    dist_offset::FT,
+    dist_step::FT,
+    val_first::FT,
+    val_last::FT,
+    val_inv_step::FT,
+    val_offset::FT,
+    val_step::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
@@ -304,18 +514,6 @@ KA.@kernel function _sf2d_kernel_tiled128_general_u32!(
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
-    shared_sums = @localmem FT (SF_GPU_MAX_2D_HIST,)
-    shared_cnts = @localmem UInt32 (SF_GPU_MAX_2D_HIST,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    if lid == 1
-        @inbounds for b in 1:NB2
-            shared_sums[b] = zero(FT)
-            shared_cnts[b] = UInt32(0)
-        end
-    end
-    @synchronize
 
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1
@@ -384,36 +582,23 @@ KA.@kernel function _sf2d_kernel_tiled128_general_u32!(
                 end
                 dX = X2 - X1
                 dist = sqrt(dX[1]^2 + dX[2]^2)
-                dbin = _gpu_digitize_general(dist, distance_edges, N_dist_edges)
-                if 1 <= dbin < N_dist_edges
+                bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_offset, dist_step, N_bins)
+                if 1 <= bin < N_bins
+                    dU = U2 - U1
                     r̂ = dX / dist
-                    val = sf_type(U2 - U1, r̂)
-                    vbin = _gpu_digitize_general(val, value_edges, N_val_edges)
-                    if 1 <= vbin < N_val_edges
-                        idx = (dbin - 1) * NV + vbin
-                        @atomic shared_sums[idx] += val
-                        @atomic shared_cnts[idx] += UInt32(1)
-                    end
+                    n̂ = SA.SVector{2, FT}(r̂[2], -r̂[1])
+                    du_L = SA.dot(dU, r̂)
+                    du_T = SA.dot(dU, n̂)
+                    du_L2 = du_L * du_L
+                    du_T2 = du_T * du_T
+                    _gpu_accumulate_single_pass_2d_pair_global_linear_val!(
+                        output_sums, output_counts, bin,
+                        du_L, du_T, du_L2, du_T2, N_val_edges,
+                        val_first, val_last, val_inv_step, val_offset, val_step,
+                    )
                 end
                 p += workgroup_size
             end
-        end
-    end
-    @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
-    if bid <= n_tile_blocks
-        b = lid
-        while b <= NB2
-            dbin = (b - 1) ÷ NV + 1
-            vbin = b - (dbin - 1) * NV
-            @atomic output_sums[dbin, vbin] += shared_sums[b]
-            if shared_cnts[b] != UInt32(0)
-                @atomic output_counts[dbin, vbin] += shared_cnts[b]
-            end
-            b += workgroup_size
         end
     end
 end
