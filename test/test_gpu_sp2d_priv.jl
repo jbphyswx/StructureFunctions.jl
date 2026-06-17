@@ -17,21 +17,21 @@ end
 """Host reference for strip bucket policy (must match `SP2DPrivPolicy.jl`)."""
 function _host_sp2d_priv_config(n_dist::Int, n_val::Int, ::Type{FT}) where {FT}
     C = 8 * n_dist * n_val
-    tile_overhead = 4 * 128 * sizeof(FT)
+    tile_overhead = 4 * 256 * sizeof(FT)
+    meta = 6 * sizeof(Int)
     reserve = 2048
     cell_bytes = sizeof(FT) + sizeof(UInt32)
     buckets = (1024, 2048, 4096, 8192, 16384)
     smem_default = 48 * 1024
-    smem_pref = 96 * 1024
-    hist48 = max(0, smem_default - tile_overhead - reserve) ÷ cell_bytes
-    bucket48 = first(b for b in buckets if b >= min(hist48, C))
-    n48 = cld(C, bucket48)
-    if n48 > 3
-        hist = max(0, smem_pref - tile_overhead - reserve) ÷ cell_bytes
-        bucket = first(b for b in buckets if b >= min(hist, C))
-        return (C, bucket, cld(C, bucket), smem_pref)
+    static(b) = tile_overhead + meta + b * cell_bytes + reserve
+    fitting = [b for b in buckets if static(b) <= smem_default]
+    isempty(fitting) && error("no bucket fits 48 KiB")
+    bucket = fitting[end]
+    for b in fitting
+        b >= C && return (C, b, cld(C, b), smem_default)
+        bucket = b
     end
-    return (C, bucket48, n48, smem_default)
+    return (C, bucket, cld(C, bucket), smem_default)
 end
 
 Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
@@ -55,6 +55,13 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
     Test.@test cfg.strip_bucket == bucket_ref
     Test.@test cfg.n_strips == nstrips_ref
     Test.@test cfg.smem_per_block == smem_ref
+
+    # Production-ish grid: bucket must fit 48 KiB static smem (not b8192).
+    C50, bucket50, nstrips50, smem50 = _host_sp2d_priv_config(50, 52, FT)
+    Test.@test bucket50 == 4096
+    Test.@test C50 == 8 * 50 * 52
+    Test.@test nstrips50 == cld(C50, 4096)
+    Test.@test smem50 == 48 * 1024
 
     # --- linear dist × 8-col linear value (production test grid) ---
     sums_lin_ref = zeros(FT, 8, NB, n_val)
