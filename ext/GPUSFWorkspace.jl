@@ -11,7 +11,8 @@ per-call `KA.zeros` allocation and repeated edge uploads.
 
 # Kinds (`kind` field)
 - `:sf1d` — 1D distance histogram (`out_dev`, `cnt_dev` vectors)
-- `:joint2d` — distance × value joint histogram
+- `:joint2d` — distance × value joint histogram; caches compiled tiled kernel in
+  `joint2d_kernel` (default exact `n_dist × n_val` smem; override via `joint2d_compile_cells`).
 - `:single_pass` — eight 1D distance histograms `(8, NB)`
 - `:single_pass_2d` — eight distance × value joint histograms `(8, NB, n_val)`;
   on-chip modes (`:shared`, `:typeplane`) flush shared histograms directly to `out_*`;
@@ -51,6 +52,9 @@ mutable struct GPUSFWorkspace
     priv_sums_dev
     priv_cnts_dev
     priv_n_tile_blocks::Int
+    joint2d_nb2::Int
+    joint2d_compile_cells::Int
+    joint2d_kernel
 end
 
 """Log-spaced distance bins use host-side FMA params only; no device edge upload."""
@@ -117,20 +121,25 @@ function SFC.GPUSFWorkspace(
         nothing, nothing, nothing, nothing,
         nothing,
         nothing, nothing, nothing, nothing, 0,
+        0, 0, nothing,
     )
     return _workspace_upload_dist_edges!(ws, dist_bins, n_bins)
 end
 
 """
-    GPUSFWorkspace(backend, distance_bins, value_bins; kind=:joint2d)
+    GPUSFWorkspace(backend, distance_bins, value_bins; kind=:joint2d, joint2d_compile_cells=nothing)
 
 Workspace for 2D joint (distance × SF value) histograms.
+
+Pass `joint2d_compile_cells` to override compile-time shared-histogram width (default
+exact `n_dist × n_val`). See [`joint2d_smem_max`](@ref), [`joint2d_smem_align256`](@ref).
 """
 function SFC.GPUSFWorkspace(
     backend::KA.Backend,
-    distance_bins::AbstractVector{FT1},
-    value_bins::AbstractVector{FT2};
+    distance_bins::Union{AbstractVector{FT1}, LinearBinEdges, LogBinEdges, InfPaddedBinEdges},
+    value_bins::Union{AbstractVector{FT2}, LinearBinEdges, LogBinEdges, InfPaddedBinEdges};
     kind::Symbol = :joint2d,
+    joint2d_compile_cells::Union{Nothing, Int} = nothing,
 ) where {FT1, FT2}
     kind == :joint2d ||
         throw(ArgumentError("three-argument GPUSFWorkspace expects kind=:joint2d (got $kind)"))
@@ -144,6 +153,9 @@ function SFC.GPUSFWorkspace(
     n_val = n_val_edges - 1
     n_dist > 0 && n_val > 0 ||
         throw(ArgumentError("distance_bins and value_bins must each have at least two edges"))
+    nb2 = n_dist * n_val
+    compile_cells = _joint2d_resolve_compile_cells(nb2, joint2d_compile_cells)
+    val_plan = _joint2d_build_val_plan(backend, value_bins)
 
     value_host = _gpu_host_edge_vector(value_bins)
     value_edges_dev = KA.allocate(backend, FT, n_val_edges)
@@ -159,10 +171,17 @@ function SFC.GPUSFWorkspace(
         NB, n_bins, n_dist, n_val, n_val_edges,
         Vector{FT}(undef, n_dist * n_val), Vector{UInt32}(undef, n_dist * n_val),
         nothing, nothing, nothing, nothing,
-        nothing,
+        val_plan,
         nothing, nothing, nothing, nothing, 0,
+        nb2, compile_cells, nothing,
     )
-    return _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
+    ws = _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
+    if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
+        ws.joint2d_kernel = _joint2d_resolve_tiled_kernel!(
+            ws, backend, dist_bins, val_plan, compile_cells,
+        )
+    end
+    return ws
 end
 
 """
@@ -228,6 +247,7 @@ function SFC.GPUSFWorkspace(
         nothing, nothing, nothing, nothing,
         val_plan,
         priv_config, nothing, nothing, nothing, 0,
+        0, 0, nothing,
     )
     ws = _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
     if dist_bins isa LinearBinEdges || dist_bins isa LogBinEdges
@@ -300,6 +320,7 @@ function SFC.release!(ws::GPUSFWorkspace)
         if f ∉ (
             :backend, :FT, :kind, :dist_bins, :val_bins, :NB, :n_bins, :n_dist, :n_val,
             :n_val_edges, :sp2d_priv_config, :priv_n_tile_blocks,
+            :joint2d_nb2, :joint2d_compile_cells,
         )
             setfield!(ws, f, nothing)
         end

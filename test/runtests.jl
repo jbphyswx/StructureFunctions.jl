@@ -69,6 +69,9 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running GPU sp2d HTP-EJ Priv Test ---")
     include("test_gpu_sp2d_priv.jl")
 
+    println("--- Running GPU joint2d smem Test ---")
+    include("test_gpu_joint2d_smem.jl")
+
     println("--- Running GPU Workspace & Slice Batch Test ---")
     include("test_gpu_workspace.jl")
 

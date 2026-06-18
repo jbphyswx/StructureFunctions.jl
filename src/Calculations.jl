@@ -33,6 +33,7 @@ export calculate_structure_function, parallel_calculate_structure_function,
     serial_calculate_structure_function!, threaded_calculate_structure_function!,
     gpu_calculate_structure_function!, calculate_structure_function!,
     GPUSFWorkspace, reset_histogram!, release!, flatten_grid_slices,
+    joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256,
     calculate_structure_function_slices!, calculate_structure_function_2d_slices!,
     calculate_structure_functions_single_pass_slices!,
     calculate_structure_functions_single_pass_2d_slices!
@@ -1143,6 +1144,15 @@ function reset_histogram! end
 
 """Release device buffers held by a [`GPUSFWorkspace`](@ref) (optional explicit free)."""
 function release! end
+
+"""Compile-time joint 2D shared-histogram width `SF_GPU_MAX_2D_HIST` (4096). Implemented in GPU extension."""
+function joint2d_smem_max end
+
+"""Exact joint histogram cell count `n_dist × n_val`. Implemented in GPU extension."""
+function joint2d_smem_exact end
+
+"""256-aligned joint compile width (capped at max). Implemented in GPU extension."""
+function joint2d_smem_align256 end
 
 """
     flatten_grid_slices(x, u)

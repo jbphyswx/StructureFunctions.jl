@@ -257,7 +257,9 @@ include(joinpath(@__DIR__, "TiledSinglePass2DKernels.jl"))
 include(joinpath(@__DIR__, "TiledSinglePass2DValueKernels.jl"))
 include(joinpath(@__DIR__, "SP2DPrivPolicy.jl"))
 include(joinpath(@__DIR__, "GPUValueDigitizePlan.jl"))
+include(joinpath(@__DIR__, "Joint2DSmemPolicy.jl"))
 include(joinpath(@__DIR__, "GPUSFWorkspace.jl"))
+include(joinpath(@__DIR__, "Joint2DLaunch.jl"))
 include(joinpath(@__DIR__, "TiledSinglePass2DPrivKernels.jl"))
 include(joinpath(@__DIR__, "SP2DPrivLaunch.jl"))
 include(joinpath(@__DIR__, "GPUValueLaunch.jl"))
@@ -1470,14 +1472,16 @@ function _launch_joint_2d_kernel!(
     N_points::Int,
     n_dist_edges::Int,
     n_val_edges::Int;
+    val_plan::Union{GPUValueDigitizePlan, Nothing} = nothing,
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
+    vp = val_plan === nothing && workspace !== nothing ? workspace.val_plan : val_plan
     if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
-            sf_type, dist_bins, N_points, n_dist_edges, n_val_edges, n_dist, n_val;
+            sf_type, dist_bins, vp, N_points, n_dist_edges, n_val_edges, n_dist, n_val;
             workspace = workspace,
         )
     end
@@ -1501,14 +1505,16 @@ function _launch_joint_2d_kernel!(
     N_points::Int,
     n_dist_edges::Int,
     n_val_edges::Int;
+    val_plan::Union{GPUValueDigitizePlan, Nothing} = nothing,
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
+    vp = val_plan === nothing && workspace !== nothing ? workspace.val_plan : val_plan
     if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
-            sf_type, dist_bins, N_points, n_dist_edges, n_val_edges, n_dist, n_val;
+            sf_type, dist_bins, vp, N_points, n_dist_edges, n_val_edges, n_dist, n_val;
             workspace = workspace,
         )
     end
@@ -1532,14 +1538,16 @@ function _launch_joint_2d_kernel!(
     N_points::Int,
     n_dist_edges::Int,
     n_val_edges::Int;
+    val_plan::Union{GPUValueDigitizePlan, Nothing} = nothing,
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 ) where {FT}
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
+    vp = val_plan === nothing && workspace !== nothing ? workspace.val_plan : val_plan
     if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
-            sf_type, dist_bins, N_points, n_dist_edges, n_val_edges, n_dist, n_val;
+            sf_type, dist_bins, vp, N_points, n_dist_edges, n_val_edges, n_dist, n_val;
             workspace = workspace,
         )
     end
@@ -1548,102 +1556,6 @@ function _launch_joint_2d_kernel!(
         sf_type, dist_bins, N_points, n_dist_edges, n_val_edges;
         workspace = workspace,
     )
-end
-
-function _launch_joint_2d_tiled_kernel!(
-    backend::KA.Backend,
-    out_sums_dev,
-    out_cnts_dev,
-    x_dev,
-    u_dev,
-    value_edges_dev,
-    sf_type,
-    lbe::LinearBinEdges,
-    N_points::Int,
-    n_dist_edges::Int,
-    n_val_edges::Int,
-    n_dist::Int,
-    n_val::Int;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
-)
-    n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
-    NB2 = n_dist * n_val
-    kernel! = _sf2d_kernel_tiled128_linear_u32!(backend, ws)
-    kernel!(
-        out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev, sf_type,
-        N_points, n_dist_edges, n_val_edges, n_val, NB2,
-        lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val,
-        n_tiles, n_tile_blocks, ws;
-        ndrange = ndrange,
-    )
-    return nothing
-end
-
-function _launch_joint_2d_tiled_kernel!(
-    backend::KA.Backend,
-    out_sums_dev,
-    out_cnts_dev,
-    x_dev,
-    u_dev,
-    value_edges_dev,
-    sf_type,
-    lbe::LogBinEdges,
-    N_points::Int,
-    n_dist_edges::Int,
-    n_val_edges::Int,
-    n_dist::Int,
-    n_val::Int;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
-)
-    n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
-    NB2 = n_dist * n_val
-    d_f, d_l, d_inv, d_off, d_st = _dist_log_linear_fields(lbe)
-    kernel! = _sf2d_kernel_tiled128_log_u32!(backend, ws)
-    kernel!(
-        out_sums_dev, out_cnts_dev, x_dev, u_dev,
-        value_edges_dev, sf_type,
-        N_points, n_dist_edges, n_val_edges, n_val, NB2,
-        d_f, d_l, d_inv, d_off, d_st,
-        n_tiles, n_tile_blocks, ws;
-        ndrange = ndrange,
-    )
-    return nothing
-end
-
-function _launch_joint_2d_tiled_kernel!(
-    backend::KA.Backend,
-    out_sums_dev,
-    out_cnts_dev,
-    x_dev,
-    u_dev,
-    value_edges_dev,
-    sf_type,
-    edges::Vector{FT},
-    N_points::Int,
-    n_dist_edges::Int,
-    n_val_edges::Int,
-    n_dist::Int,
-    n_val::Int;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
-) where {FT}
-    n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
-    NB2 = n_dist * n_val
-    _, _, gen_e = _workspace_dist_edge_bufs(workspace)
-    if gen_e === nothing
-        dist_dev = KA.allocate(backend, FT, n_dist_edges)
-        copyto!(dist_dev, edges)
-    else
-        dist_dev = gen_e
-    end
-    kernel! = _sf2d_kernel_tiled128_general_u32!(backend, ws)
-    kernel!(
-        out_sums_dev, out_cnts_dev, x_dev, u_dev,
-        dist_dev, value_edges_dev, sf_type,
-        N_points, n_dist_edges, n_val_edges, n_val, NB2,
-        edges[1], n_tiles, n_tile_blocks, ws;
-        ndrange = ndrange,
-    )
-    return nothing
 end
 
 function _launch_joint_2d_global_kernel!(
@@ -1757,6 +1669,12 @@ function _launch_gpu_joint2d!(
 
     x_dev, u_dev = _stage_sf_device_inputs(backend, x_mat, u_mat, N_dims, N_points)
 
+    val_plan = if workspace === nothing
+        _joint2d_build_val_plan(backend, value_bins)
+    else
+        workspace.val_plan
+    end
+
     if workspace === nothing
         value_host = _gpu_host_edge_vector(value_bins)
         value_edges_dev = KA.allocate(backend, FT, n_val_edges)
@@ -1777,7 +1695,7 @@ function _launch_gpu_joint2d!(
         backend, workgroup_size,
         out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
         sf_type, dist_bins, N_points, n_dist_edges, n_val_edges;
-        workspace = ws,
+        val_plan = val_plan, workspace = ws,
     )
     synchronize && KA.synchronize(backend)
     return out_sums_dev, out_cnts_dev
@@ -1791,8 +1709,11 @@ Returns [`StructureFunction2D`](@ref) with the same flat edge vectors passed in.
 
 Uses tiled128 block-local histograms when ``n_dist × n_val ≤ SF_GPU_MAX_2D_HIST``
 (with each axis ``≤ SF_GPU_MAX_BINS``); otherwise falls back to ``(N_points, N_points)``
-global-atomic pair kernels. Device count buffers are `UInt32`; `count_eltype` selects
-the host count matrix type after download. Requires `N_dims == 2` matrix input.
+global-atomic pair kernels. Default compile-time shared histogram width is exact
+``n_dist × n_val``; override on [`GPUSFWorkspace`](@ref) via `joint2d_compile_cells`
+(see [`joint2d_smem_max`](@ref), [`joint2d_smem_align256`](@ref)). Device count buffers
+are `UInt32`; `count_eltype` selects the host count matrix type after download.
+Requires `N_dims == 2` matrix input.
 """
 function SFC.gpu_calculate_structure_function_2d(
     sf_type::SFT.AbstractStructureFunctionType,
