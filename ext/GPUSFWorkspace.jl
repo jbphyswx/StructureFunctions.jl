@@ -127,22 +127,45 @@ function SFC.GPUSFWorkspace(
 end
 
 """
-    GPUSFWorkspace(backend, distance_bins, value_bins; kind=:joint2d, joint2d_compile_cells=nothing)
+    GPUSFWorkspace(backend, distance_bins, value_bins; kind=:joint2d, ...)
 
-Workspace for 2D joint (distance × SF value) histograms.
+Workspace for 2D histograms. Routes on `kind`:
+
+- `kind=:joint2d` — single distance × value joint histogram (see [`joint2d_smem_max`](@ref))
+- `kind=:single_pass_2d` — eight-type single-pass 2D (see [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md))
+
+Typed `AbstractBinEdges` distance bins (`LogBinEdges`, etc.) subtype `AbstractVector`;
+routing on `kind` avoids constructor ambiguity between joint and SP2D paths.
+"""
+function SFC.GPUSFWorkspace(
+    backend::KA.Backend,
+    distance_bins,
+    value_bins;
+    kind::Symbol = :joint2d,
+    kwargs...,
+)
+    if kind == :joint2d
+        return _gpusf_workspace_joint2d!(backend, distance_bins, value_bins; kwargs...)
+    elseif kind == :single_pass_2d
+        return _gpusf_workspace_sp2d!(backend, distance_bins, value_bins; kwargs...)
+    end
+    throw(ArgumentError(
+        "three-argument GPUSFWorkspace: kind must be :joint2d or :single_pass_2d (got $kind)",
+    ))
+end
+
+"""
+Build a `:joint2d` workspace (distance × SF value histogram).
 
 Pass `joint2d_compile_cells` to override compile-time shared-histogram width (default
 exact `n_dist × n_val`). See [`joint2d_smem_max`](@ref), [`joint2d_smem_align256`](@ref).
 """
-function SFC.GPUSFWorkspace(
+function _gpusf_workspace_joint2d!(
     backend::KA.Backend,
     distance_bins::Union{AbstractVector{FT1}, LinearBinEdges, LogBinEdges, InfPaddedBinEdges},
     value_bins::Union{AbstractVector{FT2}, LinearBinEdges, LogBinEdges, InfPaddedBinEdges};
-    kind::Symbol = :joint2d,
     joint2d_compile_cells::Union{Nothing, Int} = nothing,
 ) where {FT1, FT2}
-    kind == :joint2d ||
-        throw(ArgumentError("three-argument GPUSFWorkspace expects kind=:joint2d (got $kind)"))
     FT = promote_type(FT1, FT2)
     n_dist_edges = _gpu_n_edges(distance_bins)
     n_val_edges = _gpu_n_edges(value_bins)
@@ -185,9 +208,7 @@ function SFC.GPUSFWorkspace(
 end
 
 """
-    GPUSFWorkspace(backend, distance_bins, value_bins; kind=:single_pass_2d)
-
-Workspace for eight distance × value joint histograms (single-pass 2D).
+Build a `:single_pass_2d` workspace (eight distance × value joint histograms).
 Pass one shared edge object or `NTuple{8,...}` when columns may differ.
 """
 function _sp2d_value_eltype(value_bins::LinearBinEdges, FT3)
@@ -206,9 +227,9 @@ function _sp2d_value_eltype(v::Vector{FT}, FT3) where {FT}
     return promote_type(FT3, FT)
 end
 
-function SFC.GPUSFWorkspace(
+function _gpusf_workspace_sp2d!(
     backend::KA.Backend,
-    distance_bins::AbstractVector{FT3},
+    distance_bins::Union{AbstractVector{FT3}, LinearBinEdges, LogBinEdges},
     value_bins::Union{
         LinearBinEdges,
         LogBinEdges,
@@ -218,11 +239,8 @@ function SFC.GPUSFWorkspace(
         NTuple{8, InfPaddedBinEdges},
         NTuple{8, Vector{FT3}},
     };
-    kind::Symbol = :single_pass_2d,
     n_val::Union{Nothing, Int} = nothing,
 ) where {FT3}
-    kind == :single_pass_2d ||
-        throw(ArgumentError("single-pass 2D GPUSFWorkspace expects kind=:single_pass_2d (got $kind)"))
     n_dist_edges = _gpu_n_edges(distance_bins)
     dist_bins = _gpu_normalize_bins(distance_bins)
     NB, n_bins = _workspace_check_nb!(n_dist_edges)

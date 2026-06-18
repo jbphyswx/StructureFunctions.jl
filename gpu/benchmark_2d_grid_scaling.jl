@@ -81,10 +81,7 @@ function main()
     NB2 = n_dist * n_val
     C = 8 * NB2
     joint_eligible = _GPUExt._gpu_joint_2d_tiled_eligible(n_dist, n_val)
-    val_host = _GPUExt._gpu_host_edge_vector(value_bins)
     dist_route = _GPUExt._joint2d_dist_route(_GPUExt._gpu_normalize_bins(dist))
-    val_plan = _GPUExt._joint2d_build_val_plan(backend, value_bins)
-    val_route = _GPUExt._joint2d_val_route(val_plan)
 
     log_dir = joinpath(@__DIR__, "..", "test", "debug")
     mkpath(log_dir)
@@ -97,18 +94,20 @@ function main()
         "N=%d  n_dist=%d  n_val=%d  NB2=%d  C=%d  joint_2d tiled eligible=%s\n",
         N, n_dist, n_val, NB2, C, joint_eligible,
     )
-    @printf("joint dist_route=%s  value_route=%s\n", dist_route, val_route)
-    println("=" ^ 72)
 
     Random.seed!(42)
     x = rand(FT, 2, N) .* FT(50000)
     u = randn(FT, 2, N) .* FT(0.5)
     sft = SFT.L2SFType()
 
-    # --- single-type joint 2D: exact smem (default) ---
-    ws_j_exact = SFC.GPUSFWorkspace(backend, dist, val_host; kind = :joint2d)
+    # --- single-type joint 2D: exact smem (default); typed InfPadded value bins ---
+    ws_j_exact = SFC.GPUSFWorkspace(backend, dist, value_bins; kind = :joint2d)
+    val_route = _GPUExt._joint2d_val_route(ws_j_exact.val_plan)
+    @printf("joint dist_route=%s  value_route=%s\n", dist_route, val_route)
+    println("=" ^ 72)
+
     j_exact_run = () -> SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, val_host; workspace = ws_j_exact,
+        sft, backend, x, u, dist, value_bins; workspace = ws_j_exact,
     )
     t_joint_exact = _bench(j_exact_run, warmup, repeat_)
     compile_exact = ws_j_exact.joint2d_compile_cells
@@ -119,11 +118,11 @@ function main()
 
     # --- single-type joint 2D: max smem (legacy 4096) ---
     ws_j_max = SFC.GPUSFWorkspace(
-        backend, dist, val_host;
+        backend, dist, value_bins;
         kind = :joint2d, joint2d_compile_cells = joint2d_smem_max(),
     )
     j_max_run = () -> SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, val_host; workspace = ws_j_max,
+        sft, backend, x, u, dist, value_bins; workspace = ws_j_max,
     )
     t_joint_max = _bench(j_max_run, warmup, repeat_)
     compile_max = ws_j_max.joint2d_compile_cells
@@ -244,9 +243,9 @@ function main()
     open(log_path, "a") do io
         println(io, "--- $(Dates.now()) ---")
         @printf(io,
-            "device=%s N=%d n_dist=%d n_val=%d NB2=%d compile_exact=%d compile_max=%d dist_route=%s C=%d mode=%s output=%s tpp=%d ntp=%d\n",
+            "device=%s N=%d n_dist=%d n_val=%d NB2=%d compile_exact=%d compile_max=%d dist_route=%s val_route=%s C=%d mode=%s output=%s tpp=%d ntp=%d\n",
             CUDA.name(CUDA.device()), N, n_dist, n_val, NB2, compile_exact, compile_max,
-            dist_route, C, cfg.accum_mode, output_path, cfg.types_per_pass, cfg.n_type_passes)
+            dist_route, val_route, C, cfg.accum_mode, output_path, cfg.types_per_pass, cfg.n_type_passes)
         @printf(io,
             "joint_exact=%.6f joint_max=%.6f joint8=%.6f sp2d=%.6f pair=%.6f merge_s=%.6f merge_p=%.6f sp1d=%.6f gate=%s\n",
             t_joint_exact, t_joint_max, t_joint8, t_sp2d, t_pair, t_merge_serial,

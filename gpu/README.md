@@ -61,6 +61,20 @@ include(joinpath(SF_REPO, "gpu", "gpu_full_benchmark.jl"))
 | **`GPU_structure_function_prototypes_theory.md`** | **Hand-written theory + benchmark log (read this first)** |
 | **`SP2D_HTP_EJ.md`** | **Eight-type single-pass 2D: HTP-EJ policy, on-chip vs direct, perf notes** |
 | `benchmark_2d_grid_scaling.jl` | SP2D vs `8×joint_2d` gate on GPU (`N_DIST`, `N_VAL` env) |
+| `benchmark_joint_value_route_ab.jl` | Joint 2D A/B: `inflinear` vs `general` value digitize on full kernel |
+| `profile_joint2d.jl` | Joint 2D profiling workload (timing + Nsight target) |
+| `run_nsys_joint2d.sh` | Wrap `profile_joint2d.jl` with `nsys profile` |
+| `profile_joint2d_ncu.jl` | Kernel-only launches for Nsight Compute |
+| `run_ncu_joint2d.sh` | `ncu --set basic --target-processes all julia …` + demangled sf2d filter; see `NCU_TO_STDOUT=1` |
+| `diag_ncu_julia.sh` | Smoke: CUDA broadcast then joint2d via `run_ncu_joint2d.sh` |
+| `NCU_JULIA.md` | Working ncu+julia command on clima; notes on earlier bad diagnostics |
+| `list_joint2d_kernel_names.sh` | `nsys stats` kernel names (use when ncu headless works) |
+| `benchmark_joint2d_diagnose.jl` | Kernel-only vs e2e, swapped A/B, exact vs max compile_cells |
+| `benchmark_value_axis_dispatch.jl` | SP2D value-plan shootout (`vector_cols` vs typed plans) |
+
+**Joint 2D workspace:** build with the same typed `value_bins` object you pass to
+`gpu_calculate_structure_function_2d` (e.g. `InfPaddedBinEdges`). Do not pass
+`_gpu_host_edge_vector(...)` unless you intentionally want the `:general` digitize route.
 | `GPUPrototypeKernels.jl` | Prototype kernels + launch helpers |
 | `benchmark_prototypes.jl` | Single-N timing table, parity checks, vs production ext |
 | `gpu_full_benchmark.jl` | **Full sweep** (multi-N, all variants, JSON + markdown report) |

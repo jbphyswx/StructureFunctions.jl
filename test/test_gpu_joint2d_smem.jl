@@ -86,16 +86,17 @@ Test.@testset "GPU joint2d max smem parity — NB2=100 compile_cells=4096" begin
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
 end
 
-Test.@testset "GPU joint2d InfPadded value route — log dist NB2=440" begin
+Test.@testset "GPU joint2d typed workspace dispatch — LogBinEdges + InfPadded" begin
     N = 80
     FT = Float64
     x = rand(FT, 2, N) .+ FT(0.01)
     u = randn(FT, 2, N)
     dist = LogBinEdges(exp.(range(log(FT(100)), log(FT(5000)); length = 21)))
-    val = InfPaddedBinEdges(LinearBinEdges(collect(FT, range(-1.0, 2.0; length = 23))))
+    val = InfPaddedBinEdges(LinearBinEdges(range(-1.0, 2.0; length = 23)))
     sft = SFT.L2SFType()
     ref = _ref_joint(sft, x, u, dist, val)
-    ws = SFC.GPUSFWorkspace(KA.CPU(), dist, val)
+    ws = SFC.GPUSFWorkspace(KA.CPU(), dist, val; kind = :joint2d)
+    Test.@test ws.kind == :joint2d
     Test.@test ws.val_plan isa GPUExt.GPUValueInfLinearShared
     Test.@test GPUExt._joint2d_val_route(ws.val_plan) == :inflinear
     gpu = _gpu_joint(sft, x, u, dist, val; workspace = ws)
