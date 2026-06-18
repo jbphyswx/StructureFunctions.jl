@@ -59,6 +59,8 @@ include(joinpath(SF_REPO, "gpu", "gpu_full_benchmark.jl"))
 | File | Role |
 |------|------|
 | **`GPU_structure_function_prototypes_theory.md`** | **Hand-written theory + benchmark log (read this first)** |
+| **`SP2D_HTP_EJ.md`** | **Eight-type single-pass 2D: HTP-EJ policy, on-chip vs direct, perf notes** |
+| `benchmark_2d_grid_scaling.jl` | SP2D vs `8×joint_2d` gate on GPU (`N_DIST`, `N_VAL` env) |
 | `GPUPrototypeKernels.jl` | Prototype kernels + launch helpers |
 | `benchmark_prototypes.jl` | Single-N timing table, parity checks, vs production ext |
 | `gpu_full_benchmark.jl` | **Full sweep** (multi-N, all variants, JSON + markdown report) |
