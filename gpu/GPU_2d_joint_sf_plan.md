@@ -8,7 +8,7 @@ In-place GPU API remains optional follow-up.
 
 **Implemented separately:**
 
-- `calculate_structure_functions_single_pass_2d` / `calculate_structure_functions_single_pass_2d!` on `GPUBackend` — eight `(distance × value)` histograms in one `(N,N)` kernel pass.
+- `calculate_structure_functions_single_pass_2d` / `calculate_structure_functions_single_pass_2d!` on `GPUBackend` — eight `(distance × value)` histograms via **HTP-EJ** tiled128 (`ext/TiledSinglePass2DPrivKernels.jl`). On-chip modes flush like joint 2D; `:direct` uses priv+merge. See [`gpu/SP2D_HTP_EJ.md`](SP2D_HTP_EJ.md).
 
 **Out of scope (unless requested):**
 
@@ -78,6 +78,8 @@ same tile schedule as 1D SF; accumulate in `@localmem`, flush once per cell per 
 
 - [x] `gpu/test_cuda_parity.jl` — 1D linear/log, joint 2D ×2, single_pass_2d
 - [x] Tiled128 2D joint kernels (`TiledStructureFunction2DKernels.jl`) + automatic routing
+- [x] HTP-EJ SP2D on-chip flush (no priv+merge for `:shared`/`:typeplane`); A100 gate `sp2d < 8×joint` on 20×22 and 50×52 — see `gpu/benchmark_2d_grid_scaling.jl`, `gpu/SP2D_HTP_EJ.md`
+- [ ] Further SP2D perf (typeplane sync, digitize fusion) — documented in `SP2D_HTP_EJ.md` § future work
 - [ ] Profile on A100; tune `workgroup_size` / tile size
 - [x] Document max bin grid + `count_eltype` policy in GPU ext docstrings
 

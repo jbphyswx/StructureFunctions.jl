@@ -14,11 +14,12 @@ per-call `KA.zeros` allocation and repeated edge uploads.
 - `:joint2d` — distance × value joint histogram
 - `:single_pass` — eight 1D distance histograms `(8, NB)`
 - `:single_pass_2d` — eight distance × value joint histograms `(8, NB, n_val)`;
-  HTP-EJ privatized accumulation uses `priv_sums_dev` / `priv_cnts_dev` `(8, NB, n_val, n_tile_blocks)`
-  plus [`SP2DPrivConfig`](@ref) strip metadata logged at construct.
+  on-chip modes (`:shared`, `:typeplane`) flush shared histograms directly to `out_*`;
+  `:direct` uses `priv_sums_dev` / `priv_cnts_dev` plus merge.
+  Caches compiled pair kernel in `sp2d_pair_kernel` (typed `LinearBinEdges` / `LogBinEdges` dist).
 
 Use the matching constructor overload; `reset_histogram!(ws)` zeroes device outputs
-before each launch.
+before each launch. See [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md).
 """
 mutable struct GPUSFWorkspace
     backend::KA.Backend
@@ -46,6 +47,7 @@ mutable struct GPUSFWorkspace
     u_dev_3d_cache
     val_plan::Union{Nothing, GPUValueDigitizePlan}
     sp2d_priv_config::Union{Nothing, SP2DPrivConfig}
+    sp2d_pair_kernel
     priv_sums_dev
     priv_cnts_dev
     priv_n_tile_blocks::Int
@@ -114,7 +116,7 @@ function SFC.GPUSFWorkspace(
         Vector{FT}(undef, NB), Vector{UInt32}(undef, NB),
         nothing, nothing, nothing, nothing,
         nothing,
-        nothing, nothing, nothing, 0,
+        nothing, nothing, nothing, nothing, 0,
     )
     return _workspace_upload_dist_edges!(ws, dist_bins, n_bins)
 end
@@ -158,7 +160,7 @@ function SFC.GPUSFWorkspace(
         Vector{FT}(undef, n_dist * n_val), Vector{UInt32}(undef, n_dist * n_val),
         nothing, nothing, nothing, nothing,
         nothing,
-        nothing, nothing, nothing, 0,
+        nothing, nothing, nothing, nothing, 0,
     )
     return _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
 end
@@ -225,9 +227,13 @@ function SFC.GPUSFWorkspace(
         Vector{FT}(undef, 8 * NB * hist_n_val), Vector{UInt32}(undef, 8 * NB * hist_n_val),
         nothing, nothing, nothing, nothing,
         val_plan,
-        priv_config, nothing, nothing, 0,
+        priv_config, nothing, nothing, nothing, 0,
     )
-    return _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
+    ws = _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
+    if dist_bins isa LinearBinEdges || dist_bins isa LogBinEdges
+        ws.sp2d_pair_kernel = _sp2d_resolve_pair_kernel(ws, backend, dist_bins, val_plan, priv_config)
+    end
+    return ws
 end
 
 """
@@ -242,6 +248,8 @@ function _ensure_sp2d_priv_bufs!(
         throw(ArgumentError("_ensure_sp2d_priv_bufs! requires kind=:single_pass_2d"))
     cfg = ws.sp2d_priv_config
     cfg === nothing && throw(ArgumentError("single_pass_2d workspace missing sp2d_priv_config"))
+    cfg.needs_priv_merge ||
+        throw(ArgumentError("_ensure_sp2d_priv_bufs! requires needs_priv_merge (direct mode)"))
     if ws.priv_sums_dev === nothing ||
        ws.priv_cnts_dev === nothing ||
        ws.priv_n_tile_blocks < n_tile_blocks
@@ -275,7 +283,10 @@ function SFC.reset_histogram!(ws::GPUSFWorkspace)
     else
         fill!(ws.out_sums_dev, zero(FT))
         fill!(ws.out_cnts_dev, zero(UInt32))
-        if ws.kind == :single_pass_2d && ws.priv_sums_dev !== nothing
+        if ws.kind == :single_pass_2d &&
+           ws.sp2d_priv_config !== nothing &&
+           ws.sp2d_priv_config.needs_priv_merge &&
+           ws.priv_sums_dev !== nothing
             fill!(ws.priv_sums_dev, zero(FT))
             fill!(ws.priv_cnts_dev, zero(UInt32))
         end

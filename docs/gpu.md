@@ -80,6 +80,23 @@ Public stubs with backend dispatch:
 - `calculate_structure_function_slices!`
 - `calculate_structure_function_2d_slices!`
 - `calculate_structure_functions_single_pass_slices!` (GPU-only for now)
+- `calculate_structure_functions_single_pass_2d!` — eight `(dist × value)` histograms; GPU HTP-EJ when eligible
+
+## Eight-type single-pass 2D (SP2D)
+
+Production GPU path for `calculate_structure_functions_single_pass_2d!` with typed distance bins
+(`LinearBinEdges` / `LogBinEdges`) and `GPUSFWorkspace(...; kind=:single_pass_2d)`. Histogram policy
+(`:shared` / `:typeplane` / `:direct`) is frozen at workspace build from a 48 KiB shared-memory budget.
+
+- **On-chip** (`:shared`, `:typeplane`): shared histogram + joint-style flush to output (no merge).
+- **Direct** (`:direct`): block-private slab + merge when even one value plane does not fit in smem.
+
+**Benchmark on GPU:** `julia --project=gpu gpu/benchmark_2d_grid_scaling.jl`  
+**Design, gate, perf gaps:** [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md)
+
+The production gate is e2e SP2D **&lt; 8 × joint_2d**. A naive “~2× digitize vs 1D” bound is too optimistic:
+SP2D performs eight value digitizations per pair and may replay the full tile schedule
+`n_type_passes` times (typeplane). See the doc for a per-pair work table and future optimizations.
 
 ## Grid fields → batch layout
 
@@ -152,4 +169,5 @@ Produces `docs/src/assets/sf_gpu_parity.png`.
 ## See also
 
 - [backends.md — GPUBackend](backends.md#gpubackend)
+- [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md) — eight-type single-pass 2D (HTP-EJ)
 - [`gpu/GPU_structure_function_prototypes_theory.md`](../gpu/GPU_structure_function_prototypes_theory.md)

@@ -12,8 +12,15 @@ For `N_dims ∈ {2,3}` the fast path uses tiled128 pair blocks with block-local
 (`calculate_structure_function` with `value_bins`) uses the same tiled schedule
 when `n_dist × n_val ≤ SF_GPU_MAX_2D_HIST`. Eight-type single-pass 1D uses
 tiled128 block-local `(8, NB)` histograms when `NB ≤ SF_GPU_MAX_BINS`; eight-type
-single-pass 2D uses tiled128 pair traversal with **HTP-EJ** privatized histograms
-(shared strip → block-private slab → merge) when `n_dist ≤ SF_GPU_MAX_BINS`.
+single-pass 2D uses tiled128 pair traversal with **HTP-EJ** when `n_dist ≤ SF_GPU_MAX_BINS`
+and distance bins are typed (`LinearBinEdges` / `LogBinEdges`):
+
+- **On-chip** (`:shared`, `:typeplane`): shared histogram during the pair loop,
+  block-end `@atomic` flush into final output (same pattern as joint 2D) — no priv slab, no merge.
+- **Direct** (`:direct`): block-private global atomics during one pair pass, then merge kernel.
+
+See [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md) for policy, routing, benchmarks, and known perf gaps.
+
 Pass `force_legacy=true` to use the deprecated global-atomic path.
 
 ## Count types on GPU
@@ -983,10 +990,10 @@ end
 """True when eight-type 1D single-pass can use tiled128 block-local histograms."""
 @inline _gpu_single_pass_tiled_eligible(n_bins::Int) = n_bins <= SF_GPU_MAX_BINS
 
-"""True when eight-type 2D single-pass can use tiled128 pair traversal (distance bins ≤ 64)."""
+"""True when eight-type 2D single-pass can use HTP-EJ tiled128 (`n_dist ≤ 64`, typed dist bins)."""
 @inline _gpu_single_pass_2d_tiled_eligible(n_dist::Int) = n_dist <= SF_GPU_MAX_BINS
 
-"""Typed distance bins use tiled kernels when eligible; raw `Vector` edges use naive pair loops."""
+"""Route to HTP-EJ when tiled-eligible; raw `Vector` distance edges use naive pair loops."""
 @inline _gpu_single_pass_2d_use_tiled(dist_bins, ::GPUValueDigitizePlan, n_dist::Int) =
     _gpu_single_pass_2d_tiled_eligible(n_dist) && !(dist_bins isa Vector)
 

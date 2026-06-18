@@ -14,24 +14,28 @@ function _synthetic_value_bins_ntuple(n_bins::Int, ::Type{FT} = Float64) where {
     )
 end
 
-"""Host reference for strip bucket policy (must match `SP2DPrivPolicy.jl`)."""
+"""Host reference for priv policy (must match `SP2DPrivPolicy.jl`)."""
 function _host_sp2d_priv_config(n_dist::Int, n_val::Int, ::Type{FT}) where {FT}
     C = 8 * n_dist * n_val
+    plane = n_dist * n_val
     tile_overhead = 4 * 256 * sizeof(FT)
-    meta = 6 * sizeof(Int)
+    meta = 5 * sizeof(Int)
     reserve = 2048
     cell_bytes = sizeof(FT) + sizeof(UInt32)
-    buckets = (1024, 2048, 4096, 8192, 16384)
     smem_default = 48 * 1024
-    static(b) = tile_overhead + meta + b * cell_bytes + reserve
-    fitting = [b for b in buckets if static(b) <= smem_default]
-    isempty(fitting) && error("no bucket fits 48 KiB")
-    bucket = fitting[end]
-    for b in fitting
-        b >= C && return (C, b, cld(C, b), smem_default)
-        bucket = b
+    budget = smem_default - tile_overhead - meta - reserve
+    max_shared = budget ÷ cell_bytes
+    mode = if C <= max_shared
+        :shared
+    elseif plane <= max_shared
+        :typeplane
+    else
+        :direct
     end
-    return (C, bucket, cld(C, bucket), smem_default)
+    tpp = mode == :typeplane ? min(8, max(1, max_shared ÷ plane)) : 8
+    ntp = mode == :typeplane ? (8 + tpp - 1) ÷ tpp : 1
+    needs_merge = mode == :direct
+    return (C, mode, smem_default, max_shared, plane, tpp, ntp, needs_merge)
 end
 
 Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
@@ -41,29 +45,37 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
     x = rand(FT, 2, N)
     u = rand(FT, 2, N)
     linear_dist = LinearBinEdges(range(FT(0.0), FT(1.5); length = 11))
-    # Log spacing: log-edge range → LogBinEdges (physical edges materialized once inside).
     log_dist = LogBinEdges_from_log_edges(range(log(FT(0.01)), log(FT(1.5)); length = 11))
     value_bins_ntuple = _synthetic_value_bins_ntuple(8, FT)
     n_val = length(value_bins_ntuple[1]) - 1
     NB = length(linear_dist) - 1
 
-    # --- strip policy matches workspace metadata ---
     ws = SFC.GPUSFWorkspace(backend, linear_dist, value_bins_ntuple)
     cfg = ws.sp2d_priv_config
-    C_ref, bucket_ref, nstrips_ref, smem_ref = _host_sp2d_priv_config(NB, n_val, FT)
+    C_ref, mode_ref, smem_ref, max_shared_ref, plane_ref, tpp_ref, ntp_ref, merge_ref = _host_sp2d_priv_config(NB, n_val, FT)
     Test.@test cfg.n_joint_cells == C_ref
-    Test.@test cfg.strip_bucket == bucket_ref
-    Test.@test cfg.n_strips == nstrips_ref
+    Test.@test cfg.accum_mode == mode_ref
     Test.@test cfg.smem_per_block == smem_ref
+    Test.@test cfg.max_shared_cells == max_shared_ref
+    Test.@test cfg.plane_cells == plane_ref
+    Test.@test cfg.types_per_pass == tpp_ref
+    Test.@test cfg.n_type_passes == ntp_ref
+    Test.@test cfg.needs_priv_merge == merge_ref
+    Test.@test !cfg.needs_priv_merge
+    Test.@test mode_ref == :shared
 
-    # Production-ish grid: bucket must fit 48 KiB static smem (not b8192).
-    C50, bucket50, nstrips50, smem50 = _host_sp2d_priv_config(50, 52, FT)
-    Test.@test bucket50 == 4096
+    C50, mode50, smem50, max_shared50, plane50, tpp50, ntp50 = _host_sp2d_priv_config(50, 52, FT)
+    Test.@test mode50 == :typeplane
     Test.@test C50 == 8 * 50 * 52
-    Test.@test nstrips50 == cld(C50, 4096)
+    Test.@test plane50 == 50 * 52
+    Test.@test C50 > max_shared50
+    Test.@test plane50 <= max_shared50
     Test.@test smem50 == 48 * 1024
+    _, mode50f, _, _, _, tpp50f, ntp50f = _host_sp2d_priv_config(50, 52, Float32)
+    Test.@test mode50f == :typeplane
+    Test.@test tpp50f == 2
+    Test.@test ntp50f == 4
 
-    # --- linear dist × 8-col linear value (production test grid) ---
     sums_lin_ref = zeros(FT, 8, NB, n_val)
     cnts_lin_ref = zeros(UInt32, 8, NB, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
@@ -93,7 +105,6 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
 
         sums_legacy = zeros(FT, size(sums_ref)...)
         cnts_legacy = zeros(UInt32, size(cnts_ref)...)
-        gpu_be = SFC.GPUBackend(backend)
         SFC.gpu_calculate_structure_functions_single_pass_2d!(
             sums_legacy, cnts_legacy, backend, x, u, db, value_bins_ntuple;
             force_legacy = true,
@@ -102,7 +113,6 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
         Test.@test cnts_legacy == cnts_ref
     end
 
-    # --- InfPadded shared value + log distance (SMODE-style; typed log dist for GPU) ---
     inner = LinearBinEdges(range(FT(-0.5), FT(1.5); length = n_val + 1))
     inf_val = InfPaddedBinEdges(inner)
     n_val_inf = length(inf_val) - 1
@@ -123,7 +133,6 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
     Test.@test sums_priv ≈ sums_ref atol = 1e-11
     Test.@test cnts_priv == cnts_ref
 
-    # --- workspace reuse ---
     ws2 = SFC.GPUSFWorkspace(backend, linear_dist, value_bins_ntuple)
     sums_ws = zeros(FT, 8, NB, n_val)
     cnts_ws = zeros(UInt32, 8, NB, n_val)
@@ -133,6 +142,106 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
     )
     Test.@test sums_ws ≈ sums_lin_ref atol = 1e-11
     Test.@test cnts_ws == cnts_lin_ref
-    Test.@test ws2.priv_sums_dev !== nothing
-    Test.@test ws2.priv_n_tile_blocks > 0
+    Test.@test ws2.priv_sums_dev === nothing
+    Test.@test ws2.sp2d_pair_kernel !== nothing
+    Test.@test !ws2.sp2d_priv_config.needs_priv_merge
+end
+
+Test.@testset "GPU sp2d merge kernels (KA.CPU)" begin
+    backend = KA.CPU()
+    FT = Float64
+    n_dist, n_val, n_blocks = 4, 3, 5
+    C = 8 * n_dist * n_val
+    priv_sums = rand(FT, 8, n_dist, n_val, n_blocks)
+    priv_cnts = rand(UInt32, 8, n_dist, n_val, n_blocks)
+    out_s = zeros(FT, 8, n_dist, n_val)
+    out_c = zeros(UInt32, 8, n_dist, n_val)
+    ref_s = zeros(FT, 8, n_dist, n_val)
+    ref_c = zeros(UInt32, 8, n_dist, n_val)
+    for t in 1:8, d in 1:n_dist, v in 1:n_val, b in 1:n_blocks
+        ref_s[t, d, v] += priv_sums[t, d, v, b]
+        ref_c[t, d, v] += priv_cnts[t, d, v, b]
+    end
+    GPUExt = Base.get_extension(SF, :StructureFunctionsGPUExt)
+    for mode in (:serial, :parallel)
+        fill!(out_s, 0)
+        fill!(out_c, 0)
+        GPUExt._launch_merge_sp2d_priv!(
+            backend, out_s, out_c, priv_sums, priv_cnts, n_dist, n_val, n_blocks;
+            merge_mode = mode,
+        )
+        Test.@test out_s ≈ ref_s
+        Test.@test out_c == ref_c
+    end
+end
+
+Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
+    backend = KA.CPU()
+    FT = Float64
+    N = 64
+    x = rand(FT, 2, N)
+    u = rand(FT, 2, N)
+    n_dist_bins = 30
+    n_val_bins = 30
+    linear_dist = LinearBinEdges(range(FT(0.0), FT(2.0); length = n_dist_bins + 1))
+    value_bins_ntuple = _synthetic_value_bins_ntuple(n_val_bins, FT)
+    NB = n_dist_bins
+    n_val = n_val_bins
+    _, mode_ref, _, _, _, _, _ = _host_sp2d_priv_config(NB, n_val, FT)
+    Test.@test mode_ref == :typeplane
+
+    sums_ref = zeros(FT, 8, NB, n_val)
+    cnts_ref = zeros(UInt32, 8, NB, n_val)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_ref, cnts_ref, x, u, linear_dist, value_bins_ntuple;
+        backend = SFC.SerialBackend(),
+    )
+    ws = SFC.GPUSFWorkspace(backend, linear_dist, value_bins_ntuple)
+    Test.@test ws.sp2d_priv_config.accum_mode == :typeplane
+    Test.@test !ws.sp2d_priv_config.needs_priv_merge
+    Test.@test ws.priv_sums_dev === nothing
+    sums_gpu = zeros(FT, 8, NB, n_val)
+    cnts_gpu = zeros(UInt32, 8, NB, n_val)
+    SFC.gpu_calculate_structure_functions_single_pass_2d!(
+        sums_gpu, cnts_gpu, backend, x, u, linear_dist, value_bins_ntuple;
+        workspace = ws,
+    )
+    Test.@test sums_gpu ≈ sums_ref atol = 1e-11
+    Test.@test cnts_gpu == cnts_ref
+end
+
+Test.@testset "GPU sp2d direct mode (KA.CPU)" begin
+    backend = KA.CPU()
+    FT = Float64
+    N = 48
+    x = rand(FT, 2, N)
+    u = rand(FT, 2, N)
+    n_dist_bins = 60
+    n_val_bins = 60
+    linear_dist = LinearBinEdges(range(FT(0.0), FT(2.0); length = n_dist_bins + 1))
+    value_bins_ntuple = _synthetic_value_bins_ntuple(n_val_bins, FT)
+    NB = n_dist_bins
+    n_val = n_val_bins
+    _, mode_ref, _, _, _, _, _, merge_ref = _host_sp2d_priv_config(NB, n_val, FT)
+    Test.@test mode_ref == :direct
+    Test.@test merge_ref
+
+    sums_ref = zeros(FT, 8, NB, n_val)
+    cnts_ref = zeros(UInt32, 8, NB, n_val)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_ref, cnts_ref, x, u, linear_dist, value_bins_ntuple;
+        backend = SFC.SerialBackend(),
+    )
+    ws = SFC.GPUSFWorkspace(backend, linear_dist, value_bins_ntuple)
+    Test.@test ws.sp2d_priv_config.accum_mode == :direct
+    Test.@test ws.sp2d_priv_config.needs_priv_merge
+    sums_gpu = zeros(FT, 8, NB, n_val)
+    cnts_gpu = zeros(UInt32, 8, NB, n_val)
+    SFC.gpu_calculate_structure_functions_single_pass_2d!(
+        sums_gpu, cnts_gpu, backend, x, u, linear_dist, value_bins_ntuple;
+        workspace = ws,
+    )
+    Test.@test sums_gpu ≈ sums_ref atol = 1e-11
+    Test.@test cnts_gpu == cnts_ref
+    Test.@test ws.priv_sums_dev !== nothing
 end
