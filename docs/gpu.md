@@ -82,6 +82,12 @@ Public stubs with backend dispatch:
 - `calculate_structure_functions_single_pass_slices!` (GPU-only for now)
 - `calculate_structure_functions_single_pass_2d!` — eight `(dist × value)` histograms; GPU HTP-EJ when eligible
 
+## Single-type joint 2D smem
+
+[`GPUSFWorkspace`](@ref) for `kind=:joint2d` defaults to exact compile-time shared histogram width
+`n_dist × n_val`. Optional override: `joint2d_compile_cells=joint2d_smem_max()` or
+`joint2d_smem_align256(n_dist, n_val)`. See [`gpu/GPU_2d_joint_sf_plan.md`](../gpu/GPU_2d_joint_sf_plan.md).
+
 ## Eight-type single-pass 2D (SP2D)
 
 Production GPU path for `calculate_structure_functions_single_pass_2d!` with typed distance bins

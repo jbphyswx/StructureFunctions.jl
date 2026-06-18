@@ -31,7 +31,8 @@ export calculate_structure_function, calculate_structure_function!, calculate_st
     calculate_structure_functions_single_pass_2d!, postprocess_single_pass_results, ten_type_from_eight_2d,
     calculate_structure_function_slices!, calculate_structure_function_2d_slices!,
     calculate_structure_functions_single_pass_slices!, calculate_structure_functions_single_pass_2d_slices!,
-    flatten_grid_slices, GPUSFWorkspace, reset_histogram!, release!
+    flatten_grid_slices, GPUSFWorkspace, reset_histogram!, release!,
+    joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256
 export marginalize
 export AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
     GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend

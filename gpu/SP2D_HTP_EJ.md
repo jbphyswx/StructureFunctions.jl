@@ -79,7 +79,7 @@ Distance bins must be `LinearBinEdges` or `LogBinEdges` for the HTP-EJ tiled pat
 
 Compares **end-to-end** `gpu_calculate_structure_functions_single_pass_2d!` against **`8 × joint_2d`** (eight separate single-type 2D runs). This is the production-relevant gate (eight histogram tensors in one API call).
 
-**Asymmetry (intentional):** joint reference uses one `L2SFType` + simple vector value edges; SP2D uses eight types + `InfPaddedBinEdges` + typed value digitize plans. The gate is conservative.
+**Asymmetry (intentional):** joint reference uses one `L2SFType` + `InfPaddedBinEdges` value edges (same family as SP2D); SP2D uses eight types + typed value digitize plans. Joint value axis still uses general edge search until a typed joint kernel exists. The gate is conservative.
 
 Example A100 (`N=20000`) after on-chip flush:
 

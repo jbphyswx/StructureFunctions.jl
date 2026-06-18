@@ -57,6 +57,25 @@ same tile schedule as 1D SF; accumulate in `@localmem`, flush once per cell per 
 `n_dist > SF_GPU_MAX_BINS`, `n_val > SF_GPU_MAX_BINS`, or
 `n_dist * n_val > SF_GPU_MAX_2D_HIST` (4096).
 
+### Shared-memory compile width (2025)
+
+Default: exact `n_dist × n_val` `@localmem` cells (best occupancy when `NB2 ≪ 4096`).
+Override on [`GPUSFWorkspace`](@ref):
+
+```julia
+GPUSFWorkspace(backend, dist_bins, val_bins)  # exact NB2 (default)
+
+GPUSFWorkspace(backend, dist_bins, val_bins;
+    joint2d_compile_cells = joint2d_smem_max())  # legacy 4096, one kernel for any grid
+
+GPUSFWorkspace(backend, dist_bins, val_bins;
+    joint2d_compile_cells = joint2d_smem_align256(n_dist, n_val))
+```
+
+Helpers: `joint2d_smem_max`, `joint2d_smem_exact`, `joint2d_smem_align256` (return `Int`).
+Kernels are `@eval`'d on first use per `(dist_route, compile_cells)` and cached on the workspace.
+CPU parity: `test/test_gpu_joint2d_smem.jl`.
+
 ---
 
 ## 4. Implementation phases
