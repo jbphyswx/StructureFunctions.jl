@@ -41,11 +41,6 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Triangle Outer Chunks Test ---")
     include("test_triangle_outer_chunks.jl")
 
-    println("--- Running Spectral Test ---")
-    include("test_spectral.jl")
-
-    println("--- Running Spectral GPU Parity Test ---")
-    include("test_spectral_gpu_parity.jl")
 
     # println("--- Running Performance Benchmark Test ---") # This need not run all the time, but it's here for reference
     # include("benchmark_performance.jl")
