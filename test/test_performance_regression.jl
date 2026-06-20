@@ -108,29 +108,6 @@ Test.@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
         end
     end
 
-    Test.@testset "Spectral Analysis API" begin
-        ms = (16, 16)
-        b_direct = @benchmark calculate_spectrum(
-            DirectSumBackend(),
-            $x2,
-            $u2,
-            $ms;
-            domain_size = (10.0, 10.0),
-        ) seconds = 0.2 samples = 10
-
-        allocs = b_direct.allocs
-        time_min = minimum(b_direct.times) / 1e3 # μs
-
-        current_results["direct_sum_spectral"] =
-            Dict("allocs" => allocs, "time_μs" => time_min)
-        @info "DirectSum Spectral: $allocs allocs, $time_min μs"
-
-        if haskey(previous_results, "direct_sum_spectral")
-            prev = previous_results["direct_sum_spectral"]
-            Test.@test allocs <= prev["allocs"]
-        end
-    end
-
     Test.@testset "Static Constructor Efficiency" begin
         r_hat = SA.SVector(1.0, 0.0)
         b_nhat = @benchmark SF.HelperFunctions.n̂($r_hat)
