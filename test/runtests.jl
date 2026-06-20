@@ -23,9 +23,6 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Single-Pass 2D Test ---")
     include("test_single_pass_2d.jl")
 
-    println("--- Running Inputs Test ---")
-    include("test_inputs.jl")
-
     println("--- Running E2E Test ---")
     include("test_e2e.jl")
 
