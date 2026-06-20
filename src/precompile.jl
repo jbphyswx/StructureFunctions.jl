@@ -41,17 +41,5 @@ PrecompileTools.@compile_workload begin
                 )
             end
         end
-
-        # Spectral Analysis Precompilation
-        x_spec = ntuple(_ -> FT[0, 1], Val{2}())
-        u_spec = ntuple(_ -> FT[0, 1], Val{2}())
-        ms = (2, 2)
-        calculate_spectrum(
-            DirectSumBackend(),
-            x_spec,
-            u_spec,
-            ms;
-            domain_size = (FT(10), FT(10)),
-        )
     end
 end
