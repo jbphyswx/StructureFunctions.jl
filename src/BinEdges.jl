@@ -100,7 +100,7 @@ struct LinearBinEdges{T, RT <: AbstractRange{T}} <: AbstractBinEdges{T}
     step_val::T
 end
 
-@inline LinearBinEdges(::AbstractVector{T}) where {T} = LinearBinEdges(range(first(edges), last(edges); length=length(edges))) # no checks, assumes valid input, shouldnt really use this, should just pass a valid abstract range
+@inline LinearBinEdges(edges::AbstractVector{T}) where {T} = LinearBinEdges(range(first(edges), last(edges); length = length(edges))) # no checks, assumes valid input, shouldnt really use this, should just pass a valid abstract range
 
 function LinearBinEdges(edges::AbstractRange{T}) where {T}
     inv_step = inv(step(edges))
