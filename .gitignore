@@ -53,3 +53,4 @@ test/benchmark_results/
 test/plots/
 test/ci_log.txt
 test/bench_results.json
+test/debug/
