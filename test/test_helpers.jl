@@ -72,4 +72,46 @@ Test.@testset "HelperFunctions.jl Unit Tests" begin
         # norm(δu_t)^2 should be mδu_t^2
         Test.@test LA.norm(SFH.δu_t(δu, r_hat))^2 ≈ SFH.mδu_t(δu, r_hat)^2
     end
+
+    Test.@testset "Invariant transverse energy and explicit bases" begin
+        r_hat = SA.SVector(1.0, 0.0, 0.0)
+        δu = SA.SVector(2.0, 3.0, 4.0)
+
+        Test.@test SFH.transverse_norm2(δu, r_hat) ≈ 25.0
+        Test.@test SFH.transverse_component_norm2(δu, r_hat) ≈ 12.5
+
+        z_basis = SFH.ReferenceAxisTransverseBasis(SA.SVector(0.0, 0.0, 1.0))
+        e = SFH.transverse_basis_vector(r_hat, z_basis)
+        Test.@test e ≈ SA.SVector(0.0, 0.0, 1.0)
+        Test.@test SFH.transverse_component(δu, r_hat, z_basis) ≈ 4.0
+
+        y_basis = SFH.ReferenceAxisTransverseBasis(SA.SVector(0.0, 1.0, 0.0))
+        basis_vectors = SFH.transverse_basis(y_basis, r_hat)
+        Test.@test length(basis_vectors) == 2
+        Test.@test basis_vectors[1] ≈ SA.SVector(0.0, 1.0, 0.0)
+        Test.@test basis_vectors[2] ≈ SA.SVector(0.0, 0.0, 1.0)
+
+        bad_basis = SFH.ReferenceAxisTransverseBasis(SA.SVector(1.0, 0.0, 0.0))
+        Test.@test_throws ArgumentError SFH.transverse_basis(bad_basis, r_hat)
+
+        gauge_basis = SFH.transverse_basis(SFH.CoordinateGaugeTransverseBasis(), r_hat)
+        Test.@test length(gauge_basis) == 2
+        Test.@test LA.dot(gauge_basis[1], r_hat) ≈ 0.0
+        Test.@test LA.dot(gauge_basis[2], r_hat) ≈ 0.0
+    end
+
+    Test.@testset "Projection identity in multiple dimensions" begin
+        fixtures = (
+            (SA.SVector(3.0, 4.0), SA.SVector(1.0, 0.0)),
+            (SA.SVector(2.0, -3.0, 5.0), SA.SVector(0.0, 1.0, 0.0)),
+            (SA.SVector(1.0, 2.0, 3.0, 4.0), SA.SVector(0.0, 0.0, 1.0, 0.0)),
+        )
+
+        for (δu, r_hat) in fixtures
+            du_L = SFH.mδu_l(δu, r_hat)
+            Test.@test sum(abs2, δu) ≈ du_L^2 + SFH.transverse_norm2(δu, r_hat)
+            Test.@test SFH.transverse_component_norm2(δu, r_hat) ≈
+                SFH.transverse_norm2(δu, r_hat) / (length(δu) - 1)
+        end
+    end
 end

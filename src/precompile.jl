@@ -1,7 +1,7 @@
 PrecompileTools.@compile_workload begin
     # Common types
     FTs = [Float64, Float32]
-    dims = [1, 2, 3]
+    dims = [2, 3]
 
     for FT in FTs
         bins = [FT(0), FT(1), FT(2)]
@@ -12,22 +12,6 @@ PrecompileTools.@compile_workload begin
         ]
 
         for N in dims
-            # Tuple API Precompilation
-            x_tuple = ntuple(_ -> FT[0, 1, 2], Val{N}())
-            u_tuple = ntuple(_ -> FT[0, 1, 2], Val{N}())
-
-            for sf in sfs
-                calculate_structure_function(
-                    sf,
-                    x_tuple,
-                    u_tuple,
-                    bins;
-                    verbose = false,
-                    show_progress = false,
-                )
-            end
-
-            # Matrix API Precompilation
             x_mat = zeros(FT, N, 3)
             u_mat = zeros(FT, N, 3)
             for sf in sfs

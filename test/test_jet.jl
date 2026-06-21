@@ -8,12 +8,12 @@ Test.@testset "JET Stability Audit" begin
     # Use explicit qualification for functions to ensure JET finds them
     # and we avoid using/export issues in the test Main.
 
-    x = ([0.0, 1.0], [0.0, 0.0])
-    u = ([1.0, 2.0], [0.0, 0.0])
+    x = [0.0 1.0; 0.0 0.0]
+    u = [1.0 2.0; 0.0 0.0]
     bins = SA.SVector(0.0, 2.0)
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
-    Test.@testset "calculate_structure_function (Tuple input)" begin
+    Test.@testset "calculate_structure_function (Array input)" begin
         # Test the core (positional dispatch) for absolute stability
         # We only audit SF module to ignore internal Base.Threads dispatches
         JET.@test_opt target_modules = (SF,) SFC.calculate_structure_function(
@@ -38,10 +38,9 @@ Test.@testset "JET Stability Audit" begin
             show_progress = false,
         )
     end
-
-    Test.@testset "calculate_structure_function (Array input)" begin
-        xa = [0.0 1.0; 0.0 0.0]
-        ua = [1.0 2.0; 0.0 0.0]
+    Test.@testset "calculate_structure_function (3D Array input)" begin
+        xa = [0.0 1.0; 0.0 0.0; 0.0 0.0]
+        ua = [1.0 2.0; 0.0 0.0; 0.0 0.0]
         # Test the core (positional dispatch) for absolute stability
         JET.@test_opt target_modules = (SF,) SFC.calculate_structure_function(
             sf_type,
@@ -86,14 +85,8 @@ Test.@testset "JET Stability Audit" begin
         δu = SA.SVector{2, Float64}(1.0, 1.0)
         r̂ = SA.SVector{2, Float64}(1.0, 0.0)
         for (name, sft) in SFT.SF_TYPE_MAP
-            # Skip unimplemented types that would cause JET errors
-            if name in [
-                :RotationalSecondOrderStructureFunction,
-                :DivergentSecondOrderStructureFunction,
-            ]
-                continue
-            end
             instance = sft()
+            instance isa SFT.AbstractPairwiseStructureFunctionType || continue
             JET.@test_opt instance(δu, r̂)
             JET.@test_call instance(δu, r̂)
         end

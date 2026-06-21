@@ -2,7 +2,13 @@ module StructureFunctionObjects
 
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 
-export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2D, marginalize
+export AbstractStructureFunction,
+    StructureFunction,
+    StructureFunctionSumsAndCounts,
+    StructureFunction2D,
+    StructureFunctionTensor,
+    HelmholtzDecomposition2D,
+    marginalize
 
 """
     AbstractStructureFunction
@@ -27,7 +33,8 @@ struct StructureFunction{FT, OT <: SFT.AbstractStructureFunctionType, BT, VT} <:
     values::VT
 
     function StructureFunction(operator::OT, distance::BT, values::VT) where {OT, BT, VT}
-        (length(distance) == length(values) + 1) || throw(DimensionMismatch("Flat distance edges must have length one greater than values (got edges=$(length(distance)), values=$(length(values)))"))
+        n_values = values isa AbstractArray && ndims(values) > 1 ? size(values, 1) : length(values)
+        (length(distance) == n_values + 1) || throw(DimensionMismatch("Flat distance edges must have length one greater than the leading value-bin axis (got edges=$(length(distance)), value bins=$n_values)"))
         FT = eltype(VT)
         return new{FT, OT, BT, VT}(operator, distance, values)
     end
@@ -57,7 +64,9 @@ struct StructureFunctionSumsAndCounts{
         sums::VT,
         counts::CT,
     ) where {OT, BT, VT, CT}
-        ((length(distance) == length(sums) + 1) && (length(sums) == length(counts))) || throw(DimensionMismatch("Flat distance edges must satisfy length(distance) == length(sums) + 1 (got edges=$(length(distance)), sums=$(length(sums)), counts=$(length(counts)))"))
+        n_sums = sums isa AbstractArray && ndims(sums) > 1 ? size(sums, 1) : length(sums)
+        n_counts = counts isa AbstractArray && ndims(counts) > 1 ? size(counts, 1) : length(counts)
+        ((length(distance) == n_sums + 1) && (n_sums == n_counts) && (size(sums) == size(counts))) || throw(DimensionMismatch("Flat distance edges must satisfy length(distance) == size(sums,1) + 1 and sums/counts must match shape (got edges=$(length(distance)), sums=$(size(sums)), counts=$(size(counts)))"))
         FT = eltype(sums)
         return new{FT, OT, BT, VT, CT}(operator, distance, sums, counts)
     end
@@ -104,6 +113,95 @@ struct StructureFunction2D{
     end
 end
 
+"""
+    StructureFunctionTensor(order, distance_bins, sums, counts)
+
+Raw binned tensor structure-function result. For tensor order `P` and spatial
+dimension `D`, `sums` has leading axes `(D, D, ..., D, n_bins, auxiliary...)`
+with `P` repeated component axes. `counts` has shape `(n_bins, auxiliary...)`.
+"""
+struct StructureFunctionTensor{P, FT, BT, VT, CT} <: AbstractStructureFunction
+    order::Val{P}
+    distance_bins::BT
+    sums::VT
+    counts::CT
+
+    function StructureFunctionTensor(
+        order::Val{P},
+        distance_bins::BT,
+        sums::VT,
+        counts::CT,
+    ) where {P, BT, VT, CT}
+        P >= 1 || throw(ArgumentError("tensor order must be positive"))
+        ndims(sums) >= P + 1 ||
+            throw(DimensionMismatch("tensor sums must have at least P component axes plus one distance-bin axis"))
+        n_bins = size(sums, P + 1)
+        length(distance_bins) == n_bins + 1 ||
+            throw(DimensionMismatch("distance_bins must have length size(sums,$(P + 1))+1"))
+        size(counts, 1) == n_bins ||
+            throw(DimensionMismatch("counts first axis must match tensor distance-bin axis"))
+        size(counts)[2:end] == size(sums)[(P + 2):end] ||
+            throw(DimensionMismatch("counts auxiliary axes must match tensor sums auxiliary axes"))
+        FT = eltype(sums)
+        return new{P, FT, BT, VT, CT}(order, distance_bins, sums, counts)
+    end
+end
+
+"""
+    HelmholtzDecomposition2D(distance_bins, rotational_sums, rotational_counts,
+                             divergent_sums, divergent_counts,
+                             longitudinal_values, transverse_values)
+
+Result of the 2D isotropic Helmholtz decomposition computed from binned
+longitudinal/transverse second-order structure functions. Rotational and
+divergent components are derived quantities, not pairwise operators.
+"""
+struct HelmholtzDecomposition2D{FT, BT, VS, VC, VV} <: AbstractStructureFunction
+    operator::SFT.HelmholtzDecomposition2DType
+    distance_bins::BT
+    rotational_sums::VS
+    rotational_counts::VC
+    divergent_sums::VS
+    divergent_counts::VC
+    longitudinal_values::VV
+    transverse_values::VV
+
+    function HelmholtzDecomposition2D(
+        distance_bins::BT,
+        rotational_sums::VS,
+        rotational_counts::VC,
+        divergent_sums::VS,
+        divergent_counts::VC,
+        longitudinal_values::VV,
+        transverse_values::VV,
+    ) where {BT, VS, VC, VV}
+        n_bins = length(distance_bins) - 1
+        length(rotational_sums) == n_bins ||
+            throw(DimensionMismatch("rotational_sums must have length $n_bins"))
+        length(rotational_counts) == n_bins ||
+            throw(DimensionMismatch("rotational_counts must have length $n_bins"))
+        length(divergent_sums) == n_bins ||
+            throw(DimensionMismatch("divergent_sums must have length $n_bins"))
+        length(divergent_counts) == n_bins ||
+            throw(DimensionMismatch("divergent_counts must have length $n_bins"))
+        length(longitudinal_values) == n_bins ||
+            throw(DimensionMismatch("longitudinal_values must have length $n_bins"))
+        length(transverse_values) == n_bins ||
+            throw(DimensionMismatch("transverse_values must have length $n_bins"))
+        FT = eltype(rotational_sums)
+        return new{FT, BT, VS, VC, VV}(
+            SFT.HelmholtzDecomposition2DOperator,
+            distance_bins,
+            rotational_sums,
+            rotational_counts,
+            divergent_sums,
+            divergent_counts,
+            longitudinal_values,
+            transverse_values,
+        )
+    end
+end
+
 # ---------------------------------------------------------------------------
 # Ergonomics & Base Extensions
 # ---------------------------------------------------------------------------
@@ -113,6 +211,8 @@ import Base: show, length, +
 Base.length(sf::StructureFunction) = length(sf.values)
 Base.length(sf::StructureFunctionSumsAndCounts) = length(sf.sums)
 Base.length(sf::StructureFunction2D) = length(sf.distance_bins) - 1
+Base.length(sf::StructureFunctionTensor) = length(sf.distance_bins) - 1
+Base.length(sf::HelmholtzDecomposition2D) = length(sf.distance_bins) - 1
 
 function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSumsAndCounts)
     (sf1.operator == sf2.operator) || throw(ArgumentError("Cannot add results with different operators: got $(sf1.operator) and $(sf2.operator)"))
@@ -120,6 +220,17 @@ function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSums
     return StructureFunctionSumsAndCounts(
         sf1.operator,
         sf1.distance,
+        sf1.sums + sf2.sums,
+        sf1.counts + sf2.counts,
+    )
+end
+
+function Base.:+(sf1::StructureFunctionTensor{P}, sf2::StructureFunctionTensor{P}) where {P}
+    (sf1.distance_bins == sf2.distance_bins) ||
+        throw(ArgumentError("Cannot add tensor results with different distance binning"))
+    return StructureFunctionTensor(
+        sf1.order,
+        sf1.distance_bins,
         sf1.sums + sf2.sums,
         sf1.counts + sf2.counts,
     )
@@ -163,9 +274,20 @@ function Base.show(io::IO, sf::StructureFunction2D{FT, OT}) where {FT, OT}
     print(io, "(operator=", sf.operator, ", distance_bins=", length(sf.distance_bins), ", value_bins=", length(sf.value_bins), ")")
 end
 
+function Base.show(io::IO, sf::StructureFunctionTensor{P, FT}) where {P, FT}
+    print(io, "StructureFunctionTensor{", P, ", ", FT, "}")
+    print(io, "(distance_bins=", length(sf.distance_bins), ", size=", size(sf.sums), ")")
+end
+
+function Base.show(io::IO, sf::HelmholtzDecomposition2D{FT}) where {FT}
+    print(io, "HelmholtzDecomposition2D{", FT, "}")
+    print(io, "(distance_bins=", length(sf.distance_bins), ")")
+end
+
 # Specialized getters
 operator(sf::AbstractStructureFunction) = sf.operator
 SFT.order(sf::AbstractStructureFunction) = SFT.order(sf.operator)
+SFT.order(sf::StructureFunctionTensor{P}) where {P} = P
 
 # Comparison & Conversion
 import Base: isapprox, Float32, Float64

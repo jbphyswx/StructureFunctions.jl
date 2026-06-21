@@ -5,8 +5,8 @@ using StaticArrays: StaticArrays as SA
 
 Test.@testset "Core Correctness - Block A" begin
     Test.@testset "Blocked path regression" begin
-        x = ([0.0, 1.0], [0.0, 0.0])
-        u = ([1.0, 2.0], [0.0, 0.0])
+        x = [0.0 1.0; 0.0 0.0]
+        u = [1.0 2.0; 0.0 0.0]
         bins = SA.SVector(0.0, 2.0)
         sf_type = SFT.LongitudinalSecondOrderStructureFunction
         Test.@test_nowarn SFC.calculate_structure_function(
@@ -21,8 +21,8 @@ Test.@testset "Core Correctness - Block A" begin
 
     Test.@testset "Pair-count verification" begin
         # N=3 points -> N(N-1)/2 = 3 pairs
-        x = ([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
-        u = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        x = [0.0 1.0 2.0; 0.0 0.0 0.0]
+        u = [0.0 0.0 0.0; 0.0 0.0 0.0]
         bins = SA.SVector(0.0, 3.0)
         sf_type = SFT.SecondOrderStructureFunction
 
@@ -31,8 +31,8 @@ Test.@testset "Core Correctness - Block A" begin
         Test.@test sum(res.counts) == 3
 
         # N=4 points -> 4*3/2 = 6 pairs
-        x4 = ([0.0, 1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 0.0])
-        res4 = SFC.calculate_structure_function(sf_type, x4, (zeros(4), zeros(4)), bins;
+        x4 = [0.0 1.0 2.0 3.0; 0.0 0.0 0.0 0.0]
+        res4 = SFC.calculate_structure_function(sf_type, x4, zeros(2, 4), bins;
             verbose = false, show_progress = false, return_sums_and_counts = true)
         Test.@test sum(res4.counts) == 6
     end
@@ -42,8 +42,8 @@ Test.@testset "Core Correctness - Block A" begin
         # Velocities: (1,0) and (2,0)
         # du = (1, 0), rhat = (1, 0)
         # SecondOrderLongitudinal: (du . rhat)^2 = 1^2 = 1.0
-        x = ([0.0, 1.0], [0.0, 0.0])
-        u = ([1.0, 2.0], [0.0, 0.0])
+        x = [0.0 1.0; 0.0 0.0]
+        u = [1.0 2.0; 0.0 0.0]
         bins = SA.SVector(0.0, 2.0)
         sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
@@ -66,8 +66,8 @@ Test.@testset "Core Correctness - Block A" begin
         # Sum = 1 + 1 + 2 = 4
         # Count = 3
         # Mean = 4/3
-        x3 = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
-        u3 = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0])
+        x3 = [0.0 1.0 0.0; 0.0 0.0 1.0]
+        u3 = [0.0 1.0 0.0; 0.0 0.0 1.0]
         val3 = SFC.calculate_structure_function(
             sf_type,
             x3,
@@ -82,8 +82,8 @@ Test.@testset "Core Correctness - Block A" begin
     Test.@testset "SF wiring and signed magnitude consistency" begin
         # Test case: 2 points at (0,0) and (1,0) -> rhat = (1, 0), nhat = (0, -1)
         # Velocities: (0,1) and (0,2) -> du = (0,1) [Transverse]
-        x = ([0.0, 1.0], [0.0, 0.0])
-        u = ([0.0, 0.0], [1.0, 2.0])
+        x = [0.0 1.0; 0.0 0.0]
+        u = [0.0 0.0; 1.0 2.0]
         bins = SA.SVector(0.0, 2.0)
 
         # Longitudinal Second Order: (du.rhat)^2 = 0^2 = 0
@@ -136,11 +136,35 @@ Test.@testset "Core Correctness - Block A" begin
             show_progress = false,
         )[1][1] == 0.0
     end
+
+    Test.@testset "3D invariant transverse and S3 semantics" begin
+        δu = SA.SVector(2.0, 3.0, 4.0)
+        r̂ = SA.SVector(1.0, 0.0, 0.0)
+
+        Test.@test SFT.S2SF(δu, r̂) ≈ SFT.L2SF(δu, r̂) + SFT.T2SF(δu, r̂)
+        Test.@test SFT.L2SF(δu, r̂) ≈ 4.0
+        Test.@test SFT.T2SF(δu, r̂) ≈ 25.0
+        Test.@test SFT.T2ComponentSF(δu, r̂) ≈ 12.5
+        Test.@test SFT.L3SF(δu, r̂) ≈ 8.0
+        Test.@test SFT.L1T2SF(δu, r̂) ≈ 50.0
+        Test.@test SFT.L1T2ComponentSF(δu, r̂) ≈ 25.0
+        Test.@test SFT.S3SF(δu, r̂) ≈ SFT.L3SF(δu, r̂) + SFT.L1T2SF(δu, r̂)
+        Test.@test SFT.S3SF(δu, r̂) != SFT.FullVectorStructureFunctionType(3)(δu, r̂)
+        Test.@test SFT.FullVectorStructureFunctionType(3)(δu, r̂) ≈ sqrt(sum(abs2, δu))^3
+    end
+
+    Test.@testset "Signed transverse operators use the documented 2D orientation" begin
+        δu = SA.SVector(2.0, 3.0)
+        r̂ = SA.SVector(1.0, 0.0)
+
+        Test.@test SFT.L2T1SF(δu, r̂) ≈ -12.0
+        Test.@test SFT.T3SF(δu, r̂) ≈ -27.0
+    end
 end
 
 Test.@testset "Type Stability and Performance - Block C" begin
-    x = ([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
-    u = ([1.0, 2.0, 3.0], [0.0, 0.0, 0.0])
+    x = [0.0 1.0 2.0; 0.0 0.0 0.0]
+    u = [1.0 2.0 3.0; 0.0 0.0 0.0]
     bins = SA.SVector(0.0, 3.0)
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
