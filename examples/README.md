@@ -133,80 +133,20 @@ julia -p 8 examples/distributed_parallel.jl
 
 ---
 
-### 5. Real Climate Data (`real_data_climate.jl`)
-
-**Best for**: Practical atmospheric/ocean applications
-
-```bash
-# Optional: install NetCDF support
-julia -e 'using Pkg; Pkg.add("NetCDF")'
-
-# Run with synthetic data (generates demo)
-julia examples/real_data_climate.jl
-```
-
-**What it does**:
-- Simulates realistic atmospheric turbulence data
-- Handles missing data (NaNs) and outliers
-- Constructs 3D coordinate systems
-- Performs K41 scaling analysis
-- Multi-time-step statistics
-
-**Key workflows**:
-1. Data loading (NetCDF, HDF5, CSV)
-2. Preprocessing (unit conversion, detrending)
-3. Structure function calculation
-4. K41 validation
-5. Temporal statistics
-
-**Real data sources**:
-- SOCRATES campaign: https://data.eol.ucar.edu/
-- ERA5 reanalysis: https://cds.climate.copernicus.eu/
-- MERRA-2: https://gmao.gsfc.nasa.gov/reanalysis/MERRA-2/
-- WRF simulations: Custom NetCDF output
-
-**Learn next**: `docs/real_data.md`
-
----
-
 ## Advanced Workflows
 
 ### Combining Backends
 
-**Scenario**: Process each file with GPU, aggregate across time
+**Scenario**: Process independent array slices with GPU, aggregate across time
 
 ```julia
-using StructureFunctions, DistributedArrays
+using StructureFunctions
 
-# Load time series in parallel
 for t in 1:n_time_steps
-    # Each worker computes one time step
-    result_t = @distributed (+) for i in workers()
-        data_i = load_time_slice(t, i)
-        x, u = construct_coordinates(data_i)
-        calculate_structure_function(x, u, bins; backend=GPUBackend())
-    end
+    x_t = @view x[:, :, t]
+    u_t = @view u[:, :, t]
+    result_t = calculate_structure_function(sf, x_t, u_t, bins; backend = GPUBackend())
 end
-```
-
-### Batch Processing Out-of-Core
-
-**Scenario**: Dataset too large for memory (terabytes)
-
-```julia
-# Process in streaming chunks
-all_sums = zeros(n_bins)
-all_counts = zeros(Int, n_bins)
-
-for chunk in read_chunks("huge_data.zarr")
-    x, u = extract_data(chunk)
-    result = calculate_structure_function(x, u, bins; backend=AutoBackend())
-    all_sums .+= result.sums
-    all_counts .+= result.counts
-end
-
-# Normalize at end
-final_sf = all_sums ./ all_counts
 ```
 
 ### Multi-Scale Nested Analysis
@@ -236,7 +176,7 @@ alpha_fine = estimate_exponent(result_fine)
 julia --project -e 'using Pkg; Pkg.instantiate()'
 
 # Run all in sequence
-for script in simple_2d threaded_calculation gpu_acceleration distributed_parallel real_data_climate; do
+for script in simple_2d threaded_calculation gpu_acceleration distributed_parallel; do
     echo "Running example: $script"
     julia examples/${script}.jl
 done
@@ -252,7 +192,6 @@ done
 | threaded_calculation | 50M pts | ~1 sec | Threaded (4 cores) |
 | gpu_acceleration | 1B pts | ~20 sec | GPU (A100) |
 | distributed_parallel | 1B pts | ~30 sec | Multi-process |
-| real_data_climate | 50K pts | ~0.5 sec | Serial |
 
 *Actual times vary by hardware. Use `@time` to measure.*
 
@@ -266,7 +205,6 @@ done
 - **Speed up my computation** → `threaded_calculation.jl`
 - **Use my GPU** → `gpu_acceleration.jl`
 - **Scale to a supercomputer** → `distributed_parallel.jl`
-- **Analyze real atmospheric data** → `real_data_climate.jl`
 - **Combine multiple approaches** → Mix the examples!
 
 ---
@@ -320,7 +258,6 @@ After the examples, dive into the comprehensive docs:
 - **Architecture**: `docs/architecture.md` — Internal design
 - **Backends**: `docs/backends.md` — Detailed backend guide
 - **Extensions**: `docs/extensions.md` — Lazy loading system
-- **Real Data**: `docs/real_data.md` — File I/O and workflows
 
 ---
 
@@ -352,7 +289,7 @@ To add a new example:
 
 - Check docstrings: `?calculate_structure_function`
 - Search examples/ for similar workflows
-- Read the relevant doc file (theory / backends / real_data)
+- Read the relevant doc file (theory / backends / gpu)
 - Open an issue on GitHub
 
 ---

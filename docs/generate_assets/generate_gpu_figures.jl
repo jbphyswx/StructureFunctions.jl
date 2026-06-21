@@ -28,10 +28,10 @@ function load_payload()
     return JSON.parsefile(JSON_PATH)
 end
 
-"""Read JSON section; accept legacy keys from older collector runs."""
-function _section(payload, key::String, legacy_keys...)
+"""Read JSON section; accept alternate keys from older collector runs."""
+function _section(payload, key::String, alternate_keys...)
     haskey(payload, key) && return payload[key]
-    for lk in legacy_keys
+    for lk in alternate_keys
         haskey(payload, lk) && return payload[lk]
     end
     return []
