@@ -13,13 +13,11 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     # Coordinates in 2D (meters)
     x_coords = rand(n_points) .* 50000.0
     y_coords = rand(n_points) .* 50000.0
-    x_tuple = (x_coords, y_coords)
     x_mat = [x_coords'; y_coords']
 
     # Velocities in 2D (m/s)
     u_coords = randn(n_points) .* 0.5
     v_coords = randn(n_points) .* 0.5
-    u_tuple = (u_coords, v_coords)
     u_mat = [u_coords'; v_coords']
 
     distance_bins = [0.0, 10000.0, 20000.0, 30000.0, 50000.0]
@@ -34,8 +32,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         # 1D Baseline Calculation
         sf1d = SFC.calculate_structure_function(
             SFT.L2SF,
-            x_tuple,
-            u_tuple,
+            x_mat,
+            u_mat,
             distance_bins;
             return_sums_and_counts = true,
             backend = SFC.SerialBackend(),
@@ -46,8 +44,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         # 2D Joint-Probability Calculation
         sf2d = SFC.calculate_structure_function(
             SFT.L2SF,
-            x_tuple,
-            u_tuple,
+            x_mat,
+            u_mat,
             distance_bins,
             l2_value_bins;
             backend = SFC.SerialBackend(),
@@ -77,8 +75,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         # 1D Baseline
         sf1d = SFC.calculate_structure_function(
             SFT.L3SF,
-            x_tuple,
-            u_tuple,
+            x_mat,
+            u_mat,
             distance_bins;
             return_sums_and_counts = true,
             backend = SFC.SerialBackend(),
@@ -89,8 +87,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         # 2D Joint
         sf2d = SFC.calculate_structure_function(
             SFT.L3SF,
-            x_tuple,
-            u_tuple,
+            x_mat,
+            u_mat,
             distance_bins,
             l3_value_bins;
             backend = SFC.SerialBackend(),
@@ -108,12 +106,12 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         end
     end
 
-    # 4. Test Tuple vs Array Input Equivalence
-    @testset "Tuple vs Array Equivalence" begin
-        sf_tuple = SFC.calculate_structure_function(
+    # 4. Test Array Input Equivalence
+    @testset "Array Equivalence" begin
+        sf_serial = SFC.calculate_structure_function(
             SFT.L2SF,
-            x_tuple,
-            u_tuple,
+            x_mat,
+            u_mat,
             distance_bins,
             l2_value_bins;
             backend = SFC.SerialBackend(),
@@ -132,16 +130,16 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             show_progress = false
         )
 
-        @test sf_tuple.sums == sf_array.sums
-        @test sf_tuple.counts == sf_array.counts
+        @test sf_serial.sums == sf_array.sums
+        @test sf_serial.counts == sf_array.counts
     end
 
     # 5. Test Threaded Backend Equivalence (OhMyThreads)
     @testset "Serial vs Threaded Equivalence" begin
         sf_serial = SFC.calculate_structure_function(
             SFT.L2SF,
-            x_tuple,
-            u_tuple,
+            x_mat,
+            u_mat,
             distance_bins,
             l2_value_bins;
             backend = SFC.SerialBackend(),
@@ -151,8 +149,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 
         sf_threaded = SFC.calculate_structure_function(
             SFT.L2SF,
-            x_tuple,
-            u_tuple,
+            x_mat,
+            u_mat,
             distance_bins,
             l2_value_bins;
             backend = SFC.ThreadedBackend(),
@@ -166,8 +164,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 
     # 6. Test Algebraic Operator Support (+)
     @testset "Base algebraic addition (+)" begin
-        sf1 = SFC.calculate_structure_function(SFT.L2SF, x_tuple, u_tuple, distance_bins, l2_value_bins; verbose=false, show_progress=false)
-        sf2 = SFC.calculate_structure_function(SFT.L2SF, x_tuple, u_tuple, distance_bins, l2_value_bins; verbose=false, show_progress=false)
+        sf1 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins; verbose=false, show_progress=false)
+        sf2 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins; verbose=false, show_progress=false)
         
         combined = sf1 + sf2
         @test combined.sums == sf1.sums .* 2

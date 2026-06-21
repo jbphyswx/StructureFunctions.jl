@@ -20,8 +20,8 @@ Distributed.@everywhere using SharedArrays: SharedArrays
 Test.@testset "Parallel Equivalence Verification" begin
     # Dataset
     N = 50
-    x = ([rand() for _ in 1:N], [rand() for _ in 1:N])
-    u = ([rand() for _ in 1:N], [rand() for _ in 1:N])
+    x = rand(2, N)
+    u = rand(2, N)
     bins = SA.SVector(0.0, 0.5, 1.0)
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
@@ -56,14 +56,17 @@ Test.@testset "Parallel Equivalence Verification" begin
     end
 
     # 3. Distributed
-    sx = (SharedArrays.SharedArray(x[1]), SharedArrays.SharedArray(x[2]))
-    su = (SharedArrays.SharedArray(u[1]), SharedArrays.SharedArray(u[2]))
+    sx = SharedArrays.SharedArray{eltype(x)}(size(x))
+    su = SharedArrays.SharedArray{eltype(u)}(size(u))
+    sx .= x
+    su .= u
 
-    res_dist = SFC.parallel_calculate_structure_function(
+    res_dist = SFC.calculate_structure_function(
         sf_type,
         sx,
         su,
         bins;
+        backend = SFC.DistributedBackend(),
         verbose = false,
         show_progress = false,
         return_sums_and_counts = true,
@@ -77,11 +80,12 @@ Test.@testset "Parallel Equivalence Verification" begin
     end
 
     # 4. Distributed with bin count (Int) and LogBinEdges
-    res_dist_int = SFC.parallel_calculate_structure_function(
+    res_dist_int = SFC.calculate_structure_function(
         sf_type,
         sx,
         su,
         2;  # n_bins = 2
+        backend = SFC.DistributedBackend(),
         bin_spacing = LogBinEdges,
         verbose = false,
         show_progress = false,

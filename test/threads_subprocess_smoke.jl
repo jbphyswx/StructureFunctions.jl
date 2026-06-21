@@ -2,8 +2,8 @@ using Test: Test
 using OhMyThreads: OhMyThreads
 using StructureFunctions: StructureFunctions as SF
 
-x = (collect(0.0:1.0:7.0), collect(0.0:1.0:7.0))
-u = (collect(1.0:1.0:8.0), collect(2.0:1.0:9.0))
+x = vcat(collect(0.0:1.0:7.0)', collect(0.0:1.0:7.0)')
+u = vcat(collect(1.0:1.0:8.0)', collect(2.0:1.0:9.0)')
 bins = [0.0, 20.0]
 
 serial = SF.calculate_structure_function(
