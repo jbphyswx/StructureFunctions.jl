@@ -32,13 +32,13 @@ primary computational bottleneck in the package.
 abstract type AbstractBinEdges{T} <: AbstractVector{T} end
 
 # ========================================================================= #
-# 1. Plain Fallback / Wrapped Bin Edges
+# 1. Generic Wrapped Bin Edges
 # ========================================================================= #
 
 """
     BinEdges(edges::AbstractVector{T})
 
-Generic fallback wrapper for arbitrary sorted vectors of bin edges.
+Generic wrapper for arbitrary sorted vectors of bin edges.
 Bypasses range-specific optimizations but conforms to the `AbstractBinEdges` interface.
 
 ### Behavior
@@ -133,7 +133,7 @@ Base.getindex(v::LinearBinEdges, i::Int) = v.edges[i]
 end
 
 @inline function Base.searchsortedfirst(v::LinearBinEdges, x, o::Base.Order.Ordering)
-    # Fast path for forward ordering (default), fallback for custom ordering
+    # Fast path for forward ordering; delegate custom ordering to the wrapped vector.
     if o isa Base.Order.ForwardOrdering
         return searchsortedfirst(v, x)
     else
@@ -199,7 +199,7 @@ LogBinEdges_from_log_edges(log_edges::AbstractVector{T}) where {T} =
 """
     physical_edges_vector(bins::LogBinEdges) -> Vector
 
-Materialize physical bin edges `exp(log_edges[i])` for display or legacy consumers.
+Materialize physical bin edges `exp(log_edges[i])` for display or generic consumers.
 Not used on the digitize hot path.
 """
 function physical_edges_vector(bins::LogBinEdges{T}) where {T}

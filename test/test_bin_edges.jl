@@ -6,7 +6,7 @@ using Random: Random
 Test.@testset "BinEdges Tests" begin
     for T in (Float64, Float32)
         # =====================================================================
-        # 1. Fallback BinEdges
+        # 1. Generic BinEdges
         # =====================================================================
         raw_vec = T[1.0, 2.5, 5.0, 10.0]
         be = SF.BinEdges(raw_vec)
@@ -79,7 +79,7 @@ Test.@testset "BinEdges Tests" begin
         # =====================================================================
         # 4. InfPaddedBinEdges
         # =====================================================================
-        # Wrap fallback vector
+        # Wrap generic vector
         padded_be = SF.InfPaddedBinEdges(be)
         Test.@test length(padded_be) == 6
         Test.@test padded_be[1] == typemin(T)
@@ -149,8 +149,8 @@ Test.@testset "BinEdges Tests" begin
     Test.@testset "calculate_structure_function uses AbstractBinEdges in hot loop" begin
         Random.seed!(42)
         n = 40
-        x = (rand(n), rand(n))
-        u = (randn(n), randn(n))
+        x = rand(2, n)
+        u = randn(2, n)
         lin_range = range(0.01, 2.0, length = 11)
         log_vec = exp.(range(log(0.01), log(2.0), length = 11))
         sft = SFT.L2SF

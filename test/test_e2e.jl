@@ -24,8 +24,8 @@ Test.@testset "E2E: Structure Function E2E Suite" begin
     u = real.(SyntheticData.generate_spectral_field(xs, ys; peaks = peaks_u))
     v = real.(SyntheticData.generate_spectral_field(xs, ys; peaks = peaks_v))
 
-    pos = (xs, ys)
-    vals = (u, v)
+    pos = vcat(vec(xs)', vec(ys)')
+    vals = vcat(vec(u)', vec(v)')
 
     # Target binning
     r_bins = collect(0.1 .+ (0:5) .* 0.4)
@@ -75,8 +75,8 @@ Test.@testset "E2E: Structure Function E2E Suite" begin
         )
         sf32 = SFC.calculate_structure_function(
             SFT.SecondOrderStructureFunction,
-            (xs32, ys32),
-            (u32, v32),
+            vcat(vec(xs32)', vec(ys32)'),
+            vcat(vec(u32)', vec(v32)'),
             r32;
             verbose = false,
             show_progress = false,

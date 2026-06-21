@@ -5,30 +5,37 @@ using PrecompileTools: PrecompileTools
 
 # using Distributed
 # @everywhere include("ParallelCalculations.jl") # this works w/ include("src/StructureFunctions.jl") but not w/ using StructureFunctions, and the former dumps directly into Main...
-# using NaNStatistics # consider making this a strong dependency for easier use, needed for parallel but I'm sure we'll need it once we work with real data...
-
 include("BinEdges.jl")
 include("HelperFunctions.jl")
+include("AuxiliaryAxes.jl")
 include("StructureFunctionTypes.jl")
 include("StructureFunctionObjects.jl")
 include("Calculations.jl")
-include("SpectralAnalysis.jl")
+include("KHM.jl")
 
 import .StructureFunctionObjects:
-    AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2D
+    AbstractStructureFunction,
+    StructureFunction,
+    StructureFunctionSumsAndCounts,
+    StructureFunction2D,
+    StructureFunctionTensor,
+    HelmholtzDecomposition2D
 
 using .HelperFunctions
 using .StructureFunctionTypes
 using .StructureFunctionObjects
 using .Calculations
-using .SpectralAnalysis
+using .KHM
 
 # Re-export key APIs
 export AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges, LogBinEdges_from_log_edges,
     InfPaddedBinEdges, physical_edges_vector, n_histogram_bins
 export calculate_structure_function, calculate_structure_function!, calculate_structure_functions_single_pass,
     calculate_structure_functions_single_pass!, calculate_structure_functions_single_pass_2d,
-    calculate_structure_functions_single_pass_2d!, postprocess_single_pass_results, ten_type_from_eight_2d,
+    calculate_structure_functions_single_pass_2d!, helmholtz_decompose_2d,
+    append_helmholtz_rotational_divergent_rows,
+    marginalize_sp2d_then_append_helmholtz_rows,
+    calculate_structure_function_tensor, calculate_structure_function_tensor!,
     calculate_structure_function_slices!, calculate_structure_function_2d_slices!,
     calculate_structure_functions_single_pass_slices!, calculate_structure_functions_single_pass_2d_slices!,
     flatten_grid_slices, GPUSFWorkspace, reset_histogram!, release!,
@@ -36,17 +43,20 @@ export calculate_structure_function, calculate_structure_function!, calculate_st
 export marginalize
 export AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
     GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend
-export serial_calculate_structure_function, serial_calculate_structure_function!,
-    threaded_calculate_structure_function, threaded_calculate_structure_function!
 export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2D
+export StructureFunctionTensor, HelmholtzDecomposition2D
 export LongitudinalSecondOrderStructureFunctionType,
     TransverseSecondOrderStructureFunctionType
+export AbstractPairwiseStructureFunctionType, AbstractDerivedStructureFunctionType
 export SecondOrderStructureFunctionType, ThirdOrderStructureFunctionType
 export DiagonalConsistentThirdOrderStructureFunctionType,
     DiagonalInconsistentThirdOrderStructureFunctionType
 export OffDiagonalConsistentThirdOrderStructureFunctionType,
     OffDiagonalInconsistentThirdOrderStructureFunctionType
+export RotationalSecondOrderStructureFunctionType, DivergentSecondOrderStructureFunctionType,
+    HelmholtzDecomposition2DType
 export L2SFType, T2SFType, L3SFType, S2SFType, S3SFType, T3SFType, L2T1SFType, L1T2SFType
+export T2ComponentSFType, L1T2ComponentSFType
 
 export LongitudinalSecondOrderStructureFunction, TransverseSecondOrderStructureFunction
 export SecondOrderStructureFunction, ThirdOrderStructureFunction
@@ -55,24 +65,27 @@ export DiagonalConsistentThirdOrderStructureFunction,
 export OffDiagonalConsistentThirdOrderStructureFunction,
     OffDiagonalInconsistentThirdOrderStructureFunction
 export L2SF, T2SF, L3SF, S2SF, S3SF, T3SF, L2T1SF, L1T2SF
-
-export SpectralAnalysis
-export DirectSumBackend, FINUFFTBackend, FFTBackend
-export calculate_spectrum
+export RotationalSecondOrderStructureFunction, DivergentSecondOrderStructureFunction,
+    HelmholtzDecomposition2DOperator
+export T2ComponentSF, L1T2ComponentSF
+export get_structure_function_type
+export KHM
+export transverse_norm2,
+    transverse_component_norm2,
+    transverse_component,
+    transverse_basis,
+    transverse_basis_vector,
+    AbstractTransverseBasisConvention,
+    CanonicalTransverseBasis,
+    ReferenceAxisTransverseBasis,
+    CoordinateGaugeTransverseBasis,
+    UserTransverseBasis,
+    midpoints
 
 
 # ---------------------------------------------------------------------------
 # Initialization & Precompilation
 # ---------------------------------------------------------------------------
-
-
-# function __init__()
-#     # @require Distributed="8ba89e20-285c-5b6f-9357-94700520ee1b" include("ParallelCalculations.jl")
-#     @require Distributed="8ba89e20-285c-5b6f-9357-94700520ee1b" begin # maybe this always works because Distributed is in the extension?
-#         println(pkgdir(Distributed))
-#         include("ParallelCalculations.jl") # This seems to be almost twice as fast as the extension, not sure why...
-# end
-# end
 
 PrecompileTools.@setup_workload begin
     include("precompile.jl")

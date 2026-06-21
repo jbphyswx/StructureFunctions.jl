@@ -4,8 +4,10 @@ using LinearAlgebra: LinearAlgebra as LA
 using ..HelperFunctions: HelperFunctions as SFH
 
 abstract type AbstractStructureFunctionType end
+abstract type AbstractPairwiseStructureFunctionType <: AbstractStructureFunctionType end
+abstract type AbstractDerivedStructureFunctionType <: AbstractStructureFunctionType end
 
-# Identity call for backward compatibility: Allows SFType() where SFType is now a constant instance.
+# Identity call: allows `SFType()` for singleton operator instances.
 (sf::AbstractStructureFunctionType)() = sf
 
 # ---------------------------------------------------------------------------
@@ -38,7 +40,7 @@ end
 Parametric type representing structure function operators
 with **longitudinal (`NL`)** and **transverse (`NT`)** contributions.
 """
-struct ProjectedStructureFunctionType{NL, NT} <: AbstractStructureFunctionType end
+struct ProjectedStructureFunctionType{NL, NT} <: AbstractPairwiseStructureFunctionType end
 
 const ProjectedStructureFunction = ProjectedStructureFunctionType # Longhand alias for the type
 
@@ -70,15 +72,15 @@ Compute the structure function kernel for longitudinal/transverse components.
     # Transverse contribution
     if !iszero(NT)
         if NT == 2
-            # fast path: sum-of-squares, no sqrt
-            ex = :($ex * norm2(SFH.δu_t(δu, r̂)))
+            # fast path: invariant transverse energy, no basis and no sqrt
+            ex = :($ex * SFH.transverse_norm2(δu, r̂))
         elseif NT == 3
             # standard magnitude cubed (precomputed scalar), avoids fractional exponent
             ex = :($ex * (SFH.mδu_t(δu, r̂)^3))
         elseif NT == 1
             ex = :($ex * SFH.mδu_t(δu, r̂))
         else
-            # fallback: use scalar magnitude raised to NT (for uncommon powers)
+            # generic path: use scalar magnitude raised to NT (for uncommon powers)
             ex = :($ex * (SFH.mδu_t(δu, r̂)^$NT))
         end
     end
@@ -88,42 +90,75 @@ end
 
 # ---------------------------------------------------------------------------
 """
+    SecondOrderStructureFunctionType()
+
+Full-vector second-order structure function, ``S2SF = ||δu||²``.
+"""
+struct SecondOrderStructureFunctionType <: AbstractPairwiseStructureFunctionType end
+
+"""
+    ThirdOrderStructureFunctionType()
+
+Third-order scalar flux structure function,
+``S3SF = δu_L * ||δu||² = L3SF + L1T2SF``.
+It is intentionally not ``||δu||³``.
+"""
+struct ThirdOrderStructureFunctionType <: AbstractPairwiseStructureFunctionType end
+
+"""
     FullVectorStructureFunctionType{NF}
 
-Parametric type representing structure function operators
-with only the **full vector magnitude** ||δu||.
+Generic full-vector norm-power operator, ``||δu||^NF``. This is not used for
+`S3SF`, whose conventional definition is [`ThirdOrderStructureFunctionType`](@ref).
 """
-struct FullVectorStructureFunctionType{NF} <: AbstractStructureFunctionType end
+struct FullVectorStructureFunctionType{NF} <: AbstractPairwiseStructureFunctionType end
 
-const FullVectorStructureFunction = FullVectorStructureFunctionType # Longhand alias for the type
+const FullVectorStructureFunction = FullVectorStructureFunctionType
 
 FullVectorStructureFunctionType(NF::Integer) = FullVectorStructureFunctionType{NF}()
 
-"""
-    (sf::FullVectorStructureFunctionType{NF})(δu, r̂)
+@inline (::SecondOrderStructureFunctionType)(δu, r̂) = norm2(δu)
 
-Compute the structure function kernel for the full vector magnitude:
+@inline (::ThirdOrderStructureFunctionType)(δu, r̂) =
+    SFH.mδu_l(δu, r̂) * norm2(δu)
 
-- `NF` : power of ||δu||
-"""
-@generated function (sf::FullVectorStructureFunctionType{NF})(δu, r̂) where {NF}
-    if NF == 2
-        return :(norm2(δu))
-    else
-        return :(LA.norm(δu)^$NF)
-    end
+@generated function (::FullVectorStructureFunctionType{NF})(δu, r̂) where {NF}
+    NF == 2 && return :(norm2(δu))
+    return :(LA.norm(δu)^$NF)
 end
+
+"""
+    TransverseComponentSecondOrderStructureFunctionType()
+
+Per-component transverse second-order structure function,
+``||δu_t||² / (D - 1)``. This is distinct from `T2SF`, which stores the total
+transverse energy.
+"""
+struct TransverseComponentSecondOrderStructureFunctionType <: AbstractPairwiseStructureFunctionType end
+
+"""
+    LongitudinalTransverseComponentThirdOrderStructureFunctionType()
+
+Per-component variant of `L1T2SF`,
+``δu_L * ||δu_t||² / (D - 1)``.
+"""
+struct LongitudinalTransverseComponentThirdOrderStructureFunctionType <: AbstractPairwiseStructureFunctionType end
+
+@inline (::TransverseComponentSecondOrderStructureFunctionType)(δu, r̂) =
+    SFH.transverse_component_norm2(δu, r̂)
+
+@inline (::LongitudinalTransverseComponentThirdOrderStructureFunctionType)(δu, r̂) =
+    SFH.mδu_l(δu, r̂) * SFH.transverse_component_norm2(δu, r̂)
 
 # ---------------------------------------------------------------------------
 # Named Constants: Type Aliases (longhand and shorthands)
 
 # 2nd order Type Aliases
-const SecondOrderStructureFunctionType = FullVectorStructureFunctionType{2}
 const LongitudinalSecondOrderStructureFunctionType = ProjectedStructureFunctionType{2, 0}
 const TransverseSecondOrderStructureFunctionType = ProjectedStructureFunctionType{0, 2}
+const T2ComponentSFType = TransverseComponentSecondOrderStructureFunctionType
 
 # 3rd order Type Aliases
-const ThirdOrderStructureFunctionType = FullVectorStructureFunctionType{3}
 const DiagonalConsistentThirdOrderStructureFunctionType =
     ProjectedStructureFunctionType{3, 0}
 const DiagonalInconsistentThirdOrderStructureFunctionType =
@@ -142,6 +177,7 @@ const L3SFType = DiagonalConsistentThirdOrderStructureFunctionType
 const T3SFType = OffDiagonalConsistentThirdOrderStructureFunctionType
 const L2T1SFType = DiagonalInconsistentThirdOrderStructureFunctionType
 const L1T2SFType = OffDiagonalInconsistentThirdOrderStructureFunctionType
+const L1T2ComponentSFType = LongitudinalTransverseComponentThirdOrderStructureFunctionType
 
 # ---------------------------------------------------------------------------
 # Named Constants: Singleton Functors (The "Longhand" names now point to instances)
@@ -151,7 +187,7 @@ const SecondOrderStructureFunction = SecondOrderStructureFunctionType()
 const LongitudinalSecondOrderStructureFunction =
     LongitudinalSecondOrderStructureFunctionType()
 const TransverseSecondOrderStructureFunction = TransverseSecondOrderStructureFunctionType()
-const TransverseStructureFunction = TransverseSecondOrderStructureFunction # Legacy alias
+const T2ComponentSF = TransverseComponentSecondOrderStructureFunctionType()
 
 # 3rd order Singleton Functors
 const ThirdOrderStructureFunction = ThirdOrderStructureFunctionType()
@@ -163,6 +199,7 @@ const OffDiagonalInconsistentThirdOrderStructureFunction =
     OffDiagonalInconsistentThirdOrderStructureFunctionType()
 const OffDiagonalConsistentThirdOrderStructureFunction =
     OffDiagonalConsistentThirdOrderStructureFunctionType()
+const L1T2ComponentSF = LongitudinalTransverseComponentThirdOrderStructureFunctionType()
 
 # Shorthand Singleton Functors
 const S2SF = SecondOrderStructureFunction
@@ -174,12 +211,35 @@ const T3SF = OffDiagonalConsistentThirdOrderStructureFunction
 const L2T1SF = DiagonalInconsistentThirdOrderStructureFunction
 const L1T2SF = OffDiagonalInconsistentThirdOrderStructureFunction
 
-# Compatibility layer for Rotational/Divergent (placeholders)
-struct RotationalSecondOrderStructureFunctionType <: AbstractStructureFunctionType end
-struct DivergentSecondOrderStructureFunctionType <: AbstractStructureFunctionType end
+"""
+    RotationalSecondOrderStructureFunctionType()
+
+Helmholtz-derived 2D rotational second-order component. This is not a
+pairwise operator; compute it from binned `L2SF`/`T2SF` with
+`helmholtz_decompose_2d`.
+"""
+struct RotationalSecondOrderStructureFunctionType <: AbstractDerivedStructureFunctionType end
+
+"""
+    DivergentSecondOrderStructureFunctionType()
+
+Helmholtz-derived 2D divergent second-order component. This is not a
+pairwise operator; compute it from binned `L2SF`/`T2SF` with
+`helmholtz_decompose_2d`.
+"""
+struct DivergentSecondOrderStructureFunctionType <: AbstractDerivedStructureFunctionType end
+
+"""
+    HelmholtzDecomposition2DType()
+
+Derived quantity describing the 2D isotropic Helmholtz decomposition into
+rotational and divergent second-order components.
+"""
+struct HelmholtzDecomposition2DType <: AbstractDerivedStructureFunctionType end
 
 const RotationalSecondOrderStructureFunction = RotationalSecondOrderStructureFunctionType()
 const DivergentSecondOrderStructureFunction = DivergentSecondOrderStructureFunctionType()
+const HelmholtzDecomposition2DOperator = HelmholtzDecomposition2DType()
 
 # ---------------------------------------------------------------------------
 # Convenience Mappings
@@ -189,9 +249,10 @@ const SF_TYPE_MAP = Dict{Symbol, AbstractStructureFunctionType}(
     :LongitudinalSecondOrderStructureFunction =>
         LongitudinalSecondOrderStructureFunction,
     :TransverseSecondOrderStructureFunction => TransverseSecondOrderStructureFunction,
-    :TransverseStructureFunction => TransverseStructureFunction,
+    :T2ComponentSF => T2ComponentSF,
     :RotationalSecondOrderStructureFunction => RotationalSecondOrderStructureFunction,
     :DivergentSecondOrderStructureFunction => DivergentSecondOrderStructureFunction,
+    :HelmholtzDecomposition2D => HelmholtzDecomposition2DOperator,
     :ThirdOrderStructureFunction => ThirdOrderStructureFunction,
     :DiagonalConsistentThirdOrderStructureFunction =>
         DiagonalConsistentThirdOrderStructureFunction,
@@ -203,15 +264,20 @@ const SF_TYPE_MAP = Dict{Symbol, AbstractStructureFunctionType}(
         OffDiagonalConsistentThirdOrderStructureFunction,
     :L2SF => L2SF,
     :T2SF => T2SF,
+    :RotationalSF => RotationalSecondOrderStructureFunction,
+    :DivergentSF => DivergentSecondOrderStructureFunction,
     :L3SF => L3SF,
     :S2SF => S2SF,
     :S3SF => S3SF,
     :T3SF => T3SF,
     :L2T1SF => L2T1SF,
     :L1T2SF => L1T2SF,
+    :L1T2ComponentSF => L1T2ComponentSF,
 )
 
 export AbstractStructureFunctionType,
+    AbstractPairwiseStructureFunctionType,
+    AbstractDerivedStructureFunctionType,
     LongitudinalSecondOrderStructureFunctionType,
     TransverseSecondOrderStructureFunctionType,
     SecondOrderStructureFunctionType,
@@ -222,19 +288,26 @@ export AbstractStructureFunctionType,
     OffDiagonalConsistentThirdOrderStructureFunctionType,
     RotationalSecondOrderStructureFunctionType,
     DivergentSecondOrderStructureFunctionType,
+    HelmholtzDecomposition2DType,
+    TransverseComponentSecondOrderStructureFunctionType,
+    LongitudinalTransverseComponentThirdOrderStructureFunctionType,
     S2SFType, L2SFType, T2SFType, S3SFType, L3SFType, T3SFType, L2T1SFType, L1T2SFType,
+    T2ComponentSFType, L1T2ComponentSFType,
     SecondOrderStructureFunction,
     LongitudinalSecondOrderStructureFunction,
     TransverseSecondOrderStructureFunction,
-    TransverseStructureFunction,
+    T2ComponentSF,
     RotationalSecondOrderStructureFunction,
     DivergentSecondOrderStructureFunction,
+    HelmholtzDecomposition2DOperator,
     ThirdOrderStructureFunction,
     DiagonalConsistentThirdOrderStructureFunction,
     DiagonalInconsistentThirdOrderStructureFunction,
     OffDiagonalInconsistentThirdOrderStructureFunction,
     OffDiagonalConsistentThirdOrderStructureFunction,
-    S2SF, L2SF, T2SF, S3SF, L3SF, T3SF, L2T1SF, L1T2SF, ProjectedStructureFunctionType,
+    L1T2ComponentSF,
+    S2SF, L2SF, T2SF, S3SF, L3SF, T3SF, L2T1SF, L1T2SF,
+    T2ComponentSF, L1T2ComponentSF, ProjectedStructureFunctionType,
     FullVectorStructureFunctionType,
     ProjectedStructureFunction,
     FullVectorStructureFunction,
@@ -269,11 +342,13 @@ function get_structure_function_type(order::Int, mode::Symbol)
             return LongitudinalSecondOrderStructureFunction
         elseif mode ∈ (:transverse, :trans, :T)
             return TransverseSecondOrderStructureFunction
+        elseif mode ∈ (:transverse_component, :trans_component, :Tcomponent)
+            return T2ComponentSF
         elseif mode ∈ (:scalar, :total, :S, :full)
             return SecondOrderStructureFunction
-        elseif mode == :rotational
+        elseif mode ∈ (:rotational, :rot)
             return RotationalSecondOrderStructureFunction
-        elseif mode == :divergent
+        elseif mode ∈ (:divergent, :div)
             return DivergentSecondOrderStructureFunction
         end
     elseif order == 3
@@ -287,6 +362,8 @@ function get_structure_function_type(order::Int, mode::Symbol)
             return DiagonalInconsistentThirdOrderStructureFunction
         elseif mode == :off_diagonal_inconsistent
             return OffDiagonalInconsistentThirdOrderStructureFunction
+        elseif mode ∈ (:off_diagonal_inconsistent_component, :L1T2_component)
+            return L1T2ComponentSF
         end
     end
     error("No mapping for order $order and mode $mode")
@@ -305,8 +382,13 @@ end
 Returns the order of the structure function.
 """
 order(::ProjectedStructureFunctionType{NL, NT}) where {NL, NT} = NL + NT
+order(::SecondOrderStructureFunctionType) = 2
+order(::ThirdOrderStructureFunctionType) = 3
 order(::FullVectorStructureFunctionType{NF}) where {NF} = NF
+order(::TransverseComponentSecondOrderStructureFunctionType) = 2
+order(::LongitudinalTransverseComponentThirdOrderStructureFunctionType) = 3
 order(::RotationalSecondOrderStructureFunctionType) = 2
 order(::DivergentSecondOrderStructureFunctionType) = 2
+order(::HelmholtzDecomposition2DType) = 2
 
 end # module
