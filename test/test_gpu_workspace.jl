@@ -146,15 +146,6 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     )
     Test.@test sums_drv ≈ sums_slices atol = 1e-12
 
-    # --- flatten_grid_slices ---
-    Ny, Nx = 5, 8
-    x_grid = rand(FT, 2, Ny, Nx, T)
-    u_grid = rand(FT, 2, Ny, Nx, T)
-    x_flat, u_flat = SFC.flatten_grid_slices(x_grid, u_grid)
-    Test.@test size(x_flat) == (2, Ny * Nx, T)
-    Test.@test x_flat[:, 1, 1] ≈ x_grid[:, 1, 1, 1]
-    Test.@test x_flat[:, 2, 1] ≈ x_grid[:, 2, 1, 1]
-
     # --- 2D joint slices ---
     n_dist = length(linear_bins) - 1
     n_val = length(value_bins) - 1

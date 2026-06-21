@@ -26,22 +26,6 @@ function joint2d_smem_exact end
 """256-aligned joint compile width (capped at max). Implemented in GPU extension."""
 function joint2d_smem_align256 end
 
-"""
-    flatten_grid_slices(x, u)
-
-Reshape `(N_dims, Ny, Nx, T)` grid snapshots to `(N_dims, Ny*Nx, T)` column-major
-flattened point index (matches the matrix layout expected by slice-batch APIs).
-"""
-function flatten_grid_slices(x::AbstractArray{T, 4}, u::AbstractArray{T, 4}) where {T}
-    # This is stupid why it it asuming 4d? and is this for 2d or 3d data? here x is 4d so what is ther to flatten? seems like agent bs
-    N_dims, Ny, Nx, T_len = size(x)
-    size(u) == (N_dims, Ny, Nx, T_len) ||
-        throw(DimensionMismatch("u must match x shape $(size(x)); got $(size(u))"))
-    N_pts = Ny * Nx
-    x_out = reshape(x, N_dims, N_pts, T_len)
-    u_out = reshape(u, N_dims, N_pts, T_len)
-    return x_out, u_out
-end
 
 """
     gpu_calculate_structure_function(...)
