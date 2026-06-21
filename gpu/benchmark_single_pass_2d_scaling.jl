@@ -2,7 +2,7 @@
 """
     benchmark_single_pass_2d_scaling.jl
 
-One-hour (T=1) GPU timings for eight-type single-pass 2D vs reference kernels.
+One-hour (T=1) GPU timings for six-type single-pass 2D vs reference kernels.
 
 Run inside a GPU allocation only:
 
@@ -24,7 +24,7 @@ using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
 
 function _synthetic_value_bins_ntuple(n_bins::Int, ::Type{FT}) where {FT <: AbstractFloat}
     template = InfPaddedBinEdges(LinearBinEdges(range(FT(-1), FT(2); length = n_bins + 1)))
-    return ntuple(_ -> template, 8)
+    return ntuple(_ -> template, 6)
 end
 
 function _bench(f, warmup::Int, repeat_::Int)
@@ -53,7 +53,7 @@ function main()
     gpu_backend = SF.GPUBackend(ka_backend)
 
     println("=" ^ 72)
-    println("Eight-type single_pass_2d vs GPU reference kernels (T=1 hour each)")
+    println("Six-type single_pass_2d vs GPU reference kernels (T=1 hour each)")
     println("Device: ", CUDA.name(CUDA.device()))
     @printf("N=%d  dtype=%s  warmup=%d  repeat=%d\n", N, FT, warmup, repeat_)
     println("=" ^ 72)
@@ -71,8 +71,8 @@ function main()
 
     # --- Production-style path: in-place slice batch, kernel only ---
     ws_sp2d = SFC.GPUSFWorkspace(ka_backend, dist_vec, value_bins; kind = :single_pass_2d)
-    sums_sp2d = zeros(FT, 8, n_dist, n_val, 1)
-    counts_sp2d = zeros(Int64, 8, n_dist, n_val, 1)
+    sums_sp2d = zeros(FT, 6, n_dist, n_val, 1)
+    counts_sp2d = zeros(Int64, 6, n_dist, n_val, 1)
     sp2d_run = () -> SFC.calculate_structure_functions_single_pass_2d_slices!(
         sums_sp2d, counts_sp2d, x_batch, u_batch, dist_vec, value_bins;
         backend = gpu_backend, workspace = ws_sp2d,
@@ -90,23 +90,23 @@ function main()
     t_l2 = _bench(l2_run, warmup, repeat_)
     @printf("[ref]   1D L2SF tiled kernel        %8.4f s   (%8.2f ms)\n", t_l2, t_l2 * 1000)
 
-    # --- Eight-type single-pass 1D: kernel-only (in-place) ---
+    # --- Six-type single-pass 1D: kernel-only (in-place) ---
     ws_sp1 = SFC.GPUSFWorkspace(ka_backend, dist_vec; kind = :single_pass)
-    sums_sp1 = zeros(FT, 8, n_dist)
-    counts_sp1 = zeros(Int64, 8, n_dist)
+    sums_sp1 = zeros(FT, 6, n_dist)
+    counts_sp1 = zeros(Int64, 6, n_dist)
     sp1_kernel_run = () -> SFC.calculate_structure_functions_single_pass!(
         sums_sp1, counts_sp1, x2, u1, dist_vec;
         backend = gpu_backend, workspace = ws_sp1,
     )
     t_sp1_kernel = _bench(sp1_kernel_run, warmup, repeat_)
-    @printf("[ref]   8-type sp1d kernel (!)      %8.3f s   (%8.1f ms)\n", t_sp1_kernel, t_sp1_kernel * 1000)
+    @printf("[ref]   6-type sp1d kernel (!)      %8.3f s   (%8.1f ms)\n", t_sp1_kernel, t_sp1_kernel * 1000)
 
-    # --- Eight-type single-pass 1D: full allocating API (+ postprocess) ---
+    # --- Six-type single-pass 1D: full allocating API (+ Helmholtz append) ---
     sp1_full_run = () -> SFC.calculate_structure_functions_single_pass(
         x2, u1, dist_vec; backend = gpu_backend, workspace = ws_sp1,
     )
     t_sp1_full = _bench(sp1_full_run, warmup, repeat_)
-    @printf("[ref]   8-type sp1d full API        %8.3f s   (%8.1f ms)\n", t_sp1_full, t_sp1_full * 1000)
+    @printf("[ref]   6-type sp1d full API        %8.3f s   (%8.1f ms)\n", t_sp1_full, t_sp1_full * 1000)
 
     @printf(
         "\nRatios at N=%d:\n  sp2d / L2SF tiled:        %.0f×\n  sp2d / sp1d kernel:       %.1f×\n  sp1d full / sp1d kernel:  %.1f×\n",
@@ -114,7 +114,7 @@ function main()
     )
     println(
         "\nNote: single-pass 1D/2D use tiled128 pair traversal when NB ≤ 64. ",
-        "2D uses global atomics into (8, n_dist, n_val); 1D uses block-local (8, NB).",
+        "2D uses global atomics into (6, n_dist, n_val); 1D uses block-local (6, NB).",
     )
 
     SFC.release!(ws_sp2d)

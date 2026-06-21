@@ -756,28 +756,28 @@ function _tiled_kernel_def(TILE::Int, regpriv::Bool, nosqrt::Bool, dim2::Bool, b
 
     extra_param_exprs = if bin_kind === :linear
         (
-            :(first_edge::FT),
-            :(last_edge::FT),
-            :(inv_step::FT),
-            :(offset::FT),
-            :(step_val::FT),
+            :first_edge,
+            :last_edge,
+            :inv_step,
+            :offset,
+            :step_val,
         )
     elseif bin_kind === :log
         (
-            :(@Const(edges)),
+            :(@Const(edges::AbstractVector{FT})),
             :(@Const(lut)),
             :(e_min::Int),
         )
     else
-        (:(@Const(distance_bins)),)
+        (:(@Const(distance_bins::AbstractVector{FT})),)
     end
 
     return quote
         KA.@kernel function $(sym)(
             output,
             counts,
-            x_mat,
-            u_mat,
+            x_mat::AbstractMatrix{FT},
+            u_mat::AbstractMatrix{FT},
             sf_type,
             N_points::Int,
             N_dims::Int,

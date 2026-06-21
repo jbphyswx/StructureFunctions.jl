@@ -155,7 +155,7 @@ end
 function _cuda_synthetic_value_bins_ntuple(n_bins::Int, ::Type{FT}) where {FT}
     edges = collect(FT, range(-1.0, 2.0; length = n_bins + 1))
     template = vcat(FT(-Inf), edges, FT(Inf))
-    return ntuple(_ -> copy(template), 8)
+    return ntuple(_ -> copy(template), 6)
 end
 
 Test.@testset "CUDA single-pass 2D parity" begin
@@ -168,7 +168,7 @@ Test.@testset "CUDA single-pass 2D parity" begin
     distance_bins = exp.(range(log(FT(1000)), log(FT(50000)); length = 6))
     value_bins = _cuda_synthetic_value_bins_ntuple(10, FT)
 
-    sums_ref = zeros(Float64, 8, length(distance_bins) - 1, length(value_bins[1]) - 1)
+    sums_ref = zeros(Float64, 6, length(distance_bins) - 1, length(value_bins[1]) - 1)
     counts_ref = zeros(UInt32, size(sums_ref))
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_ref, counts_ref, x_cpu, u_cpu, distance_bins, value_bins;
