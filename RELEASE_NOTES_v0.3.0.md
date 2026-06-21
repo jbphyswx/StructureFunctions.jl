@@ -33,15 +33,13 @@ StructureFunctions.jl v0.3.0 is a major release featuring a complete backend sys
 - **docs/architecture.md**: Module organization, type hierarchy, dispatch mechanism
 - **docs/backends.md**: Detailed guide for each backend with performance tables
 - **docs/extensions.md**: Lazy loading system and custom extension development
-- **docs/real_data.md**: File I/O workflows, NaN handling, preprocessing
-- **examples/**: 5 complete worked examples from basic to advanced
+- **examples/**: Worked examples from basic to advanced
 
 #### 5. **Examples** (NEW)
 - `simple_2d.jl`: Basic 2D turbulence (65K points, 1 second)
 - `threaded_calculation.jl`: Multi-core parallelization (50M points, speedup measurement)
 - `gpu_acceleration.jl`: GPU-accelerated computation (1B points, 20s on A100)
 - `distributed_parallel.jl`: Cluster computing with SLURM submission script
-- `real_data_climate.jl`: Atmospheric data analysis with NaN handling
 - All examples include docstrings, detailed comments, and "next steps" guidance
 
 ### Performance Improvements
@@ -77,8 +75,8 @@ StructureFunctions.jl v0.3.0 is a major release featuring a complete backend sys
 - **Files created/updated**:
   - 1 README.md (438 lines, was 17 lines)
   - 1 CHANGELOG.md (155 lines, completely rewritten)
-  - 5 docs/*.md files (1905 lines total)
-  - 5 examples/*.jl + 1 examples/README.md (1603 lines total)
+  - docs/*.md files
+  - examples/*.jl + examples/README.md
 - **Total new documentation**: ~3500 lines
 
 ### Code Quality
@@ -149,7 +147,6 @@ See [README.md](README.md#migration-guide) for detailed migration guide.
 - `Distributed` (DistributedBackend, stdlib)
 - `KernelAbstractions` (GPUBackend)
 - `CUDA`, `AMDGPU`, `Metal` (GPU support)
-- `NetCDF`, `JLD2`, `HDF5`, `Zarr` (File I/O)
 
 **Zero overhead** if not used (lazy extension loading).
 
@@ -174,7 +171,6 @@ ed95f81 fix: unify backend execution system and resolve threadid buffer indexing
 - ✅ Production-ready
 
 ### v0.4.0 (Planned)
-- Out-of-core computation (Zarr cloud storage)
 - Full multifractal analysis framework
 - Spectrum/structure-function consistency module
 - Documenter.jl auto-generated docs

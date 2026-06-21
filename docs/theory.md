@@ -133,22 +133,6 @@ $$\zeta_n = \frac{n}{3} + \delta_n$$
 
 where $\delta_n > 0$ represents intermittency. These corrections are significant for $n > 3$.
 
-## Applications
-
-### Real Atmospheric Data
-
-In atmospheric science, structure functions are used to:
-1. **Characterize turbulence**: Distinguish scales, measure energy transfer rates
-2. **Validate models**: Compare observed vs. simulated structure functions
-3. **Detect waves**: Waves vs. turbulence show opposite SF scaling
-4. **Estimate dissipation**: From SDT3(-4/5 law), infer $\varepsilon$ directly
-
-### Climate & Simulation Validation
-
-- Structure functions of temperature, humidity, etc., validate climate models
-- Multifractal analysis detects model biases in event rarity
-- Direct comparison with aircraft observations (SOCRATES, CSET, etc.)
-
 ## References
 
 ### Foundational
@@ -187,4 +171,4 @@ In atmospheric science, structure functions are used to:
 - [Backends](backends.md): How to select the right computational backend for your data size
 - [Architecture](architecture.md): How the library implements calculations
 - [API Reference](../README.md#api-reference): Full function documentation
-- [Examples](../examples/README.md): Worked examples with real climate data
+- [Examples](../examples/README.md): Worked examples

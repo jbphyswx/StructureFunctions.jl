@@ -553,7 +553,6 @@ Detailed worked examples are in `examples/` directory:
 - `threaded_calculation.jl`: Multi-threaded execution
 - `gpu_acceleration.jl`: GPU acceleration with KernelAbstractions  
 - `distributed_parallel.jl`: Multi-process execution
-- `real_data_climate.jl`: Processing real climate/turbulence data
 - `custom_operator.jl`: Defining custom SF operators
 
 Clone and run:
