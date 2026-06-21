@@ -2,18 +2,18 @@
 """
     benchmark_2d_grid_scaling.jl
 
-Compare single-type joint 2D vs eight-type single-pass 2D on GPU.
+Compare single-type joint 2D vs six-type single-pass 2D on GPU.
 
 **Single-type joint 2D** (`gpu_calculate_structure_function_2d`):
   tiled block-local when `n_dist * n_val ≤ 4096`; default exact `@localmem` width
   (`joint2d_compile_cells = n_dist × n_val`). A/B vs max smem via two workspaces.
 
-**Eight-type single-pass 2D** (`gpu_calculate_structure_functions_single_pass_2d!`):
+**Six-type single-pass 2D** (`gpu_calculate_structure_functions_single_pass_2d!`):
   HTP-EJ path when distance bins are typed and `n_dist ≤ 64`:
   - `:shared` / `:typeplane` — on-chip shared histogram + direct flush to output (no merge)
   - `:direct` — priv slab + serial merge (`ENV["SP2D_MERGE"]` for experiments)
 
-Gate: e2e SP2D < `8 × joint_2d`. Logs `output=on-chip-flush` vs `priv+merge`.
+Gate: e2e SP2D < `6 × joint_2d`. Logs `output=on-chip-flush` vs `priv+merge`.
 
 Full design: `gpu/SP2D_HTP_EJ.md`
 
@@ -133,10 +133,10 @@ function main()
     )
 
     t_joint = t_joint_exact
-    t_joint8 = 8 * t_joint
-    @printf("8 × joint 2D (exact)      %8.3f ms  [reference column]\n", 1_000t_joint8)
+    t_joint6 = 6 * t_joint
+    @printf("6 × joint 2D (exact)      %8.3f ms  [reference column]\n", 1_000t_joint6)
 
-    # --- eight-type sp2d (HTP-EJ privatized) ---
+    # --- six-type sp2d (HTP-EJ privatized) ---
     ws_sp = SFC.GPUSFWorkspace(backend, dist, value_bins; kind = :single_pass_2d)
     cfg = ws_sp.sp2d_priv_config
     mode_label = if cfg.accum_mode == :typeplane
@@ -148,8 +148,8 @@ function main()
     @printf("sp2d accum_mode          %s  (max_shared=%d, output=%s)\n",
         mode_label, cfg.max_shared_cells, output_path)
 
-    sums = zeros(FT, 8, n_dist, n_val)
-    counts = zeros(UInt32, 8, n_dist, n_val)
+    sums = zeros(FT, 6, n_dist, n_val)
+    counts = zeros(UInt32, 6, n_dist, n_val)
     sp_run = () -> SFC.gpu_calculate_structure_functions_single_pass_2d!(
         sums, counts, backend, x, u, dist, value_bins; workspace = ws_sp,
     )
@@ -222,19 +222,19 @@ function main()
         @printf("sp2d total (end-to-end)  %8.3f ms  [pair flush + host]\n", 1_000t_sp2d)
     end
 
-    # --- reference: 8-type sp1d same distance bins ---
+    # --- reference: six-type sp1d same distance bins ---
     ws_sp1 = SFC.GPUSFWorkspace(backend, dist; kind = :single_pass)
-    sums1 = zeros(FT, 8, n_dist)
-    counts1 = zeros(UInt32, 8, n_dist)
+    sums1 = zeros(FT, 6, n_dist)
+    counts1 = zeros(UInt32, 6, n_dist)
     sp1_run = () -> SFC.calculate_structure_functions_single_pass!(
         sums1, counts1, x, u, dist; backend = gpu, workspace = ws_sp1,
     )
     t_sp1 = _bench(sp1_run, warmup, repeat_)
-    @printf("sp1d (8 SF types)        %8.3f ms  [block-local (8, NB)]\n", 1_000t_sp1)
+    @printf("sp1d (6 SF types)        %8.3f ms  [block-local (6, NB)]\n", 1_000t_sp1)
 
-    gate_ok = t_sp2d < t_joint8
+    gate_ok = t_sp2d < t_joint6
     @printf(
-        "\nsp2d / joint_2d = %.1f×   sp2d / sp1d = %.1f×   sp2d < 8×joint = %s\n",
+        "\nsp2d / joint_2d = %.1f×   sp2d / sp1d = %.1f×   sp2d < 6×joint = %s\n",
         t_sp2d / t_joint, t_sp2d / t_sp1, gate_ok ? "PASS" : "FAIL",
     )
     @printf("sp2d pair+merge ≈ %.1f ms (%.0f%% pair; production merge=serial)\n",

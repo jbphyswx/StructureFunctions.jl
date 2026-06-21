@@ -58,13 +58,13 @@ function _scenario_value_bins(name::AbstractString, n_inner::Int, ::Type{FT}) wh
         return _inflinear_template(n_inner, FT)
     elseif name == "inflinear_cols"
         tpl = _inflinear_template(n_inner, FT)
-        return ntuple(_ -> tpl, 8)
+        return ntuple(_ -> tpl, 6)
     elseif name == "linear_cols"
         tpl = _linear_template(n_inner, FT)
-        return ntuple(_ -> tpl, 8)
+        return ntuple(_ -> tpl, 6)
     elseif name == "vector_cols"
         tpl = _vector_template(n_inner, FT)
-        return ntuple(_ -> copy(tpl), 8)
+        return ntuple(_ -> copy(tpl), 6)
     else
         error("unknown scenario: $name")
     end
@@ -101,8 +101,8 @@ function main()
 
         ws = SFC.GPUSFWorkspace(ka_backend, dist_vec, value_bins; kind = :single_pass_2d)
         plan = ws.val_plan
-        sums = zeros(FT, 8, n_dist, n_val)
-        counts = zeros(UInt32, 8, n_dist, n_val)
+        sums = zeros(FT, 6, n_dist, n_val)
+        counts = zeros(UInt32, 6, n_dist, n_val)
 
         run! = () -> SFC.gpu_calculate_structure_functions_single_pass_2d!(
             sums, counts, ka_backend, x, u, dist_vec, value_bins;
