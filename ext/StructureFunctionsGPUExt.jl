@@ -312,53 +312,6 @@ function _stage_sf_device_inputs(
     return x_dev, u_dev
 end
 
-
-# ---------------------------------------------------------------------------
-# Spectral Analysis Kernel (Direct Sum)
-# ---------------------------------------------------------------------------
-
-KA.@kernel function _spectral_kernel!(
-    coeffs,                # Out: (ms..., NU)
-    @Const(x_dev),         # (3, N)  - padded to 3
-    @Const(u_dev),         # (NU, N)
-    @Const(ks_phys_dev),   # 3 vectors of varying lengths ms[d] - padded to 3
-    iflag::Int,
-    N::Int,
-    NU::Int,
-    D::Int,
-    ms::NTuple, # Use NTuple (untapped) to avoid UndefVarError
-)
-    # One thread per wavenumber I
-    idx = @index(Global, Cartesian)
-
-    # Pre-fetch k_phys components for this wavenumber
-    # We use SVector{3} and dot with padded x_pos
-    k_phys = SA.SVector{3, eltype(x_dev)}(
-        D >= 1 ? ks_phys_dev[1][idx[1]] : zero(eltype(x_dev)),
-        D >= 2 ? ks_phys_dev[2][idx[2]] : zero(eltype(x_dev)),
-        D >= 3 ? ks_phys_dev[3][idx[3]] : zero(eltype(x_dev)),
-    )
-
-    for u_idx in 1:NU
-        sum_val = zero(eltype(coeffs))
-        for j in 1:N
-            x_pos = SA.SVector{3, eltype(x_dev)}(
-                x_dev[1, j],
-                x_dev[2, j],
-                x_dev[3, j],
-            )
-
-            # Phase factor
-            phi = -iflag * (SA.dot(k_phys, x_pos))
-            W = complex(cos(phi), sin(phi))
-
-            sum_val += u_dev[u_idx, j] * W
-        end
-        coeffs[idx, u_idx] = sum_val / N
-    end
-end
-
-
 # ---------------------------------------------------------------------------
 # N-dimensional variant: pads 1D/2D inputs to 3D for uniformity
 # ---------------------------------------------------------------------------

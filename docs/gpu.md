@@ -104,13 +104,6 @@ The production gate is e2e SP2D **&lt; 8 × joint_2d**. A naive “~2× digitize
 SP2D performs six value digitizations per pair and may replay the full tile schedule
 `n_type_passes` times (typeplane). See the doc for a per-pair work table and future optimizations.
 
-## Grid fields → batch layout
-
-Use `flatten_grid_slices` to convert `(nx, ny, …, T)` grid stacks to `(N_dims, N_points, T)`:
-
-```julia
-x_batch, u_batch = SFC.flatten_grid_slices(x_grid, u_grid)
-```
 
 ## Testing tiers
 
