@@ -80,7 +80,7 @@ Public stubs with backend dispatch:
 - `calculate_structure_function_slices!`
 - `calculate_structure_function_2d_slices!`
 - `calculate_structure_functions_single_pass_slices!` (GPU-only for now)
-- `calculate_structure_functions_single_pass_2d!` — eight `(dist × value)` histograms; GPU HTP-EJ when eligible
+- `calculate_structure_functions_single_pass_2d!` — six `(dist × value)` histograms; GPU HTP-EJ when eligible
 
 ## Single-type joint 2D smem
 
@@ -88,7 +88,7 @@ Public stubs with backend dispatch:
 `n_dist × n_val`. Optional override: `joint2d_compile_cells=joint2d_smem_max()` or
 `joint2d_smem_align256(n_dist, n_val)`. See [`gpu/GPU_2d_joint_sf_plan.md`](../gpu/GPU_2d_joint_sf_plan.md).
 
-## Eight-type single-pass 2D (SP2D)
+## Six-invariant-type single-pass 2D (SP2D)
 
 Production GPU path for `calculate_structure_functions_single_pass_2d!` with typed distance bins
 (`LinearBinEdges` / `LogBinEdges`) and `GPUSFWorkspace(...; kind=:single_pass_2d)`. Histogram policy
@@ -101,7 +101,7 @@ Production GPU path for `calculate_structure_functions_single_pass_2d!` with typ
 **Design, gate, perf gaps:** [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md)
 
 The production gate is e2e SP2D **&lt; 8 × joint_2d**. A naive “~2× digitize vs 1D” bound is too optimistic:
-SP2D performs eight value digitizations per pair and may replay the full tile schedule
+SP2D performs six value digitizations per pair and may replay the full tile schedule
 `n_type_passes` times (typeplane). See the doc for a per-pair work table and future optimizations.
 
 ## Grid fields → batch layout
@@ -170,10 +170,10 @@ Produces `docs/src/assets/sf_gpu_parity.png`.
 ## Examples
 
 - [`examples/gpu_acceleration.jl`](../examples/gpu_acceleration.jl) — single snapshot + workspace
-- [`examples/gpu_time_slices.jl`](../examples/gpu_time_slices.jl) — slice batch vs naive loop (small N/T, CPU fallback)
+- [`examples/gpu_time_slices.jl`](../examples/gpu_time_slices.jl) — slice batch vs naive loop (small N/T, KA.CPU route)
 
 ## See also
 
 - [backends.md — GPUBackend](backends.md#gpubackend)
-- [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md) — eight-type single-pass 2D (HTP-EJ)
+- [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md) — six-invariant-type single-pass 2D (HTP-EJ)
 - [`gpu/GPU_structure_function_prototypes_theory.md`](../gpu/GPU_structure_function_prototypes_theory.md)
