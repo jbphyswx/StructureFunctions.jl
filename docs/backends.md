@@ -212,7 +212,7 @@ backend = DistributedBackend()
 bins = 10:10:5000
 
 @time result = calculate_structure_function(
-    FullVectorStructureFunction{Float64}(order=2),
+    SecondOrderStructureFunctionType(),
     x, u, bins;
     backend=backend,
     verbose=true
@@ -258,7 +258,7 @@ for workspace reuse, slice batches, testing tiers, and benchmark regeneration.
 - ✅ **Research clusters**: Many HPC centers provide GPUs
 
 ### When NOT to Use
-- ❌ No GPU: `KA.CPU()` fallback is slower than `ThreadedBackend`
+- ❌ No GPU: `KA.CPU()` is slower than `ThreadedBackend`
 - ❌ Data doesn't fit on GPU memory
 - ❌ Very small N: CPU threading wins
 
@@ -358,7 +358,7 @@ u = randn(50_000_000, 2)
 bins = 10:10:500
 
 result = calculate_structure_function(
-    FullVectorStructureFunction{Float64}(order=2),
+    SecondOrderStructureFunctionType(),
     x, u, bins;
     backend=AutoBackend(),  # Default—chooses best option
     show_progress=true

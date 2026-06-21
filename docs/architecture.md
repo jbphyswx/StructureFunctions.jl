@@ -35,7 +35,7 @@ Result Container ← Stores sums, counts, structure functions
 Example:
 ```julia
 # Operator: "Compute 2nd-order SF"
-operator = FullVectorStructureFunction{Float64}(order=2)
+operator = SecondOrderStructureFunctionType()
 
 # Backend: "Use 4 threads"
 backend = ThreadedBackend()
@@ -75,16 +75,16 @@ Operators describe *which* calculation variant:
 
 ```
 AbstractStructureFunctionType (abstract)
-├── ProjectedStructureFunction{T}
-│   └── Computes SF(r) at each distance for a single projection
-│       (e.g., longitudinal, transverse, vertical)
-└── FullVectorStructureFunction{T}
-    └── Computes multi-dimensional SFs using full velocity vectors
-        (e.g., 2D/3D anisotropic flows)
+├── AbstractPairwiseStructureFunctionType
+│   ├── SecondOrderStructureFunctionType        # S2SF = ||δu||²
+│   ├── ThirdOrderStructureFunctionType         # S3SF = δu_L ||δu||²
+│   ├── FullVectorStructureFunctionType{NF}     # generic norm power ||δu||^NF
+│   └── ProjectedStructureFunctionType{NL,NT}   # L2SF, T2SF, L3SF, L1T2SF, ...
+└── AbstractDerivedStructureFunctionType
+    └── Helmholtz-derived 2D rotational/divergent quantities
 ```
 
 Each operator stores:
-- **Vector type** (Float32, Float64) via type parameter
 - **Order** (n=2, 3, 4, ...) — which structure function order
 - **Projection** (if applicable) — which component to analyze
 
@@ -94,7 +94,7 @@ To eliminate the $O(\log B)$ binary search overhead in distance binning, Structu
 
 ```
 AbstractBinEdges (abstract)
-├── BinEdges           [fallback wrapper for standard vectors]
+├── BinEdges           [generic wrapper for standard vectors]
 ├── LinearBinEdges     [O(1) FMA-based search for uniform ranges]
 ├── LogBinEdges        [O(1) Exponent LUT Hybrid search for log ranges]
 └── InfPaddedBinEdges  [wrapper to append/prepend ±∞ boundaries]
