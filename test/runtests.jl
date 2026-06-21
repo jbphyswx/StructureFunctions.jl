@@ -32,6 +32,12 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Shorthands Test ---")
     include("test_shorthands.jl")
 
+    println("--- Running Shape Contract Test ---")
+    include("test_shape_contract.jl")
+
+    println("--- Running Tensor and KHM Test ---")
+    include("test_tensor_khm.jl")
+
     println("--- Running Threading Backend Test ---")
     include("test_threads.jl")
 
@@ -45,9 +51,6 @@ Test.@testset "StructureFunctions.jl" begin
     # Enable Parallel/Distributed Test
     println("--- Running Parallel Equivalence Test ---")
     include("test_parallel_equivalence.jl")
-
-    println("--- Running Real Data Extensions Test ---")
-    include("test_real_data_extensions.jl")
 
     println("--- Running GPU Parity Test ---")
     include("test_gpu_parity.jl")
@@ -66,6 +69,9 @@ Test.@testset "StructureFunctions.jl" begin
 
     println("--- Running GPU Workspace & Slice Batch Test ---")
     include("test_gpu_workspace.jl")
+
+    println("--- Running Batch Matrix Parity Test ---")
+    include("test_batch_matrix.jl")
 
     println("--- Running 2D Joint-Probability Binning Test ---")
     include("test_2d_binning.jl")

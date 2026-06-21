@@ -29,7 +29,7 @@ contiguous blocks and severely load-imbalances this loop (~T× skew). Round-robi
 function SFC.threaded_calculate_structure_function!(
     output_sums::AbstractVector{OT},
     output_counts::AbstractVector{CT},
-    structure_function_type::SFT.AbstractStructureFunctionType,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector;
@@ -70,7 +70,7 @@ function SFC.threaded_calculate_structure_function!(
 end
 
 function SFC.threaded_calculate_structure_function(
-    structure_function_type::SFT.AbstractStructureFunctionType,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector,
@@ -121,9 +121,9 @@ end
 function SFC.threaded_calculate_structure_function!(
     output_sums::AbstractVector{OT},
     output_counts::AbstractVector{CT},
-    structure_function_type::SFT.AbstractStructureFunctionType,
-    x_arr::AbstractArray{FT1},
-    u_arr::AbstractArray{FT2},
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x_arr::AbstractMatrix{FT1},
+    u_arr::AbstractMatrix{FT2},
     distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
@@ -143,6 +143,8 @@ function SFC.threaded_calculate_structure_function!(
     end
 
     # Chunked tmapreduce to allocate once per thread/task chunk
+    x_tuple = ntuple(k -> view(x_arr, k, :), N)
+    u_tuple = ntuple(k -> view(u_arr, k, :), N)
     result = OMT.tmapreduce(+, _triangle_outer_chunks(axes(x_arr, 2), Threads.nthreads())) do chunk
         local_output = zeros(OT, N3)
         local_counts = zeros(CT, N3)
@@ -153,8 +155,8 @@ function SFC.threaded_calculate_structure_function!(
                 Val(N),
                 structure_function_type,
                 i,
-                x_arr,
-                u_arr,
+                x_tuple,
+                u_tuple,
                 distance_bins;
                 distance_metric = distance_metric,
             )
@@ -168,9 +170,9 @@ function SFC.threaded_calculate_structure_function!(
 end
 
 function SFC.threaded_calculate_structure_function(
-    structure_function_type::SFT.AbstractStructureFunctionType,
-    x_arr::AbstractArray{FT1},
-    u_arr::AbstractArray{FT2},
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x_arr::AbstractMatrix{FT1},
+    u_arr::AbstractMatrix{FT2},
     distance_bins::AbstractVector,
     ::Val{RSAC};
     count_eltype::Type{CT} = UInt32,
@@ -217,7 +219,7 @@ end
 function SFC.threaded_calculate_structure_function!(
     sums_2d::AbstractMatrix{OT},
     counts_2d::AbstractMatrix{CT},
-    structure_function_type::SFT.AbstractStructureFunctionType,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector,
@@ -270,7 +272,7 @@ function SFC.threaded_calculate_structure_function!(
 end
 
 function SFC.threaded_calculate_structure_function(
-    structure_function_type::SFT.AbstractStructureFunctionType,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector,
@@ -312,9 +314,9 @@ end
 function SFC.threaded_calculate_structure_function!(
     sums_2d::AbstractMatrix{OT},
     counts_2d::AbstractMatrix,
-    structure_function_type::SFT.AbstractStructureFunctionType,
-    x_arr::AbstractArray{FT1},
-    u_arr::AbstractArray{FT2},
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x_arr::AbstractMatrix{FT1},
+    u_arr::AbstractMatrix{FT2},
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
     kwargs...,
@@ -335,9 +337,9 @@ function SFC.threaded_calculate_structure_function!(
 end
 
 function SFC.threaded_calculate_structure_function(
-    structure_function_type::SFT.AbstractStructureFunctionType,
-    x_arr::AbstractArray{FT1},
-    u_arr::AbstractArray{FT2},
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x_arr::AbstractMatrix{FT1},
+    u_arr::AbstractMatrix{FT2},
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
     count_eltype::Type{CT} = UInt32,
@@ -405,6 +407,8 @@ function SFC._dispatch_single_pass(
     OT = promote_type(float(FT1), float(FT2))
     n_bins = length(distance_bins) - 1
     n_points = size(x, 2)
+    D = size(x, 1)
+    vD = Val(D)
 
     # tmapreduce: each chunk gets its own task-local (sums, counts) buffers.
     # The reducer `+` merges partial results via element-wise addition.
@@ -413,43 +417,39 @@ function SFC._dispatch_single_pass(
         ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
         _triangle_outer_chunks(1:n_points, Threads.nthreads())
     ) do chunk
-        local_sums = zeros(OT, 8, n_bins)
-        local_counts = zeros(CT, 8, n_bins)
+        local_sums = zeros(OT, SFC.SINGLE_PASS_N, n_bins)
+        local_counts = zeros(CT, SFC.SINGLE_PASS_N, n_bins)
 
         for i in chunk
-            x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
-            u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
+            x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
+            u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
 
             for j in (i + 1):n_points
-                x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
+                x_j = SA.SVector{D, FT1}(ntuple(d -> x[d, j], vD))
 
                 r = distance_metric(x_i, x_j)
                 bin_idx = SFH.digitize(r, distance_bins)
 
                 if 1 <= bin_idx <= n_bins
-                    u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
+                    u_j = SA.SVector{D, FT2}(ntuple(d -> u[d, j], vD))
                     du = u_j - u_i
 
                     rh = SFH.r̂(x_i, x_j, distance_metric, r)
-                    nh = SFH.n̂(rh)
-
                     du_L = LA.dot(du, rh)
-                    du_T = LA.dot(du, nh)
+                    du_T = SFH.mδu_t(du, rh)
 
                     du_L2 = du_L * du_L
-                    du_T2 = du_T * du_T
+                    du_T2 = SFH.transverse_norm2(du, rh)
 
-                    # Accumulate the 8 core physical structure functions:
+                    # Accumulate the six invariant bulk structure functions.
                     @inbounds local_sums[1, bin_idx] += du_L2 + du_T2            # S2SF
                     @inbounds local_sums[2, bin_idx] += du_L2                    # L2SF
                     @inbounds local_sums[3, bin_idx] += du_T2                    # T2SF
                     @inbounds local_sums[4, bin_idx] += du_L * (du_L2 + du_T2)   # S3SF
                     @inbounds local_sums[5, bin_idx] += du_L * du_L2              # L3SF
-                    @inbounds local_sums[6, bin_idx] += du_L2 * du_T              # L2T1SF
-                    @inbounds local_sums[7, bin_idx] += du_L * du_T2              # L1T2SF
-                    @inbounds local_sums[8, bin_idx] += du_T * du_T2              # T3SF
+                    @inbounds local_sums[6, bin_idx] += du_L * du_T2              # L1T2SF
 
-                    for t in 1:8
+                    for t in 1:SFC.SINGLE_PASS_N
                         @inbounds local_counts[t, bin_idx] += 1
                     end
                 end
@@ -458,7 +458,7 @@ function SFC._dispatch_single_pass(
         (local_sums, local_counts)
     end
 
-    return SFC.postprocess_single_pass_results(sums, counts, distance_bins)
+    return SFC.append_helmholtz_rotational_divergent_rows(sums, counts, distance_bins)
 end
 
 function SFC._dispatch_single_pass!(
@@ -473,47 +473,45 @@ function SFC._dispatch_single_pass!(
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     n_bins = length(distance_bins) - 1
     n_points = size(x, 2)
+    D = size(x, 1)
+    vD = Val(D)
 
     chunk_sums, chunk_counts = OMT.tmapreduce(
         ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
         _triangle_outer_chunks(1:n_points, Threads.nthreads()),
     ) do chunk
-        local_sums = zeros(OT, 8, n_bins)
-        local_counts = zeros(CT, 8, n_bins)
+        local_sums = zeros(OT, SFC.SINGLE_PASS_N, n_bins)
+        local_counts = zeros(CT, SFC.SINGLE_PASS_N, n_bins)
 
         for i in chunk
-            x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
-            u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
+            x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
+            u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
 
             for j in (i + 1):n_points
-                x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
+                x_j = SA.SVector{D, FT1}(ntuple(d -> x[d, j], vD))
 
                 r = distance_metric(x_i, x_j)
                 bin_idx = SFH.digitize(r, distance_bins)
 
                 if 1 <= bin_idx <= n_bins
-                    u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
+                    u_j = SA.SVector{D, FT2}(ntuple(d -> u[d, j], vD))
                     du = u_j - u_i
 
                     rh = SFH.r̂(x_i, x_j, distance_metric, r)
-                    nh = SFH.n̂(rh)
-
                     du_L = LA.dot(du, rh)
-                    du_T = LA.dot(du, nh)
+                    du_T = SFH.mδu_t(du, rh)
 
                     du_L2 = du_L * du_L
-                    du_T2 = du_T * du_T
+                    du_T2 = SFH.transverse_norm2(du, rh)
 
                     @inbounds local_sums[1, bin_idx] += du_L2 + du_T2
                     @inbounds local_sums[2, bin_idx] += du_L2
                     @inbounds local_sums[3, bin_idx] += du_T2
                     @inbounds local_sums[4, bin_idx] += du_L * (du_L2 + du_T2)
                     @inbounds local_sums[5, bin_idx] += du_L * du_L2
-                    @inbounds local_sums[6, bin_idx] += du_L2 * du_T
-                    @inbounds local_sums[7, bin_idx] += du_L * du_T2
-                    @inbounds local_sums[8, bin_idx] += du_T * du_T2
+                    @inbounds local_sums[6, bin_idx] += du_L * du_T2
 
-                    for t in 1:8
+                    for t in 1:SFC.SINGLE_PASS_N
                         @inbounds local_counts[t, bin_idx] += 1
                     end
                 end
@@ -542,36 +540,36 @@ function SFC._dispatch_single_pass_2d(
     vb0 = SFC._sp2d_value_bin_at(value_bins, 1)
     n_val = length(vb0) - 1
     n_points = size(x, 2)
+    D = size(x, 1)
+    vD = Val(D)
 
     (sums, counts) = OMT.tmapreduce(
         ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
         _triangle_outer_chunks(1:n_points, Threads.nthreads()),
     ) do chunk
-        local_sums = zeros(OT, 8, n_bins, n_val)
-        local_counts = zeros(CT, 8, n_bins, n_val)
+        local_sums = zeros(OT, SFC.SINGLE_PASS_N, n_bins, n_val)
+        local_counts = zeros(CT, SFC.SINGLE_PASS_N, n_bins, n_val)
 
         for i in chunk
-            x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
-            u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
+            x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
+            u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
 
             for j in (i + 1):n_points
-                x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
+                x_j = SA.SVector{D, FT1}(ntuple(d -> x[d, j], vD))
 
                 r = distance_metric(x_i, x_j)
                 bin_idx = SFH.digitize(r, distance_bins)
 
                 if 1 <= bin_idx <= n_bins
-                    u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
+                    u_j = SA.SVector{D, FT2}(ntuple(d -> u[d, j], vD))
                     du = u_j - u_i
 
                     rh = SFH.r̂(x_i, x_j, distance_metric, r)
-                    nh = SFH.n̂(rh)
-
                     du_L = LA.dot(du, rh)
-                    du_T = LA.dot(du, nh)
+                    du_T = SFH.mδu_t(du, rh)
 
                     du_L2 = du_L * du_L
-                    du_T2 = du_T * du_T
+                    du_T2 = SFH.transverse_norm2(du, rh)
 
                     vals = (
                         du_L2 + du_T2,
@@ -579,12 +577,10 @@ function SFC._dispatch_single_pass_2d(
                         du_T2,
                         du_L * (du_L2 + du_T2),
                         du_L * du_L2,
-                        du_L2 * du_T,
                         du_L * du_T2,
-                        du_T * du_T2,
                     )
 
-                    for t in 1:8
+                    for t in 1:SFC.SINGLE_PASS_N
                         vb = SFC._sp2d_value_bin_at(value_bins, t)
                         vbin = SFH.digitize(vals[t], vb)
                         n_val_t = length(vb) - 1
@@ -616,36 +612,36 @@ function SFC._dispatch_single_pass_2d!(
     n_bins = length(distance_bins) - 1
     n_val = size(sums_3d, 3)
     n_points = size(x, 2)
+    D = size(x, 1)
+    vD = Val(D)
 
     chunk_sums, chunk_counts = OMT.tmapreduce(
         ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
         _triangle_outer_chunks(1:n_points, Threads.nthreads()),
     ) do chunk
-        local_sums = zeros(OT, 8, n_bins, n_val)
-        local_counts = zeros(CT, 8, n_bins, n_val)
+        local_sums = zeros(OT, SFC.SINGLE_PASS_N, n_bins, n_val)
+        local_counts = zeros(CT, SFC.SINGLE_PASS_N, n_bins, n_val)
 
         for i in chunk
-            x_i = SA.SVector{2, FT1}(x[1, i], x[2, i])
-            u_i = SA.SVector{2, FT2}(u[1, i], u[2, i])
+            x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
+            u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
 
             for j in (i + 1):n_points
-                x_j = SA.SVector{2, FT1}(x[1, j], x[2, j])
+                x_j = SA.SVector{D, FT1}(ntuple(d -> x[d, j], vD))
 
                 r = distance_metric(x_i, x_j)
                 bin_idx = SFH.digitize(r, distance_bins)
 
                 if 1 <= bin_idx <= n_bins
-                    u_j = SA.SVector{2, FT2}(u[1, j], u[2, j])
+                    u_j = SA.SVector{D, FT2}(ntuple(d -> u[d, j], vD))
                     du = u_j - u_i
 
                     rh = SFH.r̂(x_i, x_j, distance_metric, r)
-                    nh = SFH.n̂(rh)
-
                     du_L = LA.dot(du, rh)
-                    du_T = LA.dot(du, nh)
+                    du_T = SFH.mδu_t(du, rh)
 
                     du_L2 = du_L * du_L
-                    du_T2 = du_T * du_T
+                    du_T2 = SFH.transverse_norm2(du, rh)
 
                     vals = (
                         du_L2 + du_T2,
@@ -653,12 +649,10 @@ function SFC._dispatch_single_pass_2d!(
                         du_T2,
                         du_L * (du_L2 + du_T2),
                         du_L * du_L2,
-                        du_L2 * du_T,
                         du_L * du_T2,
-                        du_T * du_T2,
                     )
 
-                    for t in 1:8
+                    for t in 1:SFC.SINGLE_PASS_N
                         vb = SFC._sp2d_value_bin_at(value_bins, t)
                         vbin = SFH.digitize(vals[t], vb)
                         n_val_t = length(vb) - 1

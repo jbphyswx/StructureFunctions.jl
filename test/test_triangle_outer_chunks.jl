@@ -44,7 +44,7 @@ Test.@testset "Triangle outer chunks (OMT RoundRobin)" begin
         x = rand(2, n_pts) .* 50_000.0
         u = randn(2, n_pts)
         distance_bins = exp.(range(log(1000.0), log(50_000.0), length = 11))
-        value_bins = [collect(range(-1.0, 2.0, length = 12)) for _ in 1:8]
+        value_bins = ntuple(_ -> collect(range(-1.0, 2.0, length = 12)), 6)
 
         s_ref, c_ref = SFC.calculate_structure_functions_single_pass_2d(
             x, u, distance_bins, value_bins; backend = SFC.SerialBackend(),
@@ -56,15 +56,13 @@ Test.@testset "Triangle outer chunks (OMT RoundRobin)" begin
         Test.@test s_thr ≈ s_ref
 
         sf_type = SFT.LongitudinalSecondOrderStructureFunctionType()
-        x_t = (x[1, :], x[2, :])
-        u_t = (u[1, :], u[2, :])
         r1 = SFC.calculate_structure_function(
-            sf_type, x_t, u_t, distance_bins;
+            sf_type, x, u, distance_bins;
             backend = SFC.SerialBackend(), verbose = false, show_progress = false,
             return_sums_and_counts = true,
         )
         r2 = SFC.calculate_structure_function(
-            sf_type, x_t, u_t, distance_bins;
+            sf_type, x, u, distance_bins;
             backend = SFC.ThreadedBackend(), verbose = false, show_progress = false,
             return_sums_and_counts = true,
         )
