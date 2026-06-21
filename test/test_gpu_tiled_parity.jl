@@ -9,9 +9,9 @@ using StaticArrays: StaticArrays as SA
 
 Random.seed!(42)
 
-function _cpu_ref(sft, x_tup, u_tup, bin_edges)
+function _cpu_ref(sft, x, u, bin_edges)
     return SFC.calculate_structure_function(
-        sft, x_tup, u_tup, bin_edges;
+        sft, x, u, bin_edges;
         verbose = false, show_progress = false, return_sums_and_counts = true,
     )
 end
@@ -30,7 +30,7 @@ Test.@testset "GPU tiled parity — linear 2D N=50" begin
     u = rand(FT, 2, N)
     bin_edges = collect(FT, range(0.0, 1.4; length = 11))
     sft = SFT.L2SFType()
-    ref = _cpu_ref(sft, (x[1, :], x[2, :]), (u[1, :], u[2, :]), bin_edges)
+    ref = _cpu_ref(sft, x, u, bin_edges)
     gpu = _gpu_tiled(sft, x, u, bin_edges)
     Test.@test gpu.counts ≈ ref.counts atol = 0.0
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -45,8 +45,8 @@ Test.@testset "GPU tiled parity — linear 3D N=50" begin
     sft = SFT.L2SFType()
     ref = _cpu_ref(
         sft,
-        (x[1, :], x[2, :], x[3, :]),
-        (u[1, :], u[2, :], u[3, :]),
+        x,
+        u,
         bin_edges,
     )
     gpu = _gpu_tiled(sft, x, u, bin_edges)
@@ -62,7 +62,7 @@ Test.@testset "GPU tiled parity — log bins 2D" begin
     log_vec = exp.(range(log(FT(0.05)), log(FT(1.4)); length = 11))
     bin_edges = LogBinEdges(log_vec)
     sft = SFT.L2SFType()
-    ref = _cpu_ref(sft, (x[1, :], x[2, :]), (u[1, :], u[2, :]), log_vec)
+    ref = _cpu_ref(sft, x, u, log_vec)
     gpu = _gpu_tiled(sft, x, u, bin_edges)
     Test.@test gpu.counts ≈ ref.counts atol = 0.0
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -76,7 +76,7 @@ Test.@testset "GPU tiled parity — general monotone bins 2D" begin
     # Non-uniform, non-log monotone edges
     bin_edges = FT[0.0, 0.05, 0.12, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0, 1.15, 1.35]
     sft = SFT.L2SFType()
-    ref = _cpu_ref(sft, (x[1, :], x[2, :]), (u[1, :], u[2, :]), bin_edges)
+    ref = _cpu_ref(sft, x, u, bin_edges)
     gpu = _gpu_tiled(sft, x, u, bin_edges)
     Test.@test gpu.counts ≈ ref.counts atol = 0.0
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -89,7 +89,7 @@ Test.@testset "GPU tiled parity — medium N linear 2D" begin
     u = rand(FT, 2, N)
     bin_edges = collect(FT, range(0.0f0, 1.4f0; length = 11))
     sft = SFT.L2SFType()
-    ref = _cpu_ref(sft, (x[1, :], x[2, :]), (u[1, :], u[2, :]), bin_edges)
+    ref = _cpu_ref(sft, x, u, bin_edges)
     gpu = _gpu_tiled(sft, x, u, bin_edges)
     Test.@test gpu.counts ≈ ref.counts atol = 0.0
     max_Δ = maximum(abs, gpu.sums .- ref.sums)
@@ -103,7 +103,7 @@ Test.@testset "GPU in-place !() parity — linear 2D" begin
     u = rand(FT, 2, N)
     bin_edges = collect(FT, range(0.0, 1.4; length = 11))
     sft = SFT.L2SFType()
-    ref = _cpu_ref(sft, (x[1, :], x[2, :]), (u[1, :], u[2, :]), bin_edges)
+    ref = _cpu_ref(sft, x, u, bin_edges)
     n_bins = length(bin_edges) - 1
     sums = zeros(FT, n_bins)
     counts = zeros(UInt32, n_bins)

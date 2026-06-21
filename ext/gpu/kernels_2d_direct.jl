@@ -1,8 +1,8 @@
-# HTP-EJ: tiled128 pair traversal for eight-type single-pass 2D.
+# HTP-EJ: tiled128 pair traversal for six-invariant-type single-pass 2D.
 #
 # On-chip (:shared, :typeplane): @localmem histogram during pair loop; block-end flush
 #   via _sp2d_flush_*_to_output! (@atomic into out_sums/out_cnts, joint pattern).
-# Direct (:direct): global atomics into block-private priv slab; merge on host.
+# Direct (:direct): global atomics into block-private priv partition; merge on host.
 #
 # See gpu/SP2D_HTP_EJ.md for policy, benchmarks, and future perf notes.
 # Included from StructureFunctionsGPUExt.jl after TiledSinglePass2DValueKernels.jl.
@@ -38,7 +38,7 @@ end
     return nothing
 end
 
-"""Flush block-local shared histogram into block-private slab (`:direct` path only)."""
+"""Flush block-local shared histogram into block-private partition (`:direct` path only)."""
 @inline function _sp2d_flush_shared_hist!(
     priv_sums,
     priv_cnts,
@@ -100,10 +100,10 @@ end
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
         )
@@ -123,10 +123,10 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
             vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
             N_val_edges,
@@ -148,10 +148,10 @@ end
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
             n_inner_edges, inner_last,
@@ -172,10 +172,10 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
             vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
             n_inner_edges, inner_last[t],
@@ -196,10 +196,10 @@ end
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
         )
@@ -219,10 +219,10 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced_col(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, t, N_val_edges,
         )
@@ -242,10 +242,10 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
             g = _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
@@ -262,7 +262,7 @@ end
     return (dbin - 1) * n_val + vbin
 end
 
-"""Flush type-plane shared histogram into block-private slab (`:direct` path only)."""
+"""Flush type-plane shared histogram into block-private partition (`:direct` path only)."""
 @inline function _sp2d_flush_typeplane!(
     priv_sums,
     priv_cnts,
@@ -278,7 +278,7 @@ end
     workgroup_size::Int,
 )
     t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(8, type_pass * types_per_pass)
+    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     g = lid
     while g <= plane
         dbin = (g - 1) ÷ n_val + 1
@@ -311,7 +311,7 @@ end
     workgroup_size::Int,
 )
     t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(8, type_pass * types_per_pass)
+    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     g = lid
     while g <= plane
         dbin = (g - 1) ÷ n_val + 1
@@ -337,11 +337,11 @@ end
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
     t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(8, type_pass * types_per_pass)
+    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_linear(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
@@ -363,11 +363,11 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
     t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(8, type_pass * types_per_pass)
+    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_linear(
             vals[t], val_first[t], val_last[t],
@@ -392,11 +392,11 @@ end
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
     t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(8, type_pass * types_per_pass)
+    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_inf_padded_linear(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
@@ -419,11 +419,11 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
     t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(8, type_pass * types_per_pass)
+    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_inf_padded_linear(
             vals[t], val_first[t], val_last[t],
@@ -447,11 +447,11 @@ end
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
     t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(8, type_pass * types_per_pass)
+    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_log_spaced(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
@@ -473,11 +473,11 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
     t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(8, type_pass * types_per_pass)
+    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_log_spaced_col(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
@@ -500,11 +500,11 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
     t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(8, type_pass * types_per_pass)
+    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
@@ -517,7 +517,7 @@ end
     return nothing
 end
 
-# --- direct priv-slab accumulation (block-partitioned global atomics) ---
+# --- direct priv-partition accumulation (block-partitioned global atomics) ---
 
 @inline function _gpu_accumulate_sp2d_priv_direct_linear_val!(
     priv_sums, priv_cnts, block_id::Int, n_dist, n_val,
@@ -526,10 +526,10 @@ end
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
         )
@@ -548,10 +548,10 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
             vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
             N_val_edges,
@@ -572,10 +572,10 @@ end
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
             n_inner_edges, inner_last,
@@ -595,10 +595,10 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
             vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
             n_inner_edges, inner_last[t],
@@ -618,10 +618,10 @@ end
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
         )
@@ -640,10 +640,10 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced_col(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, t, N_val_edges,
         )
@@ -662,10 +662,10 @@ end
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
-        du_L * (du_L2 + du_T2), du_L * du_L2, du_L2 * du_T,
-        du_L * du_T2, du_T * du_T2,
+        du_L * (du_L2 + du_T2), du_L * du_L2,
+        du_L * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
             @atomic priv_sums[t, dbin, vbin, block_id] += vals[t]
@@ -687,7 +687,7 @@ KA.@kernel function _merge_sp2d_priv_serial_u32!(
     n_tile_blocks::Int,
 )
     g = @index(Global, Linear)
-    C = 8 * n_dist * n_val
+    C = SF_GPU_SINGLE_PASS_N * n_dist * n_val
     if g <= C
         t, dbin, vbin = _sp2d_decode_flat_index(g, n_dist, n_val)
         FT = eltype(output_sums)
@@ -726,7 +726,7 @@ KA.@kernel function _merge_sp2d_priv_parallel_u32!(
     shared_s = @localmem FT (256,)
     shared_c = @localmem UInt32 (256,)
 
-    if lid == 1 && g <= 8 * n_dist * n_val
+    if lid == 1 && g <= SF_GPU_SINGLE_PASS_N * n_dist * n_val
         t, dbin, vbin = _sp2d_decode_flat_index(g, n_dist, n_val)
         @inbounds begin
             shared_t[1] = t
@@ -739,7 +739,7 @@ KA.@kernel function _merge_sp2d_priv_parallel_u32!(
     g = (g_global - 1) ÷ workgroup_size + 1
     lid = (g_global - 1) % workgroup_size + 1
 
-    if g <= 8 * n_dist * n_val
+    if g <= SF_GPU_SINGLE_PASS_N * n_dist * n_val
         t = @inbounds(shared_t[1])
         dbin = @inbounds(shared_dbin[1])
         vbin = @inbounds(shared_vbin[1])
@@ -769,6 +769,7 @@ KA.@kernel function _merge_sp2d_priv_parallel_u32!(
     end
     @synchronize
 
+    # 256-lane fixed workgroup tree reduction.
     for _ in 1:8
         g_global = @index(Global, Linear)
         g = (g_global - 1) ÷ workgroup_size + 1
@@ -793,7 +794,7 @@ KA.@kernel function _merge_sp2d_priv_parallel_u32!(
     g_global = @index(Global, Linear)
     g = (g_global - 1) ÷ workgroup_size + 1
     lid = (g_global - 1) % workgroup_size + 1
-    if lid == 1 && g <= 8 * n_dist * n_val
+    if lid == 1 && g <= SF_GPU_SINGLE_PASS_N * n_dist * n_val
         t = @inbounds(shared_t[1])
         dbin = @inbounds(shared_dbin[1])
         vbin = @inbounds(shared_vbin[1])
@@ -1034,13 +1035,13 @@ function _sp2d_priv_val_accum(::Val{:vector_cols}, ::Val{:typeplane})
 end
 
 function _sp2d_priv_kernel_prefix(::Val{:shared})
-    return :_sf8_sp2d_sharedhist_tiled128_
+    return :_sf6_sp2d_sharedhist_tiled128_
 end
 function _sp2d_priv_kernel_prefix(::Val{:typeplane})
-    return :_sf8_sp2d_typeplane_tiled128_
+    return :_sf6_sp2d_typeplane_tiled128_
 end
 function _sp2d_priv_kernel_prefix(::Val{:direct})
-    return :_sf8_sp2d_directpriv_tiled128_
+    return :_sf6_sp2d_directpriv_tiled128_
 end
 
 function _sp2d_priv_val_params(::Val{:linear_shared})
@@ -1336,7 +1337,7 @@ function _launch_merge_sp2d_priv!(
     n_tile_blocks::Int;
     merge_mode::Symbol = _sp2d_merge_mode(),
 )
-    C = 8 * n_dist * n_val
+    C = SF_GPU_SINGLE_PASS_N * n_dist * n_val
     if merge_mode == :serial
         kernel! = _merge_sp2d_priv_serial_u32!(backend, 256)
         kernel!(
@@ -1354,5 +1355,6 @@ function _launch_merge_sp2d_priv!(
             workgroupsize = (ws,),
         )
     end
+    KA.synchronize(backend)
     return nothing
 end

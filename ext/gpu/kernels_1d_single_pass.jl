@@ -1,7 +1,7 @@
-# Tiled128 eight-type single-pass 1D distance histogram kernels (linear/log/general).
-# Included from StructureFunctionsGPUExt.jl — block-local (8, NB) sums + one count row.
+# Tiled128 six-invariant-type single-pass 1D distance histogram kernels (linear/log/general).
+# Included from StructureFunctionsGPUExt.jl — block-local (6, NB) sums + one count row.
 
-"""Accumulate eight native 1D SF types into flat `@localmem` sums `(8*NB,)`."""
+"""Accumulate six invariant native 1D SF types into flat `@localmem` sums `(6*NB,)`."""
 @inline function _gpu_accumulate_single_pass_1d_shared!(
     shared_sums,
     shared_cnts,
@@ -17,14 +17,12 @@
     @atomic shared_sums[2NB + bin] += du_T2
     @atomic shared_sums[3NB + bin] += du_L * (du_L2 + du_T2)
     @atomic shared_sums[4NB + bin] += du_L * du_L2
-    @atomic shared_sums[5NB + bin] += du_L2 * du_T
-    @atomic shared_sums[6NB + bin] += du_L * du_T2
-    @atomic shared_sums[7NB + bin] += du_T * du_T2
+    @atomic shared_sums[5NB + bin] += du_L * du_T2
     @atomic shared_cnts[bin] += UInt32(1)
     return nothing
 end
 
-KA.@kernel function _sf8_single_pass_kernel_tiled128_linear_u32!(
+KA.@kernel function _sf6_single_pass_kernel_tiled128_linear_u32!(
     output_sums,
     output_counts,
     x_mat,
@@ -45,13 +43,13 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_linear_u32!(
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
-    shared_sums = @localmem FT (8 * SF_GPU_MAX_BINS,)
+    shared_sums = @localmem FT (SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS,)
     shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
 
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1
     if lid == 1
-        @inbounds for k in 1:(8 * NB)
+        @inbounds for k in 1:(SF_GPU_SINGLE_PASS_N * NB)
             shared_sums[k] = zero(FT)
         end
         @inbounds for b in 1:NB
@@ -153,7 +151,7 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_linear_u32!(
     bid = (g - 1) ÷ workgroup_size + 1
     if bid <= n_tile_blocks
         k = lid
-        while k <= 8 * NB
+        while k <= SF_GPU_SINGLE_PASS_N * NB
             s = shared_sums[k]
             if s != zero(FT)
                 t = (k - 1) ÷ NB + 1
@@ -166,7 +164,7 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_linear_u32!(
         while b <= NB
             c = shared_cnts[b]
             if c != UInt32(0)
-                for t in 1:8
+                for t in 1:SF_GPU_SINGLE_PASS_N
                     @atomic output_counts[t, b] += c
                 end
             end
@@ -175,7 +173,7 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_linear_u32!(
     end
 end
 
-KA.@kernel function _sf8_single_pass_kernel_tiled128_log_u32!(
+KA.@kernel function _sf6_single_pass_kernel_tiled128_log_u32!(
     output_sums,
     output_counts,
     x_mat,
@@ -196,13 +194,13 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_log_u32!(
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
-    shared_sums = @localmem FT (8 * SF_GPU_MAX_BINS,)
+    shared_sums = @localmem FT (SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS,)
     shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
 
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1
     if lid == 1
-        @inbounds for k in 1:(8 * NB)
+        @inbounds for k in 1:(SF_GPU_SINGLE_PASS_N * NB)
             shared_sums[k] = zero(FT)
         end
         @inbounds for b in 1:NB
@@ -302,7 +300,7 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_log_u32!(
     bid = (g - 1) ÷ workgroup_size + 1
     if bid <= n_tile_blocks
         k = lid
-        while k <= 8 * NB
+        while k <= SF_GPU_SINGLE_PASS_N * NB
             s = shared_sums[k]
             if s != zero(FT)
                 t = (k - 1) ÷ NB + 1
@@ -315,7 +313,7 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_log_u32!(
         while b <= NB
             c = shared_cnts[b]
             if c != UInt32(0)
-                for t in 1:8
+                for t in 1:SF_GPU_SINGLE_PASS_N
                     @atomic output_counts[t, b] += c
                 end
             end
@@ -324,7 +322,7 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_log_u32!(
     end
 end
 
-KA.@kernel function _sf8_single_pass_kernel_tiled128_general_u32!(
+KA.@kernel function _sf6_single_pass_kernel_tiled128_general_u32!(
     output_sums,
     output_counts,
     x_mat,
@@ -342,13 +340,13 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_general_u32!(
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
-    shared_sums = @localmem FT (8 * SF_GPU_MAX_BINS,)
+    shared_sums = @localmem FT (SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS,)
     shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
 
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1
     if lid == 1
-        @inbounds for k in 1:(8 * NB)
+        @inbounds for k in 1:(SF_GPU_SINGLE_PASS_N * NB)
             shared_sums[k] = zero(FT)
         end
         @inbounds for b in 1:NB
@@ -448,7 +446,7 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_general_u32!(
     bid = (g - 1) ÷ workgroup_size + 1
     if bid <= n_tile_blocks
         k = lid
-        while k <= 8 * NB
+        while k <= SF_GPU_SINGLE_PASS_N * NB
             s = shared_sums[k]
             if s != zero(FT)
                 t = (k - 1) ÷ NB + 1
@@ -461,7 +459,7 @@ KA.@kernel function _sf8_single_pass_kernel_tiled128_general_u32!(
         while b <= NB
             c = shared_cnts[b]
             if c != UInt32(0)
-                for t in 1:8
+                for t in 1:SF_GPU_SINGLE_PASS_N
                     @atomic output_counts[t, b] += c
                 end
             end

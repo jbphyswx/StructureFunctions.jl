@@ -8,7 +8,7 @@ Random.seed!(42)
 
 function _value_bins_uniform(n_val::Int, ::Type{FT}) where {FT}
     edges = collect(range(FT(-1), FT(2); length = n_val + 1))
-    return [copy(edges) for _ in 1:8]
+    return [copy(edges) for _ in 1:6]
 end
 
 Test.@testset "GPU single-pass tiled parity — 1D log bins" begin
@@ -18,14 +18,14 @@ Test.@testset "GPU single-pass tiled parity — 1D log bins" begin
     u = randn(FT, 2, N) .* FT(0.3)
     dist_vec = LogBinEdges(Vector{FT}(exp.(range(log(FT(10)), log(FT(5000)); length = 11))))
 
-    sums_cpu = zeros(FT, 8, length(dist_vec) - 1)
-    counts_cpu = zeros(Int32, 8, length(dist_vec) - 1)
+    sums_cpu = zeros(FT, 6, length(dist_vec) - 1)
+    counts_cpu = zeros(Int32, 6, length(dist_vec) - 1)
     SFC.calculate_structure_functions_single_pass!(
         sums_cpu, counts_cpu, x, u, dist_vec; backend = SFC.SerialBackend(),
     )
 
-    sums_gpu = zeros(FT, 8, length(dist_vec) - 1)
-    counts_gpu = zeros(Int32, 8, length(dist_vec) - 1)
+    sums_gpu = zeros(FT, 6, length(dist_vec) - 1)
+    counts_gpu = zeros(Int32, 6, length(dist_vec) - 1)
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist_vec; kind = :single_pass)
     SFC.calculate_structure_functions_single_pass!(
         sums_gpu, counts_gpu, x, u, dist_vec;
@@ -43,18 +43,18 @@ Test.@testset "GPU single-pass tiled parity — 2D log dist + linear value" begi
     u = randn(FT, 2, N) .* FT(0.3)
     dist_vec = LogBinEdges(Vector{FT}(exp.(range(log(FT(10)), log(FT(5000)); length = 11))))
     n_val = 8
-    value_bins = ntuple(_ -> LinearBinEdges(range(FT(-1), FT(2); length = n_val + 1)), 8)
+    value_bins = ntuple(_ -> LinearBinEdges(range(FT(-1), FT(2); length = n_val + 1)), 6)
     n_dist = length(dist_vec) - 1
 
-    sums_cpu = zeros(FT, 8, n_dist, n_val)
-    counts_cpu = zeros(Int32, 8, n_dist, n_val)
+    sums_cpu = zeros(FT, 6, n_dist, n_val)
+    counts_cpu = zeros(Int32, 6, n_dist, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_cpu, counts_cpu, x, u, dist_vec, value_bins;
         backend = SFC.SerialBackend(),
     )
 
-    sums_gpu = zeros(FT, 8, n_dist, n_val)
-    counts_gpu = zeros(Int32, 8, n_dist, n_val)
+    sums_gpu = zeros(FT, 6, n_dist, n_val)
+    counts_gpu = zeros(Int32, 6, n_dist, n_val)
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist_vec, value_bins; kind = :single_pass_2d)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_gpu, counts_gpu, x, u, dist_vec, value_bins;
@@ -72,18 +72,18 @@ Test.@testset "GPU single-pass tiled parity — 2D InfPadded linear value catch-
     u = randn(FT, 2, N) .* FT(0.3)
     dist_vec = LogBinEdges(Vector{FT}(exp.(range(log(FT(10)), log(FT(5000)); length = 11))))
     n_val = 8
-    value_bins = ntuple(_ -> InfPaddedBinEdges(LinearBinEdges(range(FT(-1), FT(2); length = n_val - 1))), 8)
+    value_bins = ntuple(_ -> InfPaddedBinEdges(LinearBinEdges(range(FT(-1), FT(2); length = n_val - 1))), 6)
     n_dist = length(dist_vec) - 1
 
-    sums_cpu = zeros(FT, 8, n_dist, n_val)
-    counts_cpu = zeros(Int32, 8, n_dist, n_val)
+    sums_cpu = zeros(FT, 6, n_dist, n_val)
+    counts_cpu = zeros(Int32, 6, n_dist, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_cpu, counts_cpu, x, u, dist_vec, value_bins;
         backend = SFC.SerialBackend(),
     )
 
-    sums_gpu = zeros(FT, 8, n_dist, n_val)
-    counts_gpu = zeros(Int32, 8, n_dist, n_val)
+    sums_gpu = zeros(FT, 6, n_dist, n_val)
+    counts_gpu = zeros(Int32, 6, n_dist, n_val)
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist_vec, value_bins; kind = :single_pass_2d, n_val = n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_gpu, counts_gpu, x, u, dist_vec, value_bins;

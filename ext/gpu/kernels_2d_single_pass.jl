@@ -1,6 +1,6 @@
-# Tiled128 eight-type single-pass 2D joint histogram kernels (legacy tiled / global-atomic path).
+# Tiled128 six-invariant-type single-pass 2D joint histogram kernels (global-atomic path).
 # Production fast path when eligible is HTP-EJ in TiledSinglePass2DPrivKernels.jl (see gpu/SP2D_HTP_EJ.md).
-# This file: tile schedule matches 1D tiled128; non-priv fallback uses global atomics.
+# This file: tile schedule matches 1D tiled128; non-HTP-EJ route uses global atomics.
 
 @inline function _gpu_accumulate_single_pass_2d_pair_global!(
     output_sums,
@@ -19,11 +19,9 @@
         du_T2,
         du_L * (du_L2 + du_T2),
         du_L * du_L2,
-        du_L2 * du_T,
         du_L * du_T2,
-        du_T * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
             @atomic output_sums[t, bin, vbin] += vals[t]
@@ -54,11 +52,9 @@ end
         du_T2,
         du_L * (du_L2 + du_T2),
         du_L * du_L2,
-        du_L2 * du_T,
         du_L * du_T2,
-        du_T * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
         )
@@ -92,11 +88,9 @@ end
         du_T2,
         du_L * (du_L2 + du_T2),
         du_L * du_L2,
-        du_L2 * du_T,
         du_L * du_T2,
-        du_T * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
             vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
             N_val_edges,
@@ -132,11 +126,9 @@ end
         du_T2,
         du_L * (du_L2 + du_T2),
         du_L * du_L2,
-        du_L2 * du_T,
         du_L * du_T2,
-        du_T * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
             n_inner_edges, inner_last,
@@ -172,11 +164,9 @@ end
         du_T2,
         du_L * (du_L2 + du_T2),
         du_L * du_L2,
-        du_L2 * du_T,
         du_L * du_T2,
-        du_T * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
             vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
             n_inner_edges, inner_last[t],
@@ -210,11 +200,9 @@ end
         du_T2,
         du_L * (du_L2 + du_T2),
         du_L * du_L2,
-        du_L2 * du_T,
         du_L * du_T2,
-        du_T * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced(vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges)
         if 1 <= vbin < N_val_edges
             @atomic output_sums[t, bin, vbin] += vals[t]
@@ -245,11 +233,9 @@ end
         du_T2,
         du_L * (du_L2 + du_T2),
         du_L * du_L2,
-        du_L2 * du_T,
         du_L * du_T2,
-        du_T * du_T2,
     )
-    for t in 1:8
+    for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced_col(vals[t], val_first, val_last, val_inv_step, val_offset, val_step, t, N_val_edges)
         if 1 <= vbin < N_val_edges
             @atomic output_sums[t, bin, vbin] += vals[t]
@@ -259,7 +245,7 @@ end
     return nothing
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_linear_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_linear_linear_u32!(
     output_sums,
     output_counts,
     x_mat,
@@ -377,7 +363,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_linear_u32!(
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_general_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_general_u32!(
     output_sums,
     output_counts,
     x_mat,
@@ -488,7 +474,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_general_u32!(
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_linear_val_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_linear_val_u32!(
     output_sums,
     output_counts,
     x_mat,
