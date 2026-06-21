@@ -54,3 +54,6 @@ test/plots/
 test/ci_log.txt
 test/bench_results.json
 test/debug/
+
+# nsys
+*nsys-rep
