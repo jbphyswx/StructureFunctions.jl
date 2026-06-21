@@ -10,13 +10,13 @@ Random.seed!(2024)
 function _synthetic_value_bins_ntuple(n_bins::Int, ::Type{FT} = Float64) where {FT}
     return ntuple(
         _ -> LinearBinEdges(range(FT(-1), FT(2); length = n_bins + 1)),
-        8,
+        6,
     )
 end
 
 """Host reference for priv policy (must match `SP2DPrivPolicy.jl`)."""
 function _host_sp2d_priv_config(n_dist::Int, n_val::Int, ::Type{FT}) where {FT}
-    C = 8 * n_dist * n_val
+    C = 6 * n_dist * n_val
     plane = n_dist * n_val
     tile_overhead = 4 * 256 * sizeof(FT)
     meta = 5 * sizeof(Int)
@@ -32,8 +32,8 @@ function _host_sp2d_priv_config(n_dist::Int, n_val::Int, ::Type{FT}) where {FT}
     else
         :direct
     end
-    tpp = mode == :typeplane ? min(8, max(1, max_shared ÷ plane)) : 8
-    ntp = mode == :typeplane ? (8 + tpp - 1) ÷ tpp : 1
+    tpp = mode == :typeplane ? min(6, max(1, max_shared ÷ plane)) : 6
+    ntp = mode == :typeplane ? (6 + tpp - 1) ÷ tpp : 1
     needs_merge = mode == :direct
     return (C, mode, smem_default, max_shared, plane, tpp, ntp, needs_merge)
 end
@@ -66,7 +66,7 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
 
     C50, mode50, smem50, max_shared50, plane50, tpp50, ntp50 = _host_sp2d_priv_config(50, 52, FT)
     Test.@test mode50 == :typeplane
-    Test.@test C50 == 8 * 50 * 52
+    Test.@test C50 == SFC.SINGLE_PASS_N * 50 * 52
     Test.@test plane50 == 50 * 52
     Test.@test C50 > max_shared50
     Test.@test plane50 <= max_shared50
@@ -74,10 +74,10 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
     _, mode50f, _, _, _, tpp50f, ntp50f = _host_sp2d_priv_config(50, 52, Float32)
     Test.@test mode50f == :typeplane
     Test.@test tpp50f == 2
-    Test.@test ntp50f == 4
+    Test.@test ntp50f == cld(SFC.SINGLE_PASS_N, tpp50f)
 
-    sums_lin_ref = zeros(FT, 8, NB, n_val)
-    cnts_lin_ref = zeros(UInt32, 8, NB, n_val)
+    sums_lin_ref = zeros(FT, 6, NB, n_val)
+    cnts_lin_ref = zeros(UInt32, 6, NB, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_lin_ref, cnts_lin_ref, x, u, linear_dist, value_bins_ntuple;
         backend = SFC.SerialBackend(),
@@ -85,8 +85,8 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
     for (db, sums_ref, cnts_ref) in (
         (linear_dist, sums_lin_ref, cnts_lin_ref),
         begin
-            sr = zeros(FT, 8, length(log_dist) - 1, n_val)
-            cr = zeros(UInt32, 8, length(log_dist) - 1, n_val)
+            sr = zeros(FT, 6, length(log_dist) - 1, n_val)
+            cr = zeros(UInt32, 6, length(log_dist) - 1, n_val)
             SFC.calculate_structure_functions_single_pass_2d!(
                 sr, cr, x, u, log_dist, value_bins_ntuple;
                 backend = SFC.SerialBackend(),
@@ -103,29 +103,29 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
         Test.@test sums_priv ≈ sums_ref atol = 1e-11
         Test.@test cnts_priv == cnts_ref
 
-        sums_legacy = zeros(FT, size(sums_ref)...)
-        cnts_legacy = zeros(UInt32, size(cnts_ref)...)
+        sums_global = zeros(FT, size(sums_ref)...)
+        cnts_global = zeros(UInt32, size(cnts_ref)...)
         SFC.gpu_calculate_structure_functions_single_pass_2d!(
-            sums_legacy, cnts_legacy, backend, x, u, db, value_bins_ntuple;
-            force_legacy = true,
+            sums_global, cnts_global, backend, x, u, db, value_bins_ntuple;
+            force_global_atomic = true,
         )
-        Test.@test sums_legacy ≈ sums_ref atol = 1e-11
-        Test.@test cnts_legacy == cnts_ref
+        Test.@test sums_global ≈ sums_ref atol = 1e-11
+        Test.@test cnts_global == cnts_ref
     end
 
     inner = LinearBinEdges(range(FT(-0.5), FT(1.5); length = n_val + 1))
     inf_val = InfPaddedBinEdges(inner)
     n_val_inf = length(inf_val) - 1
     n_log = length(log_dist) - 1
-    sums_ref = zeros(FT, 8, n_log, n_val_inf)
-    cnts_ref = zeros(UInt32, 8, n_log, n_val_inf)
+    sums_ref = zeros(FT, 6, n_log, n_val_inf)
+    cnts_ref = zeros(UInt32, 6, n_log, n_val_inf)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_ref, cnts_ref, x, u, log_dist, inf_val;
         backend = SFC.SerialBackend(),
     )
-    sums_priv = zeros(FT, 8, n_log, n_val_inf)
-    cnts_priv = zeros(UInt32, 8, n_log, n_val_inf)
-    ws_inf = SFC.GPUSFWorkspace(backend, log_dist, inf_val)
+    sums_priv = zeros(FT, 6, n_log, n_val_inf)
+    cnts_priv = zeros(UInt32, 6, n_log, n_val_inf)
+    ws_inf = SFC.GPUSFWorkspace(backend, log_dist, inf_val; kind = :single_pass_2d)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_priv, cnts_priv, x, u, log_dist, inf_val;
         backend = SFC.GPUBackend(backend), workspace = ws_inf,
@@ -134,8 +134,8 @@ Test.@testset "GPU sp2d HTP-EJ privatized (KA.CPU)" begin
     Test.@test cnts_priv == cnts_ref
 
     ws2 = SFC.GPUSFWorkspace(backend, linear_dist, value_bins_ntuple)
-    sums_ws = zeros(FT, 8, NB, n_val)
-    cnts_ws = zeros(UInt32, 8, NB, n_val)
+    sums_ws = zeros(FT, 6, NB, n_val)
+    cnts_ws = zeros(UInt32, 6, NB, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_ws, cnts_ws, x, u, linear_dist, value_bins_ntuple;
         backend = SFC.GPUBackend(backend), workspace = ws2,
@@ -151,14 +151,14 @@ Test.@testset "GPU sp2d merge kernels (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float64
     n_dist, n_val, n_blocks = 4, 3, 5
-    C = 8 * n_dist * n_val
-    priv_sums = rand(FT, 8, n_dist, n_val, n_blocks)
-    priv_cnts = rand(UInt32, 8, n_dist, n_val, n_blocks)
-    out_s = zeros(FT, 8, n_dist, n_val)
-    out_c = zeros(UInt32, 8, n_dist, n_val)
-    ref_s = zeros(FT, 8, n_dist, n_val)
-    ref_c = zeros(UInt32, 8, n_dist, n_val)
-    for t in 1:8, d in 1:n_dist, v in 1:n_val, b in 1:n_blocks
+    C = 6 * n_dist * n_val
+    priv_sums = rand(FT, 6, n_dist, n_val, n_blocks)
+    priv_cnts = rand(UInt32, 6, n_dist, n_val, n_blocks)
+    out_s = zeros(FT, 6, n_dist, n_val)
+    out_c = zeros(UInt32, 6, n_dist, n_val)
+    ref_s = zeros(FT, 6, n_dist, n_val)
+    ref_c = zeros(UInt32, 6, n_dist, n_val)
+    for t in 1:6, d in 1:n_dist, v in 1:n_val, b in 1:n_blocks
         ref_s[t, d, v] += priv_sums[t, d, v, b]
         ref_c[t, d, v] += priv_cnts[t, d, v, b]
     end
@@ -190,8 +190,8 @@ Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
     _, mode_ref, _, _, _, _, _ = _host_sp2d_priv_config(NB, n_val, FT)
     Test.@test mode_ref == :typeplane
 
-    sums_ref = zeros(FT, 8, NB, n_val)
-    cnts_ref = zeros(UInt32, 8, NB, n_val)
+    sums_ref = zeros(FT, 6, NB, n_val)
+    cnts_ref = zeros(UInt32, 6, NB, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_ref, cnts_ref, x, u, linear_dist, value_bins_ntuple;
         backend = SFC.SerialBackend(),
@@ -200,8 +200,8 @@ Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
     Test.@test ws.sp2d_priv_config.accum_mode == :typeplane
     Test.@test !ws.sp2d_priv_config.needs_priv_merge
     Test.@test ws.priv_sums_dev === nothing
-    sums_gpu = zeros(FT, 8, NB, n_val)
-    cnts_gpu = zeros(UInt32, 8, NB, n_val)
+    sums_gpu = zeros(FT, 6, NB, n_val)
+    cnts_gpu = zeros(UInt32, 6, NB, n_val)
     SFC.gpu_calculate_structure_functions_single_pass_2d!(
         sums_gpu, cnts_gpu, backend, x, u, linear_dist, value_bins_ntuple;
         workspace = ws,
@@ -226,8 +226,8 @@ Test.@testset "GPU sp2d direct mode (KA.CPU)" begin
     Test.@test mode_ref == :direct
     Test.@test merge_ref
 
-    sums_ref = zeros(FT, 8, NB, n_val)
-    cnts_ref = zeros(UInt32, 8, NB, n_val)
+    sums_ref = zeros(FT, 6, NB, n_val)
+    cnts_ref = zeros(UInt32, 6, NB, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_ref, cnts_ref, x, u, linear_dist, value_bins_ntuple;
         backend = SFC.SerialBackend(),
@@ -235,8 +235,8 @@ Test.@testset "GPU sp2d direct mode (KA.CPU)" begin
     ws = SFC.GPUSFWorkspace(backend, linear_dist, value_bins_ntuple)
     Test.@test ws.sp2d_priv_config.accum_mode == :direct
     Test.@test ws.sp2d_priv_config.needs_priv_merge
-    sums_gpu = zeros(FT, 8, NB, n_val)
-    cnts_gpu = zeros(UInt32, 8, NB, n_val)
+    sums_gpu = zeros(FT, 6, NB, n_val)
+    cnts_gpu = zeros(UInt32, 6, NB, n_val)
     SFC.gpu_calculate_structure_functions_single_pass_2d!(
         sums_gpu, cnts_gpu, backend, x, u, linear_dist, value_bins_ntuple;
         workspace = ws,

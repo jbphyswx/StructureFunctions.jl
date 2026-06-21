@@ -13,7 +13,16 @@ end
 
 function _synthetic_value_bins_ntuple(n_bins::Int)
     template = _synthetic_value_bins(n_bins)
-    return ntuple(_ -> copy(template), 8)
+    return ntuple(_ -> copy(template), 6)
+end
+
+function _nan_equal(a, b; atol)
+    axes(a) == axes(b) || return false
+    return all(eachindex(a, b)) do i
+        ai = a[i]
+        bi = b[i]
+        (isnan(ai) && isnan(bi)) || isapprox(ai, bi; atol = atol)
+    end
 end
 
 Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
@@ -85,20 +94,20 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     out_sums_sp, out_counts_sp = SFC.calculate_structure_functions_single_pass(
         x2, u2, linear_bins; backend = SFC.GPUBackend(backend), workspace = ws_sp,
     )
-    Test.@test ref_sums_sp[1:8, :] ≈ out_sums_sp[1:8, :] atol = 1e-12
-    Test.@test ref_counts_sp[1:8, :] ≈ out_counts_sp[1:8, :]
+    Test.@test _nan_equal(ref_sums_sp, out_sums_sp; atol = 1e-12)
+    Test.@test ref_counts_sp ≈ out_counts_sp
 
     # --- single_pass_2d ---
     n_val = length(value_bins_ntuple[1]) - 1
-    sums_sp2d = zeros(FT, 8, NB, n_val)
-    counts_sp2d = zeros(UInt32, 8, NB, n_val)
+    sums_sp2d = zeros(FT, 6, NB, n_val)
+    counts_sp2d = zeros(UInt32, 6, NB, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_sp2d, counts_sp2d, x2, u2, linear_bins, value_bins_ntuple;
         backend = SFC.SerialBackend(),
     )
     ws_sp2d = SFC.GPUSFWorkspace(backend, linear_bins, value_bins_ntuple)
-    sums_gpu = zeros(FT, 8, NB, n_val)
-    counts_gpu = zeros(UInt32, 8, NB, n_val)
+    sums_gpu = zeros(FT, 6, NB, n_val)
+    counts_gpu = zeros(UInt32, 6, NB, n_val)
     SFC.gpu_calculate_structure_functions_single_pass_2d!(
         sums_gpu, counts_gpu, backend, x2, u2, linear_bins, value_bins_ntuple;
         workspace = ws_sp2d,
@@ -168,18 +177,18 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     Test.@test counts_2d_drv ≈ counts_2d_ref
 
     # --- single_pass slices ---
-    sums_sp_ref = zeros(FT, 8, NB, T)
-    counts_sp_ref = zeros(UInt32, 8, NB, T)
+    sums_sp_ref = zeros(FT, 6, NB, T)
+    counts_sp_ref = zeros(UInt32, 6, NB, T)
     for t in 1:T
         res_sums, res_counts = SFC.calculate_structure_functions_single_pass(
             x_batch[:, :, t], u_batch[:, :, t], linear_bins;
             backend = SFC.GPUBackend(backend),
         )
-        sums_sp_ref[:, :, t] .= res_sums[1:8, :]
-        counts_sp_ref[:, :, t] .= res_counts[1:8, :]
+        sums_sp_ref[:, :, t] .= res_sums[1:6, :]
+        counts_sp_ref[:, :, t] .= res_counts[1:6, :]
     end
-    sums_sp_drv = zeros(FT, 8, NB, T)
-    counts_sp_drv = zeros(UInt32, 8, NB, T)
+    sums_sp_drv = zeros(FT, 6, NB, T)
+    counts_sp_drv = zeros(UInt32, 6, NB, T)
     SFC.gpu_calculate_structure_functions_single_pass_slices!(
         sums_sp_drv, counts_sp_drv, backend, x_batch, u_batch, linear_bins;
         workspace = ws_sp,
@@ -188,11 +197,11 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     Test.@test counts_sp_drv ≈ counts_sp_ref
 
     # --- single_pass_2d slices ---
-    sums_sp2d_ref = zeros(FT, 8, NB, n_val, T)
-    counts_sp2d_ref = zeros(UInt32, 8, NB, n_val, T)
+    sums_sp2d_ref = zeros(FT, 6, NB, n_val, T)
+    counts_sp2d_ref = zeros(UInt32, 6, NB, n_val, T)
     for t in 1:T
-        st = zeros(FT, 8, NB, n_val)
-        ct = zeros(UInt32, 8, NB, n_val)
+        st = zeros(FT, 6, NB, n_val)
+        ct = zeros(UInt32, 6, NB, n_val)
         SFC.calculate_structure_functions_single_pass_2d!(
             st, ct, x_batch[:, :, t], u_batch[:, :, t], linear_bins, value_bins_ntuple;
             backend = SFC.SerialBackend(),
@@ -200,8 +209,8 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
         sums_sp2d_ref[:, :, :, t] .= st
         counts_sp2d_ref[:, :, :, t] .= ct
     end
-    sums_sp2d_drv = zeros(FT, 8, NB, n_val, T)
-    counts_sp2d_drv = zeros(UInt32, 8, NB, n_val, T)
+    sums_sp2d_drv = zeros(FT, 6, NB, n_val, T)
+    counts_sp2d_drv = zeros(UInt32, 6, NB, n_val, T)
     SFC.gpu_calculate_structure_functions_single_pass_2d_slices!(
         sums_sp2d_drv, counts_sp2d_drv, backend, x_batch, u_batch,
         linear_bins, value_bins_ntuple; workspace = ws_sp2d,

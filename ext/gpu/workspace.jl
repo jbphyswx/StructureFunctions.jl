@@ -13,8 +13,8 @@ per-call `KA.zeros` allocation and repeated edge uploads.
 - `:sf1d` — 1D distance histogram (`out_dev`, `cnt_dev` vectors)
 - `:joint2d` — distance × value joint histogram; caches compiled tiled kernel in
   `joint2d_kernel` (default exact `n_dist × n_val` smem; override via `joint2d_compile_cells`).
-- `:single_pass` — eight 1D distance histograms `(8, NB)`
-- `:single_pass_2d` — eight distance × value joint histograms `(8, NB, n_val)`;
+- `:single_pass` — six invariant 1D distance histograms `(6, NB)`
+- `:single_pass_2d` — six invariant distance × value joint histograms `(6, NB, n_val)`;
   on-chip modes (`:shared`, `:typeplane`) flush shared histograms directly to `out_*`;
   `:direct` uses `priv_sums_dev` / `priv_cnts_dev` plus merge.
   Caches compiled pair kernel in `sp2d_pair_kernel` (typed `LinearBinEdges` / `LogBinEdges` dist).
@@ -87,7 +87,7 @@ end
     GPUSFWorkspace(backend, distance_bins; kind=:sf1d)
 
 Workspace for 1D tiled structure functions or, with `kind=:single_pass`, the
-eight-type single-pass distance histograms.
+six-invariant-type single-pass distance histograms.
 """
 function SFC.GPUSFWorkspace(
     backend::KA.Backend,
@@ -108,8 +108,8 @@ function SFC.GPUSFWorkspace(
     else
         out_dev = nothing
         cnt_dev = nothing
-        out_sums_dev = KA.zeros(backend, FT, 8, NB)
-        out_cnts_dev = KA.zeros(backend, UInt32, 8, NB)
+        out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, NB)
+        out_cnts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, NB)
     end
 
     ws = GPUSFWorkspace(
@@ -132,7 +132,7 @@ end
 Workspace for 2D histograms. Routes on `kind`:
 
 - `kind=:joint2d` — single distance × value joint histogram (see [`joint2d_smem_max`](@ref))
-- `kind=:single_pass_2d` — eight-type single-pass 2D (see [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md))
+- `kind=:single_pass_2d` — six-invariant-type single-pass 2D (see [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md))
 
 Typed `AbstractBinEdges` distance bins (`LogBinEdges`, etc.) subtype `AbstractVector`;
 routing on `kind` avoids constructor ambiguity between joint and SP2D paths.
@@ -144,6 +144,14 @@ function SFC.GPUSFWorkspace(
     kind::Symbol = :joint2d,
     kwargs...,
 )
+    if kind == :joint2d && value_bins isa Tuple
+        length(value_bins) == SF_GPU_SINGLE_PASS_N ||
+            throw(ArgumentError(
+                "tuple value_bins are reserved for single-pass 2D and must have " *
+                "$SF_GPU_SINGLE_PASS_N entries; got $(length(value_bins))",
+            ))
+        kind = :single_pass_2d
+    end
     if kind == :joint2d
         return _gpusf_workspace_joint2d!(backend, distance_bins, value_bins; kwargs...)
     elseif kind == :single_pass_2d
@@ -208,8 +216,8 @@ function _gpusf_workspace_joint2d!(
 end
 
 """
-Build a `:single_pass_2d` workspace (eight distance × value joint histograms).
-Pass one shared edge object or `NTuple{8,...}` when columns may differ.
+Build a `:single_pass_2d` workspace (six invariant distance × value joint histograms).
+Pass one shared edge object or `NTuple{6,...}` when columns may differ.
 """
 function _sp2d_value_eltype(value_bins::LinearBinEdges, FT3)
     return promote_type(FT3, eltype(value_bins.edges))
@@ -220,25 +228,17 @@ end
 function _sp2d_value_eltype(value_bins::InfPaddedBinEdges, FT3)
     return _sp2d_value_eltype(value_bins.edges, FT3)
 end
-function _sp2d_value_eltype(value_bins::NTuple{8}, FT3)
-    return promote_type(FT3, (_sp2d_value_eltype(value_bins[t], FT3) for t in 1:8)...)
+function _sp2d_value_eltype(value_bins::Tuple, FT3)
+    return promote_type(FT3, (_sp2d_value_eltype(value_bins[t], FT3) for t in eachindex(value_bins))...)
 end
-function _sp2d_value_eltype(v::Vector{FT}, FT3) where {FT}
+function _sp2d_value_eltype(v::AbstractVector{FT}, FT3) where {FT <: Number}
     return promote_type(FT3, FT)
 end
 
 function _gpusf_workspace_sp2d!(
     backend::KA.Backend,
     distance_bins::Union{AbstractVector{FT3}, LinearBinEdges, LogBinEdges},
-    value_bins::Union{
-        LinearBinEdges,
-        LogBinEdges,
-        InfPaddedBinEdges,
-        NTuple{8, LinearBinEdges},
-        NTuple{8, LogBinEdges},
-        NTuple{8, InfPaddedBinEdges},
-        NTuple{8, Vector{FT3}},
-    };
+    value_bins::SFC.SinglePass2DValueBins;
     n_val::Union{Nothing, Int} = nothing,
 ) where {FT3}
     n_dist_edges = _gpu_n_edges(distance_bins)
@@ -252,8 +252,8 @@ function _gpusf_workspace_sp2d!(
     val_plan = _gpu_build_value_digitize_plan(backend, value_bins)
     value_edges_sp2d_dev = val_plan isa GPUValueVectorCols ? val_plan.edges_dev : nothing
 
-    out_sums_dev = KA.zeros(backend, FT, 8, NB, hist_n_val)
-    out_cnts_dev = KA.zeros(backend, UInt32, 8, NB, hist_n_val)
+    out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, NB, hist_n_val)
+    out_cnts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, NB, hist_n_val)
     priv_config = _sp2d_priv_config(NB, hist_n_val, FT)
 
     ws = GPUSFWorkspace(
@@ -261,7 +261,8 @@ function _gpusf_workspace_sp2d!(
         nothing, nothing, out_sums_dev, out_cnts_dev,
         nothing, value_edges_sp2d_dev, nothing,
         NB, n_bins, NB, hist_n_val, n_val_edges,
-        Vector{FT}(undef, 8 * NB * hist_n_val), Vector{UInt32}(undef, 8 * NB * hist_n_val),
+        Vector{FT}(undef, SF_GPU_SINGLE_PASS_N * NB * hist_n_val),
+        Vector{UInt32}(undef, SF_GPU_SINGLE_PASS_N * NB * hist_n_val),
         nothing, nothing, nothing, nothing,
         val_plan,
         priv_config, nothing, nothing, nothing, 0,
@@ -275,7 +276,7 @@ function _gpusf_workspace_sp2d!(
 end
 
 """
-Ensure block-private HTP-EJ slabs are allocated for `n_tile_blocks` CUDA tile blocks.
+Ensure block-private HTP-EJ partitions are allocated for `n_tile_blocks` CUDA tile blocks.
 Reallocates when `N_points` (hence tile-block count) grows.
 """
 function _ensure_sp2d_priv_bufs!(
@@ -292,14 +293,14 @@ function _ensure_sp2d_priv_bufs!(
        ws.priv_cnts_dev === nothing ||
        ws.priv_n_tile_blocks < n_tile_blocks
         FT = ws.FT
-        ws.priv_sums_dev = KA.zeros(ws.backend, FT, 8, ws.n_dist, ws.n_val, n_tile_blocks)
-        ws.priv_cnts_dev = KA.zeros(ws.backend, UInt32, 8, ws.n_dist, ws.n_val, n_tile_blocks)
+        ws.priv_sums_dev = KA.zeros(ws.backend, FT, SF_GPU_SINGLE_PASS_N, ws.n_dist, ws.n_val, n_tile_blocks)
+        ws.priv_cnts_dev = KA.zeros(ws.backend, UInt32, SF_GPU_SINGLE_PASS_N, ws.n_dist, ws.n_val, n_tile_blocks)
         ws.priv_n_tile_blocks = n_tile_blocks
     end
     return ws.priv_sums_dev, ws.priv_cnts_dev
 end
 
-"""Allocate ephemeral privatization slabs when no workspace is provided."""
+"""Allocate ephemeral privatization partitions when no workspace is provided."""
 function _alloc_sp2d_priv_bufs(
     backend::KA.Backend,
     FT::Type,
@@ -307,8 +308,8 @@ function _alloc_sp2d_priv_bufs(
     n_val::Int,
     n_tile_blocks::Int,
 )
-  priv_sums = KA.zeros(backend, FT, 8, n_dist, n_val, n_tile_blocks)
-  priv_cnts = KA.zeros(backend, UInt32, 8, n_dist, n_val, n_tile_blocks)
+  priv_sums = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, n_dist, n_val, n_tile_blocks)
+  priv_cnts = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, n_dist, n_val, n_tile_blocks)
   return priv_sums, priv_cnts
 end
 
@@ -369,4 +370,175 @@ end
 function _workspace_dist_edge_bufs(ws::Union{GPUSFWorkspace, Nothing})
     ws === nothing && return nothing, nothing, nothing
     return nothing, nothing, ws.dist_general_edges_dev
+end
+# Reusable GPU buffers for batched structure-function launches (production).
+
+"""
+    GPUBatchWorkspace{FT}
+
+Device buffers reused across batched SF calls at fixed `(N, B, NB)`.
+
+`sums_dev` / `counts_dev` are `(NB, B)` or higher-rank batch histograms.
+`partial_dev` is lazy block-private `(2·NB, strip_w, n_tile_blocks)` partition.
+`u_dev` uses batch-major layout `(B, N, N_dims)` for coalesced inner-batch loads.
+"""
+mutable struct GPUBatchWorkspace{FT, S, C, P}
+    N::Int
+    B::Int
+    NB::Int
+    n_tile_blocks::Int
+    fixed_x::Bool
+    sums_dev::S
+    counts_dev::C
+    partial_dev::Union{Nothing, P}
+    x_dev::Union{AbstractArray{FT, 2}, Nothing}
+    u_dev::Union{AbstractArray{FT, 3}, Nothing}
+end
+
+function GPUBatchWorkspace(
+    backend::KA.Backend,
+    ::Type{FT},
+    N::Int,
+    B::Int,
+    NB::Int;
+    fixed_x::Bool = true,
+) where {FT}
+    n_tiles = cld(N, SF_GPU_TILE)
+    n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
+    sums_dev = KA.zeros(backend, FT, NB, B)
+    counts_dev = KA.zeros(backend, UInt32, NB, B)
+    partial_placeholder = KA.zeros(backend, FT, 0, 0, 0)
+    return GPUBatchWorkspace{FT, typeof(sums_dev), typeof(counts_dev), typeof(partial_placeholder)}(
+        N, B, NB, n_tile_blocks, fixed_x,
+        sums_dev, counts_dev, nothing, nothing, nothing,
+    )
+end
+
+"""VRAM bytes for block-private partial `(2·NB, B, n_tile_blocks)` sums + counts."""
+function estimate_batch_priv_bytes(N_points::Int, B::Int, NB::Int, ::Type{FT}) where {FT}
+    n_tiles = cld(N_points, SF_GPU_TILE)
+    n_priv = n_tiles * (n_tiles + 1) ÷ 2
+    partition = 2 * NB * B * sizeof(FT)
+    return (partial_bytes = n_priv * partition, n_priv = n_priv, n_tiles = n_tiles)
+end
+
+"""
+Split linear batch axis `1:B` into sub-ranges so each partition's partial buffer fits
+`max_partial_bytes` (0 = no splitting → single range `1:B`).
+"""
+function batch_partition_ranges(B::Int, max_partial_bytes::Int, N_points::Int, NB::Int, ::Type{FT}) where {FT}
+    if max_partial_bytes <= 0 || B <= 0
+        return [1:B]
+    end
+    est = estimate_batch_priv_bytes(N_points, 1, NB, FT)
+    per_b_partial = est.n_priv * 2 * NB * sizeof(FT)
+    per_b_partial <= 0 && return [1:B]
+    chunk = max(1, max_partial_bytes ÷ per_b_partial)
+    ranges = UnitRange{Int}[]
+    b0 = 1
+    while b0 <= B
+        b1 = min(B, b0 + chunk - 1)
+        push!(ranges, b0:b1)
+        b0 = b1 + 1
+    end
+    return ranges
+end
+
+"""Upload host `x`, `u` once before timed kernel loops."""
+function upload_batch!(ws::GPUBatchWorkspace{FT}, backend::KA.Backend, x, u) where {FT}
+    x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = ws.fixed_x)
+    ws.x_dev = x_dev
+    ws.u_dev = u_dev
+    return ws
+end
+
+function reset_batch_output!(ws::GPUBatchWorkspace{FT}) where {FT}
+    fill!(ws.sums_dev, zero(FT))
+    fill!(ws.counts_dev, zero(UInt32))
+    return ws
+end
+
+"""Allocate block-private partial buffer on first use."""
+function ensure_batch_partial_dev!(ws::GPUBatchWorkspace{FT}, backend::KA.Backend, strip_w::Int) where {FT}
+    if ws.partial_dev === nothing
+        ws.partial_dev = KA.zeros(backend, FT, 2 * ws.NB, strip_w, ws.n_tile_blocks)
+    end
+    return ws.partial_dev
+end
+
+function download_batch!(sums, counts, ws::GPUBatchWorkspace{FT}) where {FT}
+    copy!(sums, reshape(Array(ws.sums_dev), size(sums)))
+    copy!(counts, reshape(Array(ws.counts_dev), size(counts)))
+    return nothing
+end
+
+"""Workspace for six-invariant-type single-pass batch: `(6, NB, B)` outputs."""
+mutable struct GPUBatchSP1DWorkspace{FT, S, C, P}
+    base::GPUBatchWorkspace{FT, S, C, P}
+    sums_dev::S
+    counts_dev::C
+end
+
+function GPUBatchSP1DWorkspace(
+    backend::KA.Backend,
+    ::Type{FT},
+    N::Int,
+    B::Int,
+    NB::Int;
+    fixed_x::Bool = true,
+) where {FT}
+    sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, NB, B)
+    counts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, NB, B)
+    base = GPUBatchWorkspace(backend, FT, N, B, NB; fixed_x = fixed_x)
+    return GPUBatchSP1DWorkspace{FT, typeof(sums_dev), typeof(counts_dev), typeof(base.partial_dev)}(
+        base, sums_dev, counts_dev,
+    )
+end
+
+function reset_batch_sp1d_output!(ws::GPUBatchSP1DWorkspace{FT}) where {FT}
+    fill!(ws.sums_dev, zero(FT))
+    fill!(ws.counts_dev, zero(UInt32))
+    return ws
+end
+
+"""Workspace for six-invariant-type SP2D batch: `(6, n_dist, n_val, B)` outputs."""
+mutable struct GPUBatchSP2DWorkspace{FT, S, C}
+    N::Int
+    B::Int
+    n_dist::Int
+    n_val::Int
+    fixed_x::Bool
+    sums_dev::S
+    counts_dev::C
+    x_dev::Union{AbstractArray{FT, 2}, Nothing}
+    u_dev::Union{AbstractArray{FT, 3}, Nothing}
+    partial_sums_dev
+    partial_cnts_dev
+    n_tile_blocks::Int
+end
+
+function GPUBatchSP2DWorkspace(
+    backend::KA.Backend,
+    ::Type{FT},
+    N::Int,
+    B::Int,
+    n_dist::Int,
+    n_val::Int;
+    fixed_x::Bool = true,
+) where {FT}
+    n_tiles = cld(N, SF_GPU_TILE)
+    n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
+    sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, n_dist, n_val, B)
+    counts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, n_dist, n_val, B)
+    return GPUBatchSP2DWorkspace{FT, typeof(sums_dev), typeof(counts_dev)}(
+        N, B, n_dist, n_val, fixed_x,
+        sums_dev, counts_dev, nothing, nothing,
+        nothing, nothing, n_tile_blocks,
+    )
+end
+
+function reset_batch_sp2d_output!(ws::GPUBatchSP2DWorkspace{FT}) where {FT}
+    fill!(ws.sums_dev, zero(FT))
+    fill!(ws.counts_dev, zero(UInt32))
+    return ws
 end

@@ -20,11 +20,8 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
 
     sft = SFT.L2SFType()
 
-    x_tup = (x[1, :], x[2, :])
-    u_tup = (u[1, :], u[2, :])
-
     res_ref = SFC.calculate_structure_function(
-        sft, x_tup, u_tup, bin_edges;
+        sft, x, u, bin_edges;
         verbose = false, show_progress = false, return_sums_and_counts = true,
     )
     ref_vals = res_ref.sums

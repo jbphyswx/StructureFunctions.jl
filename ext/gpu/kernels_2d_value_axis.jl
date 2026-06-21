@@ -31,7 +31,7 @@ function _sp2d_tiled_load_tile!(shared_xi, shared_ui, shared_xj, shared_uj, x_ma
     return nothing
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_linear_val_cols_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_linear_linear_val_cols_u32!(
     output_sums, output_counts, x_mat, u_mat,
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
     dist_first::FT, dist_last::FT, dist_inv_step::FT, dist_offset::FT, dist_step::FT,
@@ -103,7 +103,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_linear_val_cols_u
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_linear_val_cols_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_linear_val_cols_u32!(
     output_sums, output_counts, x_mat, u_mat,
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
     dist_first::FT, dist_last::FT, dist_inv_step::FT, dist_offset::FT, dist_step::FT,
@@ -175,7 +175,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_linear_val_cols_u32!
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_inflinear_val_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_linear_inflinear_val_u32!(
     output_sums, output_counts, x_mat, u_mat,
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
     dist_first::FT, dist_last::FT, dist_inv_step::FT, dist_offset::FT, dist_step::FT,
@@ -248,7 +248,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_inflinear_val_u32
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_inflinear_val_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_inflinear_val_u32!(
     output_sums, output_counts, x_mat, u_mat,
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
     dist_first::FT, dist_last::FT, dist_inv_step::FT, dist_offset::FT, dist_step::FT,
@@ -321,7 +321,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_inflinear_val_u32!(
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_inflinear_val_cols_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_linear_inflinear_val_cols_u32!(
     output_sums, output_counts, x_mat, u_mat,
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
     dist_first::FT, dist_last::FT, dist_inv_step::FT, dist_offset::FT, dist_step::FT,
@@ -394,7 +394,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_inflinear_val_col
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_inflinear_val_cols_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_inflinear_val_cols_u32!(
     output_sums, output_counts, x_mat, u_mat,
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
     dist_first::FT, dist_last::FT, dist_inv_step::FT, dist_offset::FT, dist_step::FT,
@@ -467,7 +467,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_inflinear_val_cols_u
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_log_val_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_log_val_u32!(
     output_sums, output_counts, x_mat, u_mat,
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
     dist_first::FT, dist_last::FT, dist_inv_step::FT, dist_offset::FT, dist_step::FT,
@@ -539,7 +539,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_log_val_u32!(
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_vector_val_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_vector_val_u32!(
     output_sums, output_counts, x_mat, u_mat,
     @Const(value_edges),
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
@@ -611,7 +611,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_vector_val_u32!(
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_log_val_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_linear_log_val_u32!(
     output_sums, output_counts, x_mat, u_mat,
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
     dist_first::FT, dist_last::FT, dist_inv_step::FT, dist_offset::FT, dist_step::FT,
@@ -683,7 +683,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_log_val_u32!(
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_log_val_cols_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_linear_log_val_cols_u32!(
     output_sums, output_counts, x_mat, u_mat,
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
     dist_first::FT, dist_last::FT, dist_inv_step::FT, dist_offset::FT, dist_step::FT,
@@ -755,7 +755,7 @@ KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_linear_log_val_cols_u32!
     end
 end
 
-KA.@kernel function _sf8_single_pass_2d_kernel_tiled128_log_log_val_cols_u32!(
+KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_log_val_cols_u32!(
     output_sums, output_counts, x_mat, u_mat,
     N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
     dist_first::FT, dist_last::FT, dist_inv_step::FT, dist_offset::FT, dist_step::FT,
