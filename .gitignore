@@ -54,6 +54,12 @@ test/plots/
 test/ci_log.txt
 test/bench_results.json
 test/debug/
+gpu/benchmark_results/
 
-# nsys
-*nsys-rep
+# Profiling and diagnostic outputs
+*.nsys-rep
+*.qdrep
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.ncu-rep
