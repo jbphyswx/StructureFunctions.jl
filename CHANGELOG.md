@@ -54,11 +54,6 @@ All notable changes to this project will be documented in this file.
 - Replaced dynamic Val(N) construction with explicit if-elseif-Val(1/2/3) to satisfy JET type stability
 - ThreadedBackend is now fully featured and battle-tested
 
-#### Real Data Support (Extensions)
-- New JLD2Ext for binary Julia data files
-- New NetCDFExt for climate/geophysical data
-- New Zarr Ext for cloud-native array storage
-- Extensible hooks for CSV, HDF5, and other formats
 
 ### Breaking Changes
 
@@ -131,7 +126,6 @@ calculate_structure_function(sf_type, x, u, bins;
 ### Known Issues & Future Work
 
 - **Block E (NUFFT)**: Spectral extensions partially integrated; full NUFFT modernization deferred to v0.4
-- **Block I (Real Data)**: Extension hooks present; full out-of-core support deferred to v0.4
 - **Documentation**: `docs/` folder structure not yet added (future: comprehensive theory/architecture guides)
 
 ### Upgrade Guide
@@ -164,4 +158,3 @@ OhMyThreads = "67456a42-ebe4-4781-8ad1-67f7eda8d8f7"
 ## [0.2.0] - Previous Release
 
 - Initial implementation of spectral analysis and 2D/3D structure functions.
-

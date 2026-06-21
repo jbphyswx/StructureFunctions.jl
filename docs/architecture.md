@@ -191,12 +191,11 @@ src/
 └── Backends.jl              # Backend type definitions
 
 ext/
-├── ThreadedBackend.jl       # OhMyThreads integration
-├── DistributedBackend.jl    # Distributed.jl integration
-├── GPUBackend.jl            # KernelAbstractions integration
-├── JLD2Ext.jl              # JLD2 file I/O
-├── NetCDFExt.jl             # NetCDF file I/O
-└── ... (more extensions)
+├── StructureFunctionsOhMyThreadsExt.jl    # OhMyThreads integration
+├── StructureFunctionsDistributedExt.jl     # Distributed.jl integration
+├── StructureFunctionsGPUExt.jl             # KernelAbstractions integration
+├── StructureFunctionsCairoMakieExt.jl      # Plotting helpers
+└── gpu/                                    # GPU kernel organization
 ```
 
 ### Example: ThreadedBackend Dispatch
@@ -280,22 +279,6 @@ To add support for a new backend (e.g., `CUDABackend`):
 
 3. **Publish** as part of release
 
-### Example: Using NetCDFExt
-
-If you have climate data in NetCDF format:
-
-```julia
-using StructureFunctions
-using NetCDF
-
-# Extension auto-loads when NetCDF is available
-# Registers a convenience method
-SF = calculate_structure_function("path/to/data.nc",
-                                 backend=ThreadedBackend())
-```
-
----
-
 ## Code Layout
 
 ### Key Files
@@ -306,8 +289,10 @@ SF = calculate_structure_function("path/to/data.nc",
 | `src/StructureFunctionTypes.jl` | Operator type definitions |
 | `src/HelperFunctions.jl` | Binning, distance metrics, utils |
 | `src/Backends.jl` | Backend type definitions |
-| `ext/ThreadedBackend.jl` | OhMyThreads integration |
-| `ext/GPUExt.jl` | KernelAbstractions + GPU kernels |
+| `ext/StructureFunctionsOhMyThreadsExt.jl` | OhMyThreads integration |
+| `ext/StructureFunctionsDistributedExt.jl` | Distributed/SharedArrays integration |
+| `ext/StructureFunctionsGPUExt.jl` | KernelAbstractions + GPU kernels |
+| `ext/StructureFunctionsCairoMakieExt.jl` | Plotting helpers |
 | `src/__init__.jl` | Exports public types/functions |
 
 ### Import Strategy
@@ -373,5 +358,4 @@ using StaticArrays
 
 - [Theory](theory.md): Mathematical foundations
 - [Backends](backends.md): When to use each backend
-- [Real Data](real_data.md): File I/O and extensions
 - [Examples](../examples/README.md): Worked code examples

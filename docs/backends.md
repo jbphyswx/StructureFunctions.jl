@@ -471,5 +471,4 @@ ProfileCanvas.show()
 
 - [Theory](theory.md): What structure functions represent
 - [Architecture](architecture.md): Internal design and dispatch
-- [Real Data](real_data.md): Loading climate/ocean data
 - [Examples](../examples/README.md): Complete worked examples
