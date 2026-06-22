@@ -1,5 +1,5 @@
 # Tiled128 six-invariant-type single-pass 2D joint histogram kernels (global-atomic path).
-# Production fast path when eligible is HTP-EJ in TiledSinglePass2DPrivKernels.jl (see gpu/SP2D_HTP_EJ.md).
+# Production fast path when eligible is HTP-EJ in kernels_2d_direct.jl (see gpu/SP2D_HTP_EJ.md).
 # This file: tile schedule matches 1D tiled128; non-HTP-EJ route uses global atomics.
 
 @inline function _gpu_accumulate_single_pass_2d_pair_global!(

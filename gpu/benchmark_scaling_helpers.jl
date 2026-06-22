@@ -38,20 +38,20 @@ function run_timed_gpu(f, backend; warmup::Int = 1)
 end
 
 """
-    bench_cpu_serial_sf(x_tup, u_tup, bins, sft; warmup=1) -> Float64
+    bench_cpu_serial_sf(x_arr, u_arr, bins, sft; warmup=1) -> Float64
 
 Time one **serial** CPU structure-function call (GPU doc assets — always 1 logical CPU worker).
 Thread scaling is measured separately in `benchmark/benchmark_scaling.jl`.
 """
-function bench_cpu_serial_sf(x_tup, u_tup, bins, sft; warmup::Int = 1)
+function bench_cpu_serial_sf(x_arr, u_arr, bins, sft; warmup::Int = 1)
     for _ in 1:warmup
         SFC.calculate_structure_function(
-            sft, x_tup, u_tup, bins;
+            sft, x_arr, u_arr, bins;
             backend = SFC.SerialBackend(), verbose = false, show_progress = false,
         )
     end
     return @elapsed SFC.calculate_structure_function(
-        sft, x_tup, u_tup, bins;
+        sft, x_arr, u_arr, bins;
         backend = SFC.SerialBackend(), verbose = false, show_progress = false,
     )
 end
@@ -150,10 +150,8 @@ Serial CPU per-slice loop (same 1-worker policy as [`bench_cpu_serial_sf`](@ref)
 function bench_cpu_serial_slice_loop!(x_batch, u_batch, bins, sft, sums, counts; T::Int, warmup::Int = 1)
     function run!()
         for t in 1:T
-            x_t = (x_batch[1, :, t], x_batch[2, :, t], x_batch[3, :, t])
-            u_t = (u_batch[1, :, t], u_batch[2, :, t], u_batch[3, :, t])
             res = SFC.calculate_structure_function(
-                sft, x_t, u_t, bins;
+                sft, @view(x_batch[:, :, t]), @view(u_batch[:, :, t]), bins;
                 backend = SFC.SerialBackend(), verbose = false, show_progress = false,
                 return_sums_and_counts = true,
             )

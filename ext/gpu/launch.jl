@@ -216,9 +216,9 @@ function _launch_joint_2d_tiled_kernel!(
 end
 # Host launch routing for HTP-EJ single-pass 2D kernels.
 #
-# Entry: _launch_single_pass_2d_priv! → needs_priv_merge ?
+# Entry: _launch_single_pass_2d_strategy! → needs_partition_merge ?
 #   _launch_sp2d_onchip!     (pair → out_*, no merge)
-#   _launch_sp2d_direct_priv! (priv partition + merge)
+#   _launch_sp2d_direct_partitioned! (private partition + merge)
 #
 # Kernel resolution cached on GPUSFWorkspace.sp2d_pair_kernel when using a workspace.
 # See gpu/SP2D_HTP_EJ.md
@@ -246,7 +246,7 @@ function _sp2d_val_variant(::GPUValueVectorCols)
 end
 
 """Trailing kernel args after tile launch params (`C, plane, types_per_pass, n_type_passes`)."""
-@inline function _sp2d_priv_kernel_tail_args(config::SP2DPrivConfig)
+@inline function _sp2d_strategy_kernel_tail_args(config::SP2DAccumulationStrategy)
     return (
         config.n_joint_cells,
         config.plane_cells,
@@ -261,7 +261,7 @@ function _sp2d_resolve_pair_kernel(
     backend::KA.Backend,
     dist_bins,
     val_plan::GPUValueDigitizePlan,
-    config::SP2DPrivConfig,
+    config::SP2DAccumulationStrategy,
     ws::Int = SF_GPU_TILED_WS,
 )
     if workspace !== nothing && workspace.sp2d_pair_kernel !== nothing
@@ -273,7 +273,7 @@ function _sp2d_resolve_pair_kernel(
         ))
     dist_sym = _sp2d_dist_variant(dist_bins)
     val_sym = _sp2d_val_variant(val_plan)
-    kernel! = _sp2d_priv_kernel_fn(dist_sym, val_sym, config.accum_mode, backend, ws)
+    kernel! = _sp2d_partition_kernel_fn(dist_sym, val_sym, config.accum_mode, backend, ws)
     if workspace !== nothing && workspace.kind == :single_pass_2d
         workspace.sp2d_pair_kernel = kernel!
     end
@@ -282,8 +282,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LinearBinEdges,
@@ -292,19 +292,19 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
     lbe, vp = dist_bins, val_plan
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -312,8 +312,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LinearBinEdges,
@@ -322,19 +322,19 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
     lbe, vp = dist_bins, val_plan
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -342,8 +342,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LinearBinEdges,
@@ -352,20 +352,20 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
     lbe, vp = dist_bins, val_plan
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step,
         vp.n_inner_edges, vp.inner_last,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -373,8 +373,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LinearBinEdges,
@@ -383,20 +383,20 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
     lbe, vp = dist_bins, val_plan
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step, vp.inner_last,
         vp.n_inner_edges,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -404,8 +404,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LinearBinEdges,
@@ -414,19 +414,19 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
     lbe, vp = dist_bins, val_plan
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -434,8 +434,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LinearBinEdges,
@@ -444,19 +444,19 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
     lbe, vp = dist_bins, val_plan
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -464,8 +464,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LogBinEdges,
@@ -474,7 +474,7 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
@@ -482,12 +482,12 @@ function _sp2d_pair_launch_kernel!(
     lbe, vp = dist_bins, val_plan
     d_f, d_l, d_inv, d_off, d_st = _dist_log_linear_fields(lbe)
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         d_f, d_l, d_inv, d_off, d_st,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -495,8 +495,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LogBinEdges,
@@ -505,7 +505,7 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
@@ -513,12 +513,12 @@ function _sp2d_pair_launch_kernel!(
     lbe, vp = dist_bins, val_plan
     d_f, d_l, d_inv, d_off, d_st = _dist_log_linear_fields(lbe)
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         d_f, d_l, d_inv, d_off, d_st,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -526,8 +526,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LogBinEdges,
@@ -536,7 +536,7 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
@@ -544,13 +544,13 @@ function _sp2d_pair_launch_kernel!(
     lbe, vp = dist_bins, val_plan
     d_f, d_l, d_inv, d_off, d_st = _dist_log_linear_fields(lbe)
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         d_f, d_l, d_inv, d_off, d_st,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step,
         vp.n_inner_edges, vp.inner_last,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -558,8 +558,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LogBinEdges,
@@ -568,7 +568,7 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
@@ -576,13 +576,13 @@ function _sp2d_pair_launch_kernel!(
     lbe, vp = dist_bins, val_plan
     d_f, d_l, d_inv, d_off, d_st = _dist_log_linear_fields(lbe)
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         d_f, d_l, d_inv, d_off, d_st,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step, vp.inner_last,
         vp.n_inner_edges,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -590,8 +590,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LogBinEdges,
@@ -600,7 +600,7 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
@@ -608,12 +608,12 @@ function _sp2d_pair_launch_kernel!(
     lbe, vp = dist_bins, val_plan
     d_f, d_l, d_inv, d_off, d_st = _dist_log_linear_fields(lbe)
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         d_f, d_l, d_inv, d_off, d_st,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -621,8 +621,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LogBinEdges,
@@ -631,7 +631,7 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
@@ -639,12 +639,12 @@ function _sp2d_pair_launch_kernel!(
     lbe, vp = dist_bins, val_plan
     d_f, d_l, d_inv, d_off, d_st = _dist_log_linear_fields(lbe)
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         d_f, d_l, d_inv, d_off, d_st,
         vp.first, vp.last, vp.inv_step, vp.offset, vp.step,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -652,8 +652,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins::LogBinEdges,
@@ -662,7 +662,7 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
@@ -670,12 +670,12 @@ function _sp2d_pair_launch_kernel!(
     lbe, vp = dist_bins, val_plan
     d_f, d_l, d_inv, d_off, d_st = _dist_log_linear_fields(lbe)
     kernel!(
-        priv_sums_dev, priv_cnts_dev, x_dev, u_dev,
+        partition_sums_dev, partition_counts_dev, x_dev, u_dev,
         N_points, n_dist_edges, n_dist, n_val_edges,
         d_f, d_l, d_inv, d_off, d_st,
         vp.edges_dev,
         n_tiles, n_tile_blocks, ws,
-        _sp2d_priv_kernel_tail_args(config)...;
+        _sp2d_strategy_kernel_tail_args(config)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -683,8 +683,8 @@ end
 
 function _sp2d_pair_launch_kernel!(
     backend::KA.Backend,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     x_dev,
     u_dev,
     dist_bins,
@@ -693,7 +693,7 @@ function _sp2d_pair_launch_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     throw(ArgumentError(
@@ -701,7 +701,7 @@ function _sp2d_pair_launch_kernel!(
     ))
 end
 
-function _launch_single_pass_2d_priv!(
+function _launch_single_pass_2d_strategy!(
     backend::KA.Backend,
     out_sums_dev,
     out_cnts_dev,
@@ -713,11 +713,11 @@ function _launch_single_pass_2d_priv!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
-    if config.needs_priv_merge
-        return _launch_sp2d_direct_priv!(
+    if config.needs_partition_merge
+        return _launch_sp2d_direct_partitioned!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
             dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config;
             workspace = workspace,
@@ -730,7 +730,7 @@ function _launch_single_pass_2d_priv!(
     )
 end
 
-"""On-chip path: pair kernel flushes shared histogram directly to `out_*` (no priv, no merge)."""
+"""On-chip path: pair kernel flushes shared histogram directly to `out_*` (no partition, no merge)."""
 function _launch_sp2d_onchip!(
     backend::KA.Backend,
     out_sums_dev,
@@ -743,7 +743,7 @@ function _launch_sp2d_onchip!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     _sp2d_pair_launch_kernel!(
@@ -755,7 +755,7 @@ function _launch_sp2d_onchip!(
 end
 
 """Direct path: block-private partition during pair traversal, then merge into `out_*`."""
-function _launch_sp2d_direct_priv!(
+function _launch_sp2d_direct_partitioned!(
     backend::KA.Backend,
     out_sums_dev,
     out_cnts_dev,
@@ -767,25 +767,25 @@ function _launch_sp2d_direct_priv!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
-    config.needs_priv_merge ||
-        throw(ArgumentError("_launch_sp2d_direct_priv! requires needs_priv_merge"))
-    priv_sums, priv_cnts, n_tb = _sp2d_priv_pair_bufs_and_launch!(
+    config.needs_partition_merge ||
+        throw(ArgumentError("_launch_sp2d_direct_partitioned! requires needs_partition_merge"))
+    partition_sums, partition_counts, n_tb = _sp2d_partition_pair_bufs_and_launch!(
         backend, out_sums_dev, x_dev, u_dev, dist_bins, val_plan,
         N_points, n_dist_edges, n_val_edges, n_dist, config;
         workspace = workspace,
     )
-    _launch_merge_sp2d_priv!(
-        backend, out_sums_dev, out_cnts_dev, priv_sums, priv_cnts,
+    _launch_merge_sp2d_partitions!(
+        backend, out_sums_dev, out_cnts_dev, partition_sums, partition_counts,
         n_dist, n_val_edges - 1, n_tb,
     )
     return nothing
 end
 
-"""Allocate/zero priv partitions and run the direct pair kernel; returns `(priv_sums, priv_cnts, n_tile_blocks)`."""
-function _sp2d_priv_pair_bufs_and_launch!(
+"""Allocate/zero private partitions and run the direct pair kernel; returns `(partition_sums, partition_counts, n_tile_blocks)`."""
+function _sp2d_partition_pair_bufs_and_launch!(
     backend::KA.Backend,
     out_sums_dev,
     x_dev,
@@ -796,29 +796,29 @@ function _sp2d_priv_pair_bufs_and_launch!(
     n_dist_edges::Int,
     n_val_edges::Int,
     n_dist::Int,
-    config::SP2DPrivConfig;
+    config::SP2DAccumulationStrategy;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
-    config.needs_priv_merge ||
-        throw(ArgumentError("_sp2d_priv_pair_bufs_and_launch! requires needs_priv_merge (direct mode)"))
+    config.needs_partition_merge ||
+        throw(ArgumentError("_sp2d_partition_pair_bufs_and_launch! requires needs_partition_merge (direct mode)"))
     _, n_tile_blocks, _, _ = _tiled_launch_params(N_points)
     if workspace === nothing
-        priv_sums, priv_cnts = _alloc_sp2d_priv_bufs(
+        partition_sums, partition_counts = _alloc_sp2d_partition_bufs(
             backend, eltype(out_sums_dev), n_dist, n_val_edges - 1, n_tile_blocks,
         )
-        fill!(priv_sums, zero(eltype(out_sums_dev)))
-        fill!(priv_cnts, zero(UInt32))
+        fill!(partition_sums, zero(eltype(out_sums_dev)))
+        fill!(partition_counts, zero(UInt32))
     else
-        priv_sums, priv_cnts = _ensure_sp2d_priv_bufs!(workspace, n_tile_blocks)
-        fill!(priv_sums, zero(eltype(out_sums_dev)))
-        fill!(priv_cnts, zero(UInt32))
+        partition_sums, partition_counts = _ensure_sp2d_partition_bufs!(workspace, n_tile_blocks)
+        fill!(partition_sums, zero(eltype(out_sums_dev)))
+        fill!(partition_counts, zero(UInt32))
     end
     n_tb = _sp2d_pair_launch_kernel!(
-        backend, priv_sums, priv_cnts, x_dev, u_dev,
+        backend, partition_sums, partition_counts, x_dev, u_dev,
         dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config;
         workspace = workspace,
     )
-    return priv_sums, priv_cnts, n_tb
+    return partition_sums, partition_counts, n_tb
 end
 # Host launch routing for single-pass 2D tiled kernels (distance × value digitize plan).
 
@@ -1251,7 +1251,7 @@ function _launch_single_pass_2d_kernel!(
     kernel! = _sf_single_pass_2d_kernel_linear!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
-        N_points, N_dims, n_dist_edges, n_val_edges,
+        N_points, Val(N_dims), n_dist_edges, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val;
         ndrange = (N_points, N_points),
     )
@@ -1277,7 +1277,7 @@ function _launch_single_pass_2d_kernel!(
     kernel! = _sf_single_pass_2d_kernel_linear!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, val_plan.edges_dev,
-        N_points, N_dims, n_dist_edges, n_val_edges,
+        N_points, Val(N_dims), n_dist_edges, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val;
         ndrange = (N_points, N_points),
     )
@@ -1306,7 +1306,7 @@ function _launch_single_pass_2d_kernel!(
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
         vp.edges_dev,
-        N_points, N_dims, n_dist_edges, n_val_edges,
+        N_points, Val(N_dims), n_dist_edges, n_val_edges,
         d_f, d_l, d_inv, d_off, d_st;
         ndrange = (N_points, N_points),
     )
@@ -1337,7 +1337,7 @@ function _launch_single_pass_2d_kernel!(
     kernel! = _sf_single_pass_2d_kernel!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
-        bins_dev, val_plan.edges_dev, N_points, N_dims, n_dist_edges, n_val_edges;
+        bins_dev, val_plan.edges_dev, N_points, Val(N_dims), n_dist_edges, n_val_edges;
         ndrange = (N_points, N_points),
     )
     return nothing
@@ -1387,20 +1387,20 @@ function _launch_single_pass_2d!(
     force_global_atomic::Bool = false,
 )
     n_dist = n_dist_edges - 1
-    if N_dims == 2 && !force_global_atomic && _gpu_single_pass_2d_use_tiled(dist_bins, val_plan, n_dist)
-        config = workspace === nothing ?
-            _sp2d_priv_config(n_dist, n_val_edges - 1, eltype(out_sums_dev)) :
-            workspace.sp2d_priv_config
-        return _launch_single_pass_2d_priv!(
-            backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
-            dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config;
+    if force_global_atomic
+        return _launch_single_pass_2d_kernel!(
+            backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
+            dist_bins, val_plan, N_points, N_dims, n_dist_edges, n_val_edges;
             workspace = workspace,
         )
     end
-    if N_dims == 2 && _gpu_single_pass_2d_use_tiled(dist_bins, val_plan, n_dist)
-        return _launch_single_pass_2d_tiled!(
+    if N_dims == 2 && !force_global_atomic && _gpu_single_pass_2d_use_tiled(dist_bins, val_plan, n_dist)
+        config = workspace === nothing ?
+            _sp2d_accumulation_strategy(n_dist, n_val_edges - 1, eltype(out_sums_dev)) :
+            workspace.sp2d_accumulation_strategy
+        return _launch_single_pass_2d_strategy!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
-            dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist;
+            dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config;
             workspace = workspace,
         )
     end
@@ -1580,7 +1580,7 @@ function _launch_batch_fixed_x_sp2d!(
     n_dist::Int,
     n_val::Int,
 ) where {FT}
-    # SP2D fixed-x uses strip_w=1 inner-b in pair loop; delegate to host strip + priv path.
+    # SP2D fixed-x uses strip_w=1 inner-b in pair loop; delegate to host strip + partitioned path.
     n_bins = length(dist_lbe.edges)
     n_tiles, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
     fe, le, is_, off, sv = dist_lbe.first_edge, dist_lbe.last_edge, dist_lbe.inv_step,

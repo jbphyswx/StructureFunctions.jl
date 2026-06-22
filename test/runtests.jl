@@ -35,6 +35,9 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Shape Contract Test ---")
     include("test_shape_contract.jl")
 
+    println("--- Running GPU Shape Contract Test ---")
+    include("test_gpu_shape_contract.jl")
+
     println("--- Running Tensor and KHM Test ---")
     include("test_tensor_khm.jl")
 
@@ -61,14 +64,17 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running GPU Single-Pass Tiled Parity Test ---")
     include("test_gpu_single_pass_tiled.jl")
 
-    println("--- Running GPU sp2d HTP-EJ Priv Test ---")
-    include("test_gpu_sp2d_priv.jl")
+    println("--- Running GPU sp2d HTP-EJ Partitioned Test ---")
+    include("test_gpu_sp2d_partitioned.jl")
 
     println("--- Running GPU joint2d smem Test ---")
     include("test_gpu_joint2d_smem.jl")
 
     println("--- Running GPU Workspace & Slice Batch Test ---")
     include("test_gpu_workspace.jl")
+
+    println("--- Running GPU Script Hygiene Test ---")
+    include("test_gpu_script_hygiene.jl")
 
     println("--- Running Batch Matrix Parity Test ---")
     include("test_batch_matrix.jl")

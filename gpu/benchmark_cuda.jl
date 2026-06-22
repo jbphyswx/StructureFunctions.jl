@@ -41,14 +41,12 @@ function main()
     u_gpu = CUDA.cu(u_cpu)
     bin_edges = LinearBinEdges(range(FT(0.1), FT(2.0); length = 21))
     sft = SFT.L2SFType()
-    x_tup = (x_cpu[1, :], x_cpu[2, :])
-    u_tup = (u_cpu[1, :], u_cpu[2, :])
 
     threaded_backend = SFC.ThreadedBackend()
 
     # Warmup
     SFC.calculate_structure_function(
-        sft, x_tup, u_tup, bin_edges;
+        sft, x_cpu, u_cpu, bin_edges;
         backend = threaded_backend,
         verbose = false,
         show_progress = false,
@@ -59,7 +57,7 @@ function main()
 
     t_threaded = @elapsed begin
         SFC.calculate_structure_function(
-            sft, x_tup, u_tup, bin_edges;
+            sft, x_cpu, u_cpu, bin_edges;
             backend = threaded_backend,
             verbose = false,
             show_progress = false,

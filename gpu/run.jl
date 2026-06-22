@@ -1,8 +1,7 @@
 # Pwd-independent entry for gpu/ scripts. Load once per REPL (`--project=gpu`):
 #
 #   include(joinpath(pkgdir(StructureFunctions), "gpu", "run.jl"))
-#   include_gpu("diagnose_sums.jl")
-#   include_gpu("benchmark_prototypes.jl")
+#   include_gpu("<script>.jl")
 
 using Pkg: pkgdir
 using StructureFunctions: StructureFunctions

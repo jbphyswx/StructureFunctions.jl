@@ -14,7 +14,6 @@ using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
     LinearBinEdges, LogBinEdges
 using Random: Random
-using StaticArrays: StaticArrays as SA
 
 Random.seed!(42)
 
@@ -30,11 +29,9 @@ Test.@testset "CUDA structure-function parity" begin
 
     bin_edges = collect(FT, range(0.0, 1.4; length = 11))
     sft = SFT.L2SFType()
-    x_tup = (x_cpu[1, :], x_cpu[2, :])
-    u_tup = (u_cpu[1, :], u_cpu[2, :])
 
     res_ref = SFC.calculate_structure_function(
-        sft, x_tup, u_tup, bin_edges;
+        sft, x_cpu, u_cpu, bin_edges;
         verbose = false,
         show_progress = false,
         return_sums_and_counts = true,
@@ -68,11 +65,9 @@ Test.@testset "CUDA log-spaced bin parity" begin
     log_edge_vec = exp.(range(log(FT(0.05)), log(FT(1.4)); length = 11))
     bin_edges = LogBinEdges(log_edge_vec)
     sft = SFT.L2SFType()
-    x_tup = (x_cpu[1, :], x_cpu[2, :])
-    u_tup = (u_cpu[1, :], u_cpu[2, :])
 
     res_ref = SFC.calculate_structure_function(
-        sft, x_tup, u_tup, bin_edges;
+        sft, x_cpu, u_cpu, bin_edges;
         verbose = false,
         show_progress = false,
         return_sums_and_counts = true,
@@ -101,11 +96,9 @@ Test.@testset "CUDA joint 2D structure-function parity" begin
     distance_bins = collect(FT, range(0.0, 1.4; length = 11))
     value_bins = collect(FT, range(0.0, 2.0; length = 11))
     sft = SFT.L2SFType()
-    x_tup = (x_cpu[1, :], x_cpu[2, :])
-    u_tup = (u_cpu[1, :], u_cpu[2, :])
 
     ref = SFC.calculate_structure_function(
-        sft, x_tup, u_tup, distance_bins, value_bins;
+        sft, x_cpu, u_cpu, distance_bins, value_bins;
         verbose = false, show_progress = false,
     )
     gpu = SFC.calculate_structure_function(

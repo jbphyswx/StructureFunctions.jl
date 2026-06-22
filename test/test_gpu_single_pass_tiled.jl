@@ -93,3 +93,63 @@ Test.@testset "GPU single-pass tiled parity — 2D InfPadded linear value catch-
     Test.@test sums_gpu ≈ sums_cpu rtol = FT(1e-4)
     Test.@test counts_gpu == counts_cpu
 end
+
+Test.@testset "GPU single-pass global fallback parity — 2D and 3D" begin
+    FT = Float32
+    backend = SF.GPUBackend(KA.CPU())
+
+    for D in (2, 3)
+        N = 18
+        x = rand(FT, D, N)
+        u = rand(FT, D, N)
+        bin_sets = (
+            collect(FT, range(0, 2; length = 75)),
+            LogBinEdges(collect(FT, exp.(range(log(FT(0.01)), log(FT(2)); length = 75)))),
+            begin
+                edges = sort!(vcat(FT(0), cumsum(rand(FT, 74))))
+                edges ./= edges[end] / FT(2)
+                edges
+            end,
+        )
+
+        for bins in bin_sets
+            sums_cpu, counts_cpu = SFC.calculate_structure_functions_single_pass(
+                x, u, bins; backend = SFC.SerialBackend(),
+            )
+            sums_gpu, counts_gpu = SFC.calculate_structure_functions_single_pass(
+                x, u, bins; backend,
+            )
+            Test.@test counts_gpu[1:6, :] == counts_cpu[1:6, :]
+            Test.@test sums_gpu[1:6, :] ≈ sums_cpu[1:6, :] atol = FT(1e-4)
+        end
+    end
+end
+
+Test.@testset "GPU single-pass 2D global fallback parity" begin
+    FT = Float32
+    backend = SF.GPUBackend(KA.CPU())
+    N = 16
+    x = rand(FT, 2, N)
+    u = rand(FT, 2, N)
+    value_bins = collect(FT, range(-0.5f0, 1.5f0; length = 9))
+    bin_sets = (
+        collect(FT, range(0, 2; length = 75)),
+        LogBinEdges(collect(FT, exp.(range(log(FT(0.01)), log(FT(2)); length = 75)))),
+        begin
+            edges = sort!(vcat(FT(0), cumsum(rand(FT, 74))))
+            edges ./= edges[end] / FT(2)
+            edges
+        end,
+    )
+
+    for bins in bin_sets
+        sums_cpu, counts_cpu = SFC.calculate_structure_functions_single_pass_2d(
+            x, u, bins, value_bins; backend = SFC.SerialBackend(),
+        )
+        sums_gpu, counts_gpu = SFC.calculate_structure_functions_single_pass_2d(
+            x, u, bins, value_bins; backend, force_global_atomic = true,
+        )
+        Test.@test counts_gpu == counts_cpu
+        Test.@test sums_gpu ≈ sums_cpu atol = FT(1e-4)
+    end
+end

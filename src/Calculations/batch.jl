@@ -173,8 +173,8 @@ end
 Six-invariant-type single-pass 1D batch.
 """
 function serial_calculate_structure_functions_single_pass!(
-    sums::AbstractArray{FT, 3},
-    counts::AbstractArray{CT, 3},
+    sums::AbstractArray{FT},
+    counts::AbstractArray{CT},
     x::AbstractArray{FT},
     u::AbstractArray{FT},
     distance_bins;
@@ -257,8 +257,8 @@ end
 Six-invariant-type SP2D batch; output `(6, n_dist, n_val, batch…)`.
 """
 function serial_calculate_structure_functions_single_pass_2d!(
-    sums::AbstractArray{FT, 4},
-    counts::AbstractArray{CT, 4},
+    sums::AbstractArray{FT},
+    counts::AbstractArray{CT},
     x::AbstractArray{FT},
     u::AbstractArray{FT},
     distance_bins,

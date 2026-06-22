@@ -1,6 +1,6 @@
 using Test: Test
 using BenchmarkTools: BenchmarkTools
-using StructureFunctions: StructureFunctions
+using StructureFunctions: StructureFunctions as SF
 using StaticArrays: StaticArrays as SA
 using Random: Random
 using JSON: JSON
@@ -29,7 +29,7 @@ end
 function run_sf_benchmark(x, u, bins, sf_type; threaded = false)
     # Cap benchmarks to 0.2s to keep the test suite under 10s
     if threaded
-        return @benchmark calculate_structure_function(
+        return @benchmark SF.calculate_structure_function(
             $sf_type,
             $x,
             $u,
@@ -38,7 +38,7 @@ function run_sf_benchmark(x, u, bins, sf_type; threaded = false)
             show_progress = false,
         ) seconds = 0.2 samples = 50
     else
-        return @benchmark calculate_structure_function(
+        return @benchmark SF.calculate_structure_function(
             $sf_type,
             $x,
             $u,
@@ -53,15 +53,12 @@ Test.@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
     Random.seed!(42)
     N = 100
 
-    # 1D Setup
-    x1 = (randn(N),)
-    u1 = (randn(N),)
     # 2D Setup
-    x2 = (randn(N), randn(N))
-    u2 = (randn(N), randn(N))
+    x2 = randn(2, N)
+    u2 = randn(2, N)
     # 3D Setup
-    x3 = (randn(N), randn(N), randn(N))
-    u3 = (randn(N), randn(N), randn(N))
+    x3 = randn(3, N)
+    u3 = randn(3, N)
 
     # Matrix version of 2D
     xm = randn(2, N)
@@ -69,9 +66,9 @@ Test.@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
 
     bins = [0.0, 0.5, 1.0, 1.5, 2.0]
 
-    sf_2nd_long = LongitudinalSecondOrderStructureFunction
-    sf_2nd_trans = TransverseSecondOrderStructureFunction
-    sf_3rd_diag = DiagonalConsistentThirdOrderStructureFunction
+    sf_2nd_long = SF.LongitudinalSecondOrderStructureFunction
+    sf_2nd_trans = SF.TransverseSecondOrderStructureFunction
+    sf_3rd_diag = SF.DiagonalConsistentThirdOrderStructureFunction
 
     previous_results = load_previous_results()
     current_results = Dict()
@@ -80,12 +77,11 @@ Test.@testset "Phase 7 Performance Regression & Comprehensive Tracking" begin
 
     # Matrix of tests
     test_matrix = [
-        ("sf_2d_tuple_2nd_long", x2, u2, sf_2nd_long),
-        ("sf_1d_tuple_2nd_long", x1, u1, sf_2nd_long),
-        ("sf_3d_tuple_2nd_long", x3, u3, sf_2nd_long),
+        ("sf_2d_array_2nd_long", x2, u2, sf_2nd_long),
+        ("sf_3d_array_2nd_long", x3, u3, sf_2nd_long),
         ("sf_2d_matrix_2nd_long", xm, um, sf_2nd_long),
-        ("sf_2d_tuple_2nd_trans", x2, u2, sf_2nd_trans),
-        ("sf_2d_tuple_3rd_diag", x2, u2, sf_3rd_diag),
+        ("sf_2d_array_2nd_trans", x2, u2, sf_2nd_trans),
+        ("sf_2d_array_3rd_diag", x2, u2, sf_3rd_diag),
     ]
 
     for (name, x_in, u_in, sft) in test_matrix

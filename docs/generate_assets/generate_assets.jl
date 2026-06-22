@@ -199,11 +199,9 @@ function generate_gpu_parity_figure()
     u = rand(FT, 2, N)
     bin_edges = collect(FT, range(0.0, 1.4; length = 11))
     sft = SF.L2SFType()
-    x_tup = (x[1, :], x[2, :])
-    u_tup = (u[1, :], u[2, :])
 
     res_serial = SFC.calculate_structure_function(
-        sft, x_tup, u_tup, bin_edges;
+        sft, x, u, bin_edges;
         verbose = false, show_progress = false, return_sums_and_counts = true,
     )
     res_gpu = SFC.gpu_calculate_structure_function(
