@@ -1,6 +1,35 @@
-# GPU benchmark results for docs/README figures
+# GPU benchmark results
 
-## Generate `assets_latest.json` (GPU allocation required)
+Generated benchmark JSON lives here. Keep profiler dumps, local logs, and ad hoc
+database outputs out of the repository; only commit intentional, reproducible result
+snapshots.
+
+## Release benchmark suite
+
+Run inside a GPU allocation:
+
+```bash
+julia --project=gpu gpu/benchmark_suite.jl
+```
+
+Outputs:
+
+- `benchmark_suite_latest.json`
+- `benchmark_suite_yyyymmdd_HHMMSS.json`
+
+The suite reports release-gate timings for:
+
+- 1D distance bins, `D = 2` and `D = 3`;
+- joint2D distance × value bins;
+- six-invariant SP2D;
+- shared-position auxiliary axes;
+- varying-position auxiliary axes;
+- workspace reuse vs fresh allocation.
+
+`BENCH_BACKEND=kacpu` is a script/API smoke test only. Treat performance gates as
+meaningful only for CUDA runs with representative `N`, `BATCH`, and bin counts.
+
+## Docs figure assets
 
 ```bash
 # From repo root, on SLURM GPU node:

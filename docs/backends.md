@@ -327,7 +327,8 @@ See [gpu.md — Testing tiers](gpu.md#testing-tiers).
 ### Kernel Details
 
 GPU kernels use tiled upper-triangle pair loops with block-local UInt32 histograms,
-then merge to global bins. See [`gpu/GPU_structure_function_prototypes_theory.md`](../gpu/GPU_structure_function_prototypes_theory.md).
+then merge to global bins. See [`docs/gpu.md`](gpu.md) for supported routes and
+CUDA validation commands.
 
 ---
 

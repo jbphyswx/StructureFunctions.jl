@@ -96,20 +96,20 @@ function main()
         )
     end
 
-    skip_cpu = get(ENV, "SKIP_CPU", large ? "1" : "0") == "1"
-    slice_mode = get(ENV, "SLICE_BASELINE", profile === :reference_full ? "full" : "off")
+    slice_mode = get(ENV, "SLICE_BASELINE", profile === :reference_full ? "full" : profile === :reference ? "sample" : "off")
     prod_sample = parse(Int, get(ENV, "PROD_SAMPLE", profile === :reference ? "8" : "0"))
     warmup = parse(Int, get(ENV, "BATCH_WARMUP", "1"))
+    n_dist = parse(Int, get(ENV, "N_DIST", "16"))
+    n_val = parse(Int, get(ENV, "N_VAL", "8"))
 
     Random.seed!(1)
     x_fix = rand(Float32, 2, N)
     u_fix = rand(Float32, 2, N, B)
     x_var = rand(Float32, 2, N, B)
     u_var = rand(Float32, 2, N, B)
-    edges = LinearBinEdges(collect(range(0.0f0, 2.0f0; length = 17)))
-    val_edges = LinearBinEdges(collect(range(-1.0f0, 1.0f0; length = 9)))
+    edges = LinearBinEdges(collect(range(0.0f0, 2.0f0; length = n_dist + 1)))
+    val_edges = LinearBinEdges(collect(range(-1.0f0, 1.0f0; length = n_val + 1)))
     sf = SFT.L2SFType()
-    cpu = SFC.SerialBackend()
     gpu_be, ka_backend = _resolve_gpu_backend()
     NB = length(edges.edges) - 1
     nv = length(val_edges.edges) - 1
@@ -117,17 +117,11 @@ function main()
     n_strips = cld(B, 16)
     n_tile_blocks = cld(N, 128) * (cld(N, 128) + 1) ÷ 2
     @printf(
-        "batch matrix PROFILE=%s N=%d B=%d strips(1D)≈%d strips(SP1D)≈%d tile_blocks≈%d\n",
-        profile, N, B, cld(B, 16), cld(B, 8), n_tile_blocks,
+        "batch matrix PROFILE=%s N=%d B=%d n_dist=%d n_val=%d strips(1D)≈%d strips(SP1D)≈%d tile_blocks≈%d\n",
+        profile, N, B, n_dist, n_val, cld(B, 16), cld(B, 8), n_tile_blocks,
     )
     println("cases: individual-1D-fixed | individual-1D-varying | SP1D-fixed | SP1D-varying | SP2D-fixed | SP2D-varying | joint2D-fixed")
 
-    if !skip_cpu
-        _bench_row("individual 1D fixed-x (CPU batch)", () -> begin
-            s = zeros(Float32, NB, B); c = zeros(UInt32, NB, B)
-            SFC.cpu_auxiliary_shared_positions!(s, c, x_fix, u_fix, sf, edges)
-        end, ka_backend; warmup = warmup)
-    end
     _bench_row("individual 1D fixed-x (GPU batch)", () -> begin
         SFC.calculate_structure_function(
             sf, x_fix, u_fix, edges;
@@ -159,54 +153,24 @@ function main()
         )
     end
 
-    if !skip_cpu
-        _bench_row("individual 1D varying-x (CPU batch)", () -> begin
-            s = zeros(Float32, NB, B); c = zeros(UInt32, NB, B)
-            SFC.cpu_auxiliary_varying_positions!(s, c, x_var, u_var, sf, edges)
-        end, ka_backend; warmup = warmup)
-    end
     _bench_row("individual 1D varying-x (GPU slices)", () -> begin
         s = zeros(Float32, NB, B); c = zeros(UInt32, NB, B)
         SFC.calculate_structure_function_slices!(s, c, sf, x_var, u_var, edges; backend = gpu_be)
     end, ka_backend; warmup = warmup)
 
-    if !skip_cpu
-        _bench_row("SP1D six-type fixed-x (CPU batch)", () -> begin
-            s = zeros(Float32, 6, NB, B); c = zeros(UInt32, 6, NB, B)
-            SFC.cpu_batch_single_pass_1d!(s, c, x_fix, u_fix, edges)
-        end, ka_backend; warmup = warmup)
-    end
     _bench_row("SP1D six-type fixed-x (GPU batch)", () -> begin
         SFC.calculate_structure_functions_single_pass(x_fix, u_fix, edges; backend = gpu_be)
     end, ka_backend; warmup = warmup)
 
-    if !skip_cpu
-        _bench_row("SP1D six-type varying-x (CPU batch)", () -> begin
-            s = zeros(Float32, 6, NB, B); c = zeros(UInt32, 6, NB, B)
-            SFC.cpu_batch_single_pass_1d!(s, c, x_var, u_var, edges)
-        end, ka_backend; warmup = warmup)
-    end
     _bench_row("SP1D six-type varying-x (GPU slices)", () -> begin
         s = zeros(Float32, 6, NB, B); c = zeros(UInt32, 6, NB, B)
         SFC.calculate_structure_functions_single_pass_slices!(s, c, x_var, u_var, edges; backend = gpu_be)
     end, ka_backend; warmup = warmup)
 
-    if !skip_cpu
-        _bench_row("SP2D six-type fixed-x (CPU batch)", () -> begin
-            s = zeros(Float32, 6, NB, nv, B); c = zeros(UInt32, 6, NB, nv, B)
-            SFC.cpu_batch_single_pass_2d!(s, c, x_fix, u_fix, edges, val_edges)
-        end, ka_backend; warmup = warmup)
-    end
     _bench_row("SP2D six-type fixed-x (GPU batch)", () -> begin
         SFC.calculate_structure_functions_single_pass_2d(x_fix, u_fix, edges, val_edges; backend = gpu_be)
     end, ka_backend; warmup = warmup)
 
-    if !skip_cpu
-        _bench_row("SP2D six-type varying-x (CPU batch)", () -> begin
-            s = zeros(Float32, 6, NB, nv, B); c = zeros(UInt32, 6, NB, nv, B)
-            SFC.cpu_batch_single_pass_2d!(s, c, x_var, u_var, edges, val_edges)
-        end, ka_backend; warmup = warmup)
-    end
     _bench_row("SP2D six-type varying-x (GPU slices)", () -> begin
         s = zeros(Float32, 6, NB, nv, B); c = zeros(UInt32, 6, NB, nv, B)
         SFC.calculate_structure_functions_single_pass_2d_slices!(
@@ -214,12 +178,6 @@ function main()
         )
     end, ka_backend; warmup = warmup)
 
-    if !skip_cpu
-        _bench_row("joint 2D single-type fixed-x (CPU batch)", () -> begin
-            s = zeros(Float32, NB, nv, B); c = zeros(UInt32, NB, nv, B)
-            SFC.cpu_auxiliary_joint2d!(s, c, sf, x_fix, u_fix, edges, val_edges)
-        end, ka_backend; warmup = warmup)
-    end
     _bench_row("joint 2D single-type fixed-x (GPU batch)", () -> begin
         SFC.calculate_structure_function(
             sf, x_fix, u_fix, edges, val_edges;
