@@ -49,7 +49,7 @@ function _warmup_gpu_session!(backend, warmup::Int)
     N = parse(Int, get(ENV, "WARMUP_N", string(minimum(SCALING_N_LIST))))
     println("  GPU session warmup (N=$N, both dtypes, compile before timed sweep) …")
     for FT in (Float32, Float64)
-        _, _, x_arr, u_arr = scaling_synthetic_data(N, FT)
+        x_arr, u_arr = scaling_synthetic_data(N, FT)
         bins = scaling_bins(FT)
         x_dev, u_dev = stage_device_arrays(backend, x_arr, u_arr, FT)
         ws = SFC.GPUSFWorkspace(backend, bins)
@@ -75,11 +75,11 @@ function collect_problem_size_scaling!(backend, warmup::Int, repeat::Int)
     rows = Dict[]
     for N in SCALING_N_LIST
         for FT in (Float32, Float64)
-            x_tup, u_tup, x_arr, u_arr = scaling_synthetic_data(N, FT)
+            x_arr, u_arr = scaling_synthetic_data(N, FT)
             bins = scaling_bins(FT)
             x_dev, u_dev = stage_device_arrays(backend, x_arr, u_arr, FT)
             ws = SFC.GPUSFWorkspace(backend, bins)
-            cpu_t = bench_cpu_serial_sf(x_tup, u_tup, bins, SCALING_SFT; warmup = warmup)
+            cpu_t = bench_cpu_serial_sf(x_arr, u_arr, bins, SCALING_SFT; warmup = warmup)
             gpu_t = bench_gpu_sf_with_workspace(
                 backend, x_dev, u_dev, bins, SCALING_SFT, ws;
                 warmup = warmup, repeat = repeat,

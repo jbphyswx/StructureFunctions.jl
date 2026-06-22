@@ -82,6 +82,20 @@ Public stubs with backend dispatch:
 - `calculate_structure_functions_single_pass_slices!` (GPU-only for now)
 - `calculate_structure_functions_single_pass_2d!` — six `(dist × value)` histograms; GPU HTP-EJ when eligible
 
+## Production route table
+
+| Public call | Shapes | Dimensions | Bin support | GPU route |
+|-------------|--------|------------|-------------|-----------|
+| `calculate_structure_function(sf, x, u, bins; backend=GPUBackend(...))` | `(D,N)` | `D=2,3` | linear, log, general vectors | tiled128 1D histogram route; explicit error for unsupported `D` |
+| same with shared positions | `x::(D,N)`, `u::(D,N, auxiliary...)` | currently production optimized for `D=2` auxiliary batch kernels | linear distance bins for fused batch route | fixed-position auxiliary batch route |
+| same with varying positions | `x,u::(D,N, auxiliary...)` | currently production optimized for `D=2` auxiliary batch kernels | linear distance bins for fused batch route | varying-position auxiliary batch route |
+| `calculate_structure_function(sf, x, u, bins, value_bins; backend=GPUBackend(...))` | `(2,N)` or auxiliary variants | `D=2` | typed and vector value-bin plans | joint 2D shared-memory route when eligible, otherwise global route |
+| `calculate_structure_functions_single_pass(x, u, bins; backend=GPUBackend(...))` | `(D,N)` or auxiliary variants | `D=2,3` point fields; `D=2` optimized auxiliary batch kernels | linear/log/general point fields; linear fused batch route | tiled 2D fast path for eligible `D=2`, global fallback otherwise |
+| `calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend=GPUBackend(...))` | `(D,N)` or auxiliary variants | `D=2,3` point fields; `D=2` optimized auxiliary batch kernels | linear/log/general point fields; typed or vector value bins | HTP-EJ shared/typeplane/direct strategy for eligible `D=2`; global fallback otherwise |
+
+The public shape contract is always `D = size(x, 1) = size(u, 1)`, `N = size(x, 2) = size(u, 2)`.
+Trailing axes are independent auxiliary calculations; `ndims(x) == 3` is not interpreted as 3D space.
+
 ## Single-type joint 2D smem
 
 [`GPUSFWorkspace`](@ref) for `kind=:joint2d` defaults to exact compile-time shared histogram width
@@ -91,16 +105,29 @@ Public stubs with backend dispatch:
 ## Six-invariant-type single-pass 2D (SP2D)
 
 Production GPU path for `calculate_structure_functions_single_pass_2d!` with typed distance bins
-(`LinearBinEdges` / `LogBinEdges`) and `GPUSFWorkspace(...; kind=:single_pass_2d)`. Histogram policy
+(`LinearBinEdges` / `LogBinEdges`) and `GPUSFWorkspace(...; kind=:single_pass_2d)`. Histogram strategy
 (`:shared` / `:typeplane` / `:direct`) is frozen at workspace build from a 48 KiB shared-memory budget.
 
+Rows are fixed to the six invariant/default quantities:
+
+1. `S2 = |delta u|^2`
+2. `L2 = delta u_L^2`
+3. `T2 = |delta u_T|^2`
+4. `S3 = delta u_L |delta u|^2`
+5. `L3 = delta u_L^3`
+6. `LT2 = delta u_L |delta u_T|^2`
+
+Basis-dependent component diagnostics such as `T3SF` and `L2T1SF` are not included in default
+single-pass outputs. Those require an explicit transverse-basis convention rather than the invariant
+bulk six-row contract.
+
 - **On-chip** (`:shared`, `:typeplane`): shared histogram + joint-style flush to output (no merge).
-- **Direct** (`:direct`): block-private slab + merge when even one value plane does not fit in smem.
+- **Direct** (`:direct`): partitioned global accumulation + merge when even one value plane does not fit in smem.
 
 **Benchmark on GPU:** `julia --project=gpu gpu/benchmark_2d_grid_scaling.jl`  
 **Design, gate, perf gaps:** [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md)
 
-The production gate is e2e SP2D **&lt; 8 × joint_2d**. A naive “~2× digitize vs 1D” bound is too optimistic:
+The production gate is e2e SP2D **&lt; 6 × joint_2d**. A naive “~2× digitize vs 1D” bound is too optimistic:
 SP2D performs six value digitizations per pair and may replay the full tile schedule
 `n_type_passes` times (typeplane). See the doc for a per-pair work table and future optimizations.
 
@@ -111,7 +138,7 @@ SP2D performs six value digitizations per pair and may replay the full tile sche
 |------|---------|----------------|
 | **1 — default CI** | `Pkg.test()` | Kernel math, binning, workspace reset, slice logic via **`KA.CPU()`** (same `@kernel` source, no CUDA) |
 | **2 — CUDA smoke** | `julia --project=gpu gpu/runtests.jl` | Device alloc, H2D/D2H, sync, Float32 on real GPU (**skipped** if `!CUDA.functional()`) |
-| **3 — benchmarks** | `julia --project=gpu gpu/collect_benchmark_assets.jl` | Timing JSON + README figures (run on GPU allocation) |
+| **3 — benchmarks** | `julia --project=gpu gpu/benchmark_suite.jl` | Release-performance gates and timing JSON (run on GPU allocation) |
 
 **Important:** Tier 1 does **not** prove CUDA correctness. Always run tier 2 on a GPU node before trusting production CUDA runs.
 
@@ -127,11 +154,24 @@ Shared bin layout and SF type with CPU benchmarks ([`benchmark/scaling_config.jl
 | **CPU weak scaling** | same | threads + N | work/thread |
 | **GPU problem-size scaling** | [`gpu/collect_benchmark_assets.jl`](../gpu/collect_benchmark_assets.jl) | N | 1 GPU, **serial CPU** |
 | **GPU slice-batch scaling** | same | T (slices) | N_SLICE, 1 GPU |
+| **GPU release gates** | [`gpu/benchmark_suite.jl`](../gpu/benchmark_suite.jl) | route | 1 GPU, shared bins |
 | **GPU strong/weak (multi-GPU)** | [`gpu/collect_multi_gpu_scaling.jl`](../gpu/collect_multi_gpu_scaling.jl) | — | **not implemented** |
 
 Problem-size scaling is the usual name for “one device, sweep input size.” It is **not** HPC strong or weak scaling.
 
 The GPU collector always uses **`SerialBackend`** for the CPU reference (1 logical worker), independent of `julia -t`. That keeps doc assets reproducible on any GPU allocation. **CPU thread scaling** is only in [`benchmark/benchmark_scaling.jl`](../benchmark/benchmark_scaling.jl) (strong/weak figures); readers combine those plots with the GPU problem-size figure as needed.
+
+The release benchmark suite is separate from docs asset generation:
+
+```bash
+julia --project=gpu gpu/benchmark_suite.jl
+```
+
+It writes `gpu/benchmark_results/benchmark_suite_latest.json` and a timestamped copy.
+The key ratios are workspace reuse, `6 * joint2D` vs SP2D, shared-position auxiliary
+fusion vs explicit loops, and varying-position auxiliary fusion vs explicit loops.
+`BENCH_BACKEND=kacpu` is useful only as a smoke test; CUDA runs with representative
+`N` and `BATCH` are the performance signal.
 
 ### Regenerate GPU doc assets (on GPU allocation)
 

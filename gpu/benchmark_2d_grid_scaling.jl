@@ -11,9 +11,9 @@ Compare single-type joint 2D vs six-type single-pass 2D on GPU.
 **Six-type single-pass 2D** (`gpu_calculate_structure_functions_single_pass_2d!`):
   HTP-EJ path when distance bins are typed and `n_dist ≤ 64`:
   - `:shared` / `:typeplane` — on-chip shared histogram + direct flush to output (no merge)
-  - `:direct` — priv slab + serial merge (`ENV["SP2D_MERGE"]` for experiments)
+  - `:direct` — partitioned global accumulation + serial merge (`ENV["SP2D_MERGE"]` for experiments)
 
-Gate: e2e SP2D < `6 × joint_2d`. Logs `output=on-chip-flush` vs `priv+merge`.
+Gate: e2e SP2D < `6 × joint_2d`. Logs `output=on-chip-flush` vs `partition+merge`.
 
 Full design: `gpu/SP2D_HTP_EJ.md`
 
@@ -138,13 +138,13 @@ function main()
 
     # --- six-type sp2d (HTP-EJ privatized) ---
     ws_sp = SFC.GPUSFWorkspace(backend, dist, value_bins; kind = :single_pass_2d)
-    cfg = ws_sp.sp2d_priv_config
+    cfg = ws_sp.sp2d_accumulation_strategy
     mode_label = if cfg.accum_mode == :typeplane
         "typeplane ($(cfg.types_per_pass)×$(cfg.n_type_passes) passes)"
     else
         string(cfg.accum_mode)
     end
-    output_path = cfg.needs_priv_merge ? "priv+merge" : "on-chip-flush"
+    output_path = cfg.needs_partition_merge ? "partition+merge" : "on-chip-flush"
     @printf("sp2d accum_mode          %s  (max_shared=%d, output=%s)\n",
         mode_label, cfg.max_shared_cells, output_path)
 
@@ -155,7 +155,7 @@ function main()
     )
     t_sp2d = _bench(sp_run, warmup, repeat_)
 
-    # Phase split: pair kernel vs merge (reuse workspace priv slabs)
+    # Phase split: pair kernel vs merge (reuse workspace private partitions)
     x_dev = KA.allocate(backend, FT, 2, N)
     u_dev = KA.allocate(backend, FT, 2, N)
     copyto!(x_dev, x)
@@ -164,9 +164,9 @@ function main()
     n_dist_edges = _GPUExt._gpu_n_edges(dist)
     n_val_edges = _GPUExt._sp2d_n_val_edges(value_bins)
 
-    pair_run = if cfg.needs_priv_merge
+    pair_run = if cfg.needs_partition_merge
         () -> begin
-            _GPUExt._sp2d_priv_pair_bufs_and_launch!(
+            _GPUExt._sp2d_partition_pair_bufs_and_launch!(
                 backend, sums, x_dev, u_dev, ws_sp.dist_bins, val_plan,
                 N, n_dist_edges, n_val_edges, n_dist, cfg; workspace = ws_sp,
             )
@@ -180,28 +180,28 @@ function main()
             )
         end
     end
-    if cfg.needs_priv_merge
-        priv_sums, priv_cnts, n_tb = pair_run()
+    if cfg.needs_partition_merge
+        sums, cnts, n_tb = pair_run()
         CUDA.synchronize()
     else
         pair_run()
         CUDA.synchronize()
-        priv_sums, priv_cnts, n_tb = nothing, nothing, 0
+        sums, cnts, n_tb = nothing, nothing, 0
     end
     t_pair = _bench(pair_run, warmup, repeat_)
-    if cfg.needs_priv_merge
-        priv_sums, priv_cnts, n_tb = pair_run()
+    if cfg.needs_partition_merge
+        sums, cnts, n_tb = pair_run()
         CUDA.synchronize()
-        merge_serial = () -> _GPUExt._launch_merge_sp2d_priv!(
-            backend, ws_sp.out_sums_dev, ws_sp.out_cnts_dev, priv_sums, priv_cnts,
+        merge_serial = () -> _GPUExt._launch_merge_sp2d_partitions!(
+            backend, ws_sp.out_sums_dev, ws_sp.out_cnts_dev, sums, cnts,
             n_dist, n_val, n_tb; merge_mode = :serial,
         )
-        merge_parallel = () -> _GPUExt._launch_merge_sp2d_priv!(
-            backend, ws_sp.out_sums_dev, ws_sp.out_cnts_dev, priv_sums, priv_cnts,
+        merge_parallel = () -> _GPUExt._launch_merge_sp2d_partitions!(
+            backend, ws_sp.out_sums_dev, ws_sp.out_cnts_dev, sums, cnts,
             n_dist, n_val, n_tb; merge_mode = :parallel,
         )
         t_merge_serial = _bench(merge_serial, warmup, repeat_)
-        priv_sums, priv_cnts, n_tb = pair_run()
+        sums, cnts, n_tb = pair_run()
         CUDA.synchronize()
         t_merge_parallel = _bench(merge_parallel, warmup, repeat_)
         t_merge_prod = t_merge_serial
@@ -212,7 +212,7 @@ function main()
     end
 
     @printf("sp2d pair kernel         %8.3f ms  [%s; %s]\n", 1_000t_pair, mode_label, output_path)
-    if cfg.needs_priv_merge
+    if cfg.needs_partition_merge
         @printf("sp2d merge (serial)     %8.3f ms  [SP2D_MERGE=serial default]\n", 1_000t_merge_serial)
         @printf("sp2d merge (parallel)   %8.3f ms  [comparison only; slow when C large]\n", 1_000t_merge_parallel)
         @printf("sp2d total (end-to-end)  %8.3f ms  [pair + serial merge + host]\n", 1_000t_sp2d)
@@ -247,15 +247,15 @@ function main()
             CUDA.name(CUDA.device()), N, n_dist, n_val, NB2, compile_exact, compile_max,
             dist_route, val_route, C, cfg.accum_mode, output_path, cfg.types_per_pass, cfg.n_type_passes)
         @printf(io,
-            "joint_exact=%.6f joint_max=%.6f joint8=%.6f sp2d=%.6f pair=%.6f merge_s=%.6f merge_p=%.6f sp1d=%.6f gate=%s\n",
-            t_joint_exact, t_joint_max, t_joint8, t_sp2d, t_pair, t_merge_serial,
+            "joint_exact=%.6f joint_max=%.6f joint6=%.6f sp2d=%.6f pair=%.6f merge_s=%.6f merge_p=%.6f sp1d=%.6f gate=%s\n",
+            t_joint_exact, t_joint_max, t_joint6, t_sp2d, t_pair, t_merge_serial,
             t_merge_parallel, t_sp1, gate_ok ? "PASS" : "FAIL")
     end
     println("\nLogged to ", log_path)
     println("Re-run production grid: N_DIST=50 N_VAL=50 julia --project=gpu gpu/benchmark_2d_grid_scaling.jl")
     println("=" ^ 72)
 
-    gate_ok || error("sp2d gate failed: sp2d ($(round(1_000t_sp2d; digits=1)) ms) >= 8×joint ($(round(1_000t_joint8; digits=1)) ms)")
+    gate_ok || error("sp2d gate failed: sp2d ($(round(1_000t_sp2d; digits=1)) ms) >= 6×joint ($(round(1_000t_joint6; digits=1)) ms)")
 end
 
 main()

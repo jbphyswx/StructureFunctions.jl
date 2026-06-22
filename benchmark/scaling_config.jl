@@ -40,21 +40,19 @@ const SCALING_SEED = parse(Int, get(ENV, "SCALING_SEED", "42"))
 const SCALING_SFT = SFT.LongitudinalSecondOrderStructureFunctionType()
 
 """
-    scaling_synthetic_data(N, FT=Float64) -> (x_tup, u_tup, x_arr, u_arr)
+    scaling_synthetic_data(N, FT=Float64) -> (x_arr, u_arr)
 
-Build 3D synthetic `(x, u)` as CPU tuples and `(3, N)` arrays from `SCALING_SEED`.
+Build 3D synthetic `(x, u)` arrays with shape `(3, N)` from `SCALING_SEED`.
 """
 function scaling_synthetic_data(N::Int, ::Type{FT} = Float64) where {FT}
     Random.seed!(SCALING_SEED)
-    x_tup = (rand(FT, N), rand(FT, N), rand(FT, N))
-    u_tup = (rand(FT, N), rand(FT, N), rand(FT, N))
     x_arr = Matrix{FT}(undef, 3, N)
     u_arr = Matrix{FT}(undef, 3, N)
     for d in 1:3
-        x_arr[d, :] .= x_tup[d]
-        u_arr[d, :] .= u_tup[d]
+        x_arr[d, :] .= rand(FT, N)
+        u_arr[d, :] .= rand(FT, N)
     end
-    return x_tup, u_tup, x_arr, u_arr
+    return x_arr, u_arr
 end
 
 """

@@ -32,11 +32,9 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     bins = collect(FT, range(0.0f0, 1.4f0; length = 11))
     NB = length(bins) - 1
     sft = SFT.L2SFType()
-    x_tup = (x_cpu[1, :], x_cpu[2, :])
-    u_tup = (u_cpu[1, :], u_cpu[2, :])
 
     ref = SFC.calculate_structure_function(
-        sft, x_tup, u_tup, bins;
+        sft, x_cpu, u_cpu, bins;
         return_sums_and_counts = true, verbose = false, show_progress = false,
     )
 

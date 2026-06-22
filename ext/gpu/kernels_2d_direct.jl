@@ -2,9 +2,9 @@
 #
 # On-chip (:shared, :typeplane): @localmem histogram during pair loop; block-end flush
 #   via _sp2d_flush_*_to_output! (@atomic into out_sums/out_cnts, joint pattern).
-# Direct (:direct): global atomics into block-private priv partition; merge on host.
+# Direct (:direct): global atomics into block-private partition; merge on host.
 #
-# See gpu/SP2D_HTP_EJ.md for policy, benchmarks, and future perf notes.
+# See gpu/SP2D_HTP_EJ.md for strategy, benchmarks, and future perf notes.
 # Included from StructureFunctionsGPUExt.jl after TiledSinglePass2DValueKernels.jl.
 
 @inline function _sp2d_flat_index(t::Int, dbin::Int, vbin::Int, n_dist::Int, n_val::Int)
@@ -40,8 +40,8 @@ end
 
 """Flush block-local shared histogram into block-private partition (`:direct` path only)."""
 @inline function _sp2d_flush_shared_hist!(
-    priv_sums,
-    priv_cnts,
+    partition_sums,
+    partition_counts,
     shared_sums,
     shared_cnts,
     C::Int,
@@ -55,9 +55,9 @@ end
     while g <= C
         t, dbin, vbin = _sp2d_decode_flat_index(g, n_dist, n_val)
         @inbounds begin
-            priv_sums[t, dbin, vbin, block_id] += shared_sums[g]
+            partition_sums[t, dbin, vbin, block_id] += shared_sums[g]
             if shared_cnts[g] != UInt32(0)
-                priv_cnts[t, dbin, vbin, block_id] += shared_cnts[g]
+                partition_counts[t, dbin, vbin, block_id] += shared_cnts[g]
             end
         end
         g += workgroup_size
@@ -264,8 +264,8 @@ end
 
 """Flush type-plane shared histogram into block-private partition (`:direct` path only)."""
 @inline function _sp2d_flush_typeplane!(
-    priv_sums,
-    priv_cnts,
+    partition_sums,
+    partition_counts,
     shared_sums,
     shared_cnts,
     type_pass::Int,
@@ -286,9 +286,9 @@ end
         for t in t_lo:t_hi
             slot = t - t_lo
             @inbounds idx = slot * plane + g
-            @inbounds priv_sums[t, dbin, vbin, block_id] += shared_sums[idx]
+            @inbounds partition_sums[t, dbin, vbin, block_id] += shared_sums[idx]
             if shared_cnts[idx] != UInt32(0)
-                @inbounds priv_cnts[t, dbin, vbin, block_id] += shared_cnts[idx]
+                @inbounds partition_counts[t, dbin, vbin, block_id] += shared_cnts[idx]
             end
         end
         g += workgroup_size
@@ -517,10 +517,10 @@ end
     return nothing
 end
 
-# --- direct priv-partition accumulation (block-partitioned global atomics) ---
+# --- direct partitioned accumulation (block-partitioned global atomics) ---
 
-@inline function _gpu_accumulate_sp2d_priv_direct_linear_val!(
-    priv_sums, priv_cnts, block_id::Int, n_dist, n_val,
+@inline function _gpu_accumulate_sp2d_partitioned_direct_linear_val!(
+    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
 ) where {FT}
@@ -534,15 +534,15 @@ end
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            @atomic priv_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic priv_cnts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
         end
     end
     return nothing
 end
 
-@inline function _gpu_accumulate_sp2d_priv_direct_linear_val_cols!(
-    priv_sums, priv_cnts, block_id::Int, n_dist, n_val,
+@inline function _gpu_accumulate_sp2d_partitioned_direct_linear_val_cols!(
+    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
     val_first, val_last, val_inv_step, val_offset, val_step,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
 )
@@ -557,15 +557,15 @@ end
             N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            @atomic priv_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic priv_cnts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
         end
     end
     return nothing
 end
 
-@inline function _gpu_accumulate_sp2d_priv_direct_inflinear_val!(
-    priv_sums, priv_cnts, block_id::Int, n_dist, n_val,
+@inline function _gpu_accumulate_sp2d_partitioned_direct_inflinear_val!(
+    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
     n_inner_edges::Int, inner_last::FT,
@@ -581,15 +581,15 @@ end
             n_inner_edges, inner_last,
         )
         if 1 <= vbin < N_val_edges
-            @atomic priv_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic priv_cnts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
         end
     end
     return nothing
 end
 
-@inline function _gpu_accumulate_sp2d_priv_direct_inflinear_val_cols!(
-    priv_sums, priv_cnts, block_id::Int, n_dist, n_val,
+@inline function _gpu_accumulate_sp2d_partitioned_direct_inflinear_val_cols!(
+    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
     val_first, val_last, val_inv_step, val_offset, val_step, inner_last,
     dbin::Int, du_L, du_T, du_L2, du_T2, n_inner_edges::Int, N_val_edges::Int,
 )
@@ -604,15 +604,15 @@ end
             n_inner_edges, inner_last[t],
         )
         if 1 <= vbin < N_val_edges
-            @atomic priv_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic priv_cnts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
         end
     end
     return nothing
 end
 
-@inline function _gpu_accumulate_sp2d_priv_direct_log_val!(
-    priv_sums, priv_cnts, block_id::Int, n_dist, n_val,
+@inline function _gpu_accumulate_sp2d_partitioned_direct_log_val!(
+    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
 ) where {FT}
@@ -626,15 +626,15 @@ end
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            @atomic priv_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic priv_cnts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
         end
     end
     return nothing
 end
 
-@inline function _gpu_accumulate_sp2d_priv_direct_log_val_cols!(
-    priv_sums, priv_cnts, block_id::Int, n_dist, n_val,
+@inline function _gpu_accumulate_sp2d_partitioned_direct_log_val_cols!(
+    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
     val_first, val_last, val_inv_step, val_offset, val_step,
 )
@@ -648,15 +648,15 @@ end
             vals[t], val_first, val_last, val_inv_step, val_offset, val_step, t, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            @atomic priv_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic priv_cnts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
         end
     end
     return nothing
 end
 
-@inline function _gpu_accumulate_sp2d_priv_direct_vector_val_cols!(
-    priv_sums, priv_cnts, block_id::Int, n_dist, n_val,
+@inline function _gpu_accumulate_sp2d_partitioned_direct_vector_val_cols!(
+    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
     value_edges,
 )
@@ -668,8 +668,8 @@ end
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
-            @atomic priv_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic priv_cnts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
         end
     end
     return nothing
@@ -677,11 +677,11 @@ end
 
 # --- merge: serial (per-cell loop over blocks) and parallel (workgroup tree-reduce) ---
 
-KA.@kernel function _merge_sp2d_priv_serial_u32!(
+KA.@kernel function _merge_sp2d_partitions_serial_u32!(
     output_sums,
     output_counts,
-    priv_sums,
-    priv_cnts,
+    partition_sums,
+    partition_counts,
     n_dist::Int,
     n_val::Int,
     n_tile_blocks::Int,
@@ -694,8 +694,8 @@ KA.@kernel function _merge_sp2d_priv_serial_u32!(
         s = zero(FT)
         c = zero(UInt32)
         @inbounds for block_id in 1:n_tile_blocks
-            s += priv_sums[t, dbin, vbin, block_id]
-            c += priv_cnts[t, dbin, vbin, block_id]
+            s += partition_sums[t, dbin, vbin, block_id]
+            c += partition_counts[t, dbin, vbin, block_id]
         end
         @inbounds begin
             output_sums[t, dbin, vbin] = s
@@ -705,11 +705,11 @@ KA.@kernel function _merge_sp2d_priv_serial_u32!(
 end
 
 """Parallel merge: one workgroup per joint cell (`ndrange = C × workgroup_size`)."""
-KA.@kernel function _merge_sp2d_priv_parallel_u32!(
+KA.@kernel function _merge_sp2d_partitions_parallel_u32!(
     output_sums::AbstractArray{FT, 3},
     output_counts::AbstractArray{UInt32, 3},
-    priv_sums::AbstractArray{FT, 4},
-    priv_cnts::AbstractArray{UInt32, 4},
+    partition_sums::AbstractArray{FT, 4},
+    partition_counts::AbstractArray{UInt32, 4},
     n_dist::Int,
     n_val::Int,
     n_tile_blocks::Int,
@@ -748,8 +748,8 @@ KA.@kernel function _merge_sp2d_priv_parallel_u32!(
         bid = lid
         while bid <= n_tile_blocks
             @inbounds begin
-                partial_s += priv_sums[t, dbin, vbin, bid]
-                partial_c += priv_cnts[t, dbin, vbin, bid]
+                partial_s += partition_sums[t, dbin, vbin, bid]
+                partial_c += partition_counts[t, dbin, vbin, bid]
             end
             bid += workgroup_size
         end
@@ -817,7 +817,7 @@ end
 """Compile-time max shared histogram cells (48 KiB default smem, Float32 cell width)."""
 const _SP2D_SHAREDHIST_COMPILE_CELLS = _sp2d_max_shared_cells(SF_GPU_SMEM_DEFAULT, Float32)
 
-function _sp2d_priv_dist_spec(::Val{:linear})
+function _sp2d_partition_dist_spec(::Val{:linear})
     params = [
         :(dist_first::FT), :(dist_last::FT), :(dist_inv_step::FT),
         :(dist_offset::FT), :(dist_step::FT),
@@ -828,7 +828,7 @@ function _sp2d_priv_dist_spec(::Val{:linear})
     return params, bin
 end
 
-function _sp2d_priv_dist_spec(::Val{:log_linear})
+function _sp2d_partition_dist_spec(::Val{:log_linear})
     params = [
         :(dist_first::FT), :(dist_last::FT), :(dist_inv_step::FT),
         :(dist_offset::FT), :(dist_step::FT),
@@ -839,7 +839,7 @@ function _sp2d_priv_dist_spec(::Val{:log_linear})
     return params, bin
 end
 
-function _sp2d_priv_val_accum(::Val{:linear_shared}, ::Val{:shared})
+function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_linear_val!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
@@ -848,17 +848,17 @@ function _sp2d_priv_val_accum(::Val{:linear_shared}, ::Val{:shared})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:linear_shared}, ::Val{:direct})
+function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:direct})
     return quote
-        _gpu_accumulate_sp2d_priv_direct_linear_val!(
-            priv_sums, priv_cnts, block_id, NB, N_val_edges - 1,
+        _gpu_accumulate_sp2d_partitioned_direct_linear_val!(
+            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             bin, du_L, du_T, du_L2, du_T2, N_val_edges,
             val_first, val_last, val_inv_step, val_offset, val_step,
         )
     end
 end
 
-function _sp2d_priv_val_accum(::Val{:linear_cols}, ::Val{:shared})
+function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_linear_val_cols!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
@@ -867,17 +867,17 @@ function _sp2d_priv_val_accum(::Val{:linear_cols}, ::Val{:shared})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:linear_cols}, ::Val{:direct})
+function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:direct})
     return quote
-        _gpu_accumulate_sp2d_priv_direct_linear_val_cols!(
-            priv_sums, priv_cnts, block_id, NB, N_val_edges - 1,
+        _gpu_accumulate_sp2d_partitioned_direct_linear_val_cols!(
+            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             val_first, val_last, val_inv_step, val_offset, val_step,
             bin, du_L, du_T, du_L2, du_T2, N_val_edges,
         )
     end
 end
 
-function _sp2d_priv_val_accum(::Val{:inflinear_shared}, ::Val{:shared})
+function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_inflinear_val!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
@@ -886,17 +886,17 @@ function _sp2d_priv_val_accum(::Val{:inflinear_shared}, ::Val{:shared})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:inflinear_shared}, ::Val{:direct})
+function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:direct})
     return quote
-        _gpu_accumulate_sp2d_priv_direct_inflinear_val!(
-            priv_sums, priv_cnts, block_id, NB, N_val_edges - 1,
+        _gpu_accumulate_sp2d_partitioned_direct_inflinear_val!(
+            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             bin, du_L, du_T, du_L2, du_T2, N_val_edges,
             val_first, val_last, val_inv_step, val_offset, val_step, n_inner_edges, inner_last,
         )
     end
 end
 
-function _sp2d_priv_val_accum(::Val{:inflinear_cols}, ::Val{:shared})
+function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_inflinear_val_cols!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
@@ -905,17 +905,17 @@ function _sp2d_priv_val_accum(::Val{:inflinear_cols}, ::Val{:shared})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:inflinear_cols}, ::Val{:direct})
+function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:direct})
     return quote
-        _gpu_accumulate_sp2d_priv_direct_inflinear_val_cols!(
-            priv_sums, priv_cnts, block_id, NB, N_val_edges - 1,
+        _gpu_accumulate_sp2d_partitioned_direct_inflinear_val_cols!(
+            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             val_first, val_last, val_inv_step, val_offset, val_step, inner_last,
             bin, du_L, du_T, du_L2, du_T2, n_inner_edges, N_val_edges,
         )
     end
 end
 
-function _sp2d_priv_val_accum(::Val{:log_linear_shared}, ::Val{:shared})
+function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_log_val!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
@@ -924,17 +924,17 @@ function _sp2d_priv_val_accum(::Val{:log_linear_shared}, ::Val{:shared})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:log_linear_shared}, ::Val{:direct})
+function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:direct})
     return quote
-        _gpu_accumulate_sp2d_priv_direct_log_val!(
-            priv_sums, priv_cnts, block_id, NB, N_val_edges - 1,
+        _gpu_accumulate_sp2d_partitioned_direct_log_val!(
+            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             bin, du_L, du_T, du_L2, du_T2, N_val_edges,
             val_first, val_last, val_inv_step, val_offset, val_step,
         )
     end
 end
 
-function _sp2d_priv_val_accum(::Val{:log_linear_cols}, ::Val{:shared})
+function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_log_val_cols!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
@@ -943,17 +943,17 @@ function _sp2d_priv_val_accum(::Val{:log_linear_cols}, ::Val{:shared})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:log_linear_cols}, ::Val{:direct})
+function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:direct})
     return quote
-        _gpu_accumulate_sp2d_priv_direct_log_val_cols!(
-            priv_sums, priv_cnts, block_id, NB, N_val_edges - 1,
+        _gpu_accumulate_sp2d_partitioned_direct_log_val_cols!(
+            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             bin, du_L, du_T, du_L2, du_T2, N_val_edges,
             val_first, val_last, val_inv_step, val_offset, val_step,
         )
     end
 end
 
-function _sp2d_priv_val_accum(::Val{:vector_cols}, ::Val{:shared})
+function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_vector_val_cols!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
@@ -961,17 +961,17 @@ function _sp2d_priv_val_accum(::Val{:vector_cols}, ::Val{:shared})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:vector_cols}, ::Val{:direct})
+function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:direct})
     return quote
-        _gpu_accumulate_sp2d_priv_direct_vector_val_cols!(
-            priv_sums, priv_cnts, block_id, NB, N_val_edges - 1,
+        _gpu_accumulate_sp2d_partitioned_direct_vector_val_cols!(
+            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             bin, du_L, du_T, du_L2, du_T2, N_val_edges, value_edges,
         )
     end
 end
 
 # type-plane (one or more SF types per pass; shared hist = types_per_pass × plane)
-function _sp2d_priv_val_accum(::Val{:linear_shared}, ::Val{:typeplane})
+function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_linear_val!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
@@ -980,7 +980,7 @@ function _sp2d_priv_val_accum(::Val{:linear_shared}, ::Val{:typeplane})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:linear_cols}, ::Val{:typeplane})
+function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_linear_val_cols!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
@@ -989,7 +989,7 @@ function _sp2d_priv_val_accum(::Val{:linear_cols}, ::Val{:typeplane})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:inflinear_shared}, ::Val{:typeplane})
+function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_inflinear_val!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
@@ -998,7 +998,7 @@ function _sp2d_priv_val_accum(::Val{:inflinear_shared}, ::Val{:typeplane})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:inflinear_cols}, ::Val{:typeplane})
+function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_inflinear_val_cols!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
@@ -1007,7 +1007,7 @@ function _sp2d_priv_val_accum(::Val{:inflinear_cols}, ::Val{:typeplane})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:log_linear_shared}, ::Val{:typeplane})
+function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_log_val!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
@@ -1016,7 +1016,7 @@ function _sp2d_priv_val_accum(::Val{:log_linear_shared}, ::Val{:typeplane})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:log_linear_cols}, ::Val{:typeplane})
+function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_log_val_cols!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
@@ -1025,7 +1025,7 @@ function _sp2d_priv_val_accum(::Val{:log_linear_cols}, ::Val{:typeplane})
         )
     end
 end
-function _sp2d_priv_val_accum(::Val{:vector_cols}, ::Val{:typeplane})
+function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_vector_val_cols!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
@@ -1034,63 +1034,63 @@ function _sp2d_priv_val_accum(::Val{:vector_cols}, ::Val{:typeplane})
     end
 end
 
-function _sp2d_priv_kernel_prefix(::Val{:shared})
+function _sp2d_partition_kernel_prefix(::Val{:shared})
     return :_sf6_sp2d_sharedhist_tiled128_
 end
-function _sp2d_priv_kernel_prefix(::Val{:typeplane})
+function _sp2d_partition_kernel_prefix(::Val{:typeplane})
     return :_sf6_sp2d_typeplane_tiled128_
 end
-function _sp2d_priv_kernel_prefix(::Val{:direct})
-    return :_sf6_sp2d_directpriv_tiled128_
+function _sp2d_partition_kernel_prefix(::Val{:direct})
+    return :_sf6_sp2d_directpartition_tiled128_
 end
 
-function _sp2d_priv_val_params(::Val{:linear_shared})
+function _sp2d_partition_val_params(::Val{:linear_shared})
     return [
         :(val_first::FT), :(val_last::FT), :(val_inv_step::FT),
         :(val_offset::FT), :(val_step::FT),
     ]
 end
-function _sp2d_priv_val_params(::Val{:linear_cols})
+function _sp2d_partition_val_params(::Val{:linear_cols})
     return [:(val_first), :(val_last), :(val_inv_step), :(val_offset), :(val_step)]
 end
-function _sp2d_priv_val_params(::Val{:inflinear_shared})
+function _sp2d_partition_val_params(::Val{:inflinear_shared})
     return [
         :(val_first::FT), :(val_last::FT), :(val_inv_step::FT),
         :(val_offset::FT), :(val_step::FT),
         :(n_inner_edges::Int), :(inner_last::FT),
     ]
 end
-function _sp2d_priv_val_params(::Val{:inflinear_cols})
+function _sp2d_partition_val_params(::Val{:inflinear_cols})
     return [
         :(val_first), :(val_last), :(val_inv_step), :(val_offset), :(val_step),
         :(inner_last), :(n_inner_edges::Int),
     ]
 end
-function _sp2d_priv_val_params(::Val{:log_linear_shared})
+function _sp2d_partition_val_params(::Val{:log_linear_shared})
     return [
         :(val_first::FT), :(val_last::FT), :(val_inv_step::FT),
         :(val_offset::FT), :(val_step::FT),
     ]
 end
-function _sp2d_priv_val_params(::Val{:log_linear_cols})
+function _sp2d_partition_val_params(::Val{:log_linear_cols})
     return [:(val_first), :(val_last), :(val_inv_step), :(val_offset), :(val_step)]
 end
-function _sp2d_priv_val_params(::Val{:vector_cols})
+function _sp2d_partition_val_params(::Val{:vector_cols})
     return [:(@Const(value_edges))]
 end
 
-function _sp2d_priv_dist_spec(dist::Symbol)
-    return _sp2d_priv_dist_spec(Val(dist))
+function _sp2d_partition_dist_spec(dist::Symbol)
+    return _sp2d_partition_dist_spec(Val(dist))
 end
 
 """Emit one HTP-EJ tiled128 kernel for `accum_mode` (`:shared`, `:typeplane`, or `:direct`)."""
-function _sp2d_priv_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbol)
+function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbol)
     hist_cells = _SP2D_SHAREDHIST_COMPILE_CELLS
-    prefix = _sp2d_priv_kernel_prefix(Val(accum_mode))
+    prefix = _sp2d_partition_kernel_prefix(Val(accum_mode))
     fname = Symbol(prefix, dist, :_, val, :_u32!)
-    dist_params, dist_bin = _sp2d_priv_dist_spec(dist)
-    val_params = _sp2d_priv_val_params(Val(val))
-    accum = _sp2d_priv_val_accum(Val(val), Val(accum_mode))
+    dist_params, dist_bin = _sp2d_partition_dist_spec(dist)
+    val_params = _sp2d_partition_val_params(Val(val))
+    accum = _sp2d_partition_val_accum(Val(val), Val(accum_mode))
     uses_shared = accum_mode in (:shared, :typeplane)
     shared_hist_decl = uses_shared ? quote
         shared_sums = @localmem FT ($(hist_cells),)
@@ -1239,7 +1239,7 @@ function _sp2d_priv_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbol)
         end
     end
     hist_params = accum_mode == :direct ?
-        [:(priv_sums), :(priv_cnts)] :
+        [:(partition_sums), :(partition_counts)] :
         [:(out_sums), :(out_cnts)]
     return quote
         KA.@kernel function $(fname)(
@@ -1297,7 +1297,7 @@ function _sp2d_priv_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbol)
     end
 end
 
-const _SP2D_PRIV_DIST_VAL = [
+const _SP2D_PARTITION_DIST_VAL = [
     (:linear, :linear_shared),
     (:linear, :linear_cols),
     (:linear, :inflinear_shared),
@@ -1313,25 +1313,25 @@ const _SP2D_PRIV_DIST_VAL = [
     (:log_linear, :vector_cols),
 ]
 
-for accum_mode in (:shared, :typeplane, :direct), (dist, val) in _SP2D_PRIV_DIST_VAL
-    ex = _sp2d_priv_kernel_def(accum_mode, dist, val)
+for accum_mode in (:shared, :typeplane, :direct), (dist, val) in _SP2D_PARTITION_DIST_VAL
+    ex = _sp2d_partition_kernel_def(accum_mode, dist, val)
     @eval $(ex)
 end
 
-"""Resolve compiled priv kernel for `(dist, val, accum_mode)`."""
-function _sp2d_priv_kernel_fn(dist::Symbol, val::Symbol, accum_mode::Symbol, backend, ws)
-    prefix = _sp2d_priv_kernel_prefix(Val(accum_mode))
+"""Resolve compiled partitioned kernel for `(dist, val, accum_mode)`."""
+function _sp2d_partition_kernel_fn(dist::Symbol, val::Symbol, accum_mode::Symbol, backend, ws)
+    prefix = _sp2d_partition_kernel_prefix(Val(accum_mode))
     fname = Symbol(prefix, dist, :_, val, :_u32!)
     kf = getfield(@__MODULE__, fname)
     return kf(backend, ws)
 end
 
-function _launch_merge_sp2d_priv!(
+function _launch_merge_sp2d_partitions!(
     backend::KA.Backend,
     out_sums_dev,
     out_cnts_dev,
-    priv_sums_dev,
-    priv_cnts_dev,
+    partition_sums_dev,
+    partition_counts_dev,
     n_dist::Int,
     n_val::Int,
     n_tile_blocks::Int;
@@ -1339,17 +1339,17 @@ function _launch_merge_sp2d_priv!(
 )
     C = SF_GPU_SINGLE_PASS_N * n_dist * n_val
     if merge_mode == :serial
-        kernel! = _merge_sp2d_priv_serial_u32!(backend, 256)
+        kernel! = _merge_sp2d_partitions_serial_u32!(backend, 256)
         kernel!(
-            out_sums_dev, out_cnts_dev, priv_sums_dev, priv_cnts_dev,
+            out_sums_dev, out_cnts_dev, partition_sums_dev, partition_counts_dev,
             n_dist, n_val, n_tile_blocks;
             ndrange = C,
         )
     else
         ws = 256
-        kernel! = _merge_sp2d_priv_parallel_u32!(backend, ws)
+        kernel! = _merge_sp2d_partitions_parallel_u32!(backend, ws)
         kernel!(
-            out_sums_dev, out_cnts_dev, priv_sums_dev, priv_cnts_dev,
+            out_sums_dev, out_cnts_dev, partition_sums_dev, partition_counts_dev,
             n_dist, n_val, n_tile_blocks, ws;
             ndrange = C * ws,
             workgroupsize = (ws,),

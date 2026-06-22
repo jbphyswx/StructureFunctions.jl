@@ -16,7 +16,7 @@ per-call `KA.zeros` allocation and repeated edge uploads.
 - `:single_pass` — six invariant 1D distance histograms `(6, NB)`
 - `:single_pass_2d` — six invariant distance × value joint histograms `(6, NB, n_val)`;
   on-chip modes (`:shared`, `:typeplane`) flush shared histograms directly to `out_*`;
-  `:direct` uses `priv_sums_dev` / `priv_cnts_dev` plus merge.
+  `:direct` uses `partition_sums_dev` / `partition_counts_dev` plus merge.
   Caches compiled pair kernel in `sp2d_pair_kernel` (typed `LinearBinEdges` / `LogBinEdges` dist).
 
 Use the matching constructor overload; `reset_histogram!(ws)` zeroes device outputs
@@ -44,14 +44,12 @@ mutable struct GPUSFWorkspace
     host_counts_scratch
     x_dev_cache
     u_dev_cache
-    x_dev_3d_cache
-    u_dev_3d_cache
     val_plan::Union{Nothing, GPUValueDigitizePlan}
-    sp2d_priv_config::Union{Nothing, SP2DPrivConfig}
+    sp2d_accumulation_strategy::Union{Nothing, SP2DAccumulationStrategy}
     sp2d_pair_kernel
-    priv_sums_dev
-    priv_cnts_dev
-    priv_n_tile_blocks::Int
+    partition_sums_dev
+    partition_counts_dev
+    partition_n_tile_blocks::Int
     joint2d_nb2::Int
     joint2d_compile_cells::Int
     joint2d_kernel
@@ -118,7 +116,7 @@ function SFC.GPUSFWorkspace(
         nothing, nothing, nothing,
         NB, n_bins, NB, 0, 0,
         Vector{FT}(undef, NB), Vector{UInt32}(undef, NB),
-        nothing, nothing, nothing, nothing,
+        nothing, nothing,
         nothing,
         nothing, nothing, nothing, nothing, 0,
         0, 0, nothing,
@@ -201,7 +199,7 @@ function _gpusf_workspace_joint2d!(
         value_edges_dev, nothing, nothing,
         NB, n_bins, n_dist, n_val, n_val_edges,
         Vector{FT}(undef, n_dist * n_val), Vector{UInt32}(undef, n_dist * n_val),
-        nothing, nothing, nothing, nothing,
+        nothing, nothing,
         val_plan,
         nothing, nothing, nothing, nothing, 0,
         nb2, compile_cells, nothing,
@@ -250,11 +248,11 @@ function _gpusf_workspace_sp2d!(
     n_val_edges = _sp2d_n_val_edges(value_bins)
     FT = _sp2d_value_eltype(value_bins, FT3)
     val_plan = _gpu_build_value_digitize_plan(backend, value_bins)
-    value_edges_sp2d_dev = val_plan isa GPUValueVectorCols ? val_plan.edges_dev : nothing
+    value_edges_sp2d_dev = _gpu_build_value_vector_cols_plan(backend, value_bins).edges_dev
 
     out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, NB, hist_n_val)
     out_cnts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, NB, hist_n_val)
-    priv_config = _sp2d_priv_config(NB, hist_n_val, FT)
+    strategy = _sp2d_accumulation_strategy(NB, hist_n_val, FT)
 
     ws = GPUSFWorkspace(
         backend, FT, :single_pass_2d, dist_bins, value_bins,
@@ -263,14 +261,14 @@ function _gpusf_workspace_sp2d!(
         NB, n_bins, NB, hist_n_val, n_val_edges,
         Vector{FT}(undef, SF_GPU_SINGLE_PASS_N * NB * hist_n_val),
         Vector{UInt32}(undef, SF_GPU_SINGLE_PASS_N * NB * hist_n_val),
-        nothing, nothing, nothing, nothing,
+        nothing, nothing,
         val_plan,
-        priv_config, nothing, nothing, nothing, 0,
+        strategy, nothing, nothing, nothing, 0,
         0, 0, nothing,
     )
     ws = _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
     if dist_bins isa LinearBinEdges || dist_bins isa LogBinEdges
-        ws.sp2d_pair_kernel = _sp2d_resolve_pair_kernel(ws, backend, dist_bins, val_plan, priv_config)
+        ws.sp2d_pair_kernel = _sp2d_resolve_pair_kernel(ws, backend, dist_bins, val_plan, strategy)
     end
     return ws
 end
@@ -279,38 +277,38 @@ end
 Ensure block-private HTP-EJ partitions are allocated for `n_tile_blocks` CUDA tile blocks.
 Reallocates when `N_points` (hence tile-block count) grows.
 """
-function _ensure_sp2d_priv_bufs!(
+function _ensure_sp2d_partition_bufs!(
     ws::GPUSFWorkspace,
     n_tile_blocks::Int,
 )
     ws.kind == :single_pass_2d ||
-        throw(ArgumentError("_ensure_sp2d_priv_bufs! requires kind=:single_pass_2d"))
-    cfg = ws.sp2d_priv_config
-    cfg === nothing && throw(ArgumentError("single_pass_2d workspace missing sp2d_priv_config"))
-    cfg.needs_priv_merge ||
-        throw(ArgumentError("_ensure_sp2d_priv_bufs! requires needs_priv_merge (direct mode)"))
-    if ws.priv_sums_dev === nothing ||
-       ws.priv_cnts_dev === nothing ||
-       ws.priv_n_tile_blocks < n_tile_blocks
+        throw(ArgumentError("_ensure_sp2d_partition_bufs! requires kind=:single_pass_2d"))
+    cfg = ws.sp2d_accumulation_strategy
+    cfg === nothing && throw(ArgumentError("single_pass_2d workspace missing sp2d_accumulation_strategy"))
+    cfg.needs_partition_merge ||
+        throw(ArgumentError("_ensure_sp2d_partition_bufs! requires needs_partition_merge (direct mode)"))
+    if ws.partition_sums_dev === nothing ||
+       ws.partition_counts_dev === nothing ||
+       ws.partition_n_tile_blocks < n_tile_blocks
         FT = ws.FT
-        ws.priv_sums_dev = KA.zeros(ws.backend, FT, SF_GPU_SINGLE_PASS_N, ws.n_dist, ws.n_val, n_tile_blocks)
-        ws.priv_cnts_dev = KA.zeros(ws.backend, UInt32, SF_GPU_SINGLE_PASS_N, ws.n_dist, ws.n_val, n_tile_blocks)
-        ws.priv_n_tile_blocks = n_tile_blocks
+        ws.partition_sums_dev = KA.zeros(ws.backend, FT, SF_GPU_SINGLE_PASS_N, ws.n_dist, ws.n_val, n_tile_blocks)
+        ws.partition_counts_dev = KA.zeros(ws.backend, UInt32, SF_GPU_SINGLE_PASS_N, ws.n_dist, ws.n_val, n_tile_blocks)
+        ws.partition_n_tile_blocks = n_tile_blocks
     end
-    return ws.priv_sums_dev, ws.priv_cnts_dev
+    return ws.partition_sums_dev, ws.partition_counts_dev
 end
 
 """Allocate ephemeral privatization partitions when no workspace is provided."""
-function _alloc_sp2d_priv_bufs(
+function _alloc_sp2d_partition_bufs(
     backend::KA.Backend,
     FT::Type,
     n_dist::Int,
     n_val::Int,
     n_tile_blocks::Int,
 )
-  priv_sums = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, n_dist, n_val, n_tile_blocks)
-  priv_cnts = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, n_dist, n_val, n_tile_blocks)
-  return priv_sums, priv_cnts
+  partition_sums = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, n_dist, n_val, n_tile_blocks)
+  partition_counts = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, n_dist, n_val, n_tile_blocks)
+  return partition_sums, partition_counts
 end
 
 """Zero device histogram buffers in `ws` (call before each kernel launch)."""
@@ -323,11 +321,11 @@ function SFC.reset_histogram!(ws::GPUSFWorkspace)
         fill!(ws.out_sums_dev, zero(FT))
         fill!(ws.out_cnts_dev, zero(UInt32))
         if ws.kind == :single_pass_2d &&
-           ws.sp2d_priv_config !== nothing &&
-           ws.sp2d_priv_config.needs_priv_merge &&
-           ws.priv_sums_dev !== nothing
-            fill!(ws.priv_sums_dev, zero(FT))
-            fill!(ws.priv_cnts_dev, zero(UInt32))
+           ws.sp2d_accumulation_strategy !== nothing &&
+           ws.sp2d_accumulation_strategy.needs_partition_merge &&
+           ws.partition_sums_dev !== nothing
+            fill!(ws.partition_sums_dev, zero(FT))
+            fill!(ws.partition_counts_dev, zero(UInt32))
         end
     end
     return ws
@@ -338,7 +336,7 @@ function SFC.release!(ws::GPUSFWorkspace)
     for f in fieldnames(typeof(ws))
         if f ∉ (
             :backend, :FT, :kind, :dist_bins, :val_bins, :NB, :n_bins, :n_dist, :n_val,
-            :n_val_edges, :sp2d_priv_config, :priv_n_tile_blocks,
+            :n_val_edges, :sp2d_accumulation_strategy, :partition_n_tile_blocks,
             :joint2d_nb2, :joint2d_compile_cells,
         )
             setfield!(ws, f, nothing)

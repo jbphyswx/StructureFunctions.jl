@@ -49,10 +49,10 @@ function main()
     println("Max bin sum: ", maximum(res.sums))
 
     backend = SF.GPUBackend(CUDA.CUDABackend())
-    x_tup = (Array(x[1, :]), Array(x[2, :]))
-    u_tup = (Array(u[1, :]), Array(u[2, :]))
+    x_cpu = Array(x)
+    u_cpu = Array(u)
     result = SFC.calculate_structure_function(
-        sft, x_tup, u_tup, bin_edges;
+        sft, x_cpu, u_cpu, bin_edges;
         backend = backend,
         verbose = false,
         show_progress = false,

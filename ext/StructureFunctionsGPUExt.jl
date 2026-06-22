@@ -16,10 +16,10 @@ single-pass 2D uses tiled128 pair traversal with **HTP-EJ** when `n_dist ≤ SF_
 and distance bins are typed (`LinearBinEdges` / `LogBinEdges`):
 
 - **On-chip** (`:shared`, `:typeplane`): shared histogram during the pair loop,
-  block-end `@atomic` flush into final output (same pattern as joint 2D) — no priv partition, no merge.
+  block-end `@atomic` flush into final output (same pattern as joint 2D) — no private partition, no merge.
 - **Direct** (`:direct`): block-private global atomics during one pair pass, then merge kernel.
 
-See [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md) for policy, routing, benchmarks, and known perf gaps.
+See [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md) for strategy, routing, benchmarks, and known perf gaps.
 
 Pass `force_global_atomic=true` to bypass HTP-EJ and use the global-atomic path.
 
@@ -242,7 +242,9 @@ end
 
 const SF_GPU_SINGLE_PASS_N = 6
 
-include(joinpath(@__DIR__, "gpu", "policy.jl"))
+include(joinpath(@__DIR__, "gpu", "value_digitize_plans.jl"))
+include(joinpath(@__DIR__, "gpu", "sp2d_accumulation_strategy.jl"))
+include(joinpath(@__DIR__, "gpu", "joint2d_shared_memory.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_1d.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_2d.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_1d_single_pass.jl"))
@@ -275,6 +277,18 @@ function _stage_sf_device_inputs(
     N_points::Int;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 ) where {FT}
+    if _array_on_backend(x_mat, backend) && _array_on_backend(u_mat, backend)
+        d_x, n_x = size(x_mat)
+        d_u, n_u = size(u_mat)
+        if d_x == N_dims && d_u == N_dims && n_x == N_points && n_u == N_points
+            if workspace !== nothing
+                workspace.x_dev_cache = x_mat
+                workspace.u_dev_cache = u_mat
+            end
+            return x_mat, u_mat
+        end
+    end
+
     if workspace !== nothing &&
        workspace.x_dev_cache !== nothing &&
        workspace.u_dev_cache !== nothing
@@ -286,18 +300,9 @@ function _stage_sf_device_inputs(
            size(ud) == (N_dims, N_points) &&
            eltype(xd) == FT &&
            eltype(ud) == FT
+            copyto!(xd, Array(x_mat))
+            copyto!(ud, Array(u_mat))
             return xd, ud
-        end
-    end
-    if _array_on_backend(x_mat, backend) && _array_on_backend(u_mat, backend)
-        d_x, n_x = size(x_mat)
-        d_u, n_u = size(u_mat)
-        if d_x == N_dims && d_u == N_dims && n_x == N_points && n_u == N_points
-            if workspace !== nothing
-                workspace.x_dev_cache = x_mat
-                workspace.u_dev_cache = u_mat
-            end
-            return x_mat, u_mat
         end
     end
 
@@ -311,27 +316,6 @@ function _stage_sf_device_inputs(
     end
     return x_dev, u_dev
 end
-
-# ---------------------------------------------------------------------------
-# N-dimensional variant: pads 1D/2D inputs to 3D for uniformity
-# ---------------------------------------------------------------------------
-
-"""
-    _pad3(v::SVector)
-
-Pad 1D/2D static vectors to 3D by appending zeros.
-3D vectors are returned unchanged.
-"""
-function _pad3(v::SA.SVector{N, T}) where {N, T}
-    if N == 1
-        return SA.SVector{3, T}(v[1], zero(T), zero(T))
-    elseif N == 2
-        return SA.SVector{3, T}(v[1], v[2], zero(T))
-    else
-        return v
-    end
-end
-
 
 # ---------------------------------------------------------------------------
 # Public API – extends the stub declared in Calculations.jl
@@ -947,61 +931,100 @@ end
 # Single-Pass GPU Kernels (global-atomic path when NB > SF_GPU_MAX_BINS)
 # ---------------------------------------------------------------------------
 
+@inline function _gpu_single_pass_pair_invariants(
+    x_mat,
+    u_mat,
+    i::Int,
+    j::Int,
+    ::Val{2},
+    ::Type{FT},
+) where {FT}
+    dx1 = x_mat[1, j] - x_mat[1, i]
+    dx2 = x_mat[2, j] - x_mat[2, i]
+    du1 = u_mat[1, j] - u_mat[1, i]
+    du2 = u_mat[2, j] - u_mat[2, i]
+    dist = sqrt(dx1^2 + dx2^2)
+    rx = dx1 / dist
+    ry = dx2 / dist
+    du_L = du1 * rx + du2 * ry
+    du_L2 = du_L * du_L
+    du_T2 = du1^2 + du2^2 - du_L2
+    return dist, du_L, du_L2, du_T2
+end
+
+@inline function _gpu_single_pass_pair_invariants(
+    x_mat,
+    u_mat,
+    i::Int,
+    j::Int,
+    ::Val{3},
+    ::Type{FT},
+) where {FT}
+    dx1 = x_mat[1, j] - x_mat[1, i]
+    dx2 = x_mat[2, j] - x_mat[2, i]
+    dx3 = x_mat[3, j] - x_mat[3, i]
+    du1 = u_mat[1, j] - u_mat[1, i]
+    du2 = u_mat[2, j] - u_mat[2, i]
+    du3 = u_mat[3, j] - u_mat[3, i]
+    dist = sqrt(dx1^2 + dx2^2 + dx3^2)
+    rx = dx1 / dist
+    ry = dx2 / dist
+    rz = dx3 / dist
+    du_L = du1 * rx + du2 * ry + du3 * rz
+    du_L2 = du_L * du_L
+    du_T2 = du1^2 + du2^2 + du3^2 - du_L2
+    return dist, du_L, du_L2, du_T2
+end
+
+@inline function _gpu_accumulate_single_pass_global!(
+    output_sums,
+    output_counts,
+    bin::Int,
+    du_L,
+    du_L2,
+    du_T2,
+)
+    @atomic output_sums[1, bin] += du_L2 + du_T2
+    @atomic output_sums[2, bin] += du_L2
+    @atomic output_sums[3, bin] += du_T2
+    @atomic output_sums[4, bin] += du_L * (du_L2 + du_T2)
+    @atomic output_sums[5, bin] += du_L * du_L2
+    @atomic output_sums[6, bin] += du_L * du_T2
+
+    for t in 1:SF_GPU_SINGLE_PASS_N
+        @atomic output_counts[t, bin] += one(eltype(output_counts))
+    end
+    return nothing
+end
+
 KA.@kernel function _sf_single_pass_kernel_linear!(
     output_sums,
     output_counts,
     @Const(x_mat),
     @Const(u_mat),
     N_points::Int,
-    N_dims::Int,
+    ::Val{D},
     N_bins::Int,
     first_edge::FT,
     last_edge::FT,
     inv_step::FT,
     offset::FT,
     step_val::FT,
-) where {FT}
+) where {D, FT}
     I = @index(Global, NTuple)
     i = I[1]
     j = I[2]
 
     if i < j
-        dx1 = x_mat[1, j] - x_mat[1, i]
-        dx2 = x_mat[2, j] - x_mat[2, i]
-        dx3 = N_dims == 3 ? x_mat[3, j] - x_mat[3, i] : zero(FT)
-        du1 = u_mat[1, j] - u_mat[1, i]
-        du2 = u_mat[2, j] - u_mat[2, i]
-        du3 = N_dims == 3 ? u_mat[3, j] - u_mat[3, i] : zero(FT)
-
-        dist = sqrt(dx1^2 + dx2^2 + dx3^2)
-
+        dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+            x_mat, u_mat, i, j, Val(D), FT,
+        )
         bin = _gpu_digitize_linear(
             dist, first_edge, last_edge, inv_step, offset, step_val, N_bins,
         )
 
         if 1 <= bin < N_bins
-            rx = dx1 / dist
-            ry = dx2 / dist
-            rz = dx3 / dist
-            du_L = du1 * rx + du2 * ry + du3 * rz
-
-            du_L2 = du_L * du_L
-            du_T2 = du1^2 + du2^2 + du3^2 - du_L2
-            n_norm = N_dims == 3 ? sqrt(rx^2 + ry^2) : one(FT)
-            nx = n_norm > zero(FT) ? ry / n_norm : one(FT)
-            ny = n_norm > zero(FT) ? -rx / n_norm : zero(FT)
-            du_T = du1 * nx + du2 * ny
-
-            @atomic output_sums[1, bin] += du_L2 + du_T2
-            @atomic output_sums[2, bin] += du_L2
-            @atomic output_sums[3, bin] += du_T2
-            @atomic output_sums[4, bin] += du_L * (du_L2 + du_T2)
-            @atomic output_sums[5, bin] += du_L * du_L2
-            @atomic output_sums[6, bin] += du_L * du_T2
-
-            for t in 1:SF_GPU_SINGLE_PASS_N
-                @atomic output_counts[t, bin] += one(eltype(output_counts))
-            end
+            _gpu_accumulate_single_pass_global!(output_sums, output_counts, bin, du_L, du_L2, du_T2)
         end
     end
 end
@@ -1012,52 +1035,26 @@ KA.@kernel function _sf_single_pass_kernel_log!(
     @Const(x_mat),
     @Const(u_mat),
     N_points::Int,
-    N_dims::Int,
+    ::Val{D},
     N_bins::Int,
     first_edge::FT,
     last_edge::FT,
     inv_step::FT,
     offset::FT,
     step_val::FT,
-) where {FT}
+) where {D, FT}
     I = @index(Global, NTuple)
     i = I[1]
     j = I[2]
 
     if i < j
-        dx1 = x_mat[1, j] - x_mat[1, i]
-        dx2 = x_mat[2, j] - x_mat[2, i]
-        dx3 = N_dims == 3 ? x_mat[3, j] - x_mat[3, i] : zero(FT)
-        du1 = u_mat[1, j] - u_mat[1, i]
-        du2 = u_mat[2, j] - u_mat[2, i]
-        du3 = N_dims == 3 ? u_mat[3, j] - u_mat[3, i] : zero(FT)
-
-        dist = sqrt(dx1^2 + dx2^2 + dx3^2)
-
+        dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+            x_mat, u_mat, i, j, Val(D), FT,
+        )
         bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, offset, step_val, N_bins)
 
         if 1 <= bin < N_bins
-            rx = dx1 / dist
-            ry = dx2 / dist
-            rz = dx3 / dist
-            du_L = du1 * rx + du2 * ry + du3 * rz
-            du_L2 = du_L * du_L
-            du_T2 = du1^2 + du2^2 + du3^2 - du_L2
-            n_norm = N_dims == 3 ? sqrt(rx^2 + ry^2) : one(FT)
-            nx = n_norm > zero(FT) ? ry / n_norm : one(FT)
-            ny = n_norm > zero(FT) ? -rx / n_norm : zero(FT)
-            du_T = du1 * nx + du2 * ny
-
-            @atomic output_sums[1, bin] += du_L2 + du_T2
-            @atomic output_sums[2, bin] += du_L2
-            @atomic output_sums[3, bin] += du_T2
-            @atomic output_sums[4, bin] += du_L * (du_L2 + du_T2)
-            @atomic output_sums[5, bin] += du_L * du_L2
-            @atomic output_sums[6, bin] += du_L * du_T2
-
-            for t in 1:SF_GPU_SINGLE_PASS_N
-                @atomic output_counts[t, bin] += one(eltype(output_counts))
-            end
+            _gpu_accumulate_single_pass_global!(output_sums, output_counts, bin, du_L, du_L2, du_T2)
         end
     end
 end
@@ -1069,50 +1066,22 @@ KA.@kernel function _sf_single_pass_kernel!(
     @Const(u_mat),               # Matrix{FT} of size (2, N_points)
     @Const(distance_bins),       # monotone bin edges, length N_bins
     N_points::Int,
-    N_dims::Int,
+    ::Val{D},
     N_bins::Int,
-)
+) where {D}
     I = @index(Global, NTuple)
     i = I[1]
     j = I[2]
     
     if i < j
-        dx1 = x_mat[1, j] - x_mat[1, i]
-        dx2 = x_mat[2, j] - x_mat[2, i]
-        dx3 = N_dims == 3 ? x_mat[3, j] - x_mat[3, i] : zero(eltype(x_mat))
-        du1 = u_mat[1, j] - u_mat[1, i]
-        du2 = u_mat[2, j] - u_mat[2, i]
-        du3 = N_dims == 3 ? u_mat[3, j] - u_mat[3, i] : zero(eltype(u_mat))
-
-        dist = sqrt(dx1^2 + dx2^2 + dx3^2)
-        
+        FT = eltype(x_mat)
+        dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+            x_mat, u_mat, i, j, Val(D), FT,
+        )
         bin = _gpu_digitize_general(dist, distance_bins, N_bins)
         
         if 1 <= bin < N_bins
-            FT = eltype(x_mat)
-            rx = dx1 / dist
-            ry = dx2 / dist
-            rz = dx3 / dist
-            du_L = du1 * rx + du2 * ry + du3 * rz
-            
-            du_L2 = du_L * du_L
-            du_T2 = du1^2 + du2^2 + du3^2 - du_L2
-            n_norm = N_dims == 3 ? sqrt(rx^2 + ry^2) : one(FT)
-            nx = n_norm > zero(FT) ? ry / n_norm : one(FT)
-            ny = n_norm > zero(FT) ? -rx / n_norm : zero(FT)
-            du_T = du1 * nx + du2 * ny
-            
-            # Atomically accumulate the six invariant structure functions.
-            @atomic output_sums[1, bin] += du_L2 + du_T2
-            @atomic output_sums[2, bin] += du_L2
-            @atomic output_sums[3, bin] += du_T2
-            @atomic output_sums[4, bin] += du_L * (du_L2 + du_T2)
-            @atomic output_sums[5, bin] += du_L * du_L2
-            @atomic output_sums[6, bin] += du_L * du_T2
-            
-            for t in 1:SF_GPU_SINGLE_PASS_N
-                @atomic output_counts[t, bin] += one(eltype(output_counts))
-            end
+            _gpu_accumulate_single_pass_global!(output_sums, output_counts, bin, du_L, du_L2, du_T2)
         end
     end
 end
@@ -1140,7 +1109,7 @@ function _launch_single_pass_kernel!(
     kernel! = _sf_single_pass_kernel_linear!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
-        N_points, N_dims, n_edges,
+        N_points, Val(N_dims), n_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val;
         ndrange = (N_points, N_points),
     )
@@ -1171,7 +1140,7 @@ function _launch_single_pass_kernel!(
     kernel! = _sf_single_pass_kernel_log!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
-        N_points, N_dims, n_edges,
+        N_points, Val(N_dims), n_edges,
         lb.first_edge, lb.last_edge, lb.inv_step, lb.offset, lb.step_val;
         ndrange = (N_points, N_points),
     )
@@ -1208,7 +1177,7 @@ function _launch_single_pass_kernel!(
     kernel! = _sf_single_pass_kernel!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
-        bins_dev, N_points, N_dims, n_edges;
+        bins_dev, N_points, Val(N_dims), n_edges;
         ndrange = (N_points, N_points),
     )
     return nothing
@@ -1689,7 +1658,7 @@ KA.@kernel function _sf_single_pass_2d_kernel_linear!(
     @Const(u_mat),
     @Const(value_edges),
     N_points::Int,
-    N_dims::Int,
+    ::Val{D},
     N_bins::Int,
     N_val_edges::Int,
     first_edge::FT,
@@ -1697,34 +1666,20 @@ KA.@kernel function _sf_single_pass_2d_kernel_linear!(
     inv_step::FT,
     offset::FT,
     step_val::FT,
-) where {FT}
+) where {D, FT}
     I = @index(Global, NTuple)
     i, j = I[1], I[2]
     if i < j
-        dx1 = x_mat[1, j] - x_mat[1, i]
-        dx2 = x_mat[2, j] - x_mat[2, i]
-        dx3 = N_dims == 3 ? x_mat[3, j] - x_mat[3, i] : zero(FT)
-        du1 = u_mat[1, j] - u_mat[1, i]
-        du2 = u_mat[2, j] - u_mat[2, i]
-        du3 = N_dims == 3 ? u_mat[3, j] - u_mat[3, i] : zero(FT)
-        dist = sqrt(dx1^2 + dx2^2 + dx3^2)
+        dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+            x_mat, u_mat, i, j, Val(D), FT,
+        )
         bin = _gpu_digitize_linear(
             dist, first_edge, last_edge, inv_step, offset, step_val, N_bins,
         )
         if 1 <= bin < N_bins
-            rx = dx1 / dist
-            ry = dx2 / dist
-            rz = dx3 / dist
-            du_L = du1 * rx + du2 * ry + du3 * rz
-            du_L2 = du_L * du_L
-            du_T2 = du1^2 + du2^2 + du3^2 - du_L2
-            n_norm = N_dims == 3 ? sqrt(rx^2 + ry^2) : one(FT)
-            nx = n_norm > zero(FT) ? ry / n_norm : one(FT)
-            ny = n_norm > zero(FT) ? -rx / n_norm : zero(FT)
-            du_T = du1 * nx + du2 * ny
             _gpu_accumulate_single_pass_2d_pair!(
                 output_sums, output_counts, value_edges, bin,
-                du_L, du_T, du_L2, du_T2, N_val_edges,
+                du_L, zero(du_L), du_L2, du_T2, N_val_edges,
             )
         end
     end
@@ -1737,7 +1692,7 @@ KA.@kernel function _sf_single_pass_2d_kernel_log!(
     @Const(u_mat),
     @Const(value_edges),
     N_points::Int,
-    N_dims::Int,
+    ::Val{D},
     N_bins::Int,
     N_val_edges::Int,
     first_edge::FT,
@@ -1745,32 +1700,18 @@ KA.@kernel function _sf_single_pass_2d_kernel_log!(
     inv_step::FT,
     offset::FT,
     step_val::FT,
-) where {FT}
+) where {D, FT}
     I = @index(Global, NTuple)
     i, j = I[1], I[2]
     if i < j
-        dx1 = x_mat[1, j] - x_mat[1, i]
-        dx2 = x_mat[2, j] - x_mat[2, i]
-        dx3 = N_dims == 3 ? x_mat[3, j] - x_mat[3, i] : zero(FT)
-        du1 = u_mat[1, j] - u_mat[1, i]
-        du2 = u_mat[2, j] - u_mat[2, i]
-        du3 = N_dims == 3 ? u_mat[3, j] - u_mat[3, i] : zero(FT)
-        dist = sqrt(dx1^2 + dx2^2 + dx3^2)
+        dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+            x_mat, u_mat, i, j, Val(D), FT,
+        )
         bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, offset, step_val, N_bins)
         if 1 <= bin < N_bins
-            rx = dx1 / dist
-            ry = dx2 / dist
-            rz = dx3 / dist
-            du_L = du1 * rx + du2 * ry + du3 * rz
-            du_L2 = du_L * du_L
-            du_T2 = du1^2 + du2^2 + du3^2 - du_L2
-            n_norm = N_dims == 3 ? sqrt(rx^2 + ry^2) : one(FT)
-            nx = n_norm > zero(FT) ? ry / n_norm : one(FT)
-            ny = n_norm > zero(FT) ? -rx / n_norm : zero(FT)
-            du_T = du1 * nx + du2 * ny
             _gpu_accumulate_single_pass_2d_pair!(
                 output_sums, output_counts, value_edges, bin,
-                du_L, du_T, du_L2, du_T2, N_val_edges,
+                du_L, zero(du_L), du_L2, du_T2, N_val_edges,
             )
         end
     end
@@ -1784,36 +1725,22 @@ KA.@kernel function _sf_single_pass_2d_kernel!(
     @Const(distance_bins),
     @Const(value_edges),
     N_points::Int,
-    N_dims::Int,
+    ::Val{D},
     N_bins::Int,
     N_val_edges::Int,
-)
+) where {D}
     I = @index(Global, NTuple)
     i, j = I[1], I[2]
     if i < j
         FT = eltype(x_mat)
-        dx1 = x_mat[1, j] - x_mat[1, i]
-        dx2 = x_mat[2, j] - x_mat[2, i]
-        dx3 = N_dims == 3 ? x_mat[3, j] - x_mat[3, i] : zero(FT)
-        du1 = u_mat[1, j] - u_mat[1, i]
-        du2 = u_mat[2, j] - u_mat[2, i]
-        du3 = N_dims == 3 ? u_mat[3, j] - u_mat[3, i] : zero(eltype(u_mat))
-        dist = sqrt(dx1^2 + dx2^2 + dx3^2)
+        dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+            x_mat, u_mat, i, j, Val(D), FT,
+        )
         bin = _gpu_digitize_general(dist, distance_bins, N_bins)
         if 1 <= bin < N_bins
-            rx = dx1 / dist
-            ry = dx2 / dist
-            rz = dx3 / dist
-            du_L = du1 * rx + du2 * ry + du3 * rz
-            du_L2 = du_L * du_L
-            du_T2 = du1^2 + du2^2 + du3^2 - du_L2
-            n_norm = N_dims == 3 ? sqrt(rx^2 + ry^2) : one(FT)
-            nx = n_norm > zero(FT) ? ry / n_norm : one(FT)
-            ny = n_norm > zero(FT) ? -rx / n_norm : zero(FT)
-            du_T = du1 * nx + du2 * ny
             _gpu_accumulate_single_pass_2d_pair!(
                 output_sums, output_counts, value_edges, bin,
-                du_L, du_T, du_L2, du_T2, N_val_edges,
+                du_L, zero(du_L), du_L2, du_T2, N_val_edges,
             )
         end
     end
@@ -1857,7 +1784,7 @@ function _gpu_run_single_pass_2d!(
     x_dev, u_dev = _stage_sf_device_inputs(backend, x, u, N_dims, N_points; workspace = workspace)
 
     if workspace === nothing
-        val_plan = N_dims == 3 ?
+        val_plan = force_global_atomic ? _gpu_build_value_vector_cols_plan(backend, value_bins) : N_dims == 3 ?
             _gpu_build_value_vector_cols_plan(backend, value_bins) :
             _gpu_build_value_digitize_plan(backend, value_bins)
         out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, n_bins, n_val)
@@ -1866,7 +1793,7 @@ function _gpu_run_single_pass_2d!(
     else
         _validate_gpu_workspace!(workspace, backend, :single_pass_2d, n_bins; n_val = n_val)
         SFC.reset_histogram!(workspace)
-        val_plan = N_dims == 3 ?
+        val_plan = force_global_atomic ? GPUValueVectorCols{FT}(workspace.value_edges_sp2d_dev) : N_dims == 3 ?
             _gpu_build_value_vector_cols_plan(backend, value_bins) :
             workspace.val_plan
         out_sums_dev = workspace.out_sums_dev
@@ -1905,7 +1832,7 @@ function _launch_single_pass_2d_kernel!(
     kernel! = _sf_single_pass_2d_kernel_linear!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
-        N_points, 2, n_dist_edges, n_val_edges,
+        N_points, Val(2), n_dist_edges, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val;
         ndrange = (N_points, N_points),
     )
@@ -1930,7 +1857,7 @@ function _launch_single_pass_2d_kernel!(
     kernel! = _sf_single_pass_2d_kernel_log!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
-        N_points, 2, n_dist_edges, n_val_edges,
+        N_points, Val(2), n_dist_edges, n_val_edges,
         d_f, d_l, d_inv, d_off, d_st;
         ndrange = (N_points, N_points),
     )
@@ -1961,7 +1888,7 @@ function _launch_single_pass_2d_kernel!(
     kernel! = _sf_single_pass_2d_kernel!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
-        bins_dev, value_edges_dev, N_points, 2, n_dist_edges, n_val_edges;
+        bins_dev, value_edges_dev, N_points, Val(2), n_dist_edges, n_val_edges;
         ndrange = (N_points, N_points),
     )
     return nothing
@@ -2078,63 +2005,6 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d!(
         workgroup_size = workgroup_size, workspace = workspace, kwargs...,
     )
     return sums_3d, counts_3d
-end
-
-# ---------------------------------------------------------------------------
-# 3D slice-batch staging and GPU slice drivers
-# ---------------------------------------------------------------------------
-
-"""
-    _stage_sf_device_inputs_3d(backend, x, u, N_dims, N_points, T)
-
-Upload `(N_dims, N_points, T)` inputs once; reuse when already on `backend`.
-"""
-function _stage_sf_device_inputs_3d(
-    backend::KA.Backend,
-    x::AbstractArray{FT, 3},
-    u::AbstractArray{FT, 3},
-    N_dims::Int,
-    N_points::Int,
-    T::Int;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
-) where {FT}
-    size(x) == (N_dims, N_points, T) ||
-        throw(DimensionMismatch("x must have shape ($N_dims, $N_points, $T); got $(size(x))"))
-    size(u) == size(x) ||
-        throw(DimensionMismatch("u must match x shape $(size(x)); got $(size(u))"))
-    if workspace !== nothing &&
-       workspace.x_dev_3d_cache !== nothing &&
-       workspace.u_dev_3d_cache !== nothing
-        xd = workspace.x_dev_3d_cache
-        ud = workspace.u_dev_3d_cache
-        if _array_on_backend(xd, backend) &&
-           _array_on_backend(ud, backend) &&
-           size(xd) == (N_dims, N_points, T) &&
-           eltype(xd) == FT
-            return xd, ud
-        end
-    end
-    if _array_on_backend(x, backend) && _array_on_backend(u, backend)
-        if workspace !== nothing
-            workspace.x_dev_3d_cache = x
-            workspace.u_dev_3d_cache = u
-        end
-        return x, u
-    end
-    x_dev = KA.allocate(backend, FT, N_dims, N_points, T)
-    u_dev = KA.allocate(backend, FT, N_dims, N_points, T)
-    copyto!(x_dev, Array(x))
-    copyto!(u_dev, Array(u))
-    if workspace !== nothing
-        workspace.x_dev_3d_cache = x_dev
-        workspace.u_dev_3d_cache = u_dev
-    end
-    return x_dev, u_dev
-end
-
-"""Device-resident matrix view for time slice `t` of a `(N_dims, N_points, T)` array."""
-@inline function _device_slice_mat(a, t::Int)
-    return view(a, :, :, t)
 end
 
 """

@@ -26,16 +26,16 @@ FT = length(ARGS) >= 2 && ARGS[2] == "Float32" ? Float32 : Float64
 N_threads = Threads.nthreads()
 
 Random.seed!(SCALING_SEED)
-x_tup, u_tup, _, _ = scaling_synthetic_data(N_points, FT)
+x_arr, u_arr = scaling_synthetic_data(N_points, FT)
 bins = scaling_bins(FT)
 sft = SCALING_SFT
 
 # Warmup (avoid counting compile time)
-SFC.calculate_structure_function(sft, x_tup, u_tup, bins; backend = SFC.ThreadedBackend(), verbose = false, show_progress = false)
+SFC.calculate_structure_function(sft, x_arr, u_arr, bins; backend = SFC.ThreadedBackend(), verbose = false, show_progress = false)
 
 # Timed run
 t_start = time()
-SFC.calculate_structure_function(sft, x_tup, u_tup, bins; backend = SFC.ThreadedBackend(), verbose = false, show_progress = false)
+SFC.calculate_structure_function(sft, x_arr, u_arr, bins; backend = SFC.ThreadedBackend(), verbose = false, show_progress = false)
 elapsed = time() - t_start
 
 result = Dict(

@@ -75,6 +75,32 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
         Test.@test counts_acc ≈ counts_k
     end
 
+    Test.@testset "workspace input cache refreshes same-shape host inputs" begin
+        ws_refresh = SFC.GPUSFWorkspace(backend, linear_bins)
+        x_alt = reverse(x2; dims = 2)
+        u_alt = 2 .* u2 .+ FT(0.25)
+
+        ref_a = SFC.gpu_calculate_structure_function(
+            sft, backend, x2, u2, linear_bins; return_sums_and_counts = true,
+        )
+        ref_b = SFC.gpu_calculate_structure_function(
+            sft, backend, x_alt, u_alt, linear_bins; return_sums_and_counts = true,
+        )
+        out_a = SFC.gpu_calculate_structure_function(
+            sft, backend, x2, u2, linear_bins; return_sums_and_counts = true, workspace = ws_refresh,
+        )
+        out_b = SFC.gpu_calculate_structure_function(
+            sft, backend, x_alt, u_alt, linear_bins; return_sums_and_counts = true, workspace = ws_refresh,
+        )
+
+        Test.@test out_a.sums ≈ ref_a.sums atol = 1e-12
+        Test.@test out_a.counts ≈ ref_a.counts
+        Test.@test out_b.sums ≈ ref_b.sums atol = 1e-12
+        Test.@test out_b.counts ≈ ref_b.counts
+        Test.@test !isapprox(out_b.sums, ref_a.sums; atol = 1e-12)
+        SFC.release!(ws_refresh)
+    end
+
     # --- 2D joint ---
     ref2d = SFC.gpu_calculate_structure_function_2d(
         sft, backend, x2, u2, linear_bins, value_bins,

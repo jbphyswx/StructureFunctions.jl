@@ -74,11 +74,13 @@ function _gpu_calculate_structure_function_batch(
     sums, counts = _gpu_batch_allocate_outputs(FT, NB, bdims)
     sums_dev = KA.adapt(backend, sums)
     counts_dev = KA.adapt(backend, counts)
+    sums_dev_flat = reshape(sums_dev, NB, B)
+    counts_dev_flat = reshape(counts_dev, NB, B)
     x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = fixed_x)
     if fixed_x
-        _launch_batch_fixed_x_sf!(backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N, B, lbe)
+        _launch_batch_fixed_x_sf!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, sf_type, N, B, lbe)
     else
-        _launch_batch_varying_x_sf!(backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N, B, lbe)
+        _launch_batch_varying_x_sf!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, sf_type, N, B, lbe)
     end
     _gpu_batch_download!(sums, counts, sums_dev, counts_dev)
     if RSAC
@@ -111,11 +113,13 @@ function _gpu_calculate_structure_function_batch!(
     B = SFC.batch_size(u)
     sums_dev = KA.adapt(backend, zeros(eltype(output_sums), NB, SFC.batch_dims(u)...))
     counts_dev = KA.adapt(backend, zeros(UInt32, NB, SFC.batch_dims(u)...))
+    sums_dev_flat = reshape(sums_dev, NB, B)
+    counts_dev_flat = reshape(counts_dev, NB, B)
     x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = fixed_x)
     if fixed_x
-        _launch_batch_fixed_x_sf!(backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N, B, lbe)
+        _launch_batch_fixed_x_sf!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, sf_type, N, B, lbe)
     else
-        _launch_batch_varying_x_sf!(backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N, B, lbe)
+        _launch_batch_varying_x_sf!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, sf_type, N, B, lbe)
     end
     _accumulate_batch_host!(output_sums, output_counts, sums_dev, counts_dev)
     return nothing
@@ -153,11 +157,13 @@ function _gpu_dispatch_single_pass_batch(
     sums, counts = _gpu_batch_allocate_sp1d(FT, NB, bdims)
     sums_dev = KA.adapt(backend, sums)
     counts_dev = KA.adapt(backend, counts)
+    sums_dev_flat = reshape(sums_dev, SFC.SINGLE_PASS_N, NB, B)
+    counts_dev_flat = reshape(counts_dev, SFC.SINGLE_PASS_N, NB, B)
     x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = fixed_x)
     if fixed_x
-        _launch_batch_fixed_x_sp1d!(backend, sums_dev, counts_dev, x_dev, u_dev, N, B, lbe)
+        _launch_batch_fixed_x_sp1d!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, N, B, lbe)
     else
-        _launch_batch_varying_x_sp1d!(backend, sums_dev, counts_dev, x_dev, u_dev, N, B, lbe)
+        _launch_batch_varying_x_sp1d!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, N, B, lbe)
     end
     _gpu_batch_download!(sums, counts, sums_dev, counts_dev)
     return (sums = sums, counts = CT === UInt32 ? counts : CT.(counts))
@@ -178,11 +184,13 @@ function _gpu_dispatch_single_pass_batch!(
     B = SFC.batch_size(u)
     sums_dev = KA.adapt(backend, zeros(OT, size(sums)...))
     counts_dev = KA.adapt(backend, zeros(UInt32, size(counts)...))
+    sums_dev_flat = reshape(sums_dev, SFC.SINGLE_PASS_N, NB, B)
+    counts_dev_flat = reshape(counts_dev, SFC.SINGLE_PASS_N, NB, B)
     x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = fixed_x)
     if fixed_x
-        _launch_batch_fixed_x_sp1d!(backend, sums_dev, counts_dev, x_dev, u_dev, N, B, lbe)
+        _launch_batch_fixed_x_sp1d!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, N, B, lbe)
     else
-        _launch_batch_varying_x_sp1d!(backend, sums_dev, counts_dev, x_dev, u_dev, N, B, lbe)
+        _launch_batch_varying_x_sp1d!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, N, B, lbe)
     end
     tmp_s = Array(sums_dev)
     tmp_c = Array(counts_dev)
@@ -217,11 +225,13 @@ function _gpu_dispatch_single_pass_2d_batch(
     sums, counts = _gpu_batch_allocate_sp2d(FT, n_dist, n_val, bdims)
     sums_dev = KA.adapt(backend, sums)
     counts_dev = KA.adapt(backend, counts)
+    sums_dev_flat = reshape(sums_dev, SFC.SINGLE_PASS_N, n_dist, n_val, B)
+    counts_dev_flat = reshape(counts_dev, SFC.SINGLE_PASS_N, n_dist, n_val, B)
     x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = fixed_x)
     if fixed_x
-        _launch_batch_fixed_x_sp2d!(backend, sums_dev, counts_dev, x_dev, u_dev, N, B, lbe, val_plan, n_dist, n_val)
+        _launch_batch_fixed_x_sp2d!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, N, B, lbe, val_plan, n_dist, n_val)
     else
-        _launch_batch_varying_x_sp2d!(backend, sums_dev, counts_dev, x_dev, u_dev, N, B, lbe, val_plan, n_dist, n_val)
+        _launch_batch_varying_x_sp2d!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, N, B, lbe, val_plan, n_dist, n_val)
     end
     _gpu_batch_download!(sums, counts, sums_dev, counts_dev)
     return (sums = sums, counts = CT === UInt32 ? counts : CT.(counts))
@@ -246,11 +256,13 @@ function _gpu_dispatch_single_pass_2d_batch!(
     B = SFC.batch_size(u)
     sums_dev = KA.adapt(backend, zeros(OT, size(sums)...))
     counts_dev = KA.adapt(backend, zeros(UInt32, size(counts)...))
+    sums_dev_flat = reshape(sums_dev, SFC.SINGLE_PASS_N, n_dist, n_val, B)
+    counts_dev_flat = reshape(counts_dev, SFC.SINGLE_PASS_N, n_dist, n_val, B)
     x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = fixed_x)
     if fixed_x
-        _launch_batch_fixed_x_sp2d!(backend, sums_dev, counts_dev, x_dev, u_dev, N, B, lbe, val_plan, n_dist, n_val)
+        _launch_batch_fixed_x_sp2d!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, N, B, lbe, val_plan, n_dist, n_val)
     else
-        _launch_batch_varying_x_sp2d!(backend, sums_dev, counts_dev, x_dev, u_dev, N, B, lbe, val_plan, n_dist, n_val)
+        _launch_batch_varying_x_sp2d!(backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, N, B, lbe, val_plan, n_dist, n_val)
     end
     tmp_s = Array(sums_dev)
     tmp_c = Array(counts_dev)
@@ -289,15 +301,17 @@ function _gpu_calculate_structure_function_2d_batch(
     sums, counts = _gpu_batch_allocate_joint2d(FT, n_dist, n_val, bdims)
     sums_dev = KA.adapt(backend, sums)
     counts_dev = KA.adapt(backend, counts)
+    sums_dev_flat = reshape(sums_dev, n_dist, n_val, B)
+    counts_dev_flat = reshape(counts_dev, n_dist, n_val, B)
     x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = fixed_x)
     if fixed_x
         _launch_batch_fixed_x_joint2d!(
-            backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N, B,
+            backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, sf_type, N, B,
             distance_bins, value_bins, n_dist, n_val,
         )
     else
         _launch_batch_varying_x_joint2d!(
-            backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N, B,
+            backend, sums_dev_flat, counts_dev_flat, x_dev, u_dev, sf_type, N, B,
             distance_bins, value_bins, n_dist, n_val,
         )
     end

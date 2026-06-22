@@ -1,269 +1,154 @@
-CUDA validation, doc-asset benchmarks, and prototype kernel research for structure-function evaluation.
-Production GPU code is in `ext/StructureFunctionsGPUExt.jl` (tiled kernels, workspace, slice batches).
+CUDA validation, benchmark entry points, and prototype notes for
+StructureFunctions.jl GPU work.
 
-**User guide:** [`docs/gpu.md`](../docs/gpu.md)  
-**Full research writeup:**
-[`GPU_structure_function_prototypes_theory.md`](GPU_structure_function_prototypes_theory.md)
+Production GPU code lives in `ext/StructureFunctionsGPUExt.jl` and `ext/gpu/`.
+General user documentation lives in [`docs/gpu.md`](../docs/gpu.md).
 
-Run benchmarks inside a GPU SLURM allocation. **Start Julia once** (precompile is expensive;
-do not spawn a fresh `julia … script.jl` process for every run).
+## File Inventory
 
-**Login node:** smoke scripts only (`diagnose_sums.jl` defaults to `N=500`). Do **not** run
-`N=20000` benchmarks or GPU work outside your allocation — SLURM may terminate the process.
+### Production CUDA Tests
 
-**Julia:** single-threaded (`julia --project=gpu` — no `-t`).
+| File | Purpose |
+|------|---------|
+| `Project.toml`, `Manifest.toml` | CUDA/benchmark environment used inside SLURM allocations. |
+| `run.jl` | `include_gpu(...)` helper for pwd-independent script loading. |
+| `runtests.jl` | CUDA test entry point; includes CUDA parity and workspace tests. |
+| `test_cuda_parity.jl` | CUDA parity for 1D distance bins, joint 2D bins, and six-invariant SP2D. |
+| `test_workspace_cuda.jl` | CUDA workspace reuse and slice-batch parity. |
+| `smoke_cuda.jl` | Fast manual CUDA smoke test for allocation, launch, download, and public `GPUBackend` API. |
 
-### Load scripts (pwd-independent)
+### Maintained Benchmarks And Asset Scripts
 
-Load once per REPL session:
+| File | Purpose |
+|------|---------|
+| `benchmark_suite.jl` | Maintained performance-gate runner for 1D, joint2D, SP2D, auxiliary-axis routes, workspace reuse, and structured JSON output. |
+| `benchmark_cuda.jl` | Simple production GPU vs threaded CPU timing at one `N`. |
+| `benchmark_2d_grid_scaling.jl` | SP2D vs repeated joint2D gate for selected `(n_dist, n_val)`. |
+| `benchmark_single_pass_2d_scaling.jl` | Single-pass 2D scaling sweep. |
+| `benchmark_value_axis_dispatch.jl` | SP2D value-bin digitize route comparison. |
+| `benchmark_workspace.jl` | Workspace reuse timing. |
+| `benchmark_slices.jl` | Slice-batch driver timing. |
+| `benchmark_batch_matrix.jl` | Current auxiliary-axis batch matrix benchmark. |
+| `benchmark_scaling_helpers.jl` | Shared timing helpers for maintained benchmark and asset scripts. |
+| `collect_benchmark_assets.jl` | Generates `gpu/benchmark_results/assets_latest.json` for docs/README figures. |
+| `collect_multi_gpu_scaling.jl` | Future multi-GPU scaling collector; retained as a maintained placeholder. |
+| `plot_cuda_parity.jl` | Optional docs parity figure, run under CUDA allocation. |
+
+### Diagnostics And Profiling Helpers
+
+| File | Purpose |
+|------|---------|
+| `diagnose_sums.jl`, `diagnose_counts.jl`, `diagnose_reconcile.jl` | Manual correctness diagnostics for sums/counts and route reconciliation. |
+| `benchmark_joint2d_diagnose.jl`, `benchmark_joint_value_route_ab.jl` | Focused joint2D route diagnostics. |
+| `profile_joint2d.jl`, `profile_joint2d_ncu.jl` | Nsight profiling workloads. |
+| `run_nsys_joint2d.sh`, `run_ncu_joint2d.sh`, `diag_ncu_julia.sh`, `list_joint2d_kernel_names.sh` | Nsight wrapper and inspection scripts. |
+| `NCU_JULIA.md` | Notes for working Nsight Compute commands on the cluster. |
+| `prove_f32_accumulation.jl` | Manual proof/check script for Float32 accumulation behavior. |
+
+### Prototype / Archive Candidates
+
+These files are not production API. Keep them only while they are actively useful for
+porting or benchmarking a maintained route; otherwise move them under an archive or
+delete them.
+
+| File | Current status |
+|------|----------------|
+| `archive/GPUPrototypeKernels.jl` | Historical prototype kernel collection. |
+| `archive/benchmark_prototypes.jl`, `archive/gpu_full_benchmark.jl`, `archive/benchmark_helpers.jl` | Prototype benchmark harness and generated-report machinery. |
+| `archive/benchmark_batch_optimal.jl`, `archive/benchmark_batch_usmem.jl`, `archive/benchmark_batch_diagnose.jl`, `archive/benchmark_batch_profile_fixed_x.jl`, `archive/benchmark_batch_accum_toy.jl`, `archive/benchmark_batch_prototypes.jl` | Batch prototype/diagnostic scripts retained only as historical references. |
+| `archive/batch_prototypes/` | Prototype package for batch experiments; not part of production dispatch. |
+
+### Documentation And Generated Outputs
+
+| Path | Purpose |
+|------|---------|
+| `SP2D_HTP_EJ.md` | Current six-invariant SP2D HTP-EJ strategy document. |
+| `GPU_2d_joint_sf_plan.md` | Joint 2D implementation status and follow-up notes. |
+| `BATCH_ACCUM_POLICY.md`, `FIXED_GEOMETRY_BATCH_BENCHMARK.md` | Batch design notes; still need cleanup against current dispatch terminology. |
+| `GPU_structure_function_prototypes_theory.md` | Historical prototype research notes. |
+| `benchmark_results/README.md` | Describes generated benchmark output policy. |
+| `benchmark_results/assets_latest.json` | Generated docs asset snapshot. Regenerate intentionally; do not commit profiler dumps or local run logs. |
+
+## CUDA Validation On Slurm
+
+CUDA is not run by default CI for this repository. Before trusting GPU changes, run this
+inside a GPU allocation:
+
+```bash
+srun --gres=gpu:1 --time=06:00:00 --pty bash
+julia --project=gpu -e 'include("gpu/runtests.jl")'
+```
+
+Expected result after the array-only public API cleanup:
+
+```text
+Test Summary:          | Pass  Total
+StructureFunctions GPU |   24     24
+GPU tests passed.
+```
+
+For a faster manual smoke before the full CUDA testset:
+
+```bash
+julia --project=gpu gpu/smoke_cuda.jl
+```
+
+## Running Scripts
+
+Start Julia once inside the allocation. Precompile is expensive; do not spawn a fresh
+`julia script.jl` process for every benchmark.
 
 ```julia
 using Pkg: pkgdir
 using StructureFunctions: StructureFunctions
 include(joinpath(pkgdir(StructureFunctions), "gpu", "run.jl"))
-```
 
-Then run any gpu script regardless of `pwd`:
-
-```julia
-include_gpu("diagnose_sums.jl")        # CPU smoke (N=500 default)
-include_gpu("diagnose_reconcile.jl")   # SLURM: Float64 reference + per-worker diff
-include_gpu("diagnose_counts.jl")      # GPU counts — SLURM only
-include_gpu("benchmark_prototypes.jl")
+include_gpu("smoke_cuda.jl")
+include_gpu("test_cuda_parity.jl")
+include_gpu("test_workspace_cuda.jl")
+include_gpu("benchmark_suite.jl")
 include_gpu("benchmark_cuda.jl")
-include_gpu("gpu_full_benchmark.jl")
+include_gpu("benchmark_2d_grid_scaling.jl")
+include_gpu("benchmark_workspace.jl")
 ```
 
-Large benchmarks (e.g. `ENV["N"] = "20000"`) only inside your SLURM allocation.
+Large benchmarks, profiling helpers, and any script that allocates CUDA arrays must run
+inside the SLURM allocation. Re-`include` is cheap; restarting Julia is not.
 
-### Absolute path (alternative)
+The maintained benchmark command for release checks is:
 
-```julia
-SF_REPO = "/path/to/StructureFunctions.jl"
-include(joinpath(SF_REPO, "gpu", "run.jl"))
-include_gpu("benchmark_prototypes.jl")
+```bash
+julia --project=gpu gpu/benchmark_suite.jl
 ```
 
-Examples:
+It writes `gpu/benchmark_results/benchmark_suite_latest.json` plus a timestamped copy
+and prints these ratios:
 
-```julia
-ENV["N"] = "20000"
-include(joinpath(SF_REPO, "gpu", "benchmark_prototypes.jl"))
+- fresh allocation vs workspace reuse;
+- `6 * joint2D` vs six-invariant SP2D;
+- explicit per-slice loops vs fused shared-position auxiliary axes;
+- explicit per-slice loops vs fused varying-position auxiliary axes.
 
-ENV["SKIP_CPU"] = "1"
-include(joinpath(SF_REPO, "gpu", "gpu_full_benchmark.jl"))
-```
+Use `BENCH_BACKEND=kacpu` only as a smoke test that the benchmark still runs. Treat
+performance ratios as meaningful only under CUDA allocation and representative `N/BATCH`.
 
-`-t 2` matches your SLURM `--cpus-per-task`. Re-`include` is cheap; restarting `julia` is not.
+## Current Output Contracts
 
-| File | Role |
-|------|------|
-| **`GPU_structure_function_prototypes_theory.md`** | **Hand-written theory + benchmark log (read this first)** |
-| **`SP2D_HTP_EJ.md`** | **Eight-type single-pass 2D: HTP-EJ policy, on-chip vs direct, perf notes** |
-| `benchmark_2d_grid_scaling.jl` | SP2D vs `8×joint_2d` gate on GPU (`N_DIST`, `N_VAL` env) |
-| `benchmark_joint_value_route_ab.jl` | Joint 2D A/B: `inflinear` vs `general` value digitize on full kernel |
-| `profile_joint2d.jl` | Joint 2D profiling workload (timing + Nsight target) |
-| `run_nsys_joint2d.sh` | Wrap `profile_joint2d.jl` with `nsys profile` |
-| `profile_joint2d_ncu.jl` | Kernel-only launches for Nsight Compute |
-| `run_ncu_joint2d.sh` | `ncu --set basic --target-processes all julia …` + demangled sf2d filter; see `NCU_TO_STDOUT=1` |
-| `diag_ncu_julia.sh` | Smoke: CUDA broadcast then joint2d via `run_ncu_joint2d.sh` |
-| `NCU_JULIA.md` | Working ncu+julia command on clima; notes on earlier bad diagnostics |
-| `list_joint2d_kernel_names.sh` | `nsys stats` kernel names (use when ncu headless works) |
-| `benchmark_joint2d_diagnose.jl` | Kernel-only vs e2e, swapped A/B, exact vs max compile_cells |
-| `benchmark_value_axis_dispatch.jl` | SP2D value-plan shootout (`vector_cols` vs typed plans) |
+GPU public inputs follow the same array shape contract as CPU:
 
-**Joint 2D workspace:** build with the same typed `value_bins` object you pass to
-`gpu_calculate_structure_function_2d` (e.g. `InfPaddedBinEdges`). Do not pass
-`_gpu_host_edge_vector(...)` unless you intentionally want the `:general` digitize route.
-| `GPUPrototypeKernels.jl` | Prototype kernels + launch helpers |
-| `benchmark_prototypes.jl` | Single-N timing table, parity checks, vs production ext |
-| `gpu_full_benchmark.jl` | **Full sweep** (multi-N, all variants, JSON + markdown report) |
-| `benchmark_helpers.jl` | Shared timing/parity helpers for benchmark scripts |
-| `diagnose_counts.jl` | **CPU gold vs GPU paths** — run before trusting any kernel |
-| `benchmark_cuda.jl` | Simple production-ext vs CPU threading comparison |
-| `GPU_timings_and_theory.md` | Auto-generated report from `gpu_full_benchmark.jl` |
-| `runtests.jl` / `test_cuda_parity.jl` / `test_workspace_cuda.jl` | Tier-2 CUDA parity (not in default `Pkg.test()`) |
-| `collect_benchmark_assets.jl` | Doc/README scaling JSON (`assets_latest.json`) |
-| `open_issues.md` | Follow-ups before operationalizing |
+- point field: `x::(D,N)`, `u::(D,N)`;
+- shared positions: `x::(D,N)`, `u::(D,N, auxiliary...)`;
+- varying positions: `x::(D,N, auxiliary...)`, `u::(D,N, auxiliary...)`;
+- `D` is `size(x, 1)`, not `ndims(x)`.
 
----
+Six-invariant single-pass 2D returns rows:
 
-## What we are computing
+1. `S2 = |delta u|^2`
+2. `L2 = delta u_L^2`
+3. `T2 = |delta u_T|^2`
+4. `S3 = delta u_L |delta u|^2`
+5. `L3 = delta u_L^3`
+6. `LT2 = delta u_L |delta u_T|^2`
 
-For `N` points, all unordered pairs `(i, j)` with `i < j` (~`N(N-1)/2` pairs):
-
-1. Separation `dist = ‖x_j - x_i‖`
-2. Bin index from `dist` (linear / log / general — prototype: **linear only**)
-3. Structure-function sample `val = sf_type(u_j - u_i, r̂)`
-4. Accumulate into histogram: `sums[bin] += val`, `counts[bin] += 1`
-
-The output is a **histogram with ~20 bins**, not `N²` outputs.
-
----
-
-## Why the production kernel is slow
-
-`StructureFunctionsGPUExt.jl` today launches `ndrange = (N, N)` and, for each valid
-pair, does per-pair global `@atomic` updates into ~20 bin slots — ~**200M contended
-atomics** at `N = 20k` (~**0.097 s** on A100).
-
-**Correctness (N=20k diagnosis):** global Float32 per-pair atomics **lose ~42M** counts
-(Σcounts ≈ 152M vs true in-bin ≈ 194M) when hot bins exceed Float32 integer precision.
-**UInt32 global** (`baseline_linear_global_u32`) fixes counts with the same slow algorithm.
-**blockshared** (~8× faster) also correct via chunked merge.
-Run `benchmark_prototypes.jl` for timed Float32 vs UInt32 vs blockshared rows.
-
-Production fix: UInt32 counts and/or block-local histogram — not keep global Float32 atomics.
-
----
-
-## Candidate fast path: `blockshared_256k_w256`
-
-**Status:** fastest **proven** prototype at `N = 20k` (~**0.012 s** kernel). New candidates
-below target memory bandwidth / atomic overhead — **benchmark in SLURM** before claiming faster.
-
-### Why 0.012 s is not the end
-
-The current kernel still, for **every pair**:
-
-1. Decodes `k → (i,j)` via **binary search** (15+ steps)
-2. Loads `x[i], x[j], u[i], u[j]` from **global memory at random indices** (no reuse)
-
-The jump **0.097 → 0.012** came from **block-local histograms** (fewer global atomics). The next
-jump is **tiling** (reuse loaded points) — standard for GPU pair histograms:
-
-- [CADISHI](https://doi.org/10.1016/j.cpc.2018.10.018) — tile particles into shared memory; **~40× vs CPU** on GPU
-- [Pitaksirianan et al. DAPD 2019](https://cse.usf.edu/~tuy/pub/DAPD19.pdf) — 2-body statistics tiling + warp privatization
-
-### Tiled sweep (`prototype_variants` → 17 configs)
-
-All use CADISHI-style upper-triangle tile blocking, **UInt32** counts, and launch
-`ndrange = n_tile_blocks × workgroup_size`. Names encode flags:
-
-| Suffix | Meaning |
-|--------|---------|
-| `tiled64` / `tiled128` | Tile edge length (points per tile side) |
-| `regpriv` | Register partial histogram per thread before shared merge (**blockshared/private only**; tiled `regpriv` uses shared atomics — `MVector` spills on CUDA in tile kernels) |
-| `nosqrt` | Bin from `dist²` via `_gpu_digitize_linear_sq` (sqrt only for `r̂`) |
-| `2d` | 2D distance / `r̂` on `(x,y)` only — **not parity vs 3D-padded CPU gold** |
-| `w256` / `w128` | CUDA block size |
-
-Generated combinations (plus `tiled64_w128_u32`):
-
-- `tiled{64,128}[_regpriv][_nosqrt][_2d]_u32_w256` — full 2×2×2×2 grid per tile size
-- `tiled64_w128_u32` — best base kernel at `workgroup_size=128`
-
-**Proven at N=20k (A100):** `tiled64_u32_w256` ≈ **0.0064 s** kernel (Δcnt=0, sums vs f64 ref).
-
-### Idea in one sentence
-
-Each CUDA **thread block** keeps its own small histogram in **fast shared memory**;
-only after the block finishes all its pairs does it merge once per bin into global memory.
-
-### Three phases (per thread block)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Phase 1 — init shared histogram (one thread zeros bins)   │
-│    shared_sums[1:NB], shared_cnts[1:NB]  in @localmem       │
-├─────────────────────────────────────────────────────────────┤
-│  Phase 2 — grid-stride over pair indices                    │
-│    each thread: pair_idx, pair_idx + stride, ...            │
-│      → decode k → (i,j)                                     │
-│      → dist, bin, val                                       │
-│      → @atomic shared_sums[bin] += val   (block-local)      │
-├─────────────────────────────────────────────────────────────┤
-│  Phase 3 — flush block histogram to global (once per bin)   │
-│    threads cooperatively: @atomic output[b] += shared_sums[b]│
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Global atomics drop** from ~400M (sum + count per pair) to roughly
-`nblocks × NB` (~262k × 20 at default launch config).
-
-### Pair loop (not `(N,N)`)
-
-Pairs are indexed linearly `k = 1 … N(N-1)/2` and mapped with **integer binary search**
-(`_pair_from_linear` in `GPUPrototypeKernels.jl`). A grid-stride loop assigns work:
-
-```julia
-pair_idx = (block_id - 1) * workgroup_size + thread_id
-while pair_idx <= total_pairs
-    # process pair pair_idx
-    pair_idx += nblocks * workgroup_size
-end
-```
-
-Default launch (see `prototype_variants`):
-
-- `nworkers = min(262_144, total_pairs)`
-- `workgroup_size = 256`
-- `ndrange = nblocks * workgroup_size`
-
-### Code location
-
-Kernel: `_proto_blockshared_linear!` in `GPUPrototypeKernels.jl`.
-
----
-
-## Other prototype variants (for comparison)
-
-| Variant | Accumulation | Notes |
-|---------|--------------|-------|
-| `baseline_grid_N2` | Global atomic, `(N,N)` grid | Mirrors production ext |
-| `baseline_linear_global` | Global atomic, grid-stride pairs | Timing baseline |
-| `private_*` | Register histogram per **grid worker**, then global atomic | OK but slower than blockshared at 256k workers; register pressure if mis-tuned |
-| `blockshared_*` | **Shared mem per block** | **Canonical fast path** |
-| `baseline_linear_global_u32` | Global atomic, **UInt32 counts** | Same speed class as Float32 global; **exact Σcounts** |
-| `blockshared_256k_w256_u32` | Blockshared + **UInt32 counts** | Timed vs Float32 blockshared |
-| `private_*_device_resident` | Same as private, reuse device buffers | Staging win for repeated calls |
-
----
-
-## Interpreting `benchmark_prototypes.jl`
-
-| Column | Meaning |
-|--------|---------|
-| `cnt` | Device count storage: **`u32`** (integer atomics) or **`f32`** (Float32 — lossy at large N) |
-| `Δcnt` | `Σcounts − CPU gold` (exact pass requires **0**) |
-| `max\|Δsum\|` | Largest per-bin SF sum error vs serial CPU gold |
-| `parity` | **`ok`** only if per-bin counts **exact** and sums within rtol=1e-4, atol=500 vs gold |
-
-Float32-count paths (`cnt=f32`) fail strict parity by design except at small N.
-
----
-
-## Full multi-N benchmark (`gpu_full_benchmark.jl`)
-
-Like `src/BinEdges_benchmarking.jl` + `src/BinEdges_timings_and_theory.md` on CPU,
-this script sweeps several `N` values, runs **every** prototype variant, times production
-`gpu_calculate_structure_function`, optionally threaded CPU, and writes:
-
-- `gpu/benchmark_results/gpu_full_<timestamp>.json`
-- `gpu/benchmark_results/gpu_full_latest.json`
-- `gpu/GPU_timings_and_theory.md` (regenerated results section)
-
-```julia
-SF_REPO = "/path/to/StructureFunctions.jl"
-inc(f) = include(joinpath(SF_REPO, "gpu", f))
-
-inc("gpu_full_benchmark.jl")
-
-ENV["QUICK"] = "1"
-ENV["N"] = "20000"
-inc("gpu_full_benchmark.jl")
-
-ENV["N_LIST"] = "4000,10000,20000"
-ENV["SKIP_CPU"] = "1"
-inc("gpu_full_benchmark.jl")
-```
-
-(`cd` to `SF_REPO` and `include("gpu/gpu_full_benchmark.jl")` also works — see top of this file.)
-
----
-
-## Next step for production
-
-See **`GPU_structure_function_prototypes_theory.md` §9** for integration target
-(`tiled128` + 2D distance + UInt32 counts). Port into `StructureFunctionsGPUExt.jl`
-for linear bins (then log / general). See `open_issues.md` for checklist.
+Basis-dependent component diagnostics such as `T3SF` and `L2T1SF` are not part of
+the default single-pass output.
