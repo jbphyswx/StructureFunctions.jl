@@ -1,4 +1,4 @@
-CUDA validation, benchmark entry points, and prototype notes for
+CUDA validation, benchmark entry points, and profiling helpers for
 StructureFunctions.jl GPU work.
 
 Production GPU code lives in `ext/StructureFunctionsGPUExt.jl` and `ext/gpu/`.
@@ -34,29 +34,14 @@ General user documentation lives in [`docs/gpu.md`](../docs/gpu.md).
 | `collect_multi_gpu_scaling.jl` | Future multi-GPU scaling collector; retained as a maintained placeholder. |
 | `plot_cuda_parity.jl` | Optional docs parity figure, run under CUDA allocation. |
 
-### Diagnostics And Profiling Helpers
+### Profiling Helpers
 
 | File | Purpose |
 |------|---------|
-| `diagnose_sums.jl`, `diagnose_counts.jl`, `diagnose_reconcile.jl` | Manual correctness diagnostics for sums/counts and route reconciliation. |
 | `benchmark_joint2d_diagnose.jl`, `benchmark_joint_value_route_ab.jl` | Focused joint2D route diagnostics. |
 | `profile_joint2d.jl`, `profile_joint2d_ncu.jl` | Nsight profiling workloads. |
 | `run_nsys_joint2d.sh`, `run_ncu_joint2d.sh`, `diag_ncu_julia.sh`, `list_joint2d_kernel_names.sh` | Nsight wrapper and inspection scripts. |
 | `NCU_JULIA.md` | Notes for working Nsight Compute commands on the cluster. |
-| `prove_f32_accumulation.jl` | Manual proof/check script for Float32 accumulation behavior. |
-
-### Prototype / Archive Candidates
-
-These files are not production API. Keep them only while they are actively useful for
-porting or benchmarking a maintained route; otherwise move them under an archive or
-delete them.
-
-| File | Current status |
-|------|----------------|
-| `archive/GPUPrototypeKernels.jl` | Historical prototype kernel collection. |
-| `archive/benchmark_prototypes.jl`, `archive/gpu_full_benchmark.jl`, `archive/benchmark_helpers.jl` | Prototype benchmark harness and generated-report machinery. |
-| `archive/benchmark_batch_optimal.jl`, `archive/benchmark_batch_usmem.jl`, `archive/benchmark_batch_diagnose.jl`, `archive/benchmark_batch_profile_fixed_x.jl`, `archive/benchmark_batch_accum_toy.jl`, `archive/benchmark_batch_prototypes.jl` | Batch prototype/diagnostic scripts retained only as historical references. |
-| `archive/batch_prototypes/` | Prototype package for batch experiments; not part of production dispatch. |
 
 ### Documentation And Generated Outputs
 
@@ -64,8 +49,6 @@ delete them.
 |------|---------|
 | `SP2D_HTP_EJ.md` | Current six-invariant SP2D HTP-EJ strategy document. |
 | `GPU_2d_joint_sf_plan.md` | Joint 2D implementation status and follow-up notes. |
-| `BATCH_ACCUM_POLICY.md`, `FIXED_GEOMETRY_BATCH_BENCHMARK.md` | Batch design notes; still need cleanup against current dispatch terminology. |
-| `GPU_structure_function_prototypes_theory.md` | Historical prototype research notes. |
 | `benchmark_results/README.md` | Describes generated benchmark output policy. |
 | `benchmark_results/assets_latest.json` | Generated docs asset snapshot. Regenerate intentionally; do not commit profiler dumps or local run logs. |
 

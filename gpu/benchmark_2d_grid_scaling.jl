@@ -116,7 +116,7 @@ function main()
         1_000t_joint_exact, compile_exact, NB2,
     )
 
-    # --- single-type joint 2D: max smem (legacy 4096) ---
+    # --- single-type joint 2D: max smem compile width ---
     ws_j_max = SFC.GPUSFWorkspace(
         backend, dist, value_bins;
         kind = :joint2d, joint2d_compile_cells = joint2d_smem_max(),

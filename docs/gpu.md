@@ -5,7 +5,7 @@ StructureFunctions.jl provides GPU structure-function kernels via
 This guide covers production APIs: single snapshots, workspace reuse, and time-slice batches.
 
 For backend selection across serial / threaded / distributed / GPU, see [backends.md](backends.md).
-For prototype kernel research and SLURM benchmark scripts, see [`gpu/README.md`](../gpu/README.md).
+For CUDA validation and SLURM benchmark scripts, see [`gpu/README.md`](../gpu/README.md).
 
 ## When to use the GPU
 
@@ -209,4 +209,3 @@ Produces `docs/src/assets/sf_gpu_parity.png`.
 
 - [backends.md — GPUBackend](backends.md#gpubackend)
 - [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md) — six-invariant-type single-pass 2D (HTP-EJ)
-- [`gpu/GPU_structure_function_prototypes_theory.md`](../gpu/GPU_structure_function_prototypes_theory.md)
