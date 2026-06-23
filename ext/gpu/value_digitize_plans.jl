@@ -58,10 +58,20 @@ struct GPUValueLogLinearCols{T}
     step::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
 end
 
-"""Plain `Vector` value columns: binary search on `(n_edges, 6)` edge matrix."""
-struct GPUValueVectorCols{T}
-    edges_dev
+"""Plain `Vector` value columns: binary search on `(n_edges, 6)` edge matrix.
+`edges_dev` is typed (param `E`) so the struct is isbits-after-adapt and can be
+passed to a GPU kernel; the `adapt_structure` rule below converts the device
+edge matrix to its in-kernel form when KA adapts kernel arguments."""
+struct GPUValueVectorCols{T, E}
+    edges_dev::E
 end
+
+# Keep the existing 1-type-param constructor calls working (E inferred).
+GPUValueVectorCols{T}(edges_dev::E) where {T, E} = GPUValueVectorCols{T, E}(edges_dev)
+
+# Make KA's argument adaptation recurse into the device edge matrix.
+KA.Adapt.adapt_structure(to, p::GPUValueVectorCols{T}) where {T} =
+    GPUValueVectorCols{T}(KA.Adapt.adapt(to, p.edges_dev))
 
 const GPUValueDigitizePlan = Union{
     GPUValueLinearShared,
@@ -288,3 +298,106 @@ function _validate_gpu_value_bins!(value_bins, n_val::Int)
     end
     return nothing
 end
+
+@inline function _gpu_digitize_value_plan(
+    x,
+    plan::GPUValueLinearShared,
+    col::Int,
+    n_edges::Int,
+)
+    return _gpu_digitize_linear(
+        x, plan.first, plan.last, plan.inv_step, plan.offset, plan.step, n_edges,
+    )
+end
+
+@inline function _gpu_digitize_value_plan(
+    x,
+    plan::GPUValueLinearCols,
+    col::Int,
+    n_edges::Int,
+)
+    return _gpu_digitize_linear(
+        x,
+        plan.first[col],
+        plan.last[col],
+        plan.inv_step[col],
+        plan.offset[col],
+        plan.step[col],
+        n_edges,
+    )
+end
+
+@inline function _gpu_digitize_value_plan(
+    x,
+    plan::GPUValueInfLinearShared,
+    col::Int,
+    n_edges::Int,
+)
+    return _gpu_digitize_inf_padded_linear(
+        x,
+        plan.first,
+        plan.last,
+        plan.inv_step,
+        plan.offset,
+        plan.step,
+        plan.n_inner_edges,
+        plan.inner_last,
+    )
+end
+
+@inline function _gpu_digitize_value_plan(
+    x,
+    plan::GPUValueInfLinearCols,
+    col::Int,
+    n_edges::Int,
+)
+    return _gpu_digitize_inf_padded_linear(
+        x,
+        plan.first[col],
+        plan.last[col],
+        plan.inv_step[col],
+        plan.offset[col],
+        plan.step[col],
+        plan.n_inner_edges,
+        plan.inner_last[col],
+    )
+end
+
+@inline function _gpu_digitize_value_plan(
+    x,
+    plan::GPUValueLogLinearShared,
+    col::Int,
+    n_edges::Int,
+)
+    return _gpu_digitize_log_spaced(
+        x, plan.first, plan.last, plan.inv_step, plan.offset, plan.step, n_edges,
+    )
+end
+
+@inline function _gpu_digitize_value_plan(
+    x,
+    plan::GPUValueLogLinearCols,
+    col::Int,
+    n_edges::Int,
+)
+    return _gpu_digitize_log_spaced_col(
+        x,
+        plan.first,
+        plan.last,
+        plan.inv_step,
+        plan.offset,
+        plan.step,
+        col,
+        n_edges,
+    )
+end
+
+@inline function _gpu_digitize_value_plan(
+    x,
+    plan::GPUValueVectorCols,
+    col::Int,
+    n_edges::Int,
+)
+    return _gpu_digitize_general_col(x, plan.edges_dev, col, n_edges)
+end
+

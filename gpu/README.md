@@ -29,6 +29,7 @@ General user documentation lives in [`docs/gpu.md`](../docs/gpu.md).
 | `benchmark_workspace.jl` | Workspace reuse timing. |
 | `benchmark_slices.jl` | Slice-batch driver timing. |
 | `benchmark_batch_matrix.jl` | Current auxiliary-axis batch matrix benchmark. |
+| `benchmark_batch_breakdown.jl` | Phase timing for batch fixed-x (kernel vs merge vs adapt vs download). |
 | `benchmark_scaling_helpers.jl` | Shared timing helpers for maintained benchmark and asset scripts. |
 | `collect_benchmark_assets.jl` | Generates `gpu/benchmark_results/assets_latest.json` for docs/README figures. |
 | `collect_multi_gpu_scaling.jl` | Future multi-GPU scaling collector; retained as a maintained placeholder. |
@@ -114,6 +115,92 @@ and prints these ratios:
 
 Use `BENCH_BACKEND=kacpu` only as a smoke test that the benchmark still runs. Treat
 performance ratios as meaningful only under CUDA allocation and representative `N/BATCH`.
+
+For the large auxiliary-axis matrix runs, load `benchmark_batch_matrix.jl` once and
+call `run_batch_matrix_benchmark` directly:
+
+```julia
+include_gpu("benchmark_batch_matrix.jl")
+
+# N=20_000, B=8064, 16 distance bins, 8 value bins.
+run_batch_matrix_benchmark(profile = :reference, allow_slow = true)
+
+# Same long auxiliary run with 20 x 20 distance/value bins.
+run_batch_matrix_benchmark(profile = :reference, allow_slow = true, n_dist = 20, n_val = 20)
+
+# Same long auxiliary run with 50 x 50 distance/value bins.
+run_batch_matrix_benchmark(profile = :reference, allow_slow = true, n_dist = 50, n_val = 50)
+```
+
+The default reference cases run the fixed-position batch routes, the individual
+varying-position GPU-slice route, and an eight-slice explicit GPU baseline sample.
+They also run sampled varying-position SP1D/SP2D routes and extrapolate to full `B`.
+The full varying-position SP1D/SP2D routes are intentionally opt-in because they can
+take many minutes at `N=20_000`, `B=8064`. Add those cases explicitly only when you
+mean to measure the full route:
+
+```julia
+run_batch_matrix_benchmark(
+    profile = :reference,
+    allow_slow = true,
+    cases = (:sp1d_varying_gpu_sample, :sp2d_varying_gpu_sample),
+)
+
+run_batch_matrix_benchmark(
+    profile = :reference,
+    allow_slow = true,
+    cases = (:sp1d_varying, :sp2d_varying),  # full B, expected to be slow
+)
+```
+
+For an exact all-slice explicit GPU baseline, include `:individual_fixed_gpu_full`.
+The shell `PROFILE=... ALLOW_SLOW=1` wrapper still exists for batch scripts, but the
+REPL function is the maintained interface.
+
+To diagnose varying-position performance, compare the public varying route against
+an explicit loop over the optimized point-field GPU route:
+
+```julia
+run_batch_matrix_benchmark(
+    profile = :reference,
+    allow_slow = true,
+    B = 80,
+    explicit_samples = 8,
+    cases = (
+        :individual_varying,
+        :individual_varying_explicit_gpu_sample,
+        :sp1d_varying_gpu_sample,
+        :sp1d_varying_explicit_gpu_sample,
+        :sp2d_varying_gpu_sample,
+        :sp2d_varying_explicit_gpu_sample,
+    ),
+)
+```
+
+If the explicit optimized loop is faster, the fused varying-position route should be
+replaced or redesigned. If both are slow, investigate the point-field route,
+workspace reuse, and device-view staging first.
+
+## A100 performance gates (`profile = :reference`)
+
+Run on a GPU node after batch-kernel changes:
+
+```bash
+julia --project=gpu -e 'include("gpu/benchmark_batch_matrix.jl");
+    run_batch_matrix_benchmark(profile=:reference, allow_slow=true)'
+nsys profile -o batch_fixed_x --trace=cuda,nvtx --force-overwrite=true \
+    julia --project=gpu gpu/profile_batch_fixed_x.jl
+nsys stats --force-export=true --report cuda_gpu_kern_sum batch_fixed_x.nsys-rep
+```
+
+Dev timing split: `gpu/benchmark_batch_breakdown.jl`. Working notes: `gpu/benchmark_results/`.
+
+| Gate | Target |
+|------|--------|
+| `N=20_000`, `B=8064`, `individual_fixed` | beat explicit slice extrapolation; stretch < 10 s hot launch |
+| `workspace_speedup`, `sp2d_vs_6x_joint2d` | > 1.0× (open) |
+
+Record logs under `gpu/benchmark_results/`.
 
 ## Current Output Contracts
 

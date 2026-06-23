@@ -1412,6 +1412,67 @@ function _launch_single_pass_2d!(
 end
 # Production batch launch drivers — fixed-x and varying-x.
 # Included from StructureFunctionsGPUExt.jl after BatchTiledKernels.jl.
+#
+# Fixed-x launch invariant (do not regress):
+# - `ndrange = n_tile_blocks * workgroup_size` only — never multiply by `cld(B, strip_w)`.
+# - Host strip loop over `BATCH_USMEM_STRIP_W` (16) via `_batch_fixed_x_usmem_priv!`.
+# - `KA.CPU`: serial merge; other backends: grouped merge. Same kernel on both.
+# - Varying-x routes use `(tile, auxiliary)` grid scaling (`ndrange * B`), not host strips.
+
+function _launch_batch_fixed_x_sf!(
+    backend::KA.CPU,
+    sums_dev,
+    counts_dev,
+    x_dev,
+    u_dev,
+    sf_type,
+    N::Int,
+    B::Int,
+    lbe::LinearBinEdges{FT};
+    workspace::Union{GPUBatchWorkspace{FT}, Nothing} = nothing,
+) where {FT}
+    n_bins = length(lbe.edges)
+    NB = n_bins - 1
+    NB > SF_GPU_MAX_BINS &&
+        error("batch tiled128 supports at most $SF_GPU_MAX_BINS bins (got NB=$NB)")
+    n_tiles, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
+    n_priv = _batch_usmem_n_priv(n_tile_blocks)
+    fe, le, is_, off, sv = lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val
+    kernel! = _batch_fixed_x_sf_kernel(backend, ws)
+    merge_sums! = _batch_merge_usmem_sums!(backend, ws)
+    merge_cnts! = _batch_merge_usmem_cnts!(backend, ws)
+    partial_sums = KA.zeros(backend, FT, NB, BATCH_USMEM_STRIP_W, n_priv)
+    partial_cnts = KA.zeros(backend, UInt32, NB, n_priv)
+    b_base = 1
+    while b_base <= B
+        bw = min(BATCH_USMEM_STRIP_W, B - b_base + 1)
+        fill!(partial_sums, zero(FT))
+        fill!(partial_cnts, zero(UInt32))
+        kernel!(
+            partial_sums, partial_cnts, x_dev, u_dev, sf_type,
+            N, n_bins, NB, b_base, bw, fe, le, is_, off, sv,
+            n_tiles, n_tile_blocks, ws;
+            ndrange = ndrange,
+        )
+        merge_sums!(
+            @view(sums_dev[:, b_base:b_base + bw - 1]), partial_sums,
+            NB, bw, n_priv, NB * bw;
+            ndrange = NB * bw,
+        )
+        if b_base == 1
+            merge_cnts!(
+                @view(counts_dev[:, 1]), partial_cnts, NB, n_priv, NB;
+                ndrange = NB,
+            )
+        end
+        b_base += bw
+    end
+    if B > 1
+        counts_dev[:, 2:end] .= @view counts_dev[:, 1]
+    end
+    KA.synchronize(backend)
+    return nothing
+end
 
 function _launch_batch_fixed_x_sf!(
     backend::KA.Backend,
@@ -1430,15 +1491,18 @@ function _launch_batch_fixed_x_sf!(
     NB > SF_GPU_MAX_BINS &&
         error("batch tiled128 supports at most $SF_GPU_MAX_BINS bins (got NB=$NB)")
     n_tiles, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
+    n_priv = _batch_usmem_n_priv(n_tile_blocks)
     fe, le, is_, off, sv = lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val
-    kernel! = _batch_fixed_x_usmem_priv!(backend, ws)
-    merge_sums! = _batch_merge_usmem_sums!(backend, ws)
-    merge_cnts! = _batch_merge_usmem_cnts!(backend, ws)
-    partial_sums = KA.zeros(backend, FT, NB, BATCH_USMEM_STRIP_W, n_tile_blocks)
-    partial_cnts = KA.zeros(backend, UInt32, NB, n_tile_blocks)
+    kernel! = _batch_fixed_x_sf_kernel(backend, ws)
+    merge_sums! = _batch_merge_usmem_sums_grouped!(backend, ws)
+    merge_cnts! = _batch_merge_usmem_cnts_grouped!(backend, ws)
+    partial_sums = KA.zeros(backend, FT, NB, BATCH_USMEM_STRIP_W, n_priv)
+    partial_cnts = KA.zeros(backend, UInt32, NB, n_priv)
     b_base = 1
     while b_base <= B
         bw = min(BATCH_USMEM_STRIP_W, B - b_base + 1)
+        fill!(partial_sums, zero(FT))
+        fill!(partial_cnts, zero(UInt32))
         kernel!(
             partial_sums, partial_cnts, x_dev, u_dev, sf_type,
             N, n_bins, NB, b_base, bw, fe, le, is_, off, sv,
@@ -1447,13 +1511,13 @@ function _launch_batch_fixed_x_sf!(
         )
         merge_sums!(
             @view(sums_dev[:, b_base:b_base + bw - 1]), partial_sums,
-            NB, bw, n_tile_blocks, NB * bw;
-            ndrange = NB * bw,
+            NB, bw, n_priv, ws;
+            ndrange = NB * bw * ws,
         )
         if b_base == 1
             merge_cnts!(
-                @view(counts_dev[:, 1]), partial_cnts, NB, n_tile_blocks, NB;
-                ndrange = NB,
+                @view(counts_dev[:, 1]), partial_cnts, NB, n_priv, ws;
+                ndrange = NB * ws,
             )
         end
         b_base += bw
@@ -1466,7 +1530,7 @@ function _launch_batch_fixed_x_sf!(
 end
 
 function _launch_batch_fixed_x_sp1d!(
-    backend::KA.Backend,
+    backend::KA.CPU,
     sums_dev,
     counts_dev,
     x_dev,
@@ -1489,6 +1553,8 @@ function _launch_batch_fixed_x_sp1d!(
     b_base = 1
     while b_base <= B
         bw = min(BATCH_SP1D_USMEM_STRIP_W, B - b_base + 1)
+        fill!(partial_sums, zero(FT))
+        fill!(partial_cnts, zero(UInt32))
         kernel!(
             partial_sums, partial_cnts, x_dev, u_dev,
             N, n_bins, NB, b_base, bw, fe, le, is_, off, sv,
@@ -1504,6 +1570,58 @@ function _launch_batch_fixed_x_sp1d!(
             merge_cnts!(
                 @view(counts_dev[:, :, 1]), partial_cnts, NB, n_tile_blocks, SF_GPU_SINGLE_PASS_N * NB;
                 ndrange = SF_GPU_SINGLE_PASS_N * NB,
+            )
+        end
+        b_base += bw
+    end
+    if B > 1
+        @views counts_dev[:, :, 2:end] .= counts_dev[:, :, 1:1]
+    end
+    KA.synchronize(backend)
+    return nothing
+end
+
+function _launch_batch_fixed_x_sp1d!(
+    backend::KA.Backend,
+    sums_dev,
+    counts_dev,
+    x_dev,
+    u_dev,
+    N::Int,
+    B::Int,
+    lbe::LinearBinEdges{FT};
+) where {FT}
+    n_bins = length(lbe.edges)
+    NB = n_bins - 1
+    NB > SF_GPU_MAX_BINS &&
+        error("batch SP1D tiled128 supports at most $SF_GPU_MAX_BINS bins (got NB=$NB)")
+    n_tiles, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
+    fe, le, is_, off, sv = lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val
+    kernel! = _batch_fixed_x_sp1d_usmem_priv!(backend, ws)
+    merge_sums! = _batch_merge_sp1d_sums_grouped!(backend, ws)
+    merge_cnts! = _batch_merge_sp1d_cnts_grouped!(backend, ws)
+    partial_sums = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, NB, BATCH_SP1D_USMEM_STRIP_W, n_tile_blocks)
+    partial_cnts = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, NB, n_tile_blocks)
+    b_base = 1
+    while b_base <= B
+        bw = min(BATCH_SP1D_USMEM_STRIP_W, B - b_base + 1)
+        fill!(partial_sums, zero(FT))
+        fill!(partial_cnts, zero(UInt32))
+        kernel!(
+            partial_sums, partial_cnts, x_dev, u_dev,
+            N, n_bins, NB, b_base, bw, fe, le, is_, off, sv,
+            n_tiles, n_tile_blocks, ws;
+            ndrange = ndrange,
+        )
+        merge_sums!(
+            @view(sums_dev[:, :, b_base:b_base + bw - 1]), partial_sums,
+            NB, bw, n_tile_blocks, ws;
+            ndrange = SF_GPU_SINGLE_PASS_N * NB * bw * ws,
+        )
+        if b_base == 1
+            merge_cnts!(
+                @view(counts_dev[:, :, 1]), partial_cnts, NB, n_tile_blocks, ws;
+                ndrange = SF_GPU_SINGLE_PASS_N * NB * ws,
             )
         end
         b_base += bw
@@ -1535,7 +1653,7 @@ function _launch_batch_varying_x_sf!(
         sums_dev, counts_dev, x_dev, u_dev, sf_type,
         N, n_bins, NB, fe, le, is_, off, sv,
         n_tiles, n_tile_blocks, ws, B;
-        ndrange = ndrange,
+        ndrange = ndrange * B,
     )
     KA.synchronize(backend)
     return nothing
@@ -1560,13 +1678,12 @@ function _launch_batch_varying_x_sp1d!(
         sums_dev, counts_dev, x_dev, u_dev,
         N, n_bins, NB, fe, le, is_, off, sv,
         n_tiles, n_tile_blocks, ws, B;
-        ndrange = ndrange,
+        ndrange = ndrange * B,
     )
     KA.synchronize(backend)
     return nothing
 end
 
-"""Fixed-x SP2D batch: inner `b` in pair loop via varying-x-style kernel with shared `x`."""
 function _launch_batch_fixed_x_sp2d!(
     backend::KA.Backend,
     sums_dev,
@@ -1580,7 +1697,6 @@ function _launch_batch_fixed_x_sp2d!(
     n_dist::Int,
     n_val::Int,
 ) where {FT}
-    # SP2D fixed-x uses strip_w=1 inner-b in pair loop; delegate to host strip + partitioned path.
     n_bins = length(dist_lbe.edges)
     n_tiles, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
     fe, le, is_, off, sv = dist_lbe.first_edge, dist_lbe.last_edge, dist_lbe.inv_step,
@@ -1591,6 +1707,8 @@ function _launch_batch_fixed_x_sp2d!(
     b_base = 1
     while b_base <= B
         bw = min(BATCH_USMEM_STRIP_W, B - b_base + 1)
+        fill!(partial, zero(FT))
+        fill!(partial_cnt, zero(UInt32))
         kernel!(
             partial, partial_cnt, x_dev, u_dev,
             N, n_bins, n_dist, n_val, b_base, bw,
@@ -1608,110 +1726,8 @@ function _launch_batch_fixed_x_sp2d!(
     return nothing
 end
 
-@inline function _gpu_digitize_value_plan(
-    x,
-    plan::GPUValueLinearShared,
-    col::Int,
-    n_edges::Int,
-)
-    return _gpu_digitize_linear(
-        x, plan.first, plan.last, plan.inv_step, plan.offset, plan.step, n_edges,
-    )
-end
-
-@inline function _gpu_digitize_value_plan(
-    x,
-    plan::GPUValueLinearCols,
-    col::Int,
-    n_edges::Int,
-)
-    return _gpu_digitize_linear(
-        x,
-        plan.first[col],
-        plan.last[col],
-        plan.inv_step[col],
-        plan.offset[col],
-        plan.step[col],
-        n_edges,
-    )
-end
-
-@inline function _gpu_digitize_value_plan(
-    x,
-    plan::GPUValueInfLinearShared,
-    col::Int,
-    n_edges::Int,
-)
-    return _gpu_digitize_inf_padded_linear(
-        x,
-        plan.first,
-        plan.last,
-        plan.inv_step,
-        plan.offset,
-        plan.step,
-        plan.n_inner_edges,
-        plan.inner_last,
-    )
-end
-
-@inline function _gpu_digitize_value_plan(
-    x,
-    plan::GPUValueInfLinearCols,
-    col::Int,
-    n_edges::Int,
-)
-    return _gpu_digitize_inf_padded_linear(
-        x,
-        plan.first[col],
-        plan.last[col],
-        plan.inv_step[col],
-        plan.offset[col],
-        plan.step[col],
-        plan.n_inner_edges,
-        plan.inner_last[col],
-    )
-end
-
-@inline function _gpu_digitize_value_plan(
-    x,
-    plan::GPUValueLogLinearShared,
-    col::Int,
-    n_edges::Int,
-)
-    return _gpu_digitize_log_spaced(
-        x, plan.first, plan.last, plan.inv_step, plan.offset, plan.step, n_edges,
-    )
-end
-
-@inline function _gpu_digitize_value_plan(
-    x,
-    plan::GPUValueLogLinearCols,
-    col::Int,
-    n_edges::Int,
-)
-    return _gpu_digitize_log_spaced_col(
-        x,
-        plan.first,
-        plan.last,
-        plan.inv_step,
-        plan.offset,
-        plan.step,
-        col,
-        n_edges,
-    )
-end
-
-@inline function _gpu_digitize_value_plan(
-    x,
-    plan::GPUValueVectorCols,
-    col::Int,
-    n_edges::Int,
-)
-    return _gpu_digitize_general_col(x, plan.edges_dev, col, n_edges)
-end
-
-function _merge_batch_sp2d_partial!(
-    backend::KA.Backend,
+@inline function _merge_batch_sp2d_partial!(
+    backend::KA.CPU,
     sums_dev,
     counts_dev,
     partial,
@@ -1725,113 +1741,47 @@ function _merge_batch_sp2d_partial!(
 )
     merge_s! = _batch_merge_sp2d_sums!(backend, ws)
     merge_c! = _batch_merge_sp2d_cnts!(backend, ws)
-    nworkers = SF_GPU_SINGLE_PASS_N * n_dist * n_val * bw
+    n_out = SF_GPU_SINGLE_PASS_N * n_dist * n_val * bw
     merge_s!(
         @view(sums_dev[:, :, :, b_base:(b_base + bw - 1)]), partial,
-        n_dist, n_val, bw, n_tile_blocks, nworkers;
-        ndrange = nworkers,
+        n_dist, n_val, bw, n_tile_blocks, n_out;
+        ndrange = n_out,
     )
     merge_c!(
         @view(counts_dev[:, :, :, b_base:(b_base + bw - 1)]), partial_cnt,
-        n_dist, n_val, bw, n_tile_blocks, nworkers;
-        ndrange = nworkers,
+        n_dist, n_val, bw, n_tile_blocks, n_out;
+        ndrange = n_out,
     )
     return nothing
 end
 
-KA.@kernel function _batch_varying_x_sp2d_fixed_x!(
-    partial_sums,
-    partial_cnts,
-    @Const(x_mat),
-    @Const(u_batch),
-    N_points::Int,
-    N_bins::Int,
+@inline function _merge_batch_sp2d_partial!(
+    backend::KA.Backend,
+    sums_dev,
+    counts_dev,
+    partial,
+    partial_cnt,
     n_dist::Int,
     n_val::Int,
     b_base::Int,
     bw::Int,
-    first_edge::FT,
-    last_edge::FT,
-    inv_step::FT,
-    offset::FT,
-    step_val::FT,
-    val_plan::GPUValueDigitizePlan,
-    n_tiles::Int,
     n_tile_blocks::Int,
-    workgroup_size::Int,
-) where {FT}
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
-    block_id = bid
-    if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
-        i0 = (ti - 1) * SF_GPU_TILE + 1
-        j0 = (tj - 1) * SF_GPU_TILE + 1
-        ni = min(SF_GPU_TILE, N_points - i0 + 1)
-        nj = min(SF_GPU_TILE, N_points - j0 + 1)
-        if ni > 0 && nj > 0
-            n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
-            p = lid
-            while p <= n_pairs
-                if ti < tj
-                    ia = (p - 1) ÷ nj + 1
-                    jb = (p - 1) - (ia - 1) * nj + 1
-                    gi = i0 + ia - 1
-                    gj = j0 + jb - 1
-                    X1 = SA.SVector{2, FT}(x_mat[1, gi], x_mat[2, gi])
-                    X2 = SA.SVector{2, FT}(x_mat[1, gj], x_mat[2, gj])
-                    dX = X2 - X1
-                    dist = sqrt(dX[1]^2 + dX[2]^2)
-                    dbin = _gpu_digitize_linear(
-                        dist, first_edge, last_edge, inv_step, offset, step_val, N_bins,
-                    )
-                    pair_ok = 1 <= dbin < N_bins
-                    r̂ = pair_ok ? dX / dist : SA.SVector{2, FT}(zero(FT), zero(FT))
-                else
-                    ia, jb = _pair_from_linear(p, ni)
-                    gi = i0 + ia - 1
-                    gj = i0 + jb - 1
-                    X1 = SA.SVector{2, FT}(x_mat[1, gi], x_mat[2, gi])
-                    X2 = SA.SVector{2, FT}(x_mat[1, gj], x_mat[2, gj])
-                    dX = X2 - X1
-                    dist = sqrt(dX[1]^2 + dX[2]^2)
-                    dbin = _gpu_digitize_linear(
-                        dist, first_edge, last_edge, inv_step, offset, step_val, N_bins,
-                    )
-                    pair_ok = 1 <= dbin < N_bins
-                    r̂ = pair_ok ? dX / dist : SA.SVector{2, FT}(zero(FT), zero(FT))
-                end
-                if pair_ok
-                    @inbounds for col in 1:bw
-                        b = b_base + col - 1
-                        U1 = SA.SVector{2, FT}(u_batch[b, gi, 1], u_batch[b, gi, 2])
-                        U2 = SA.SVector{2, FT}(u_batch[b, gj, 1], u_batch[b, gj, 2])
-                        du = U2 - U1
-                        du_L = r̂[1] * du[1] + r̂[2] * du[2]
-                        du_T = r̂[2] * du[1] - r̂[1] * du[2]
-                        du_L2 = du_L * du_L
-                        du_T2 = du_T * du_T
-                        v1 = du_L2 + du_T2
-                        v2 = du_L2
-                        v3 = du_T2
-                        v4 = du_L * (du_L2 + du_T2)
-                        v5 = du_L * du_L2
-                        v6 = du_L * du_T2
-                        @inbounds for t in 1:SF_GPU_SINGLE_PASS_N
-                            val_t = t == 1 ? v1 : t == 2 ? v2 : t == 3 ? v3 : t == 4 ? v4 : t == 5 ? v5 : v6
-                            vbin = _gpu_digitize_value_plan(val_t, val_plan, t, n_val + 1)
-                            if 1 <= vbin <= n_val
-                                @atomic partial_sums[t, dbin, vbin, col, block_id] += val_t
-                                @atomic partial_cnts[t, dbin, vbin, col, block_id] += UInt32(1)
-                            end
-                        end
-                    end
-                end
-                p += workgroup_size
-            end
-        end
-    end
+    ws::Int,
+)
+    merge_s! = _batch_merge_sp2d_sums_grouped!(backend, ws)
+    merge_c! = _batch_merge_sp2d_cnts_grouped!(backend, ws)
+    n_out = SF_GPU_SINGLE_PASS_N * n_dist * n_val * bw
+    merge_s!(
+        @view(sums_dev[:, :, :, b_base:(b_base + bw - 1)]), partial,
+        n_dist, n_val, bw, n_tile_blocks, ws;
+        ndrange = n_out * ws,
+    )
+    merge_c!(
+        @view(counts_dev[:, :, :, b_base:(b_base + bw - 1)]), partial_cnt,
+        n_dist, n_val, bw, n_tile_blocks, ws;
+        ndrange = n_out * ws,
+    )
+    return nothing
 end
 
 function _launch_batch_varying_x_sp2d!(
@@ -1856,92 +1806,10 @@ function _launch_batch_varying_x_sp2d!(
         sums_dev, counts_dev, x_dev, u_dev,
         N, n_bins, n_dist, n_val, fe, le, is_, off, sv, val_plan,
         n_tiles, n_tile_blocks, ws, B;
-        ndrange = ndrange,
+        ndrange = ndrange * B,
     )
     KA.synchronize(backend)
     return nothing
-end
-
-KA.@kernel function _batch_varying_x_sp2d!(
-    output_sums,
-    output_counts,
-    @Const(x_batch),
-    @Const(u_batch),
-    N_points::Int,
-    N_bins::Int,
-    n_dist::Int,
-    n_val::Int,
-    first_edge::FT,
-    last_edge::FT,
-    inv_step::FT,
-    offset::FT,
-    step_val::FT,
-    val_plan::GPUValueDigitizePlan,
-    n_tiles::Int,
-    n_tile_blocks::Int,
-    workgroup_size::Int,
-    B::Int,
-) where {FT}
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
-    if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
-        i0 = (ti - 1) * SF_GPU_TILE + 1
-        j0 = (tj - 1) * SF_GPU_TILE + 1
-        ni = min(SF_GPU_TILE, N_points - i0 + 1)
-        nj = min(SF_GPU_TILE, N_points - j0 + 1)
-        if ni > 0 && nj > 0
-            n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
-            p = lid
-            while p <= n_pairs
-                if ti < tj
-                    ia = (p - 1) ÷ nj + 1
-                    jb = (p - 1) - (ia - 1) * nj + 1
-                    gi = i0 + ia - 1
-                    gj = j0 + jb - 1
-                else
-                    ia, jb = _pair_from_linear(p, ni)
-                    gi = i0 + ia - 1
-                    gj = i0 + jb - 1
-                end
-                @inbounds for b in 1:B
-                    X1 = SA.SVector{2, FT}(x_batch[1, gi, b], x_batch[2, gi, b])
-                    X2 = SA.SVector{2, FT}(x_batch[1, gj, b], x_batch[2, gj, b])
-                    U1 = SA.SVector{2, FT}(u_batch[1, gi, b], u_batch[2, gi, b])
-                    U2 = SA.SVector{2, FT}(u_batch[1, gj, b], u_batch[2, gj, b])
-                    dX = X2 - X1
-                    dist = sqrt(dX[1]^2 + dX[2]^2)
-                    dbin = _gpu_digitize_linear(
-                        dist, first_edge, last_edge, inv_step, offset, step_val, N_bins,
-                    )
-                    if 1 <= dbin < N_bins
-                        r̂ = dX / dist
-                        du = U2 - U1
-                        du_L = r̂[1] * du[1] + r̂[2] * du[2]
-                        du_T = r̂[2] * du[1] - r̂[1] * du[2]
-                        du_L2 = du_L * du_L
-                        du_T2 = du_T * du_T
-                        v1 = du_L2 + du_T2
-                        v2 = du_L2
-                        v3 = du_T2
-                        v4 = du_L * (du_L2 + du_T2)
-                        v5 = du_L * du_L2
-                        v6 = du_L * du_T2
-                        @inbounds for t in 1:SF_GPU_SINGLE_PASS_N
-                            val_t = t == 1 ? v1 : t == 2 ? v2 : t == 3 ? v3 : t == 4 ? v4 : t == 5 ? v5 : v6
-                            vbin = _gpu_digitize_value_plan(val_t, val_plan, t, n_val + 1)
-                            if 1 <= vbin <= n_val
-                                @atomic output_sums[t, dbin, vbin, b] += val_t
-                                @atomic output_counts[t, dbin, vbin, b] += UInt32(1)
-                            end
-                        end
-                    end
-                end
-                p += workgroup_size
-            end
-        end
-    end
 end
 
 function _launch_batch_varying_x_joint2d!(
@@ -1961,14 +1829,28 @@ function _launch_batch_varying_x_joint2d!(
     workgroup_size::Int = 64,
 )
     FT = eltype(sums_dev)
+    dist_bins    = _gpu_normalize_bins(distance_bins)
+    n_dist_edges = _gpu_n_edges(distance_bins)
+    n_val_edges  = _gpu_n_edges(value_bins)
+    val_plan     = _joint2d_build_val_plan(backend, value_bins)
+
+    value_host      = _gpu_host_edge_vector(value_bins)
+    value_edges_dev = KA.allocate(backend, FT, n_val_edges)
+    copyto!(value_edges_dev, value_host)
+
+    out_sums_dev = KA.allocate(backend, FT, n_dist, n_val)
+    out_cnts_dev = KA.allocate(backend, UInt32, n_dist, n_val)
+
     for b in 1:B
-        x_sl = @view x_dev[:, :, b]
-        u_sl = @view u_dev[:, :, b]
-        out_sums_dev, out_cnts_dev = _launch_gpu_joint2d!(
-            sf_type, backend, x_sl, u_sl, distance_bins, value_bins;
-            workgroup_size = workgroup_size,
-            workspace = workspace,
-            synchronize = false,
+        fill!(out_sums_dev, zero(FT))
+        fill!(out_cnts_dev, zero(UInt32))
+        _launch_joint_2d_kernel!(
+            backend, workgroup_size,
+            out_sums_dev, out_cnts_dev,
+            @view(x_dev[:, :, b]), @view(u_dev[:, :, b]),
+            value_edges_dev,
+            sf_type, dist_bins, N, n_dist_edges, n_val_edges;
+            val_plan = val_plan,
         )
         copyto!(@view(sums_dev[:, :, b]), out_sums_dev)
         copyto!(@view(counts_dev[:, :, b]), out_cnts_dev)
@@ -1994,13 +1876,32 @@ function _launch_batch_fixed_x_joint2d!(
     workgroup_size::Int = 64,
 )
     FT = eltype(sums_dev)
+    dist_bins    = _gpu_normalize_bins(distance_bins)
+    n_dist_edges = _gpu_n_edges(distance_bins)
+    n_val_edges  = _gpu_n_edges(value_bins)
+    val_plan     = _joint2d_build_val_plan(backend, value_bins)
+
+    value_host      = _gpu_host_edge_vector(value_bins)
+    value_edges_dev = KA.allocate(backend, FT, n_val_edges)
+    copyto!(value_edges_dev, value_host)
+
+    out_sums_dev = KA.allocate(backend, FT, n_dist, n_val)
+    out_cnts_dev = KA.allocate(backend, UInt32, n_dist, n_val)
+
+    # u_dev layout from _stage_batch_device: (B, N, N_dims)
+    # pre-transpose to (N_dims, N, B) once so each slice @view(u_t[:, :, b]) is (N_dims, N)
+    u_t = permutedims(u_dev, (3, 2, 1))
+
     for b in 1:B
-        u_sl = permutedims(@view(u_dev[b, :, :]), (2, 1))
-        out_sums_dev, out_cnts_dev = _launch_gpu_joint2d!(
-            sf_type, backend, x_dev, u_sl, distance_bins, value_bins;
-            workgroup_size = workgroup_size,
-            workspace = workspace,
-            synchronize = false,
+        fill!(out_sums_dev, zero(FT))
+        fill!(out_cnts_dev, zero(UInt32))
+        _launch_joint_2d_kernel!(
+            backend, workgroup_size,
+            out_sums_dev, out_cnts_dev,
+            x_dev, @view(u_t[:, :, b]),
+            value_edges_dev,
+            sf_type, dist_bins, N, n_dist_edges, n_val_edges;
+            val_plan = val_plan,
         )
         copyto!(@view(sums_dev[:, :, b]), out_sums_dev)
         copyto!(@view(counts_dev[:, :, b]), out_cnts_dev)
