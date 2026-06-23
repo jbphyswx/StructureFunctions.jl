@@ -412,6 +412,36 @@ function GPUBatchWorkspace(
     )
 end
 
+"""Device bytes for block-private partial `(NB, B_chunk, n_tile_blocks)` sums."""
+function _batch_fixed_x_chunk_partial_bytes(N_points::Int, B_chunk::Int, NB::Int, ::Type{FT}) where {FT}
+    _, n_tile_blocks, _, _ = _batch_tiled_launch_params(N_points)
+    return n_tile_blocks * NB * B_chunk * sizeof(FT)
+end
+
+"""Split `1:B` into chunks whose `(NB, B_chunk, n_tile_blocks)` partial fits `max_partial_bytes`."""
+function batch_fixed_x_chunk_ranges(
+    B::Int,
+    max_partial_bytes::Int,
+    N_points::Int,
+    NB::Int,
+    ::Type{FT},
+) where {FT}
+    if max_partial_bytes <= 0 || B <= 0
+        return [1:B]
+    end
+    per_b = _batch_fixed_x_chunk_partial_bytes(N_points, 1, NB, FT)
+    per_b <= 0 && return [1:B]
+    chunk = max(1, max_partial_bytes ÷ per_b)
+    ranges = UnitRange{Int}[]
+    b0 = 1
+    while b0 <= B
+        b1 = min(B, b0 + chunk - 1)
+        push!(ranges, b0:b1)
+        b0 = b1 + 1
+    end
+    return ranges
+end
+
 """VRAM bytes for block-private partial `(2·NB, B, n_tile_blocks)` sums + counts."""
 function estimate_batch_priv_bytes(N_points::Int, B::Int, NB::Int, ::Type{FT}) where {FT}
     n_tiles = cld(N_points, SF_GPU_TILE)

@@ -155,12 +155,12 @@ Test.@testset "GPU joint 2D parity — L3SF log distance bins" begin
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
 end
 
-Test.@testset "GPU tiled parity — NB > 64 errors" begin
+Test.@testset "GPU tiled parity — NB > SF_GPU_MAX_BINS errors" begin
     N = 20
     FT = Float64
     x = rand(FT, 2, N)
     u = rand(FT, 2, N)
-    bin_edges = collect(FT, range(0.0, 2.0; length = 67))  # 66 bins
+    bin_edges = collect(FT, range(0.0, 2.0; length = 130))  # 129 bins (> 128 cap)
     sft = SFT.L2SFType()
     Test.@test_throws ErrorException SFC.gpu_calculate_structure_function(
         sft, KA.CPU(), x, u, bin_edges; return_sums_and_counts = true,

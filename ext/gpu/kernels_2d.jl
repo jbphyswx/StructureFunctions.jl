@@ -22,8 +22,7 @@ end
 """Cooperative grid-stride zero of block-local joint histogram (uses runtime `NB2`)."""
 function _joint2d_cooperative_zero_body()
     return quote
-        g = @index(Global, Linear)
-        lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
         b = lid
         while b <= NB2
             @inbounds begin
@@ -125,7 +124,7 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
     val_digitize = _joint2d_val_digitize_expr(val_route)
     params = _joint2d_kernel_param_exprs(dist_route, val_route)
     return quote
-        KA.@kernel function $(fname)($(params...),) where {FT}
+        KA.@kernel unsafe_indices=true function $(fname)($(params...),) where {FT}
             shared_xi = @localmem FT (256,)
             shared_ui = @localmem FT (256,)
             shared_xj = @localmem FT (256,)
@@ -134,10 +133,8 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
             shared_cnts = @localmem UInt32 ($(hist),)
 
             $(zero_body)
-
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
-            bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
             if bid <= n_tile_blocks
                 ti, tj = _tile_from_linear(bid, n_tiles)
                 i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -172,10 +169,8 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                 end
             end
             @synchronize
-
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
-            bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
             if bid <= n_tile_blocks
                 ti, tj = _tile_from_linear(bid, n_tiles)
                 i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -218,10 +213,8 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                 end
             end
             @synchronize
-
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
-            bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
             if bid <= n_tile_blocks
                 b = lid
                 while b <= NB2
