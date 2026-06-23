@@ -7,11 +7,11 @@
 # See gpu/SP2D_HTP_EJ.md for strategy, benchmarks, and future perf notes.
 # Included from StructureFunctionsGPUExt.jl after TiledSinglePass2DValueKernels.jl.
 
-@inline function _sp2d_flat_index(t::Int, dbin::Int, vbin::Int, n_dist::Int, n_val::Int)
+@inline function _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
     return (t - 1) * n_dist * n_val + (dbin - 1) * n_val + vbin
 end
 
-@inline function _sp2d_decode_flat_index(g::Int, n_dist::Int, n_val::Int)
+@inline function _sp2d_decode_flat_index(g, n_dist, n_val)
     t = (g - 1) ÷ (n_dist * n_val) + 1
     rem = (g - 1) % (n_dist * n_val)
     dbin = rem ÷ n_val + 1
@@ -25,9 +25,9 @@ end
     C::Int,
     lid::Int,
     workgroup_size::Int,
-    ::Type{FT},
-) where {FT}
+)
     g = lid
+    FT = eltype(shared_sums)
     while g <= C
         @inbounds begin
             shared_sums[g] = zero(FT)
@@ -44,12 +44,12 @@ end
     partition_counts,
     shared_sums,
     shared_cnts,
-    C::Int,
-    n_dist::Int,
-    n_val::Int,
-    block_id::Int,
-    lid::Int,
-    workgroup_size::Int,
+    C,
+    n_dist,
+    n_val,
+    block_id,
+    lid,
+    workgroup_size,
 )
     g = lid
     while g <= C
@@ -71,11 +71,11 @@ end
     out_cnts,
     shared_sums,
     shared_cnts,
-    C::Int,
-    n_dist::Int,
-    n_val::Int,
-    lid::Int,
-    workgroup_size::Int,
+    C,
+    n_dist,
+    n_val,
+    lid,
+    workgroup_size,
 )
     g = lid
     while g <= C
@@ -95,7 +95,7 @@ end
 
 @inline function _gpu_accumulate_sp2d_sharedhist_linear_val!(
     shared_sums, shared_cnts, n_dist, n_val,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
+    dbin, du_L, du_T, du_L2, du_T2, N_val_edges,
     val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
 ) where {FT}
     vals = SA.SVector(
@@ -677,7 +677,7 @@ end
 
 # --- merge: serial (per-cell loop over blocks) and parallel (workgroup tree-reduce) ---
 
-KA.@kernel function _merge_sp2d_partitions_serial_u32!(
+KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_serial_u32!(
     output_sums,
     output_counts,
     partition_sums,
@@ -705,7 +705,7 @@ KA.@kernel function _merge_sp2d_partitions_serial_u32!(
 end
 
 """Parallel merge: one workgroup per joint cell (`ndrange = C × workgroup_size`)."""
-KA.@kernel function _merge_sp2d_partitions_parallel_u32!(
+KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_parallel_u32!(
     output_sums::AbstractArray{FT, 3},
     output_counts::AbstractArray{UInt32, 3},
     partition_sums::AbstractArray{FT, 4},
@@ -1139,14 +1139,12 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
     accum_body = if accum_mode == :typeplane
         quote
             @synchronize
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
             if lid == 1
                 @inbounds shared_type_pass[1] = 1
             end
             @synchronize
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
             if @inbounds(shared_block_id[1]) <= n_tile_blocks &&
                @inbounds(shared_tile[3]) > 0 && @inbounds(shared_tile[4]) > 0
                 block_id = @inbounds(shared_block_id[1])
@@ -1156,15 +1154,19 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                 @inbounds nj = shared_tile[4]
                 n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
                 for _ in 1:n_type_passes
-                    g = @index(Global, Linear)
-                    lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
                     @inbounds type_pass = shared_type_pass[1]
-                    _sp2d_zero_shared_hist!(
-                        shared_sums, shared_cnts, types_per_pass * plane, lid, workgroup_size, FT,
-                    )
+                    let g_zero = lid
+                        while g_zero <= types_per_pass * plane
+                            @inbounds begin
+                                shared_sums[g_zero] = zero(FT)
+                                shared_cnts[g_zero] = zero(UInt32)
+                            end
+                            g_zero += workgroup_size
+                        end
+                    end
                     @synchronize
-                    g = @index(Global, Linear)
-                    lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
                     block_id = @inbounds(shared_block_id[1])
                     @inbounds ti = shared_tile[1]
                     @inbounds tj = shared_tile[2]
@@ -1174,8 +1176,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                     n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
                     $(pair_loop)
                     @synchronize
-                    g = @index(Global, Linear)
-                    lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
                     @inbounds type_pass = shared_type_pass[1]
                     block_id = @inbounds(shared_block_id[1])
                     _sp2d_flush_typeplane_to_output!(
@@ -1183,8 +1184,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                         NB, N_val_edges - 1, lid, workgroup_size,
                     )
                     @synchronize
-                    g = @index(Global, Linear)
-                    lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
                     if lid == 1
                         @inbounds shared_type_pass[1] += 1
                     end
@@ -1195,14 +1195,20 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
     elseif accum_mode == :shared
         quote
             @synchronize
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
             if @inbounds(shared_block_id[1]) <= n_tile_blocks
-                _sp2d_zero_shared_hist!(shared_sums, shared_cnts, C, lid, workgroup_size, FT)
+                let g_zero = lid
+                    while g_zero <= C
+                        @inbounds begin
+                            shared_sums[g_zero] = zero(FT)
+                            shared_cnts[g_zero] = zero(UInt32)
+                        end
+                        g_zero += workgroup_size
+                    end
+                end
             end
             @synchronize
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
             if @inbounds(shared_block_id[1]) <= n_tile_blocks &&
                @inbounds(shared_tile[3]) > 0 && @inbounds(shared_tile[4]) > 0
                 block_id = @inbounds(shared_block_id[1])
@@ -1214,8 +1220,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                 $(pair_loop)
             end
             @synchronize
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
             _sp2d_flush_shared_to_output!(
                 out_sums, out_cnts, shared_sums, shared_cnts, C, NB, N_val_edges - 1,
                 lid, workgroup_size,
@@ -1224,8 +1229,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
     else
         quote
             @synchronize
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
             if @inbounds(shared_block_id[1]) <= n_tile_blocks &&
                @inbounds(shared_tile[3]) > 0 && @inbounds(shared_tile[4]) > 0
                 block_id = @inbounds(shared_block_id[1])
@@ -1242,7 +1246,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
         [:(partition_sums), :(partition_counts)] :
         [:(out_sums), :(out_cnts)]
     return quote
-        KA.@kernel function $(fname)(
+        KA.@kernel unsafe_indices=true function $(fname)(
             $(hist_params...), x_mat, u_mat,
             N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
             $(dist_params...),
@@ -1263,8 +1267,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                 @inbounds shared_block_id[1] = (g - 1) ÷ workgroup_size + 1
             end
             @synchronize
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
             if @inbounds(shared_block_id[1]) <= n_tile_blocks
                 ti, tj = _tile_from_linear(@inbounds(shared_block_id[1]), n_tiles)
                 i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -1277,8 +1280,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                 )
             end
             @synchronize
-            g = @index(Global, Linear)
-            lid = (g - 1) % workgroup_size + 1
+    lid = @index(Local, Linear)
             if @inbounds(shared_block_id[1]) <= n_tile_blocks
                 ti, tj = _tile_from_linear(@inbounds(shared_block_id[1]), n_tiles)
                 i0 = (ti - 1) * SF_GPU_TILE + 1

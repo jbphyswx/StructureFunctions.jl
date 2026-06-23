@@ -36,13 +36,13 @@ GPU kernel (`LinearBinEdges`, `LogBinEdges`, or general `Vector`). Pass typed ed
 fast paths; plain `Vector` inputs use the general kernel with no layout inference.
 
 !!! note "KernelAbstractions Macro Limitations"
-    We explicitly import `@index`, `@atomic`, `@Const`, `@private`, and `@localmem` from `KernelAbstractions` because
+    We explicitly import `@index`, `@atomic`, `@Const`, `@private`, `@uniform`, and `@localmem` from `KernelAbstractions` because
     these macros currently fail to resolve correctly when called as `KA.@index`, etc.
     `@Const` is only valid on **kernel** parameter lists, not on host `@inline` helpers.
 """
 module StructureFunctionsGPUExt
 
-using KernelAbstractions: KernelAbstractions as KA, @index, @atomic, @Const, @localmem, @private, @synchronize
+using KernelAbstractions: KernelAbstractions as KA, @index, @atomic, @Const, @localmem, @private, @uniform, @synchronize
 using StaticArrays: StaticArrays as SA
 using Distances: Distances as DI
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
@@ -166,6 +166,27 @@ end
     return low - 1
 end
 
+@inline function _gpu_digitize_general_col(
+    x::T,
+    edges,
+    col::Int,
+    n_edges::Int,
+) where {T}
+    low = 1
+    high = n_edges
+    while low <= high
+        mid = (low + high) >>> 1
+        @inbounds edge_mid = edges[mid, col]
+        if edge_mid < x
+            low = mid + 1
+        else
+            high = mid - 1
+        end
+    end
+    return low - 1
+end
+
+
 """
 Device digitize for [`InfPaddedBinEdges`](@ref) with [`LinearBinEdges`](@ref) interior.
 Matches CPU `digitize(x, InfPadded)` (underflow bin 1, interior FMA+offset, overflow past inner last).
@@ -203,7 +224,7 @@ const SF_GPU_TILE = 128
 const SF_GPU_TILED_WS = 256
 
 """Maximum distance-bin count compiled into tiled `@localmem` histograms."""
-const SF_GPU_MAX_BINS = 64
+const SF_GPU_MAX_BINS = 128
 
 """
 Maximum flat joint histogram cells ``n_dist × n_val`` for tiled128 2D joint SF
@@ -252,6 +273,10 @@ include(joinpath(@__DIR__, "gpu", "kernels_2d_single_pass.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_2d_value_axis.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_2d_direct.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_batch.jl"))
+# Unified parametric kernel core (building blocks) + the two tiled kernels that
+# replace the per-variant kernels above. See gpu/OPTIMAL_KERNEL_DESIGN.md.
+include(joinpath(@__DIR__, "gpu", "sf_core.jl"))
+include(joinpath(@__DIR__, "gpu", "sf_tiled.jl"))
 include(joinpath(@__DIR__, "gpu", "workspace.jl"))
 include(joinpath(@__DIR__, "gpu", "launch.jl"))
 
@@ -997,7 +1022,7 @@ end
     return nothing
 end
 
-KA.@kernel function _sf_single_pass_kernel_linear!(
+KA.@kernel unsafe_indices=true function _sf_single_pass_kernel_linear!(
     output_sums,
     output_counts,
     @Const(x_mat),
@@ -1029,7 +1054,7 @@ KA.@kernel function _sf_single_pass_kernel_linear!(
     end
 end
 
-KA.@kernel function _sf_single_pass_kernel_log!(
+KA.@kernel unsafe_indices=true function _sf_single_pass_kernel_log!(
     output_sums,
     output_counts,
     @Const(x_mat),
@@ -1059,7 +1084,7 @@ KA.@kernel function _sf_single_pass_kernel_log!(
     end
 end
 
-KA.@kernel function _sf_single_pass_kernel!(
+KA.@kernel unsafe_indices=true function _sf_single_pass_kernel!(
     output_sums,                 # Matrix{FT} of size (6, N_bins-1)
     output_counts,               # Matrix{FT} of size (6, N_bins-1)
     @Const(x_mat),               # Matrix{FT} of size (2, N_points)
@@ -1187,7 +1212,7 @@ end
 # Joint 2D SF kernels (one sf_type, distance × value histogram)
 # ---------------------------------------------------------------------------
 
-KA.@kernel function _sf_joint_2d_kernel_linear!(
+KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel_linear!(
     output_sums,
     output_counts,
     @Const(x_mat),
@@ -1227,7 +1252,7 @@ KA.@kernel function _sf_joint_2d_kernel_linear!(
     end
 end
 
-KA.@kernel function _sf_joint_2d_kernel_log!(
+KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel_log!(
     output_sums,
     output_counts,
     @Const(x_mat),
@@ -1266,7 +1291,7 @@ KA.@kernel function _sf_joint_2d_kernel_log!(
     end
 end
 
-KA.@kernel function _sf_joint_2d_kernel!(
+KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel!(
     output_sums,
     output_counts,
     @Const(x_mat),
@@ -1601,25 +1626,6 @@ end
 # Single-pass 2D GPU kernels (eight distance × value joint histograms)
 # ---------------------------------------------------------------------------
 
-@inline function _gpu_digitize_general_col(
-    x::T,
-    edges,
-    col::Int,
-    n_edges::Int,
-) where {T}
-    low = 1
-    high = n_edges
-    while low <= high
-        mid = (low + high) >>> 1
-        @inbounds edge_mid = edges[mid, col]
-        if edge_mid < x
-            low = mid + 1
-        else
-            high = mid - 1
-        end
-    end
-    return low - 1
-end
 
 @inline function _gpu_accumulate_single_pass_2d_pair!(
     output_sums,
@@ -1651,7 +1657,7 @@ end
     return nothing
 end
 
-KA.@kernel function _sf_single_pass_2d_kernel_linear!(
+KA.@kernel unsafe_indices=true function _sf_single_pass_2d_kernel_linear!(
     output_sums,
     output_counts,
     @Const(x_mat),
@@ -1685,7 +1691,7 @@ KA.@kernel function _sf_single_pass_2d_kernel_linear!(
     end
 end
 
-KA.@kernel function _sf_single_pass_2d_kernel_log!(
+KA.@kernel unsafe_indices=true function _sf_single_pass_2d_kernel_log!(
     output_sums,
     output_counts,
     @Const(x_mat),
@@ -1717,7 +1723,7 @@ KA.@kernel function _sf_single_pass_2d_kernel_log!(
     end
 end
 
-KA.@kernel function _sf_single_pass_2d_kernel!(
+KA.@kernel unsafe_indices=true function _sf_single_pass_2d_kernel!(
     output_sums,
     output_counts,
     @Const(x_mat),
@@ -2012,7 +2018,7 @@ end
 
 Batch 1D structure functions over the third dimension of `x`, `u` with layout
 `(N_dims, N_points, T)`. Host outputs `sums`, `counts` have shape `(NB, T)`.
-Uploads `x`, `u` once and synchronizes the backend once after the last launch.
+Uploads `x`, `u` once and loops over optimized point-field GPU kernels.
 """
 function SFC.gpu_calculate_structure_function_slices!(
     sums::AbstractMatrix{OT},
@@ -2036,14 +2042,11 @@ function SFC.gpu_calculate_structure_function_slices!(
         throw(DimensionMismatch("counts must have shape ($NB, $T); got $(size(counts))"))
     N_dims == 2 ||
         error("GPUExt: slice batch requires N_dims=2 (got N_dims=$N_dims)")
-    sums_dev = KA.adapt(backend, zeros(FT, NB, T))
-    counts_dev = KA.adapt(backend, zeros(UInt32, NB, T))
-    x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = false)
-    _launch_batch_varying_x_sf!(
-        backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N_points, T, lbe,
-    )
-    copy!(sums, Array(sums_dev))
-    copy!(counts, Array(counts_dev))
+    # Fused varying-x batch (B = T) through the unified N-body path (measured
+    # ~1.9× the old per-slice varying kernel; single launch, no per-slice loop).
+    oh, ch = _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins, NB, T, false, OT)
+    copy!(sums, reshape(oh, NB, T))
+    copy!(counts, reshape(ch, NB, T))
     return nothing
 end
 
@@ -2073,15 +2076,12 @@ function SFC.gpu_calculate_structure_function_2d_slices!(
     size(counts) == size(sums) ||
         throw(DimensionMismatch("counts must match sums shape $(size(sums))"))
 
-    sums_dev = KA.adapt(backend, zeros(FT, n_dist, n_val, T))
-    counts_dev = KA.adapt(backend, zeros(UInt32, n_dist, n_val, T))
-    x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = false)
-    _launch_batch_varying_x_joint2d!(
-        backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N_points, T,
-        distance_bins, value_bins, n_dist, n_val; workspace = workspace,
-    )
-    copy!(sums, Array(sums_dev))
-    copy!(counts, Array(counts_dev))
+    # Fused varying-x batch (B = T) through the unified joint-2D path (one launch,
+    # no per-slice loop; N-body + privatized histogram).
+    oh, ch = _gpu_2d_unified_device(backend, x, u, sf_type, distance_bins, value_bins,
+                                    Val(1), n_dist, n_val, T, false, OT)
+    copy!(sums, reshape(oh, n_dist, n_val, T))
+    copy!(counts, reshape(ch, n_dist, n_val, T))
     return nothing
 end
 
@@ -2111,12 +2111,11 @@ function SFC.gpu_calculate_structure_functions_single_pass_slices!(
         throw(DimensionMismatch("counts must match sums shape $(size(sums))"))
     N_dims == 2 ||
         error("GPUExt: single-pass slice batch requires N_dims=2 (got N_dims=$N_dims)")
-    sums_dev = KA.adapt(backend, zeros(FT, SF_GPU_SINGLE_PASS_N, n_bins, T))
-    counts_dev = KA.adapt(backend, zeros(UInt32, SF_GPU_SINGLE_PASS_N, n_bins, T))
-    x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = false)
-    _launch_batch_varying_x_sp1d!(backend, sums_dev, counts_dev, x_dev, u_dev, N_points, T, lbe)
-    copy!(sums, Array(sums_dev))
-    copy!(counts, Array(counts_dev))
+    # Fused varying-x batch (B = T) through the unified N-body single-pass path.
+    oh, ch = _gpu_1d_unified_device(backend, x, u, nothing, distance_bins,
+                                    Val(SFC.SINGLE_PASS_N), n_bins, T, false, OT)
+    copy!(sums, reshape(oh, SFC.SINGLE_PASS_N, n_bins, T))
+    copy!(counts, reshape(ch, SFC.SINGLE_PASS_N, n_bins, T))
     return nothing
 end
 
@@ -2149,15 +2148,13 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d_slices!(
         throw(DimensionMismatch("counts must match sums shape $(size(sums))"))
     N_dims == 2 ||
         error("GPUExt: SP2D slice batch requires N_dims=2 (got N_dims=$N_dims)")
-    val_plan = _gpu_build_value_digitize_plan(backend, value_bins)
-    sums_dev = KA.adapt(backend, zeros(FT, SF_GPU_SINGLE_PASS_N, n_bins, n_val, T))
-    counts_dev = KA.adapt(backend, zeros(UInt32, SF_GPU_SINGLE_PASS_N, n_bins, n_val, T))
-    x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = false)
-    _launch_batch_varying_x_sp2d!(
-        backend, sums_dev, counts_dev, x_dev, u_dev, N_points, T, lbe, val_plan, n_bins, n_val,
-    )
-    copy!(sums, Array(sums_dev))
-    copy!(counts, Array(counts_dev))
+    # Fused varying-x batch (B = T) through the unified single-pass-2D path
+    # (N-body + dynamic-shared privatized histogram; ~17× the old per-slice path
+    # at 50×50, one launch instead of T).
+    oh, ch = _gpu_sp2d_unified_device(backend, x, u, distance_bins, value_bins,
+                                      n_bins, n_val, T, false, OT)
+    copy!(sums, reshape(oh, SFC.SINGLE_PASS_N, n_bins, n_val, T))
+    copy!(counts, reshape(ch, SFC.SINGLE_PASS_N, n_bins, n_val, T))
     return nothing
 end
 

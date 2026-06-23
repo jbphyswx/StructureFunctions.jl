@@ -1,6 +1,7 @@
 # GPU benchmark results
 
-Generated benchmark JSON lives here. Keep profiler dumps, local logs, and ad hoc
+Generated benchmark JSON lives here. **Working perf notes:** `BATCH_FIXED_X_PERF.md`.
+Keep profiler dumps, local logs, and ad hoc
 database outputs out of the repository; only commit intentional, reproducible result
 snapshots.
 

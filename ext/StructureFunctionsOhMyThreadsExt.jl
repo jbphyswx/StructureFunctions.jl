@@ -436,21 +436,20 @@ function SFC._dispatch_single_pass(
 
                     rh = SFH.r̂(x_i, x_j, distance_metric, r)
                     du_L = LA.dot(du, rh)
-                    du_T = SFH.mδu_t(du, rh)
-
                     du_L2 = du_L * du_L
-                    du_T2 = SFH.transverse_norm2(du, rh)
+                    du_norm2 = LA.dot(du, du)
+                    du_T2 = du_norm2 - du_L2
 
                     # Accumulate the six invariant bulk structure functions.
-                    @inbounds local_sums[1, bin_idx] += du_L2 + du_T2            # S2SF
+                    @inbounds local_sums[1, bin_idx] += du_norm2                 # S2SF
                     @inbounds local_sums[2, bin_idx] += du_L2                    # L2SF
                     @inbounds local_sums[3, bin_idx] += du_T2                    # T2SF
-                    @inbounds local_sums[4, bin_idx] += du_L * (du_L2 + du_T2)   # S3SF
-                    @inbounds local_sums[5, bin_idx] += du_L * du_L2              # L3SF
-                    @inbounds local_sums[6, bin_idx] += du_L * du_T2              # L1T2SF
+                    @inbounds local_sums[4, bin_idx] += du_L * du_norm2          # S3SF
+                    @inbounds local_sums[5, bin_idx] += du_L * du_L2             # L3SF
+                    @inbounds local_sums[6, bin_idx] += du_L * du_T2             # L1T2SF
 
-                    for t in 1:SFC.SINGLE_PASS_N
-                        @inbounds local_counts[t, bin_idx] += 1
+                    @inbounds for t in 1:SFC.SINGLE_PASS_N
+                        local_counts[t, bin_idx] += one(CT)
                     end
                 end
             end
@@ -499,20 +498,19 @@ function SFC._dispatch_single_pass!(
 
                     rh = SFH.r̂(x_i, x_j, distance_metric, r)
                     du_L = LA.dot(du, rh)
-                    du_T = SFH.mδu_t(du, rh)
-
                     du_L2 = du_L * du_L
-                    du_T2 = SFH.transverse_norm2(du, rh)
+                    du_norm2 = LA.dot(du, du)
+                    du_T2 = du_norm2 - du_L2
 
-                    @inbounds local_sums[1, bin_idx] += du_L2 + du_T2
+                    @inbounds local_sums[1, bin_idx] += du_norm2
                     @inbounds local_sums[2, bin_idx] += du_L2
                     @inbounds local_sums[3, bin_idx] += du_T2
-                    @inbounds local_sums[4, bin_idx] += du_L * (du_L2 + du_T2)
+                    @inbounds local_sums[4, bin_idx] += du_L * du_norm2
                     @inbounds local_sums[5, bin_idx] += du_L * du_L2
                     @inbounds local_sums[6, bin_idx] += du_L * du_T2
 
-                    for t in 1:SFC.SINGLE_PASS_N
-                        @inbounds local_counts[t, bin_idx] += 1
+                    @inbounds for t in 1:SFC.SINGLE_PASS_N
+                        local_counts[t, bin_idx] += one(CT)
                     end
                 end
             end
@@ -566,16 +564,15 @@ function SFC._dispatch_single_pass_2d(
 
                     rh = SFH.r̂(x_i, x_j, distance_metric, r)
                     du_L = LA.dot(du, rh)
-                    du_T = SFH.mδu_t(du, rh)
-
                     du_L2 = du_L * du_L
-                    du_T2 = SFH.transverse_norm2(du, rh)
+                    du_norm2 = LA.dot(du, du)
+                    du_T2 = du_norm2 - du_L2
 
                     vals = (
-                        du_L2 + du_T2,
+                        du_norm2,
                         du_L2,
                         du_T2,
-                        du_L * (du_L2 + du_T2),
+                        du_L * du_norm2,
                         du_L * du_L2,
                         du_L * du_T2,
                     )
@@ -638,16 +635,15 @@ function SFC._dispatch_single_pass_2d!(
 
                     rh = SFH.r̂(x_i, x_j, distance_metric, r)
                     du_L = LA.dot(du, rh)
-                    du_T = SFH.mδu_t(du, rh)
-
                     du_L2 = du_L * du_L
-                    du_T2 = SFH.transverse_norm2(du, rh)
+                    du_norm2 = LA.dot(du, du)
+                    du_T2 = du_norm2 - du_L2
 
                     vals = (
-                        du_L2 + du_T2,
+                        du_norm2,
                         du_L2,
                         du_T2,
-                        du_L * (du_L2 + du_T2),
+                        du_L * du_norm2,
                         du_L * du_L2,
                         du_L * du_T2,
                     )
