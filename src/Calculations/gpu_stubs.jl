@@ -1,5 +1,29 @@
 # GPU Extension and Workspace Stubs
 
+# ---------------------------------------------------------------------------
+# CUDA fast-path dispatch hooks (overridden by StructureFunctionsCUDAExt)
+# ---------------------------------------------------------------------------
+# The GPU (KernelAbstractions) extension calls these at its unified launch
+# chokepoints. The default returns `false` ("not handled") so portable KA
+# kernels run on CPU/AMD/whenever CUDA is not loaded. When both
+# KernelAbstractions and CUDA are loaded, StructureFunctionsCUDAExt adds
+# methods specialized on `CUDA.CUDABackend` that launch the N-body broadcast +
+# (for 2D) dynamic-shared kernels and return `true`. See
+# gpu/OPTIMAL_KERNEL_DESIGN.md for the settled design.
+
+"""Try the CUDA fast 2D launch (N-body broadcast + privatized histogram, dynamic
+shared for large single-pass). Returns `true` if handled, `false` to fall back to
+the portable KA tiled kernel. Overridden by `StructureFunctionsCUDAExt`."""
+gpu_fast_launch_2d_batch!(backend, out, cnt, x, u, sf_type, dist_dig, val_plan,
+                          N, n_dist, n_val, B, D, nmom, fixed_x) = false
+
+"""Try the CUDA fast 1D launch (N-body broadcast + privatized shared histogram).
+Returns `true` if handled, `false` to fall back to the portable KA tiled kernel.
+Overridden by `StructureFunctionsCUDAExt`."""
+gpu_fast_launch_1d_batch!(backend, out, cnt, x, u, sf_type, dist_dig,
+                          N, NB, B, D, nmom, fixed_x) = false
+
+
 """
     GPUSFWorkspace(backend, distance_bins; kind=:sf1d)
 

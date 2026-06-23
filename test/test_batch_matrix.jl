@@ -59,6 +59,20 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
 
+    @testset "row1b individual 1D fixed-x B>strip (regression)" begin
+        Nb, Bb = 24, 17
+        x, u, lbe = _rand_batch_fixed(Nb, Bb)
+        NB = length(lbe.edges) - 1
+        cpu_s = zeros(Float32, NB, Bb)
+        cpu_c = zeros(UInt32, NB, Bb)
+        auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
+        gpu_out = SFC.calculate_structure_function(
+            SF_TYPE, x, u, lbe;
+            backend = GPU_BE, return_sums_and_counts = true, verbose = false,
+        )
+        @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
+    end
+
     @testset "row2 individual 1D varying-x" begin
         x, u, lbe = _rand_batch_varying(N, B)
         @test ndims(x) == 3
@@ -157,5 +171,23 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             SF_TYPE, x, u, lbe, val_edges; backend = GPU_BE,
         )
         @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
+    end
+
+    @testset "row8 SP2D fixed-x production 50x50 bin grid (smoke)" begin
+        Np, Bp = 32, 2
+        x, u, lbe = _rand_batch_fixed(Np, Bp)
+        val_edges = LinearBinEdges(collect(range(-1.0f0, 1.0f0; length = 51)))
+        @test length(lbe.edges) - 1 == 10
+        @test length(val_edges.edges) - 1 == 50
+        n_bins = length(lbe.edges) - 1
+        n_val = length(val_edges.edges) - 1
+        cpu_s = zeros(Float32, 6, n_bins, n_val, Bp)
+        cpu_c = zeros(UInt32, 6, n_bins, n_val, Bp)
+        serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges)
+
+        gpu_sp = SFC.calculate_structure_functions_single_pass_2d(
+            x, u, lbe, val_edges; backend = GPU_BE,
+        )
+        @test batch_histograms_equal(gpu_sp.sums, gpu_sp.counts, cpu_s, cpu_c; atol = 1f-4)
     end
 end

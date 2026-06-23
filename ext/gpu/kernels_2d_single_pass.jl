@@ -245,7 +245,7 @@ end
     return nothing
 end
 
-KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_linear_linear_u32!(
+KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_linear_linear_u32!(
     output_sums,
     output_counts,
     x_mat,
@@ -272,10 +272,8 @@ KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_linear_linear_u32!(
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -310,10 +308,8 @@ KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_linear_linear_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -363,7 +359,7 @@ KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_linear_linear_u32!(
     end
 end
 
-KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_general_u32!(
+KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_general_u32!(
     output_sums,
     output_counts,
     x_mat,
@@ -386,10 +382,8 @@ KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_general_u32!(
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -424,10 +418,8 @@ KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_general_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -474,7 +466,7 @@ KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_general_u32!(
     end
 end
 
-KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_linear_val_u32!(
+KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_linear_val_u32!(
     output_sums,
     output_counts,
     x_mat,
@@ -501,10 +493,8 @@ KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_linear_val_u32!(
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -539,10 +529,8 @@ KA.@kernel function _sf6_single_pass_2d_kernel_tiled128_log_linear_val_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1

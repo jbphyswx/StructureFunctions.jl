@@ -9,7 +9,7 @@
 
 # Shared layout: SF_GPU_TILE=128 → 2D shared coords length 256, 3D length 384.
 
-KA.@kernel function _sf_kernel_tiled128_2d_linear_u32!(
+KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_linear_u32!(
     output,
     counts,
     x_mat,
@@ -34,20 +34,16 @@ KA.@kernel function _sf_kernel_tiled128_2d_linear_u32!(
     shared_uj = @localmem FT (256,)
     shared_sums = @localmem FT (SF_GPU_MAX_BINS,)
     shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    if lid == 1
-        @inbounds for b in 1:NB
-            shared_sums[b] = zero(FT)
-            shared_cnts[b] = UInt32(0)
-        end
+    lid = @index(Local, Linear)
+    b_init = lid
+    while b_init <= NB
+        @inbounds shared_sums[b_init] = zero(FT)
+        @inbounds shared_cnts[b_init] = UInt32(0)
+        b_init += workgroup_size
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -82,10 +78,8 @@ KA.@kernel function _sf_kernel_tiled128_2d_linear_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -127,10 +121,8 @@ KA.@kernel function _sf_kernel_tiled128_2d_linear_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         b = lid
         while b <= NB
@@ -143,7 +135,7 @@ KA.@kernel function _sf_kernel_tiled128_2d_linear_u32!(
     end
 end
 
-KA.@kernel function _sf_kernel_tiled128_3d_linear_u32!(
+KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_linear_u32!(
     output,
     counts,
     x_mat,
@@ -168,20 +160,16 @@ KA.@kernel function _sf_kernel_tiled128_3d_linear_u32!(
     shared_uj = @localmem FT (384,)
     shared_sums = @localmem FT (SF_GPU_MAX_BINS,)
     shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    if lid == 1
-        @inbounds for b in 1:NB
-            shared_sums[b] = zero(FT)
-            shared_cnts[b] = UInt32(0)
-        end
+    lid = @index(Local, Linear)
+    b_init = lid
+    while b_init <= NB
+        @inbounds shared_sums[b_init] = zero(FT)
+        @inbounds shared_cnts[b_init] = UInt32(0)
+        b_init += workgroup_size
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -220,10 +208,8 @@ KA.@kernel function _sf_kernel_tiled128_3d_linear_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -265,10 +251,8 @@ KA.@kernel function _sf_kernel_tiled128_3d_linear_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         b = lid
         while b <= NB
@@ -281,7 +265,7 @@ KA.@kernel function _sf_kernel_tiled128_3d_linear_u32!(
     end
 end
 
-KA.@kernel function _sf_kernel_tiled128_2d_log_u32!(
+KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_log_u32!(
     output,
     counts,
     x_mat,
@@ -306,20 +290,16 @@ KA.@kernel function _sf_kernel_tiled128_2d_log_u32!(
     shared_uj = @localmem FT (256,)
     shared_sums = @localmem FT (SF_GPU_MAX_BINS,)
     shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    if lid == 1
-        @inbounds for b in 1:NB
-            shared_sums[b] = zero(FT)
-            shared_cnts[b] = UInt32(0)
-        end
+    lid = @index(Local, Linear)
+    b_init = lid
+    while b_init <= NB
+        @inbounds shared_sums[b_init] = zero(FT)
+        @inbounds shared_cnts[b_init] = UInt32(0)
+        b_init += workgroup_size
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -354,10 +334,8 @@ KA.@kernel function _sf_kernel_tiled128_2d_log_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -397,10 +375,8 @@ KA.@kernel function _sf_kernel_tiled128_2d_log_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         b = lid
         while b <= NB
@@ -413,7 +389,7 @@ KA.@kernel function _sf_kernel_tiled128_2d_log_u32!(
     end
 end
 
-KA.@kernel function _sf_kernel_tiled128_3d_log_u32!(
+KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_log_u32!(
     output,
     counts,
     x_mat,
@@ -438,20 +414,16 @@ KA.@kernel function _sf_kernel_tiled128_3d_log_u32!(
     shared_uj = @localmem FT (384,)
     shared_sums = @localmem FT (SF_GPU_MAX_BINS,)
     shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    if lid == 1
-        @inbounds for b in 1:NB
-            shared_sums[b] = zero(FT)
-            shared_cnts[b] = UInt32(0)
-        end
+    lid = @index(Local, Linear)
+    b_init = lid
+    while b_init <= NB
+        @inbounds shared_sums[b_init] = zero(FT)
+        @inbounds shared_cnts[b_init] = UInt32(0)
+        b_init += workgroup_size
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -490,10 +462,8 @@ KA.@kernel function _sf_kernel_tiled128_3d_log_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -533,10 +503,8 @@ KA.@kernel function _sf_kernel_tiled128_3d_log_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         b = lid
         while b <= NB
@@ -549,7 +517,7 @@ KA.@kernel function _sf_kernel_tiled128_3d_log_u32!(
     end
 end
 
-KA.@kernel function _sf_kernel_tiled128_2d_general_u32!(
+KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_general_u32!(
     output,
     counts,
     x_mat,
@@ -571,20 +539,16 @@ KA.@kernel function _sf_kernel_tiled128_2d_general_u32!(
     shared_uj = @localmem FT (256,)
     shared_sums = @localmem FT (SF_GPU_MAX_BINS,)
     shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    if lid == 1
-        @inbounds for b in 1:NB
-            shared_sums[b] = zero(FT)
-            shared_cnts[b] = UInt32(0)
-        end
+    lid = @index(Local, Linear)
+    b_init = lid
+    while b_init <= NB
+        @inbounds shared_sums[b_init] = zero(FT)
+        @inbounds shared_cnts[b_init] = UInt32(0)
+        b_init += workgroup_size
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -619,10 +583,8 @@ KA.@kernel function _sf_kernel_tiled128_2d_general_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -662,10 +624,8 @@ KA.@kernel function _sf_kernel_tiled128_2d_general_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         b = lid
         while b <= NB
@@ -678,7 +638,7 @@ KA.@kernel function _sf_kernel_tiled128_2d_general_u32!(
     end
 end
 
-KA.@kernel function _sf_kernel_tiled128_3d_general_u32!(
+KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_general_u32!(
     output,
     counts,
     x_mat,
@@ -700,20 +660,16 @@ KA.@kernel function _sf_kernel_tiled128_3d_general_u32!(
     shared_uj = @localmem FT (384,)
     shared_sums = @localmem FT (SF_GPU_MAX_BINS,)
     shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    if lid == 1
-        @inbounds for b in 1:NB
-            shared_sums[b] = zero(FT)
-            shared_cnts[b] = UInt32(0)
-        end
+    lid = @index(Local, Linear)
+    b_init = lid
+    while b_init <= NB
+        @inbounds shared_sums[b_init] = zero(FT)
+        @inbounds shared_cnts[b_init] = UInt32(0)
+        b_init += workgroup_size
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -752,10 +708,8 @@ KA.@kernel function _sf_kernel_tiled128_3d_general_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         ti, tj = _tile_from_linear(bid, n_tiles)
         i0 = (ti - 1) * SF_GPU_TILE + 1
@@ -795,10 +749,8 @@ KA.@kernel function _sf_kernel_tiled128_3d_general_u32!(
         end
     end
     @synchronize
-
-    g = @index(Global, Linear)
-    lid = (g - 1) % workgroup_size + 1
-    bid = (g - 1) ÷ workgroup_size + 1
+    lid = @index(Local, Linear)
+    bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         b = lid
         while b <= NB
