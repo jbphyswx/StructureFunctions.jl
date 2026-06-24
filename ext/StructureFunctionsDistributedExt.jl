@@ -33,7 +33,7 @@ end
 
 # --- Non-Mutating 1D Dispatch ---
 function SFC._dispatch_execution_backend(
-    ::SFC.DistributedBackend,
+    db::SFC.DistributedBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
@@ -48,12 +48,13 @@ function SFC._dispatch_execution_backend(
         u_vecs,
         distance_bins,
         Val(RSAC);
+        inner = db.inner,
         kwargs...,
     )
 end
 
 function SFC._dispatch_execution_backend(
-    ::SFC.DistributedBackend,
+    db::SFC.DistributedBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_arr::AbstractMatrix,
     u_arr::AbstractMatrix,
@@ -65,7 +66,7 @@ function SFC._dispatch_execution_backend(
     x_vecs = ntuple(k -> view(x_arr, k, :), N_dims)
     u_vecs = ntuple(k -> view(u_arr, k, :), N_dims)
     return SFC._dispatch_execution_backend(
-        SFC.DistributedBackend(),
+        db,
         structure_function_type,
         x_vecs,
         u_vecs,
@@ -85,21 +86,27 @@ function _parallel_calculate_structure_function_core(
     verbose = true,
     show_progress = true,
     count_eltype::Type{CT} = UInt32,
+    inner::SFC.AbstractExecutionBackend = SFC.SerialBackend(),
     kwargs...,
 ) where {RSAC, CT}
     if verbose
-        @info("calculating structure function (distributed reduction)")
+        @info("calculating structure function (distributed reduction, inner=$(nameof(typeof(inner))))")
     end
 
-    # Use the result-object wrapper for clean distributed reduction using package types
+    # One balanced i-list per worker; each worker computes its partial via `inner`
+    # (Serial, or Threaded for hybrid distributed+threaded). Reduce partials by +.
+    N = length(x_vecs[1])
+    nw = max(1, Distributed.nworkers())
+    chunks = SFC._balanced_index_chunks(N, nw)
     sums_and_counts =
-        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for i in _balanced_triangle_perm(length(x_vecs[1]))
-            SFC.calculate_structure_function_i(
+        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for w in 1:nw
+            SFC._partial_sums_counts(
+                inner,
                 structure_function_type,
-                i,
                 x_vecs,
                 u_vecs,
-                distance_bins;
+                distance_bins,
+                chunks[w];
                 distance_metric = distance_metric,
                 count_eltype = count_eltype,
             )

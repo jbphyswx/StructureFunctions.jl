@@ -164,3 +164,48 @@ function calculate_structure_function_i(
         local_counts,
     )
 end
+
+"""
+    _partial_sums_counts(inner, sf_type, x_vecs, u_vecs, distance_bins, ilist; kwargs...)
+
+Partial 1D sums/counts over an explicit outer-index list `ilist` (each `i` contributes pairs
+`(i, j>i)`). Used by the distributed driver to give each worker a balanced share; `inner`
+selects how the worker computes its share locally. This generic method runs SERIALLY for any
+backend; the OhMyThreads extension adds a `::ThreadedBackend` method that threads over `ilist`
+(enabling hybrid distributed+threaded). Returns a `StructureFunctionSumsAndCounts`.
+"""
+function _partial_sums_counts(
+    ::AbstractExecutionBackend,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector,
+    ilist;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
+) where {CT}
+    OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
+    nb = n_histogram_bins(distance_bins)
+    sums = zeros(OT, nb)
+    counts = zeros(CT, nb)
+    be = BinEdges(distance_bins)
+    vN = Val(length(x_vecs))
+    for i in ilist
+        calculate_structure_function_i!(
+            sums, counts, vN, structure_function_type, i, x_vecs, u_vecs, be;
+            distance_metric = distance_metric,
+        )
+    end
+    return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
+end
+
+"""
+    _balanced_index_chunks(N, k) -> Vector of k index-lists
+
+Split `1:N` into `k` balanced outer-index lists for the triangular pair loop (work ∝ N-i).
+Round-robin assignment (`i ≡ w (mod k)`) gives each chunk a mix of cheap/expensive indices.
+"""
+function _balanced_index_chunks(N::Integer, k::Integer)
+    k = max(1, k)
+    return [collect(w:k:N) for w in 1:k]
+end
