@@ -91,6 +91,37 @@ end
 DistributedBackend() = DistributedBackend(SerialBackend())
 
 """
+    MPIBackend{Inner} <: AbstractExecutionBackend
+    MPIBackend(inner = SerialBackend(); comm = MPI.COMM_WORLD)
+
+Multi-rank execution via MPI.jl, parametric on the per-rank `inner` backend (like
+[`DistributedBackend`](@ref)). Each rank computes a balanced share of the pairs with `inner`
+(Serial/Threaded), then the partial histograms are combined with `MPI.Allreduce!` so every
+rank holds the full result. Requires `MPI` to be loaded; the program must run under `mpiexec`
+(or equivalent) with `MPI.Init()` called. Offered for multi-node adoption.
+
+# Examples
+```julia
+using MPI; MPI.Init()
+backend = SFC.MPIBackend(SFC.ThreadedBackend())   # hybrid MPI + threads
+result  = SFC.calculate_structure_function(sf_type, x, u, bins; backend=backend)
+```
+"""
+struct MPIBackend{Inner <: AbstractExecutionBackend, C} <: AbstractExecutionBackend
+    inner::Inner
+    comm::C
+end
+# `comm = nothing` ⇒ the MPI extension uses `MPI.COMM_WORLD` (core cannot reference MPI).
+MPIBackend(inner::AbstractExecutionBackend = SerialBackend(); comm = nothing) =
+    MPIBackend(inner, comm)
+
+function _dispatch_execution_backend(
+    ::MPIBackend, args...; kwargs...,
+)
+    throw(ArgumentError("MPI backend is unavailable. Load MPI (`using MPI`) to enable StructureFunctionsMPIExt, or use a different backend."))
+end
+
+"""
     GPUBackend{B} <: AbstractExecutionBackend
 
 GPU-accelerated execution backend using KernelAbstractions.jl.
