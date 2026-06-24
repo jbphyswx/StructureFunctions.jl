@@ -11,6 +11,7 @@ using LinearAlgebra: LinearAlgebra as LA
 using SharedArrays: SharedArrays
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     HelperFunctions as SFH, StructureFunctionTypes as SFT,
+    StructureFunctionObjects as SFO,
     AbstractBinEdges, LinearBinEdges, LogBinEdges
 
 SFC.distributed_workers_available(::Val{:distributed}) = Distributed.nworkers() > 1
@@ -122,6 +123,79 @@ function _parallel_calculate_structure_function_core(
             output_div[k] = iszero(c) ? OT(NaN) : sums_and_counts.sums[k] / c
         end
         return SF.StructureFunction(structure_function_type, distance_bins, output_div)
+    end
+end
+
+# --- Batched (auxiliary-axis) distributed dispatch ---
+# Distribute the BATCH axis across workers (per-b work is equal, so contiguous chunks are
+# balanced). Each worker computes complete b-slices via the `inner` backend (serial or
+# threaded batch kernels) and returns its slice; results are concatenated along the batch
+# axis (disjoint b's ⇒ no reduction). With one worker pinned per NUMA node this keeps each
+# process's velocity data socket-local, beating pure threading's single-socket bandwidth ceiling.
+# Matches ndims(u) >= 3 only (the AbstractMatrix point-field method above is more specific).
+@inline function _dist_batch_chunks(B::Int, nw::Int)
+    nw = clamp(nw, 1, max(B, 1))
+    return [(((w - 1) * B) ÷ nw + 1):((w * B) ÷ nw) for w in 1:nw]
+end
+
+function SFC._dispatch_execution_backend(
+    db::SFC.DistributedBackend,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x::AbstractArray,
+    u::AbstractArray,
+    distance_bins::AbstractVector,
+    ::Val{RSAC};
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose = true,
+    show_progress = true,
+    count_eltype::Type{CT} = UInt32,
+    backend = nothing,
+    kwargs...,
+) where {RSAC, CT}
+    verbose && @info("calculating batched structure function (distributed over batch axis, inner=$(nameof(typeof(db.inner))))")
+    D, N = size(u, 1), size(u, 2)
+    bdims = size(u)[3:end]
+    B = prod(bdims)
+    fixed_x = ndims(x) == 2
+    u_flat = reshape(u, D, N, B)
+    x_flat = fixed_x ? x : reshape(x, D, N, B)
+    nb = SFC.n_histogram_bins(distance_bins)
+    inner = db.inner
+
+    chunks = _dist_batch_chunks(B, Distributed.nworkers())
+    # each worker computes its contiguous b-chunk locally via the inner backend
+    parts = Distributed.pmap(chunks) do bc
+        usub = u_flat[:, :, bc]
+        xsub = fixed_x ? x_flat : x_flat[:, :, bc]
+        r = SFC.calculate_structure_function(
+            structure_function_type, xsub, usub, distance_bins;
+            backend = inner, return_sums_and_counts = true,
+            verbose = false, show_progress = false,
+            distance_metric = distance_metric, count_eltype = count_eltype,
+        )
+        (r.sums, r.counts)
+    end
+
+    OT = promote_type(float(eltype(x)), float(eltype(u)))
+    sums = zeros(OT, nb, B)
+    counts = zeros(CT, nb, B)
+    for (w, bc) in enumerate(chunks)
+        @inbounds sums[:, bc] .= reshape(parts[w][1], nb, length(bc))
+        @inbounds counts[:, bc] .= reshape(parts[w][2], nb, length(bc))
+    end
+
+    if RSAC
+        return SFO.StructureFunctionSumsAndCounts(
+            structure_function_type, distance_bins,
+            reshape(sums, nb, bdims...), reshape(counts, nb, bdims...),
+        )
+    else
+        out = similar(sums)
+        @inbounds for k in eachindex(sums)
+            c = counts[k]
+            out[k] = iszero(c) ? OT(NaN) : sums[k] / c
+        end
+        return SFO.StructureFunction(structure_function_type, distance_bins, reshape(out, nb, bdims...))
     end
 end
 

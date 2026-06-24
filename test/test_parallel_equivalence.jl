@@ -97,6 +97,26 @@ Test.@testset "Parallel Equivalence Verification" begin
         Test.@test counts_serial == res_hybrid.counts
     end
 
+    # 3c. Batched distributed (distribute the batch axis across workers), serial+hybrid inner.
+    xb = rand(2, N, 4)
+    ub = rand(2, N, 4)
+    res_ser_b = SFC.calculate_structure_function(
+        sf_type, xb, ub, bins;
+        backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+        return_sums_and_counts = true,
+    )
+    Test.@testset "Serial vs Distributed batched" begin
+        for inner in (SFC.SerialBackend(), SFC.ThreadedBackend())
+            res_db = SFC.calculate_structure_function(
+                sf_type, xb, ub, bins;
+                backend = SFC.DistributedBackend(inner), verbose = false, show_progress = false,
+                return_sums_and_counts = true,
+            )
+            Test.@test res_ser_b.counts == res_db.counts
+            Test.@test res_ser_b.sums ≈ res_db.sums
+        end
+    end
+
     # 4. Distributed with bin count (Int) and LogBinEdges
     res_dist_int = SFC.calculate_structure_function(
         sf_type,
