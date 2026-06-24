@@ -745,4 +745,34 @@ function SFC.threaded_calculate_structure_function(
     return SFO.StructureFunction2D(structure_function_type, distance_bins, value_bins, sums, counts)
 end
 
+# Threaded partial over an explicit outer-index list (hybrid distributed+threaded: a worker
+# threads over its assigned i-list). Round-robin chunks for triangle balance; reduce by +.
+function SFC._partial_sums_counts(
+    ::SFC.ThreadedBackend,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector,
+    ilist;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
+) where {CT}
+    OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
+    nb = n_histogram_bins(distance_bins)
+    be = BinEdges(distance_bins)
+    vN = Val(length(x_vecs))
+    result = OMT.tmapreduce(+, _triangle_outer_chunks(ilist, Threads.nthreads())) do chunk
+        local_sums = zeros(OT, nb)
+        local_counts = zeros(CT, nb)
+        for i in chunk
+            SFC.calculate_structure_function_i!(
+                local_sums, local_counts, vN, structure_function_type, i, x_vecs, u_vecs, be;
+                distance_metric = distance_metric,
+            )
+        end
+        SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, local_sums, local_counts)
+    end
+    return result
+end
+
 end # module

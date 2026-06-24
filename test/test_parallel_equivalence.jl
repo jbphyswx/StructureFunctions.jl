@@ -16,6 +16,7 @@ Distributed.@everywhere using StructureFunctions:
     LogBinEdges, LinearBinEdges
 Distributed.@everywhere using StaticArrays: StaticArrays as SA
 Distributed.@everywhere using SharedArrays: SharedArrays
+Distributed.@everywhere using OhMyThreads: OhMyThreads  # for hybrid DistributedBackend(ThreadedBackend())
 
 Test.@testset "Parallel Equivalence Verification" begin
     # Dataset
@@ -77,6 +78,23 @@ Test.@testset "Parallel Equivalence Verification" begin
         Test.@test out_serial[1] ≈ out_dist[1]
         Test.@test out_serial[2] ≈ out_dist[2]
         Test.@test counts_serial == counts_dist
+    end
+
+    # 3b. Hybrid: DistributedBackend(ThreadedBackend()) — each worker threads over its share.
+    res_hybrid = SFC.calculate_structure_function(
+        sf_type,
+        sx,
+        su,
+        bins;
+        backend = SFC.DistributedBackend(SFC.ThreadedBackend()),
+        verbose = false,
+        show_progress = false,
+        return_sums_and_counts = true,
+    )
+
+    Test.@testset "Serial vs Distributed(Threaded) hybrid" begin
+        Test.@test out_serial ≈ res_hybrid.sums
+        Test.@test counts_serial == res_hybrid.counts
     end
 
     # 4. Distributed with bin count (Int) and LogBinEdges

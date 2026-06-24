@@ -57,25 +57,38 @@ end
 struct ThreadedBackend <: AbstractExecutionBackend end
 
 """
-    DistributedBackend <: AbstractExecutionBackend
+    DistributedBackend{Inner} <: AbstractExecutionBackend
+    DistributedBackend(inner = SerialBackend())
 
 Distributed (multi-process/multi-node) execution backend using Distributed.jl.
 
-Requires workers to be started via `addprocs()` or similar. Use this backend when:
-- Computing across multiple processes or machines
-- Dataset is large but computation must remain in-core on each worker
-- You have a compute cluster available
+Parametric on the per-worker `inner` backend (like [`GPUBackend`](@ref) is parametric on its
+device backend): distribution across processes and local execution within a process are
+orthogonal axes. `inner` selects how each worker computes its share of the pairs:
+
+- `DistributedBackend()` / `DistributedBackend(SerialBackend())` — each worker runs serially.
+- `DistributedBackend(ThreadedBackend())` — hybrid: each worker threads over its share
+  (requires `OhMyThreads` and worker threads, e.g. `addprocs(n; exeflags="-t k")`). On a
+  multi-socket node this enables one-process-per-socket × threaded-within-socket, which scales
+  past the single-socket memory-bandwidth ceiling of pure threading.
+
+Requires workers started via `addprocs()`.
 
 # Examples
 ```julia
 using Distributed: addprocs
+addprocs(4)
+result = SFC.calculate_structure_function(sf_type, x, u, bins; backend=SFC.DistributedBackend())
 
-addprocs(4)  # Start 4 worker processes
-result = SFC.calculate_structure_function(sf_type, x, u, bins; 
-                                         backend=SFC.DistributedBackend())
+# hybrid distributed + threaded (workers each with 8 threads):
+# addprocs(2; exeflags="-t 8"); @everywhere using OhMyThreads
+# backend = SFC.DistributedBackend(SFC.ThreadedBackend())
 ```
 """
-struct DistributedBackend <: AbstractExecutionBackend end
+struct DistributedBackend{Inner <: AbstractExecutionBackend} <: AbstractExecutionBackend
+    inner::Inner
+end
+DistributedBackend() = DistributedBackend(SerialBackend())
 
 """
     GPUBackend{B} <: AbstractExecutionBackend
