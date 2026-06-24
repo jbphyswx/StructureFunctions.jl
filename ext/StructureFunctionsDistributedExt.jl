@@ -15,6 +15,22 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 
 SFC.distributed_workers_available(::Val{:distributed}) = Distributed.nworkers() > 1
 
+# Balanced outer-index order for the triangular pair loop (work for index i is ~ N - i).
+# `@distributed` splits its iterable into CONTIGUOUS per-worker blocks, so iterating 1:N
+# directly gives worker 1 all the expensive low-i pairs (~2x imbalance). Interleaving
+# high/low indices ([1, N, 2, N-1, ...]) makes every contiguous block carry ~equal work.
+function _balanced_triangle_perm(N::Integer)
+    perm = Vector{Int}(undef, N)
+    lo, hi, k = 1, N, 1
+    @inbounds while lo <= hi
+        perm[k] = lo; k += 1; lo += 1
+        if lo <= hi
+            perm[k] = hi; k += 1; hi -= 1
+        end
+    end
+    return perm
+end
+
 # --- Non-Mutating 1D Dispatch ---
 function SFC._dispatch_execution_backend(
     ::SFC.DistributedBackend,
@@ -77,7 +93,7 @@ function _parallel_calculate_structure_function_core(
 
     # Use the result-object wrapper for clean distributed reduction using package types
     sums_and_counts =
-        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for i in eachindex(x_vecs[1])
+        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for i in _balanced_triangle_perm(length(x_vecs[1]))
             SFC.calculate_structure_function_i(
                 structure_function_type,
                 i,
@@ -177,7 +193,7 @@ function SFC._dispatch_execution_backend(
     end
 
     sums_and_counts =
-        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for i in eachindex(x_vecs[1])
+        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for i in _balanced_triangle_perm(length(x_vecs[1]))
             SFC.calculate_structure_function_2d_i(
                 structure_function_type,
                 i,
@@ -231,7 +247,7 @@ function SFC._dispatch_single_pass(
     D = size(x, 1)
     vD = Val(D)
     
-    combined_reduced = Distributed.@distributed (+) for i in 1:n_points
+    combined_reduced = Distributed.@distributed (+) for i in _balanced_triangle_perm(n_points)
         local_combined = zeros(Float64, 2 * SFC.SINGLE_PASS_N, n_bins)
         x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
         u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
@@ -248,8 +264,6 @@ function SFC._dispatch_single_pass(
                 
                 rh = SFH.r̂(x_i, x_j, distance_metric, r)
                 du_L = LA.dot(du, rh)
-                du_T = SFH.mδu_t(du, rh)
-                
                 du_L2 = du_L * du_L
                 du_T2 = SFH.transverse_norm2(du, rh)
                 
@@ -292,7 +306,7 @@ function SFC._dispatch_single_pass_2d(
     D = size(x, 1)
     vD = Val(D)
 
-    combined_reduced = Distributed.@distributed (+) for i in 1:n_points
+    combined_reduced = Distributed.@distributed (+) for i in _balanced_triangle_perm(n_points)
         local_combined = zeros(Float64, 2 * SFC.SINGLE_PASS_N, n_bins, n_val)
         x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
         u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))

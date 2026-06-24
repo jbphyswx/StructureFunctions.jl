@@ -117,20 +117,22 @@ function calculate_structure_function_i!(
     FT2 = eltype(T2)
     N3 = length(distance_bins)
 
-    X1 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][i], Val(N)))
-    U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val(N)))
+    X1 = SA.SVector{N, FT1}(ntuple(k -> @inbounds(x_vecs[k][i]), Val(N)))
+    U1 = SA.SVector{N, FT2}(ntuple(k -> @inbounds(u_vecs[k][i]), Val(N)))
 
     iter_inds = eachindex(x_vecs[1])
-    for j in (i + 1):last(iter_inds)
+    # @inbounds: x_vecs[k] are strided views; the bounds checks on every component access
+    # were a large per-pair overhead. U2 is built only for in-range pairs.
+    @inbounds for j in (i + 1):last(iter_inds)
         X2 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][j], Val(N)))
-        U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
 
         distance = distance_metric(X1, X2)
         bin = SFH.digitize(distance, distance_bins)
         if 1 <= bin < N3
+            U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
             rh = SFH.r̂(X1, X2, distance_metric, distance)
-            @inbounds output[bin] += structure_function_type(U2 - U1, rh)
-            @inbounds counts[bin] += 1
+            output[bin] += structure_function_type(U2 - U1, rh)
+            counts[bin] += 1
         end
     end
     return nothing
