@@ -668,4 +668,81 @@ function SFC._dispatch_single_pass_2d!(
     return sums_3d, counts_3d
 end
 
+# ============================================================================================
+# Threaded CPU BATCH paths — parallelize over the OUTER pair index i (geometry computed once).
+#
+# Round-robin i-chunks (triangle load balance, like the point-field path) with thread-local
+# accumulators reduced by elementwise +. No `threadid()`. Reuses the same `_bl_run_*!` drivers
+# + `_bl_*!` kernels as serial; only the executor differs. These `::AbstractArray` methods are
+# more specialized than the generic core serial-fallback stubs, so they win dispatch here.
+# ============================================================================================
+
+@inline _bl_accum_reduce(a, b) = (a[1] .+ b[1], a[2] .+ b[2])
+
+# per-chunk work as a named function so the assigned `acc` is not a boxed closure capture
+# (OhMyThreads rejects boxed captures; see its boxing docs).
+@inline function _bl_run_one_chunk(make_accum, run_chunk!, isub)
+    acc = make_accum()
+    run_chunk!(acc, isub)
+    return acc
+end
+
+# executor: round-robin chunks of the outer i-range; per-chunk thread-local accumulators reduced by +.
+function _bl_threaded_exec(make_accum, run_chunk!, ifull)
+    nt = Threads.nthreads()
+    (nt <= 1 || length(ifull) <= 1) && return _bl_run_one_chunk(make_accum, run_chunk!, ifull)
+    return OMT.tmapreduce(_bl_accum_reduce, OMT.chunks(ifull; n = nt, split = OMT.RoundRobin())) do isub
+        _bl_run_one_chunk(make_accum, run_chunk!, isub)
+    end
+end
+
+function SFC.auxiliary_structure_function_threaded!(
+    sums::AbstractArray, counts::AbstractArray,
+    sf_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...,
+)
+    SFC._bl_run_1d!(sums, counts, sf_type, x, u, BinEdges(distance_bins), _bl_threaded_exec)
+end
+
+function SFC.auxiliary_joint2d_threaded!(
+    sums::AbstractArray, counts::AbstractArray,
+    sf_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins; kwargs...,
+)
+    SFC._bl_run_joint2d!(sums, counts, sf_type, x, u, BinEdges(distance_bins), BinEdges(value_bins), _bl_threaded_exec)
+end
+
+function SFC.threaded_calculate_structure_functions_single_pass!(
+    sums::AbstractArray, counts::AbstractArray, x, u, distance_bins; kwargs...,
+)
+    SFC._bl_run_sp1d!(sums, counts, x, u, BinEdges(distance_bins), _bl_threaded_exec)
+end
+
+function SFC.threaded_calculate_structure_functions_single_pass_2d!(
+    sums::AbstractArray, counts::AbstractArray, x, u, distance_bins,
+    value_bins::SFC.SinglePass2DValueBins; kwargs...,
+)
+    SFC._bl_run_sp2d!(sums, counts, x, u, BinEdges(distance_bins), value_bins, _bl_threaded_exec)
+end
+
+# Batched (ndims(u) >= 3) non-mutating joint-2D. The AbstractMatrix method earlier is more
+# specific and handles the point-field case; this is entered only for batched inputs (the
+# non-mutating ThreadedBackend dispatch routes value_bins here as the trailing argument).
+function SFC.threaded_calculate_structure_function(
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x_arr::AbstractArray{FT1},
+    u_arr::AbstractArray{FT2},
+    distance_bins::AbstractVector,
+    value_bins::AbstractVector;
+    count_eltype::Type{CT} = UInt32,
+    kwargs...,
+) where {FT1 <: Number, FT2 <: Number, CT}
+    OT = promote_type(float(FT1), float(FT2))
+    n_dist = n_histogram_bins(distance_bins)
+    n_val = n_histogram_bins(value_bins)
+    bdims = size(u_arr)[3:end]
+    sums = zeros(OT, n_dist, n_val, bdims...)
+    counts = zeros(CT, n_dist, n_val, bdims...)
+    SFC.auxiliary_joint2d_threaded!(sums, counts, structure_function_type, x_arr, u_arr, distance_bins, value_bins; kwargs...)
+    return SFO.StructureFunction2D(structure_function_type, distance_bins, value_bins, sums, counts)
+end
+
 end # module
