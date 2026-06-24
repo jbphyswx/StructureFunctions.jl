@@ -17,21 +17,86 @@ function serial_calculate_structure_function!(
         @info("calculating structure function (serial reduction)")
     end
 
-    iter_inds = eachindex(x_vecs[1])
-    # Pass Val(length(x_vecs)) to make it a type parameter in the work function
-    vN = Val(length(x_vecs))
-    PM.@showprogress enabled = show_progress for i in iter_inds
+    # Fast path: Euclidean + D ∈ (2,3) uses the SIMD compute/scatter-split kernel (vectorizes
+    # the per-pair compute over j; only the histogram scatter is scalar). Other metrics/D fall
+    # back to the scalar per-i kernel.
+    D = length(x_vecs)
+    if distance_metric isa DI.Euclidean && D == 2
+        return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs, distance_bins, Val(2))
+    elseif distance_metric isa DI.Euclidean && D == 3
+        return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs, distance_bins, Val(3))
+    end
+
+    vN = Val(D)
+    PM.@showprogress enabled = show_progress for i in eachindex(x_vecs[1])
         calculate_structure_function_i!(
-            output,
-            counts,
-            vN,
-            structure_function_type,
-            i,
-            x_vecs,
-            u_vecs,
-            distance_bins;
+            output, counts, vN, structure_function_type, i, x_vecs, u_vecs, distance_bins;
             distance_metric = distance_metric,
         )
+    end
+    return nothing
+end
+
+"""
+    _pf_simd_run!(output, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}) -> mutates buffers
+
+Point-field 1D (Euclidean) via the SIMD compute/scatter split. Materializes contiguous
+per-component vectors (so consecutive `j` are unit-stride → packed loads), then for each `i`:
+`@simd` over `j>i` computes distance + SF value into buffers (no scatter ⇒ vectorizes), and a
+short scalar loop digitizes + scatters into the histogram. `Val{D}` keeps it type-stable.
+"""
+function _pf_simd_run!(
+    output::AbstractVector{OT}, counts::AbstractVector{CT},
+    sf::SFT.AbstractPairwiseStructureFunctionType,
+    x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D},
+) where {OT, CT, D}
+    xc = ntuple(d -> collect(x_vecs[d]), Val(D))   # contiguous component vectors
+    uc = ntuple(d -> collect(u_vecs[d]), Val(D))
+    N = length(xc[1])
+    distbuf = Vector{eltype(xc[1])}(undef, N)
+    valbuf = Vector{OT}(undef, N)
+    _pf_simd_pairs!(output, counts, sf, xc, uc, dist_be, Val(D), distbuf, valbuf, 1:(N - 1))
+    return nothing
+end
+
+"""
+    _pf_simd_pairs!(output, counts, sf, xc, uc, dist_be, ::Val{D}, distbuf, valbuf, irange)
+
+Core point-field SIMD compute/scatter kernel over outer indices `irange` (each `i` contributes
+pairs `(i, j>i)`). For each `i`: `@simd` over `j` computes distance + SF value into the buffers
+(contiguous components ⇒ packed loads, no scatter ⇒ vectorizes), then a scalar loop digitizes +
+scatters. The `i`-loop AND the inner `@simd` live in THIS function body and it is called once per
+range — factoring the inner loop into a per-`i` helper stops the `@simd` from vectorizing. Shared
+by the serial driver (full range) and the threaded extension (one chunk per task).
+"""
+function _pf_simd_pairs!(
+    output::AbstractVector{OT}, counts::AbstractVector{CT},
+    sf::SFT.AbstractPairwiseStructureFunctionType,
+    xc::NTuple{D}, uc::NTuple{D}, dist_be, ::Val{D},
+    distbuf::AbstractVector, valbuf::AbstractVector, irange,
+) where {OT, CT, D}
+    N = length(xc[1])
+    nb = n_histogram_bins(dist_be)
+    FTx = eltype(xc[1])
+    @inbounds for i in irange
+        Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
+        Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
+        @simd for j in (i + 1):N
+            Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
+            dx = Xj - Xi
+            dist = sqrt(LA.dot(dx, dx))
+            Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
+            rh = dx / dist
+            distbuf[j] = dist
+            valbuf[j] = sf(Uj - Ui, rh)
+        end
+        for j in (i + 1):N
+            bin = SFH.digitize(distbuf[j], dist_be)
+            if 1 <= bin <= nb
+                output[bin] += valbuf[j]
+                counts[bin] += one(CT)
+            end
+        end
     end
     return nothing
 end
