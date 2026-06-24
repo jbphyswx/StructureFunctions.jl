@@ -13,6 +13,9 @@ using StructureFunctions:
     BinEdges,
     n_histogram_bins
 
+# Signal to AutoBackend that threading is genuinely available (see backends.jl).
+SFC._ohmythreads_loaded() = true
+
 """
     _triangle_outer_chunks(indices, n_tasks)
 
