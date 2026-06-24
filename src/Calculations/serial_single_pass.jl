@@ -182,6 +182,13 @@ function _accumulate_single_pass_1d!(
         throw(DimensionMismatch("counts must have shape ($SINGLE_PASS_N, n_bins); got $(size(counts))"))
     vD = Val(D)
 
+    # Fast path: Euclidean + D ∈ (2,3) via the SIMD compute/scatter split (vectorizes the
+    # per-pair du_L / |du|² compute over j; the 6-way histogram scatter stays scalar).
+    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
+        _sp_simd_run!(sums, counts, x, u, BinEdges(distance_bins), D == 2 ? Val(2) : Val(3))
+        return sums, counts
+    end
+
     for i in 1:n_points
         x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
         u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
@@ -217,6 +224,74 @@ function _accumulate_single_pass_1d!(
     end
 
     return sums, counts
+end
+
+"""
+    _pf_sp_simd_pairs!(sums, counts, xc, uc, dist_be, ::Val{D}, distbuf, duLbuf, dn2buf, irange)
+
+Single-pass (6 invariants) point-field SIMD compute/scatter kernel over outer indices `irange`.
+For each `i`: `@simd` over `j>i` computes distance, `du_L = du·r̂`, and `|du|²` into buffers
+(contiguous components ⇒ packed loads, no scatter ⇒ vectorizes), then a scalar loop digitizes
+and scatters the 6 invariants. Like `_pf_simd_pairs!`, the loop must live in this one kernel
+(not a per-`i` helper) for the `@simd` to vectorize. Shared by serial + threaded.
+"""
+function _pf_sp_simd_pairs!(
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
+    xc::NTuple{D}, uc::NTuple{D}, dist_be, ::Val{D},
+    distbuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector, irange,
+) where {OT, CT, D}
+    N = length(xc[1])
+    nb = n_histogram_bins(dist_be)
+    FTx = eltype(xc[1])
+    @inbounds for i in irange
+        Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
+        Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
+        @simd for j in (i + 1):N
+            Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
+            dx = Xj - Xi
+            dist = sqrt(LA.dot(dx, dx))
+            rh = dx / dist
+            du = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D))) - Ui
+            distbuf[j] = dist
+            duLbuf[j] = LA.dot(du, rh)
+            dn2buf[j] = LA.dot(du, du)
+        end
+        for j in (i + 1):N
+            bin = SFH.digitize(distbuf[j], dist_be)
+            if 1 <= bin <= nb
+                duL = duLbuf[j]
+                dn2 = dn2buf[j]
+                duL2 = duL * duL
+                duT2 = dn2 - duL2
+                sums[1, bin] += dn2
+                sums[2, bin] += duL2
+                sums[3, bin] += duT2
+                sums[4, bin] += duL * dn2
+                sums[5, bin] += duL * duL2
+                sums[6, bin] += duL * duT2
+                for t in 1:SINGLE_PASS_N
+                    counts[t, bin] += one(CT)
+                end
+            end
+        end
+    end
+    return nothing
+end
+
+# Serial driver: materialize contiguous component vectors + buffers, run over the full range.
+function _sp_simd_run!(
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
+    x::AbstractMatrix, u::AbstractMatrix, dist_be, ::Val{D},
+) where {OT, CT, D}
+    xc = ntuple(d -> collect(view(x, d, :)), Val(D))
+    uc = ntuple(d -> collect(view(u, d, :)), Val(D))
+    N = length(xc[1])
+    FTx = eltype(xc[1])
+    distbuf = Vector{FTx}(undef, N)
+    duLbuf = Vector{OT}(undef, N)
+    dn2buf = Vector{OT}(undef, N)
+    _pf_sp_simd_pairs!(sums, counts, xc, uc, dist_be, Val(D), distbuf, duLbuf, dn2buf, 1:(N - 1))
+    return nothing
 end
 
 function _dispatch_single_pass end

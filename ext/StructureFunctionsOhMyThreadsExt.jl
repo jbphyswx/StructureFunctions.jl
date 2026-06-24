@@ -438,6 +438,14 @@ function SFC._dispatch_single_pass(
     D = size(x, 1)
     vD = Val(D)
 
+    # Fast path: Euclidean + D ∈ (2,3) threads the SIMD compute/scatter single-pass kernel.
+    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
+        sums = zeros(OT, SFC.SINGLE_PASS_N, n_bins)
+        counts = zeros(CT, SFC.SINGLE_PASS_N, n_bins)
+        _threaded_sp_simd!(sums, counts, x, u, BinEdges(distance_bins), D == 2 ? Val(2) : Val(3))
+        return SFC.append_helmholtz_rotational_divergent_rows(sums, counts, distance_bins)
+    end
+
     # tmapreduce: each chunk gets its own task-local (sums, counts) buffers.
     # The reducer `+` merges partial results via element-wise addition.
     # This produces O(nthreads) allocations total — not O(n_points).
@@ -503,6 +511,12 @@ function SFC._dispatch_single_pass!(
     D = size(x, 1)
     vD = Val(D)
 
+    # Fast path: Euclidean + D ∈ (2,3) threads the SIMD compute/scatter single-pass kernel.
+    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
+        _threaded_sp_simd!(sums, counts, x, u, BinEdges(distance_bins), D == 2 ? Val(2) : Val(3))
+        return sums, counts
+    end
+
     chunk_sums, chunk_counts = OMT.tmapreduce(
         ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
         _triangle_outer_chunks(1:n_points, Threads.nthreads()),
@@ -549,6 +563,33 @@ function SFC._dispatch_single_pass!(
     sums .+= chunk_sums
     counts .+= chunk_counts
     return sums, counts
+end
+
+# Threaded single-pass SIMD: contiguous components shared, per-task buffers + local (6,nb)
+# accumulators, round-robin i-chunks reduced by +.
+function _threaded_sp_simd!(
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, x, u, dist_be, ::Val{D},
+) where {OT, CT, D}
+    xc = ntuple(d -> collect(view(x, d, :)), Val(D))
+    uc = ntuple(d -> collect(view(u, d, :)), Val(D))
+    Np = size(x, 2)
+    nb = n_histogram_bins(dist_be)
+    FTx = eltype(xc[1])
+    cs, cc = OMT.tmapreduce(
+        ((s1, c1), (s2, c2)) -> (s1 .+ s2, c1 .+ c2),
+        _triangle_outer_chunks(1:(Np - 1), Threads.nthreads()),
+    ) do chunk
+        ls = zeros(OT, SFC.SINGLE_PASS_N, nb)
+        lc = zeros(CT, SFC.SINGLE_PASS_N, nb)
+        distbuf = Vector{FTx}(undef, Np)
+        duLbuf = Vector{OT}(undef, Np)
+        dn2buf = Vector{OT}(undef, Np)
+        SFC._pf_sp_simd_pairs!(ls, lc, xc, uc, dist_be, Val(D), distbuf, duLbuf, dn2buf, chunk)
+        (ls, lc)
+    end
+    sums .+= cs
+    counts .+= cc
+    return nothing
 end
 
 function SFC._dispatch_single_pass_2d(
