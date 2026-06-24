@@ -196,6 +196,12 @@ function threaded_calculate_structure_function!(args...; kwargs...)
     )
 end
 
+# Flipped to `true` by the OhMyThreads extension when it loads. AutoBackend gates its threaded
+# choice on this rather than `hasmethod`, because the throwing stub above makes `hasmethod`
+# always true — which previously fooled AutoBackend into the threaded path (then it threw)
+# when OhMyThreads was not loaded. With this flag, AutoBackend cleanly falls back to serial.
+_ohmythreads_loaded() = false
+
 function _threaded_backend_available(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x,
@@ -203,16 +209,7 @@ function _threaded_backend_available(
     distance_bins,
     vrsac,
 )
-    return hasmethod(
-        threaded_calculate_structure_function,
-        Tuple{
-            typeof(structure_function_type),
-            typeof(x),
-            typeof(u),
-            typeof(distance_bins),
-            typeof(vrsac),
-        },
-    )
+    return _ohmythreads_loaded()
 end
 
 function _threaded_backend_available!(
@@ -223,17 +220,7 @@ function _threaded_backend_available!(
     u,
     distance_bins,
 )
-    return hasmethod(
-        threaded_calculate_structure_function!,
-        Tuple{
-            typeof(sums),
-            typeof(counts),
-            typeof(structure_function_type),
-            typeof(x),
-            typeof(u),
-            typeof(distance_bins),
-        },
-    )
+    return _ohmythreads_loaded()
 end
 
 function _threaded_backend_available!(
@@ -245,18 +232,7 @@ function _threaded_backend_available!(
     distance_bins,
     value_bins::AbstractVector,
 )
-    return hasmethod(
-        threaded_calculate_structure_function!,
-        Tuple{
-            typeof(sums),
-            typeof(counts),
-            typeof(structure_function_type),
-            typeof(x),
-            typeof(u),
-            typeof(distance_bins),
-            typeof(value_bins),
-        },
-    )
+    return _ohmythreads_loaded()
 end
 
 function _dispatch_execution_backend(
