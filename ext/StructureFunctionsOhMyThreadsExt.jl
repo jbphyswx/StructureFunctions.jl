@@ -142,7 +142,15 @@ function SFC.threaded_calculate_structure_function!(
         throw(ArgumentError("Threaded array backend supports only 1D, 2D, or 3D inputs."))
     end
 
-    # Chunked tmapreduce to allocate once per thread/task chunk
+    # Fast path: Euclidean + D ∈ (2,3) threads the SIMD compute/scatter-split kernel over
+    # round-robin i-chunks (per-task buffers + local accumulators; contiguous components shared).
+    if distance_metric isa DI.Euclidean && N == 2
+        return _threaded_pf_simd!(output_sums, output_counts, structure_function_type, x_arr, u_arr, distance_bins, Val(2))
+    elseif distance_metric isa DI.Euclidean && N == 3
+        return _threaded_pf_simd!(output_sums, output_counts, structure_function_type, x_arr, u_arr, distance_bins, Val(3))
+    end
+
+    # Fallback: scalar per-i over chunks
     x_tuple = ntuple(k -> view(x_arr, k, :), N)
     u_tuple = ntuple(k -> view(u_arr, k, :), N)
     result = OMT.tmapreduce(+, _triangle_outer_chunks(axes(x_arr, 2), Threads.nthreads())) do chunk
@@ -150,20 +158,37 @@ function SFC.threaded_calculate_structure_function!(
         local_counts = zeros(CT, N3)
         for i in chunk
             SFC.calculate_structure_function_i!(
-                local_output,
-                local_counts,
-                Val(N),
-                structure_function_type,
-                i,
-                x_tuple,
-                u_tuple,
-                distance_bins;
-                distance_metric = distance_metric,
+                local_output, local_counts, Val(N), structure_function_type, i,
+                x_tuple, u_tuple, distance_bins; distance_metric = distance_metric,
             )
         end
         SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, local_output, local_counts)
     end
 
+    output_sums .+= result.sums
+    output_counts .+= result.counts
+    return nothing
+end
+
+# Threaded point-field SIMD compute/scatter split: contiguous component vectors materialized
+# once (shared, read-only), per-task histogram + distbuf/valbuf, round-robin i-chunks.
+function _threaded_pf_simd!(
+    output_sums::AbstractVector{OT}, output_counts::AbstractVector{CT},
+    sf::SFT.AbstractPairwiseStructureFunctionType, x_arr, u_arr, dist_be, ::Val{D},
+) where {OT, CT, D}
+    xc = ntuple(d -> collect(view(x_arr, d, :)), Val(D))
+    uc = ntuple(d -> collect(view(u_arr, d, :)), Val(D))
+    Np = size(x_arr, 2)
+    nb = n_histogram_bins(dist_be)
+    FTx = eltype(xc[1])
+    result = OMT.tmapreduce(+, _triangle_outer_chunks(1:(Np - 1), Threads.nthreads())) do chunk
+        local_output = zeros(OT, nb)
+        local_counts = zeros(CT, nb)
+        distbuf = Vector{FTx}(undef, Np)
+        valbuf = Vector{OT}(undef, Np)
+        SFC._pf_simd_pairs!(local_output, local_counts, sf, xc, uc, dist_be, Val(D), distbuf, valbuf, chunk)
+        SFO.StructureFunctionSumsAndCounts(sf, dist_be, local_output, local_counts)
+    end
     output_sums .+= result.sums
     output_counts .+= result.counts
     return nothing
