@@ -288,8 +288,8 @@ sft = SF.LongitudinalSecondOrderStructureFunctionType()
 
 ws = SFC.GPUSFWorkspace(backend, bins)
 result = SFC.gpu_calculate_structure_function(
-    sft, backend, x, u, bins; workspace = ws, return_sums_and_counts = true,
-)
+    sft, backend, x, u, bins; workspace = ws,
+)  # returns a StructureFunctionSumsAndCounts (raw sums + counts)
 SFC.release!(ws)
 ```
 
