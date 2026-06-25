@@ -6,6 +6,7 @@ export AbstractStructureFunction,
     StructureFunction,
     StructureFunctionSumsAndCounts,
     StructureFunction2DSumsAndCounts,
+    StructureFunctionTensor,
     StructureFunctionTensorSumsAndCounts,
     HelmholtzDecomposition2D,
     marginalize
@@ -148,6 +149,33 @@ struct StructureFunctionTensorSumsAndCounts{P, FT, BT, VT, CT} <: AbstractStruct
 end
 
 """
+    StructureFunctionTensor(order, distance_bins, values)
+
+Averaged binned tensor structure function — the mean tensor ``D_{i…}(r)`` per distance bin
+(the `sums ./ counts` reduction of a [`StructureFunctionTensorSumsAndCounts`](@ref), with the
+empty-bin guard `count == 0 → NaN`). For tensor order `P` and spatial dimension `D`, `values`
+has leading axes `(D, D, ..., D, n_bins, auxiliary...)` with `P` repeated component axes. This
+is the default result of `calculate_structure_function_tensor`; pass
+`output_type = StructureFunctionTensorSumsAndCounts` for the raw accumulator.
+"""
+struct StructureFunctionTensor{P, FT, BT, VT} <: AbstractStructureFunction
+    order::Val{P}
+    distance_bins::BT
+    values::VT
+
+    function StructureFunctionTensor(order::Val{P}, distance_bins::BT, values::VT) where {P, BT, VT}
+        P >= 1 || throw(ArgumentError("tensor order must be positive"))
+        ndims(values) >= P + 1 ||
+            throw(DimensionMismatch("tensor values must have at least P component axes plus one distance-bin axis"))
+        n_bins = size(values, P + 1)
+        length(distance_bins) == n_bins + 1 ||
+            throw(DimensionMismatch("distance_bins must have length size(values,$(P + 1))+1"))
+        FT = eltype(values)
+        return new{P, FT, BT, VT}(order, distance_bins, values)
+    end
+end
+
+"""
     HelmholtzDecomposition2D(distance_bins, rotational_sums, rotational_counts,
                              divergent_sums, divergent_counts,
                              longitudinal_values, transverse_values)
@@ -212,6 +240,7 @@ Base.length(sf::StructureFunction) = length(sf.values)
 Base.length(sf::StructureFunctionSumsAndCounts) = length(sf.sums)
 Base.length(sf::StructureFunction2DSumsAndCounts) = length(sf.distance_bins) - 1
 Base.length(sf::StructureFunctionTensorSumsAndCounts) = length(sf.distance_bins) - 1
+Base.length(sf::StructureFunctionTensor) = length(sf.distance_bins) - 1
 Base.length(sf::HelmholtzDecomposition2D) = length(sf.distance_bins) - 1
 
 function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSumsAndCounts)
@@ -279,6 +308,11 @@ function Base.show(io::IO, sf::StructureFunctionTensorSumsAndCounts{P, FT}) wher
     print(io, "(distance_bins=", length(sf.distance_bins), ", size=", size(sf.sums), ")")
 end
 
+function Base.show(io::IO, sf::StructureFunctionTensor{P, FT}) where {P, FT}
+    print(io, "StructureFunctionTensor{", P, ", ", FT, "}")
+    print(io, "(distance_bins=", length(sf.distance_bins), ", size=", size(sf.values), ")")
+end
+
 function Base.show(io::IO, sf::HelmholtzDecomposition2D{FT}) where {FT}
     print(io, "HelmholtzDecomposition2D{", FT, "}")
     print(io, "(distance_bins=", length(sf.distance_bins), ")")
@@ -288,6 +322,7 @@ end
 operator(sf::AbstractStructureFunction) = sf.operator
 SFT.order(sf::AbstractStructureFunction) = SFT.order(sf.operator)
 SFT.order(sf::StructureFunctionTensorSumsAndCounts{P}) where {P} = P
+SFT.order(sf::StructureFunctionTensor{P}) where {P} = P
 
 # Comparison & Conversion
 import Base: isapprox, Float32, Float64

@@ -122,6 +122,33 @@ end
 @inline _bin_average(sums::AbstractArray, counts::AbstractArray) =
     _bin_average!(similar(sums, eltype(sums)), sums, counts)
 
+"""
+    _tensor_bin_average(sums, counts, ::Val{P})
+
+Tensor analogue of [`_bin_average`](@ref): `counts` (indexed by `(bin, aux...)`) broadcasts over
+the `P` leading component axes of `sums` (shape `(D×P..., n_bins, aux...)`). Same empty-bin guard
+(`count == 0 → NaN`) and `eltype` preservation. Used by `_finalize` to average a tensor result.
+"""
+function _tensor_bin_average(sums::AbstractArray, counts::AbstractArray, ::Val{P}) where {P}
+    T = eltype(sums)
+    out = similar(sums, T)
+    comp = CartesianIndices(ntuple(d -> axes(sums, d), Val(P)))   # D^P component indices
+    rest = CartesianIndices(axes(sums)[(P + 1):end])              # (n_bins, aux...)
+    @inbounds for r in rest
+        c = counts[r]
+        if iszero(c)
+            for ci in comp
+                out[ci, r] = T(NaN)
+            end
+        else
+            for ci in comp
+                out[ci, r] = sums[ci, r] / c
+            end
+        end
+    end
+    return out
+end
+
 # Non-mutating backends always return the raw accumulator (`StructureFunctionSumsAndCounts`);
 # the public boundary picks the representation via `_finalize(raw, output_type)`.
 function serial_calculate_structure_function(
