@@ -28,7 +28,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         # Baselines
         bas = SFC.calculate_structure_function(
             SFT.L2SF, x_mat, u_mat, distance_bins;
-            return_sums_and_counts = true, backend = SFC.SerialBackend(), verbose = false, show_progress = false
+            output_type = SF.StructureFunctionSumsAndCounts, backend = SFC.SerialBackend(), verbose = false, show_progress = false
         )
 
         sums = zeros(Float64, n_dist)
@@ -49,7 +49,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     @testset "1D Serial Mutating Array Correctness & Accumulation" begin
         bas = SFC.calculate_structure_function(
             SFT.L2SF, x_mat, u_mat, distance_bins;
-            return_sums_and_counts = true, backend = SFC.SerialBackend(), verbose = false, show_progress = false
+            output_type = SF.StructureFunctionSumsAndCounts, backend = SFC.SerialBackend(), verbose = false, show_progress = false
         )
 
         sums = zeros(Float64, n_dist)

@@ -149,14 +149,13 @@ function _serial_calculate_structure_function_point(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector,
-    vrsac::Val{RSAC},
     vD::Val{D};
     count_eltype::Type{CT} = UInt32,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose::Bool = true,
     show_progress::Bool = true,
     kwargs...,
-) where {FT1, FT2, RSAC, D, CT}
+) where {FT1, FT2, D, CT}
     x_tuple = _component_vector_views(x, vD)
     u_tuple = _component_vector_views(u, vD)
     OT = promote_type(float(FT1), float(FT2))
@@ -175,32 +174,22 @@ function _serial_calculate_structure_function_point(
         show_progress = show_progress,
     )
 
-    if RSAC
-        return SFO.StructureFunctionSumsAndCounts(
-            structure_function_type,
-            distance_bins,
-            output,
-            counts,
-        )
-    end
-
-    output_div = similar(output)
-    for k in eachindex(output)
-        c = counts[k]
-        output_div[k] = iszero(c) ? OT(NaN) : output[k] / c
-    end
-    return SFO.StructureFunction(structure_function_type, distance_bins, output_div)
+    return SFO.StructureFunctionSumsAndCounts(
+        structure_function_type,
+        distance_bins,
+        output,
+        counts,
+    )
 end
 
 function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, RSAC, CT}
+) where {FT1 <: Number, FT2 <: Number, CT}
     if ndims(u) >= 3
         dist_be = BinEdges(distance_bins)
         n_bins = n_histogram_bins(dist_be)
@@ -209,16 +198,7 @@ function serial_calculate_structure_function(
         sums = zeros(FT, n_bins, bdims...)
         counts = zeros(CT, n_bins, bdims...)
         auxiliary_structure_function!(sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
-        if RSAC
-            return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
-        else
-            output_div = similar(sums)
-            @inbounds for k in eachindex(sums)
-                c = counts[k]
-                output_div[k] = iszero(c) ? FT(NaN) : sums[k] / c
-            end
-            return SFO.StructureFunction(structure_function_type, distance_bins, output_div)
-        end
+        return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
     # Point-field route:
     D = size(x, 1)
@@ -227,7 +207,6 @@ function serial_calculate_structure_function(
         x,
         u,
         distance_bins,
-        Val(RSAC),
         Val(2);
         count_eltype = count_eltype,
         kwargs...,
@@ -237,7 +216,6 @@ function serial_calculate_structure_function(
         x,
         u,
         distance_bins,
-        Val(RSAC),
         Val(3);
         count_eltype = count_eltype,
         kwargs...,
@@ -249,11 +227,10 @@ function threaded_calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, RSAC, CT}
+) where {FT1 <: Number, FT2 <: Number, CT}
     if ndims(u) >= 3
         dist_be = BinEdges(distance_bins)
         n_bins = n_histogram_bins(dist_be)
@@ -262,16 +239,7 @@ function threaded_calculate_structure_function(
         sums = zeros(FT, n_bins, bdims...)
         counts = zeros(CT, n_bins, bdims...)
         auxiliary_structure_function_threaded!(sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
-        if RSAC
-            return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
-        else
-            output_div = similar(sums)
-            @inbounds for k in eachindex(sums)
-                c = counts[k]
-                output_div[k] = iszero(c) ? FT(NaN) : sums[k] / c
-            end
-            return SFO.StructureFunction(structure_function_type, distance_bins, output_div)
-        end
+        return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
     throw(ArgumentError("Threaded backend is unavailable for non-batch inputs. Load the OhMyThreads extension or use backend=SerialBackend()."))
 end

@@ -24,28 +24,45 @@ function SFC._dispatch_execution_backend(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x,
     u,
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     kwargs...,
-) where {RSAC}
+)
     SFC.has_auxiliary_axes(shape) && throw(ArgumentError(
         "MPIBackend currently supports point-field (non-batched) inputs; got a batched shape."))
-    return _mpi_point_1d(b, structure_function_type, x, u, distance_bins, Val(RSAC); kwargs...)
+    return _mpi_point_1d(b, structure_function_type, x, u, distance_bins; kwargs...)
 end
 
+# 2D joint is not yet implemented for MPI (the share-then-Allreduce pattern would extend to it).
+# Give an honest error here so the 7-arg call does not fall through to the core "MPI unavailable"
+# stub, which would wrongly tell the user to load MPI when MPI is already loaded.
+function SFC._dispatch_execution_backend(
+    ::SFC.MPIBackend,
+    ::SFC.AbstractFieldShape,
+    ::SFT.AbstractPairwiseStructureFunctionType,
+    x,
+    u,
+    distance_bins::AbstractVector,
+    value_bins::AbstractVector;
+    kwargs...,
+)
+    throw(ArgumentError(
+        "2D joint structure functions are not yet implemented for MPIBackend; use a different \
+         backend, or compute the 2D histogram with SerialBackend/ThreadedBackend per rank."))
+end
+
+# Returns the raw accumulator; the public boundary applies `_finalize`.
 function _mpi_point_1d(
     b::SFC.MPIBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractMatrix,
     u::AbstractMatrix,
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     count_eltype::Type{CT} = UInt32,
     verbose = false,
     show_progress = false,
     kwargs...,
-) where {RSAC, CT}
+) where {CT}
     comm = _comm(b)
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)
@@ -64,17 +81,7 @@ function _mpi_point_1d(
     MPI.Allreduce!(sums, +, comm)
     MPI.Allreduce!(counts, +, comm)
 
-    if RSAC
-        return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
-    else
-        OT = eltype(sums)
-        out = similar(sums)
-        @inbounds for k in eachindex(sums)
-            c = counts[k]
-            out[k] = iszero(c) ? OT(NaN) : sums[k] / c
-        end
-        return SFO.StructureFunction(structure_function_type, distance_bins, out)
-    end
+    return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
 end
 
 end # module

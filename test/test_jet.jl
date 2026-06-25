@@ -14,18 +14,24 @@ Test.@testset "JET Stability Audit" begin
     sf_type = SFT.LongitudinalSecondOrderStructureFunction
 
     Test.@testset "calculate_structure_function (Array input)" begin
-        # Test the core (positional dispatch) for absolute stability
-        # We only audit SF module to ignore internal Base.Threads dispatches
+        # Audit type stability of the compute kernel on a concrete backend. The default (averaged)
+        # path exercises the full backend compute (which produces the raw
+        # `StructureFunctionSumsAndCounts`) plus `_finalize`, so any kernel instability surfaces
+        # here. We audit `SerialBackend` (concrete) rather than `AutoBackend` because AutoBackend's
+        # runtime backend selection is an intended runtime branch, not a fixable instability. We
+        # only audit the SF module to ignore internal Base.Threads dispatches. (Passing a
+        # non-default `output_type` explicitly incurs a single by-design dynamic-dispatch barrier
+        # in `_finalize`; it is checked for error-freedom via @test_call below, not @test_opt.)
         JET.@test_opt target_modules = (SF,) SFC.calculate_structure_function(
             sf_type,
             x,
             u,
-            bins,
-            Val(false);
+            bins;
+            backend = SFC.SerialBackend(),
             verbose = false,
             show_progress = false,
         )
-        # Test the convenience entry point for correctness (call)
+        # Error-freedom of the default and explicit-output_type convenience entries.
         # Only analyze StructureFunctions module code, not external packages like ProgressMeter
         # which do compile-time checks for Main.IJulia that may not be present.
         # See: https://github.com/timholy/ProgressMeter.jl/issues/348
@@ -34,6 +40,15 @@ Test.@testset "JET Stability Audit" begin
             x,
             u,
             bins;
+            verbose = false,
+            show_progress = false,
+        )
+        JET.@test_call target_modules = (SF,) SFC.calculate_structure_function(
+            sf_type,
+            x,
+            u,
+            bins;
+            output_type = SF.StructureFunctionSumsAndCounts,
             verbose = false,
             show_progress = false,
         )
@@ -41,17 +56,17 @@ Test.@testset "JET Stability Audit" begin
     Test.@testset "calculate_structure_function (3D Array input)" begin
         xa = [0.0 1.0; 0.0 0.0; 0.0 0.0]
         ua = [1.0 2.0; 0.0 0.0; 0.0 0.0]
-        # Test the core (positional dispatch) for absolute stability
+        # Audit type stability of the compute kernel on a concrete backend (see note above).
         JET.@test_opt target_modules = (SF,) SFC.calculate_structure_function(
             sf_type,
             xa,
             ua,
-            bins,
-            Val(false);
+            bins;
+            backend = SFC.SerialBackend(),
             verbose = false,
             show_progress = false,
         )
-        # Test the convenience entry point for correctness (call)
+        # Error-freedom of the default and explicit-output_type convenience entries.
         # Only analyze StructureFunctions module code, not external packages like ProgressMeter
         # which do compile-time checks for Main.IJulia that may not be present.
         # See: https://github.com/timholy/ProgressMeter.jl/issues/348
@@ -60,6 +75,15 @@ Test.@testset "JET Stability Audit" begin
             xa,
             ua,
             bins;
+            verbose = false,
+            show_progress = false,
+        )
+        JET.@test_call target_modules = (SF,) SFC.calculate_structure_function(
+            sf_type,
+            xa,
+            ua,
+            bins;
+            output_type = SF.StructureFunctionSumsAndCounts,
             verbose = false,
             show_progress = false,
         )
