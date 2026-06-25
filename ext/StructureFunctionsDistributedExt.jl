@@ -32,23 +32,21 @@ function _balanced_triangle_perm(N::Integer)
     return perm
 end
 
-# --- Non-Mutating 1D Dispatch ---
+# --- Non-Mutating 1D Dispatch (returns the raw accumulator; public boundary finalizes) ---
 function SFC._dispatch_execution_backend(
     db::SFC.DistributedBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     backend = nothing,
     kwargs...,
-) where {RSAC}
+)
     return _parallel_calculate_structure_function_core(
         structure_function_type,
         x_vecs,
         u_vecs,
-        distance_bins,
-        Val(RSAC);
+        distance_bins;
         inner = db.inner,
         kwargs...,
     )
@@ -59,10 +57,9 @@ function SFC._dispatch_execution_backend(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_arr::AbstractMatrix,
     u_arr::AbstractMatrix,
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     kwargs...,
-) where {RSAC}
+)
     N_dims = size(x_arr, 1)
     x_vecs = ntuple(k -> view(x_arr, k, :), N_dims)
     u_vecs = ntuple(k -> view(u_arr, k, :), N_dims)
@@ -71,8 +68,7 @@ function SFC._dispatch_execution_backend(
         structure_function_type,
         x_vecs,
         u_vecs,
-        distance_bins,
-        Val(RSAC);
+        distance_bins;
         kwargs...,
     )
 end
@@ -81,15 +77,14 @@ function _parallel_calculate_structure_function_core(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
     count_eltype::Type{CT} = UInt32,
     inner::SFC.AbstractExecutionBackend = SFC.SerialBackend(),
     kwargs...,
-) where {RSAC, CT}
+) where {CT}
     if verbose
         @info("calculating structure function (distributed reduction, inner=$(nameof(typeof(inner))))")
     end
@@ -113,17 +108,10 @@ function _parallel_calculate_structure_function_core(
             )
         end
 
-    if RSAC
-        return sums_and_counts
-    else
-        OT = eltype(sums_and_counts.sums)
-        output_div = similar(sums_and_counts.sums, OT)
-        for k in eachindex(sums_and_counts.sums)
-            c = sums_and_counts.counts[k]
-            output_div[k] = iszero(c) ? OT(NaN) : sums_and_counts.sums[k] / c
-        end
-        return SF.StructureFunction(structure_function_type, distance_bins, output_div)
-    end
+    # Pin the reduction's element type: `@distributed (+)` infers `Any`, which would otherwise
+    # make `AutoBackend`'s union (and the public `_finalize`) type-unstable when Distributed is
+    # loaded. `_partial_sums_counts` and `+` both yield a `StructureFunctionSumsAndCounts`.
+    return sums_and_counts::SFO.StructureFunctionSumsAndCounts
 end
 
 # --- Batched (auxiliary-axis) distributed dispatch ---
@@ -143,15 +131,14 @@ function SFC._dispatch_execution_backend(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray,
     u::AbstractArray,
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose = true,
     show_progress = true,
     count_eltype::Type{CT} = UInt32,
     backend = nothing,
     kwargs...,
-) where {RSAC, CT}
+) where {CT}
     verbose && @info("calculating batched structure function (distributed over batch axis, inner=$(nameof(typeof(db.inner))))")
     D, N = size(u, 1), size(u, 2)
     bdims = size(u)[3:end]
@@ -163,13 +150,14 @@ function SFC._dispatch_execution_backend(
     inner = db.inner
 
     chunks = _dist_batch_chunks(B, Distributed.nworkers())
-    # each worker computes its contiguous b-chunk locally via the inner backend
+    # each worker computes its contiguous b-chunk locally via the inner backend, requesting the
+    # raw accumulator so partials can be concatenated; the public boundary finalizes.
     parts = Distributed.pmap(chunks) do bc
         usub = u_flat[:, :, bc]
         xsub = fixed_x ? x_flat : x_flat[:, :, bc]
         r = SFC.calculate_structure_function(
             structure_function_type, xsub, usub, distance_bins;
-            backend = inner, return_sums_and_counts = true,
+            backend = inner, output_type = SFO.StructureFunctionSumsAndCounts,
             verbose = false, show_progress = false,
             distance_metric = distance_metric, count_eltype = count_eltype,
         )
@@ -184,19 +172,10 @@ function SFC._dispatch_execution_backend(
         @inbounds counts[:, bc] .= reshape(parts[w][2], nb, length(bc))
     end
 
-    if RSAC
-        return SFO.StructureFunctionSumsAndCounts(
-            structure_function_type, distance_bins,
-            reshape(sums, nb, bdims...), reshape(counts, nb, bdims...),
-        )
-    else
-        out = similar(sums)
-        @inbounds for k in eachindex(sums)
-            c = counts[k]
-            out[k] = iszero(c) ? OT(NaN) : sums[k] / c
-        end
-        return SFO.StructureFunction(structure_function_type, distance_bins, reshape(out, nb, bdims...))
-    end
+    return SFO.StructureFunctionSumsAndCounts(
+        structure_function_type, distance_bins,
+        reshape(sums, nb, bdims...), reshape(counts, nb, bdims...),
+    )
 end
 
 # --- Auto-Binning 1D Dispatch ---
@@ -210,7 +189,6 @@ function SFC._dispatch_execution_backend(
     bin_spacing::Type{<:AbstractBinEdges} = LogBinEdges,
     verbose = true,
     show_progress = true,
-    return_sums_and_counts::Bool = false,
     backend = nothing,
     kwargs...,
 )
@@ -245,8 +223,7 @@ function SFC._dispatch_execution_backend(
         structure_function_type,
         x_vecs,
         u_vecs,
-        actual_bins,
-        Val(return_sums_and_counts);
+        actual_bins;
         distance_metric = distance_metric,
         verbose = verbose,
         show_progress = show_progress,
@@ -286,7 +263,8 @@ function SFC._dispatch_execution_backend(
                 count_eltype = count_eltype,
             )
         end
-    return sums_and_counts
+    # Pin the reduction's element type (see the 1D note above): keeps `AutoBackend` type-stable.
+    return sums_and_counts::SFO.StructureFunction2DSumsAndCounts
 end
 
 function SFC._dispatch_execution_backend(
@@ -453,8 +431,7 @@ function SFC._dispatch_execution_backend!(
         structure_function_type,
         x_vecs,
         u_vecs,
-        distance_bins,
-        Val(true);
+        distance_bins;
         kwargs...,
     )
     sums .+= result.sums

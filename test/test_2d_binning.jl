@@ -35,7 +35,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             x_mat,
             u_mat,
             distance_bins;
-            return_sums_and_counts = true,
+            output_type = SF.StructureFunctionSumsAndCounts,
             backend = SFC.SerialBackend(),
             verbose = false,
             show_progress = false
@@ -78,7 +78,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             x_mat,
             u_mat,
             distance_bins;
-            return_sums_and_counts = true,
+            output_type = SF.StructureFunctionSumsAndCounts,
             backend = SFC.SerialBackend(),
             verbose = false,
             show_progress = false

@@ -22,7 +22,7 @@ Test.@testset "Tensor Structure Functions" begin
     Test.@test t2.sums[:, :, 2] ≈ expected_bin2
 
     s2 = SFC.calculate_structure_function(
-        SFT.S2SF, x, u, bins; backend = SFC.SerialBackend(), return_sums_and_counts = true
+        SFT.S2SF, x, u, bins; backend = SFC.SerialBackend(), output_type = SF.StructureFunctionSumsAndCounts
     )
     trace_sums = [sum(t2.sums[a, a, bin] for a in 1:2) for bin in axes(t2.sums, 3)]
     Test.@test trace_sums ≈ s2.sums

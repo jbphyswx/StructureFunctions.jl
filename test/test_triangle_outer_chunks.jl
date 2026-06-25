@@ -2,7 +2,7 @@
 using Test: Test
 using Random: Random
 using OhMyThreads: OhMyThreads as OMT
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, StructureFunctionObjects as SFO
 
 function _pair_work(n::Int, chunk)
     return sum(n - i for i in chunk)
@@ -59,12 +59,12 @@ Test.@testset "Triangle outer chunks (OMT RoundRobin)" begin
         r1 = SFC.calculate_structure_function(
             sf_type, x, u, distance_bins;
             backend = SFC.SerialBackend(), verbose = false, show_progress = false,
-            return_sums_and_counts = true,
+            output_type = SFO.StructureFunctionSumsAndCounts,
         )
         r2 = SFC.calculate_structure_function(
             sf_type, x, u, distance_bins;
             backend = SFC.ThreadedBackend(), verbose = false, show_progress = false,
-            return_sums_and_counts = true,
+            output_type = SFO.StructureFunctionSumsAndCounts,
         )
         Test.@test r2.counts == r1.counts
         Test.@test r2.sums ≈ r1.sums

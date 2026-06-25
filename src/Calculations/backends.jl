@@ -210,7 +210,6 @@ function _threaded_backend_available(
     x,
     u,
     distance_bins,
-    vrsac,
 )
     return _ohmythreads_loaded()
 end
@@ -239,7 +238,13 @@ function _threaded_backend_available!(
 end
 
 function _dispatch_execution_backend(
-    ::DistributedBackend, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, vrsac; kwargs...
+    ::DistributedBackend, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
+)
+    throw(ArgumentError("Distributed backend is unavailable. Load Distributed/SharedArrays extension or use backend=SerialBackend()."))
+end
+
+function _dispatch_execution_backend(
+    ::DistributedBackend, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     throw(ArgumentError("Distributed backend is unavailable. Load Distributed/SharedArrays extension or use backend=SerialBackend()."))
 end

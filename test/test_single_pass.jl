@@ -49,7 +49,7 @@ Test.@testset "Single-Pass Core Correctness & Helmholtz Parity" begin
         # Standard calculation
         res = SFC.calculate_structure_function(
             sft_types[t], x_mat, u_mat, distance_bins_ref;
-            verbose = false, show_progress = false, return_sums_and_counts = true
+            verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts
         )
         # Compare sums with an absolute tolerance for floating-point underflow differences
         Test.@test isapprox(sums[t, :], res.sums, atol=1e-12)
@@ -178,7 +178,7 @@ Test.@testset "Single-Pass with Custom Distance Metric (Cityblock)" begin
         res = SFC.calculate_structure_function(
             sft_types[t], x_mat, u_mat, distance_bins_ref;
             distance_metric = metric,
-            verbose = false, show_progress = false, return_sums_and_counts = true
+            verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts
         )
         Test.@test isapprox(sums[t, :], res.sums, atol=1e-12)
         Test.@test counts[t, :] == res.counts

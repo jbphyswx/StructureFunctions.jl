@@ -12,6 +12,19 @@ function _derived_structure_function_error(structure_function_type)
     ))
 end
 
+# --- Result finalization (output-type dispatch) ---
+# Backends compute and return only the raw accumulator (`…SumsAndCounts`). The public boundary
+# maps it to the requested `output_type` via dispatch on `(raw, ::Type{output})`. Asking for an
+# unsupported representation (e.g. an averaged 2D result) errors cleanly via the fallback — it
+# never silently ignores, and the request can never leak into a backend kernel as a stray kwarg.
+_finalize(r::SFO.StructureFunctionSumsAndCounts, ::Type{<:SFO.StructureFunctionSumsAndCounts}) = r
+_finalize(r::SFO.StructureFunctionSumsAndCounts, ::Type{<:SFO.StructureFunction}) =
+    SFO.StructureFunction(r.operator, r.distance, _bin_average(r.sums, r.counts))
+_finalize(r::SFO.StructureFunction2DSumsAndCounts, ::Type{<:SFO.StructureFunction2DSumsAndCounts}) = r
+_finalize(r, ::Type{R}) where {R} = throw(ArgumentError(
+    "Cannot produce a $R from this calculation (got a $(typeof(r))). Check the `output_type` keyword.",
+))
+
 function calculate_structure_function(
     structure_function_type::SFT.AbstractDerivedStructureFunctionType,
     x,
@@ -38,62 +51,33 @@ function calculate_structure_function(
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector;
-    return_sums_and_counts::Bool = false,
     kwargs...,
 )
     _unsupported_tuple_input()
 end
 
-function calculate_structure_function(
-    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
-    x_vecs::Tuple,
-    u_vecs::Tuple,
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
-    backend::AbstractExecutionBackend = AutoBackend(),
-    kwargs...,
-) where {RSAC}
-    _unsupported_tuple_input()
-end
-
+# 1D public entry: the backend returns the raw `StructureFunctionSumsAndCounts`; `_finalize`
+# maps it to the requested `output_type` (default the averaged `StructureFunction`).
 function calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector;
-    return_sums_and_counts::Bool = false,
-    kwargs...,
-) where {FT1, FT2}
-    return calculate_structure_function(
-        structure_function_type,
-        x,
-        u,
-        distance_bins,
-        Val(return_sums_and_counts);
-        kwargs...,
-    )
-end
-
-function calculate_structure_function(
-    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
-    x::AbstractArray{FT1},
-    u::AbstractArray{FT2},
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
     backend::AbstractExecutionBackend = AutoBackend(),
+    output_type::Type{OT} = SFO.StructureFunction,
     kwargs...,
-) where {FT1, FT2, RSAC}
+) where {FT1, FT2, OT}
     shape = _validate_array_shape(x, u)
-    return _dispatch_execution_backend(
+    raw = _dispatch_execution_backend(
         backend,
         shape,
         structure_function_type,
         x,
         u,
-        distance_bins,
-        Val(RSAC);
+        distance_bins;
         kwargs...,
     )
+    return _finalize(raw, output_type)
 end
 
 function calculate_structure_function(
@@ -108,6 +92,9 @@ function calculate_structure_function(
     _unsupported_tuple_input()
 end
 
+# 2D joint public entry: the backend returns the raw `StructureFunction2DSumsAndCounts`;
+# `_finalize` defaults to returning it as-is. There is no averaged 2D representation, so any
+# other `output_type` errors cleanly via the `_finalize` fallback (never silently ignored).
 function calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray{FT1},
@@ -115,10 +102,11 @@ function calculate_structure_function(
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
     backend::AbstractExecutionBackend = AutoBackend(),
+    output_type::Type{OT} = SFO.StructureFunction2DSumsAndCounts,
     kwargs...,
-) where {FT1, FT2}
+) where {FT1, FT2, OT}
     shape = _validate_array_shape(x, u)
-    return _dispatch_execution_backend(
+    raw = _dispatch_execution_backend(
         backend,
         shape,
         structure_function_type,
@@ -128,6 +116,7 @@ function calculate_structure_function(
         value_bins;
         kwargs...,
     )
+    return _finalize(raw, output_type)
 end
 
 function calculate_structure_function(
@@ -483,75 +472,115 @@ function _dispatch_execution_backend!(
 end
 
 # --- Non-Mutating Dispatch Layers ---
+# 1D (distance_bins only) and 2D (distance_bins + value_bins) are distinguished by ARITY here:
+# 1D methods take 6 positional args and return a raw `StructureFunctionSumsAndCounts`; 2D methods
+# take a 7th `value_bins::AbstractVector` and return a raw `StructureFunction2DSumsAndCounts`.
+# The public boundary applies `_finalize` to pick the representation.
 
+# 1D
 function _dispatch_execution_backend(
-    ::SerialBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, vrsac; kwargs...
+    ::SerialBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
-    return serial_calculate_structure_function(structure_function_type, x, u, distance_bins, vrsac; kwargs...)
+    return serial_calculate_structure_function(structure_function_type, x, u, distance_bins; kwargs...)
 end
 
 function _dispatch_execution_backend(
-    ::SerialBackend, shape::PointField{D}, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, vrsac::Val; kwargs...
+    ::SerialBackend, shape::PointField{D}, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 ) where {D}
     return _serial_calculate_structure_function_point(
-        structure_function_type,
-        x,
-        u,
-        distance_bins,
-        vrsac,
-        Val(D);
-        kwargs...,
+        structure_function_type, x, u, distance_bins, Val(D); kwargs...,
     )
 end
 
 function _dispatch_execution_backend(
-    ::ThreadedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, vrsac; kwargs...
+    ::ThreadedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
-    return threaded_calculate_structure_function(structure_function_type, x, u, distance_bins, vrsac; kwargs...)
+    return threaded_calculate_structure_function(structure_function_type, x, u, distance_bins; kwargs...)
 end
 
 function _dispatch_execution_backend(
-    backend::DistributedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, vrsac; kwargs...
+    backend::DistributedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
-    return _dispatch_execution_backend(backend, structure_function_type, x, u, distance_bins, vrsac; kwargs...)
+    return _dispatch_execution_backend(backend, structure_function_type, x, u, distance_bins; kwargs...)
 end
 
 function _dispatch_execution_backend(
-    backend::GPUBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, vrsac; kwargs...
+    backend::GPUBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
-    if vrsac isa Val
-        if has_auxiliary_axes(shape)
-            return gpu_calculate_structure_function_batch(structure_function_type, backend.backend, x, u, distance_bins, vrsac; kwargs...)
-        end
-        return gpu_calculate_structure_function(structure_function_type, backend.backend, x, u, distance_bins, vrsac; kwargs...)
-    elseif vrsac isa AbstractVector
-        if has_auxiliary_axes(shape)
-            return gpu_calculate_structure_function_2d_batch(structure_function_type, backend.backend, x, u, distance_bins, vrsac; kwargs...)
-        end
-        return gpu_calculate_structure_function_2d(structure_function_type, backend.backend, x, u, distance_bins, vrsac; kwargs...)
-    else
-        throw(ArgumentError("unsupported trailing argument type for GPU backend: $(typeof(vrsac))"))
+    if has_auxiliary_axes(shape)
+        return gpu_calculate_structure_function_batch(structure_function_type, backend.backend, x, u, distance_bins; kwargs...)
     end
+    return gpu_calculate_structure_function(structure_function_type, backend.backend, x, u, distance_bins; kwargs...)
 end
 
 function _dispatch_execution_backend(
-    ::AutoBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, vrsac; kwargs...
+    ::AutoBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
     if distributed_workers_available(Val(:distributed))
-        return _dispatch_execution_backend(DistributedBackend(), shape, structure_function_type, x, u, distance_bins, vrsac; kwargs...)
+        return _dispatch_execution_backend(DistributedBackend(), shape, structure_function_type, x, u, distance_bins; kwargs...)
     end
 
     if has_auxiliary_axes(shape)
         if Threads.nthreads() > 1
-            return _dispatch_execution_backend(ThreadedBackend(), shape, structure_function_type, x, u, distance_bins, vrsac; kwargs...)
+            return _dispatch_execution_backend(ThreadedBackend(), shape, structure_function_type, x, u, distance_bins; kwargs...)
         end
-        return _dispatch_execution_backend(SerialBackend(), shape, structure_function_type, x, u, distance_bins, vrsac; kwargs...)
+        return _dispatch_execution_backend(SerialBackend(), shape, structure_function_type, x, u, distance_bins; kwargs...)
     end
 
     if Threads.nthreads() > 1 &&
-       _threaded_backend_available(structure_function_type, x, u, distance_bins, vrsac)
-        return _dispatch_execution_backend(ThreadedBackend(), shape, structure_function_type, x, u, distance_bins, vrsac; kwargs...)
+       _threaded_backend_available(structure_function_type, x, u, distance_bins)
+        return _dispatch_execution_backend(ThreadedBackend(), shape, structure_function_type, x, u, distance_bins; kwargs...)
     end
 
-    return _dispatch_execution_backend(SerialBackend(), shape, structure_function_type, x, u, distance_bins, vrsac; kwargs...)
+    return _dispatch_execution_backend(SerialBackend(), shape, structure_function_type, x, u, distance_bins; kwargs...)
+end
+
+# 2D (joint distance×value)
+function _dispatch_execution_backend(
+    ::SerialBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+)
+    return serial_calculate_structure_function(structure_function_type, x, u, distance_bins, value_bins; kwargs...)
+end
+
+function _dispatch_execution_backend(
+    ::ThreadedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+)
+    return threaded_calculate_structure_function(structure_function_type, x, u, distance_bins, value_bins; kwargs...)
+end
+
+function _dispatch_execution_backend(
+    backend::DistributedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+)
+    return _dispatch_execution_backend(backend, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
+end
+
+function _dispatch_execution_backend(
+    backend::GPUBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+)
+    if has_auxiliary_axes(shape)
+        return gpu_calculate_structure_function_2d_batch(structure_function_type, backend.backend, x, u, distance_bins, value_bins; kwargs...)
+    end
+    return gpu_calculate_structure_function_2d(structure_function_type, backend.backend, x, u, distance_bins, value_bins; kwargs...)
+end
+
+function _dispatch_execution_backend(
+    ::AutoBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+)
+    if distributed_workers_available(Val(:distributed))
+        return _dispatch_execution_backend(DistributedBackend(), shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
+    end
+
+    if has_auxiliary_axes(shape)
+        if Threads.nthreads() > 1
+            return _dispatch_execution_backend(ThreadedBackend(), shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
+        end
+        return _dispatch_execution_backend(SerialBackend(), shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
+    end
+
+    if Threads.nthreads() > 1 &&
+       _threaded_backend_available(structure_function_type, x, u, distance_bins)
+        return _dispatch_execution_backend(ThreadedBackend(), shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
+    end
+
+    return _dispatch_execution_backend(SerialBackend(), shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
 end

@@ -81,11 +81,10 @@ function SFC.threaded_calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {RSAC, CT}
+) where {CT}
     FT1 = eltype(x_vecs[1])
     FT2 = eltype(u_vecs[1])
     OT = promote_type(float(FT1), float(FT2))
@@ -103,24 +102,11 @@ function SFC.threaded_calculate_structure_function(
         kwargs...,
     )
 
-    if RSAC
-        return SFO.StructureFunctionSumsAndCounts(
-            structure_function_type,
-            distance_bins,
-            output,
-            counts,
-        )
-    end
-
-    output_div = similar(output)
-    for k in eachindex(output)
-        c = counts[k]
-        output_div[k] = iszero(c) ? OT(NaN) : output[k] / c
-    end
-    return SFO.StructureFunction(
+    return SFO.StructureFunctionSumsAndCounts(
         structure_function_type,
         distance_bins,
-        output_div,
+        output,
+        counts,
     )
 end
 
@@ -206,11 +192,10 @@ function SFC.threaded_calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_arr::AbstractMatrix{FT1},
     u_arr::AbstractMatrix{FT2},
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number, RSAC, CT}
+) where {FT1 <: Number, FT2 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     N3 = n_histogram_bins(distance_bins)
     output = zeros(OT, N3)
@@ -226,24 +211,11 @@ function SFC.threaded_calculate_structure_function(
         kwargs...,
     )
 
-    if RSAC
-        return SFO.StructureFunctionSumsAndCounts(
-            structure_function_type,
-            distance_bins,
-            output,
-            counts,
-        )
-    end
-
-    output_div = similar(output)
-    for k in eachindex(output)
-        c = counts[k]
-        output_div[k] = iszero(c) ? OT(NaN) : output[k] / c
-    end
-    return SFO.StructureFunction(
+    return SFO.StructureFunctionSumsAndCounts(
         structure_function_type,
         distance_bins,
-        output_div,
+        output,
+        counts,
     )
 end
 

@@ -78,9 +78,9 @@ for T in (Float64, Float32)
     let x = rand(T, 3, NPF), u = rand(T, 3, NPF), bins = _bins(T)
         pairs = NPF*(NPF-1)÷2
         fS() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=SFC.SerialBackend(),
-                  verbose=false, show_progress=false, return_sums_and_counts=true)
+                  verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
         fT() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=SFC.ThreadedBackend(),
-                  verbose=false, show_progress=false, return_sums_and_counts=true)
+                  verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
         report("point-field 1D", pairs, fS, fT)
     end
 
@@ -88,9 +88,9 @@ for T in (Float64, Float32)
     let x = rand(T, 3, N), u = rand(T, 3, N, B), bins = _bins(T)
         pairs = N*(N-1)÷2 * B
         fS() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=SFC.SerialBackend(),
-                  verbose=false, show_progress=false, return_sums_and_counts=true)
+                  verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
         fT() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=SFC.ThreadedBackend(),
-                  verbose=false, show_progress=false, return_sums_and_counts=true)
+                  verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
         report("batch shared-pos 1D", pairs, fS, fT; do_threaded = DO_THREADED_BATCH)
     end
 
@@ -98,9 +98,9 @@ for T in (Float64, Float32)
     let x = rand(T, 3, N), u = rand(T, 3, N, B), bins = _bins(T), vb = _vbins(T)
         pairs = N*(N-1)÷2 * B
         fS() = SFC.calculate_structure_function(SFTYPE, x, u, bins, vb; backend=SFC.SerialBackend(),
-                  verbose=false, show_progress=false, return_sums_and_counts=true)
+                  verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
         fT() = SFC.calculate_structure_function(SFTYPE, x, u, bins, vb; backend=SFC.ThreadedBackend(),
-                  verbose=false, show_progress=false, return_sums_and_counts=true)
+                  verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
         report("batch 2D joint", pairs, fS, fT; do_threaded = DO_THREADED_BATCH)
     end
 end

@@ -4,6 +4,7 @@ using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
     Calculations as SFC,
     StructureFunctionTypes as SFT,
+    StructureFunctionObjects as SFO,
     batch_histograms_equal
 
 Random.seed!(20260621)
@@ -14,7 +15,7 @@ const GPU_SHAPE_CPU_BE = SFC.SerialBackend()
 function _gpu_shape_pairwise(sf, x, u, bins)
     return SFC.calculate_structure_function(
         sf, x, u, bins;
-        backend = GPU_SHAPE_BE, return_sums_and_counts = true,
+        backend = GPU_SHAPE_BE, output_type = SFO.StructureFunctionSumsAndCounts,
         verbose = false, show_progress = false,
     )
 end
@@ -22,7 +23,7 @@ end
 function _cpu_shape_pairwise(sf, x, u, bins)
     return SFC.calculate_structure_function(
         sf, x, u, bins;
-        backend = GPU_SHAPE_CPU_BE, return_sums_and_counts = true,
+        backend = GPU_SHAPE_CPU_BE, output_type = SFO.StructureFunctionSumsAndCounts,
         verbose = false, show_progress = false,
     )
 end

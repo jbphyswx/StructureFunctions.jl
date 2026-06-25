@@ -34,7 +34,7 @@ Test.@testset "Parallel Equivalence Verification" begin
         bins;
         verbose = false,
         show_progress = false,
-        return_sums_and_counts = true,
+        output_type = SF.StructureFunctionSumsAndCounts,
     )
     out_serial, counts_serial = res_serial.sums, res_serial.counts
 
@@ -46,7 +46,7 @@ Test.@testset "Parallel Equivalence Verification" begin
         bins;
         verbose = false,
         show_progress = false,
-        return_sums_and_counts = true,
+        output_type = SF.StructureFunctionSumsAndCounts,
     )
     out_thread, counts_thread = res_thread.sums, res_thread.counts
 
@@ -70,7 +70,7 @@ Test.@testset "Parallel Equivalence Verification" begin
         backend = SFC.DistributedBackend(),
         verbose = false,
         show_progress = false,
-        return_sums_and_counts = true,
+        output_type = SF.StructureFunctionSumsAndCounts,
     )
     out_dist, counts_dist = res_dist.sums, res_dist.counts
 
@@ -89,7 +89,7 @@ Test.@testset "Parallel Equivalence Verification" begin
         backend = SFC.DistributedBackend(SFC.ThreadedBackend()),
         verbose = false,
         show_progress = false,
-        return_sums_and_counts = true,
+        output_type = SF.StructureFunctionSumsAndCounts,
     )
 
     Test.@testset "Serial vs Distributed(Threaded) hybrid" begin
@@ -103,14 +103,14 @@ Test.@testset "Parallel Equivalence Verification" begin
     res_ser_b = SFC.calculate_structure_function(
         sf_type, xb, ub, bins;
         backend = SFC.SerialBackend(), verbose = false, show_progress = false,
-        return_sums_and_counts = true,
+        output_type = SF.StructureFunctionSumsAndCounts,
     )
     Test.@testset "Serial vs Distributed batched" begin
         for inner in (SFC.SerialBackend(), SFC.ThreadedBackend())
             res_db = SFC.calculate_structure_function(
                 sf_type, xb, ub, bins;
                 backend = SFC.DistributedBackend(inner), verbose = false, show_progress = false,
-                return_sums_and_counts = true,
+                output_type = SF.StructureFunctionSumsAndCounts,
             )
             Test.@test res_ser_b.counts == res_db.counts
             Test.@test res_ser_b.sums ≈ res_db.sums
@@ -127,7 +127,7 @@ Test.@testset "Parallel Equivalence Verification" begin
         bin_spacing = LogBinEdges,
         verbose = false,
         show_progress = false,
-        return_sums_and_counts = true,
+        output_type = SF.StructureFunctionSumsAndCounts,
     )
 
     res_serial_int = SFC.calculate_structure_function(
@@ -138,7 +138,7 @@ Test.@testset "Parallel Equivalence Verification" begin
         bin_spacing = LogBinEdges,
         verbose = false,
         show_progress = false,
-        return_sums_and_counts = true,
+        output_type = SF.StructureFunctionSumsAndCounts,
     )
 
     Test.@testset "Serial vs Distributed (Int/LogBinEdges)" begin

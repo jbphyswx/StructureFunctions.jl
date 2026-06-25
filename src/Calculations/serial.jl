@@ -101,15 +101,37 @@ function _pf_simd_pairs!(
     return nothing
 end
 
+"""
+    _bin_average!(out, sums, counts)
+    _bin_average(sums, counts)
+
+Per-bin mean `sums ./ counts` with the empty-bin guard `count == 0 → NaN`. The cast uses
+`eltype(out)` (so Float32 stays Float32, Float64 stays Float64). Elementwise: works for 1D
+vectors, 2D matrices, and batched `(n_bins, batch...)` arrays whose `sums`/`counts` share a
+shape. The allocating form returns a fresh array of `eltype(sums)`. This is the single
+canonical averaging used by `_finalize`.
+"""
+function _bin_average!(out::AbstractArray{T}, sums::AbstractArray, counts::AbstractArray) where {T}
+    @inbounds for k in eachindex(out, sums, counts)
+        c = counts[k]
+        out[k] = iszero(c) ? T(NaN) : sums[k] / c
+    end
+    return out
+end
+
+@inline _bin_average(sums::AbstractArray, counts::AbstractArray) =
+    _bin_average!(similar(sums, eltype(sums)), sums, counts)
+
+# Non-mutating backends always return the raw accumulator (`StructureFunctionSumsAndCounts`);
+# the public boundary picks the representation via `_finalize(raw, output_type)`.
 function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector,
-    ::Val{RSAC};
+    distance_bins::AbstractVector;
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {T1, T2, RSAC, CT}
+) where {T1, T2, CT}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
     OT = promote_type(float(FT1), float(FT2))
@@ -127,21 +149,12 @@ function serial_calculate_structure_function(
         kwargs...,
     )
 
-    if RSAC # just return the sums and the counts, don't take the mean in each bin...
-        return SFO.StructureFunctionSumsAndCounts(
-            structure_function_type,
-            distance_bins,
-            output,
-            counts,
-        )
-    else # do the mean in each bin.
-        output_div = similar(output)
-        for k in eachindex(output)
-            c = counts[k]
-            output_div[k] = iszero(c) ? OT(NaN) : output[k] / c
-        end
-        return SFO.StructureFunction(structure_function_type, distance_bins, output_div)
-    end
+    return SFO.StructureFunctionSumsAndCounts(
+        structure_function_type,
+        distance_bins,
+        output,
+        counts,
+    )
 end
 
 function serial_calculate_structure_function!(

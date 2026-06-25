@@ -22,15 +22,14 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
 
     res_ref = SFC.calculate_structure_function(
         sft, x, u, bin_edges;
-        verbose = false, show_progress = false, return_sums_and_counts = true,
+        verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts,
     )
     ref_vals = res_ref.sums
     ref_counts = res_ref.counts
 
     # --- GPU extension (CPU backend for parity test) ---
     res_gpu = SFC.gpu_calculate_structure_function(
-        sft, KA.CPU(), x, u, bin_edges;
-        return_sums_and_counts = true,
+        sft, KA.CPU(), x, u, bin_edges,
     )
     gpu_vals = res_gpu.sums
     gpu_counts = res_gpu.counts
