@@ -17,8 +17,21 @@ using StructureFunctions.Calculations:
 const FT = Float32
 const GPU_BE = SFC.GPUBackend(CUDA.CUDABackend())
 const SF_TYPE = SFT.L2SFType()
+const SP2D_INV = (:S2, :L2, :T2, :S3, :L3, :L1T2)
 
 maxrel(a, b) = maximum(abs.(a .- b) ./ max.(abs.(b), 1f-3))
+
+# Max relative error of a keyed SP2D result `g` against a stacked (6, ...) ref `cs`,
+# and whether all per-invariant counts match the corresponding ref slice `cc`.
+function _sp2d_maxrel_counts(g, cs, cc)
+    mr = 0.0
+    counts_ok = true
+    for (t, k) in enumerate(SP2D_INV)
+        mr = max(mr, maxrel(g[k].sums, cs[t, :, :, :]))
+        counts_ok &= g[k].counts == cc[t, :, :, :]
+    end
+    return mr, counts_ok
+end
 
 println("End-to-end 2D CUDA public-API parity vs serial CPU\n")
 println("| case | bins | max relΔ | counts exact |")
@@ -32,7 +45,8 @@ let N = 1500, B = 4
         cs = zeros(FT, 6, nd, nv, B); cc = zeros(UInt32, 6, nd, nv, B)
         serial_calculate_structure_functions_single_pass_2d!(cs, cc, x, u, lbe, ve)
         g = SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE)
-        @printf("| SP2D fixed | %dx%d | %.2e | %s |\n", nd, nv, maxrel(g.sums, cs), g.counts == cc)
+        mr, counts_ok = _sp2d_maxrel_counts(g, cs, cc)
+        @printf("| SP2D fixed | %dx%d | %.2e | %s |\n", nd, nv, mr, counts_ok)
     end
 end
 # ---- SP2D varying-x ----
@@ -44,7 +58,8 @@ let N = 1500, B = 4
         cs = zeros(FT, 6, nd, nv, B); cc = zeros(UInt32, 6, nd, nv, B)
         serial_calculate_structure_functions_single_pass_2d!(cs, cc, x, u, lbe, ve)
         g = SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE)
-        @printf("| SP2D varying | %dx%d | %.2e | %s |\n", nd, nv, maxrel(g.sums, cs), g.counts == cc)
+        mr, counts_ok = _sp2d_maxrel_counts(g, cs, cc)
+        @printf("| SP2D varying | %dx%d | %.2e | %s |\n", nd, nv, mr, counts_ok)
     end
 end
 # ---- joint 2D fixed-x and varying-x ----

@@ -168,14 +168,18 @@ Test.@testset "CUDA single-pass 2D parity" begin
         backend = SFC.SerialBackend(),
     )
 
-    sums_gpu, counts_gpu = SFC.calculate_structure_functions_single_pass_2d(
+    inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
+    sp_gpu = SFC.calculate_structure_functions_single_pass_2d(
         x_cpu, u_cpu, distance_bins, value_bins;
         backend = SF.GPUBackend(CUDA.CUDABackend()),
     )
     CUDA.synchronize()
 
-    Test.@test counts_gpu == counts_ref
-    max_Δ = maximum(abs, sums_gpu .- sums_ref)
+    max_Δ = 0.0
+    for (t, k) in enumerate(inv)
+        Test.@test sp_gpu[k].counts == counts_ref[t, :, :]
+        max_Δ = max(max_Δ, maximum(abs, sp_gpu[k].sums .- sums_ref[t, :, :]))
+    end
     Test.@test max_Δ < 0.1f0
     println("CUDA single-pass 2D parity OK  max |Δ sums| = ", max_Δ)
 end
