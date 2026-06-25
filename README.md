@@ -26,7 +26,7 @@ StructureFunctions.jl computes structure functions (SFs) from scattered data, ch
 
 - **Structure Functions**: 1st, 2nd, 3rd order; longitudinal & transverse projections in 1D, 2D, 3D
 - **In-place Mutating API**: Pre-allocated mutating functions (`calculate_structure_function!`) for zero-allocation loops (O(n_threads) multi-threaded chunked allocations)
-- **2D Joint-Probability Binning**: Natively accumulates both exact sums and contribution counts across distance and structure function value increment bins (`StructureFunction2D`)
+- **2D Joint-Probability Binning**: Natively accumulates both exact sums and contribution counts across distance and structure function value increment bins (`StructureFunction2DSumsAndCounts`)
 - **Typed Backend System**: Serial, Threaded, Distributed, GPU, Auto — choose your parallelization strategy
 - **Type-Stable Dispatch**: No runtime overhead from symbolic dispatch; all paths validated with JET
 - **Extensible Architecture**: Optional extensions for parallelization and GPU acceleration
@@ -230,10 +230,10 @@ calculate_structure_function(sf_type::AbstractStructureFunctionType,
                             u::Union{Tuple, Matrix},
                             distance_bins::AbstractVector{<:Tuple};
                             backend=SerialBackend(),
-                            return_sums_and_counts=false,
+                            output_type=StructureFunction,   # or StructureFunctionSumsAndCounts for raw
                             distance_metric=Euclidean(),
                             verbose=true,
-                            show_progress=true) → StructureFunction
+                            show_progress=true) → StructureFunction  # (or StructureFunctionSumsAndCounts)
 ```
 
 **2. 2D Joint-Probability Allocating API:**
@@ -247,7 +247,7 @@ calculate_structure_function(sf_type::AbstractStructureFunctionType,
                             backend=SerialBackend(),
                             distance_metric=Euclidean(),
                             verbose=true,
-                            show_progress=true) → StructureFunction2D
+                            show_progress=true) → StructureFunction2DSumsAndCounts
 ```
 
 **3. In-place Mutating API (Zero-Allocation):**
@@ -313,15 +313,15 @@ struct StructureFunction{FT, OT, BT, VT} <: AbstractStructureFunction
 end
 ```
 
-**2. 2D Joint-Probability Container (`StructureFunction2D`):**
+**2. 2D Joint-Probability Container (`StructureFunction2DSumsAndCounts`):**
 
 ```julia
-struct StructureFunction2D{FT, OT, BT, VT, MT} <: AbstractStructureFunction
+struct StructureFunction2DSumsAndCounts{FT, OT, BT, VT, MT, CT} <: AbstractStructureFunction
     operator::OT                   # AbstractStructureFunctionType
-    distance_bins::BT              # AbstractVector of (r_min, r_max)
+    distance_bins::BT              # AbstractVector of distance bin edges
     value_bins::VT                 # AbstractVector of value bin edges
     sums::MT                       # AbstractMatrix{FT} (distance x value)
-    counts::MT                     # AbstractMatrix{FT} (distance x value)
+    counts::CT                     # AbstractMatrix (distance x value)
 end
 ```
 
@@ -361,7 +361,10 @@ log_bins_raw = collect(exp.(range(log(0.01), log(10.0), length=51)))
 # Wrap them in LogBinEdges to activate O(1) Exponent LUT Hybrid Search
 distance_bins = LogBinEdges(log_bins_raw)
 
-# Run calculation (bypasses standard binary search bottleneck completely)
+# Run calculation (bypasses standard binary search bottleneck completely).
+# Returns a NamedTuple keyed by invariant: results.S2, results.L2, results.T2,
+# results.S3, results.L3, results.L1T2 (+ results.helmholtz for point-field input).
+# Each entry is a StructureFunction (pass output_type=StructureFunctionSumsAndCounts for raw).
 results = SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=SFC.SerialBackend())
 ```
 

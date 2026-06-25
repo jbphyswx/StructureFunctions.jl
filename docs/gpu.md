@@ -32,8 +32,8 @@ bins = collect(FT, range(0.0f0, 1.5f0; length = 21))
 sft = SF.LongitudinalSecondOrderStructureFunctionType()
 
 result = SFC.gpu_calculate_structure_function(
-    sft, backend, x, u, bins; return_sums_and_counts = true,
-)
+    sft, backend, x, u, bins,
+)  # returns a StructureFunctionSumsAndCounts (raw sums + counts)
 ```
 
 `distance_bins` must have the **same element type** as `x` and `u` (e.g. `Float32` fields →
@@ -48,7 +48,7 @@ device histogram buffers each launch (~10–15% end-to-end win at `N=20k` on A10
 ws = SFC.GPUSFWorkspace(backend, bins)
 for _ in 1:10
     SFC.gpu_calculate_structure_function(
-        sft, backend, x, u, bins; workspace = ws, return_sums_and_counts = true,
+        sft, backend, x, u, bins; workspace = ws,
     )
 end
 SFC.release!(ws)  # optional explicit free

@@ -145,14 +145,14 @@ struct StructureFunctionSumsAndCounts{FT, OT, BT, VT} <: AbstractStructureFuncti
 end
 ```
 
-3. **`StructureFunction2D`**: Stores the 2D joint-probability binning grid (separation distance $r$ vs. SF value $v$).
+3. **`StructureFunction2DSumsAndCounts`**: Stores the 2D joint-probability binning grid (separation distance $r$ vs. SF value $v$).
 ```julia
-struct StructureFunction2D{FT, OT, BT, VT, MT} <: AbstractStructureFunction
+struct StructureFunction2DSumsAndCounts{FT, OT, BT, VT, MT, CT} <: AbstractStructureFunction
     operator::OT
     distance_bins::BT
     value_bins::VT                 # Value increment bin edges
     sums::MT                       # 2D matrix of exact sums (distance x value)
-    counts::MT                     # 2D matrix of contribution counts
+    counts::CT                     # 2D matrix of contribution counts
 end
 ```
 
