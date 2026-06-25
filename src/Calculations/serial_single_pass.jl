@@ -490,25 +490,82 @@ function _dispatch_single_pass(::AutoBackend, shape::AbstractFieldShape, x::Abst
     return _dispatch_single_pass(SerialBackend(), shape, x, u, distance_bins; kwargs...)
 end
 
-"""
-    calculate_structure_functions_single_pass(x, u, distance_bins; backend=AutoBackend(), kwargs...)
+# --- Single-pass result collections (keyed by invariant) ---
 
-Primary entrypoint for computing six invariant native structure functions in one pair pass.
+"""
+    SINGLE_PASS_OPERATORS
+
+The six native single-pass invariants in stacked-row order, keyed by short name. Used to label
+each row of the single-pass `(sums, counts)` accumulator when building the result collection.
+"""
+const SINGLE_PASS_OPERATORS = (
+    S2   = SFT.SecondOrderStructureFunctionType(),
+    L2   = SFT.LongitudinalSecondOrderStructureFunctionType(),
+    T2   = SFT.TransverseSecondOrderStructureFunctionType(),
+    S3   = SFT.ThirdOrderStructureFunctionType(),
+    L3   = SFT.DiagonalConsistentThirdOrderStructureFunctionType(),
+    L1T2 = SFT.OffDiagonalInconsistentThirdOrderStructureFunctionType(),
+)
+
+# View of stacked-row `t` across all trailing axes (n_bins, auxiliary...) — zero-copy.
+@inline _sp_rowview(A::AbstractArray, t::Int) = view(A, t, ntuple(_ -> Colon(), ndims(A) - 1)...)
+
+"""
+    _single_pass_collection_1d(sums, counts, distance_bins, ::Type{OT})
+
+Wrap the stacked 1D single-pass `(sums, counts)` into a `NamedTuple` keyed by invariant
+(`S2, L2, T2, S3, L3, L1T2`), each value a single-operator result of representation `OT`
+(default the averaged `StructureFunction`; pass `StructureFunctionSumsAndCounts` for raw).
+Entries are zero-copy views into the stacked accumulator and share the (identical-by-construction)
+counts row. For point-field input (stacked with the Helmholtz rows) a
+`:helmholtz => HelmholtzDecomposition2D` entry is appended.
+"""
+function _single_pass_collection_1d(
+    sums::AbstractArray, counts::AbstractArray, distance_bins, ::Type{OT},
+) where {OT}
+    cc = _sp_rowview(counts, 1)   # the six invariants share one (identical) counts row
+    base = (
+        S2   = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.S2, distance_bins, _sp_rowview(sums, 1), cc), OT),
+        L2   = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.L2, distance_bins, _sp_rowview(sums, 2), cc), OT),
+        T2   = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.T2, distance_bins, _sp_rowview(sums, 3), cc), OT),
+        S3   = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.S3, distance_bins, _sp_rowview(sums, 4), cc), OT),
+        L3   = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.L3, distance_bins, _sp_rowview(sums, 5), cc), OT),
+        L1T2 = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.L1T2, distance_bins, _sp_rowview(sums, 6), cc), OT),
+    )
+    if ndims(sums) == 2 && size(sums, 1) >= SINGLE_PASS_WITH_HELMHOLTZ_N
+        return merge(base, (; helmholtz = helmholtz_decompose_2d(distance_bins, sums, counts)))
+    end
+    return base
+end
+
+"""
+    calculate_structure_functions_single_pass(x, u, distance_bins; backend=AutoBackend(),
+                                              output_type=StructureFunction, kwargs...)
+
+Compute the six native invariant structure functions (S2, L2, T2, S3, L3, L1T2) in one pair
+pass, returned as a `NamedTuple` keyed by invariant. Each entry is a single-operator result of
+the requested `output_type` (default the averaged `StructureFunction`; pass
+`StructureFunctionSumsAndCounts` for the raw sums+counts). For point-field input a `:helmholtz`
+entry (a [`HelmholtzDecomposition2D`](@ref)) is included.
 """
 function calculate_structure_functions_single_pass(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3};
     backend::AbstractExecutionBackend = AutoBackend(),
+    output_type::Type{OT} = SFO.StructureFunction,
     count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     shape = _validate_array_shape(x, u)
-    return _dispatch_single_pass(
+    # `_dispatch_single_pass` returns a `(sums, counts)` pair (a plain Tuple for point-field,
+    # a NamedTuple for batched); index positionally to handle both.
+    raw = _dispatch_single_pass(
         backend, shape, x, u, distance_bins;
         count_eltype = count_eltype,
         kwargs...,
     )
+    return _single_pass_collection_1d(raw[1], raw[2], distance_bins, output_type)
 end
 
 
@@ -809,10 +866,40 @@ function _dispatch_single_pass_2d(::AutoBackend, shape::AbstractFieldShape, x::A
     return _dispatch_single_pass_2d(SerialBackend(), shape, x, u, distance_bins, value_bins; kwargs...)
 end
 
-"""
-    calculate_structure_functions_single_pass_2d(x, u, distance_bins, value_bins; backend=AutoBackend(), kwargs...)
+# Per-invariant value bins: a single vector is shared across invariants; a 6-tuple is per-invariant.
+@inline _sp_valuebins(vb::AbstractVector, t::Int) = vb
+@inline _sp_valuebins(vb::Tuple, t::Int) = vb[t]
 
-Primary entrypoint for computing six invariant 2D joint structure function histograms in one pass.
+"""
+    _single_pass_collection_2d(sums, counts, distance_bins, value_bins, ::Type{OT})
+
+Wrap the stacked 2D single-pass `(sums, counts)` (shape `(6, n_dist, n_val, aux...)`) into a
+`NamedTuple` keyed by invariant, each value a `StructureFunction2DSumsAndCounts` view into the
+stacked accumulator. Unlike 1D, the per-cell counts genuinely differ per invariant (each
+invariant's value lands in a different value-bin), so counts are taken per-invariant. The 2D joint
+histogram has no averaged representation, so `OT` must be `StructureFunction2DSumsAndCounts`.
+"""
+function _single_pass_collection_2d(
+    sums::AbstractArray, counts::AbstractArray, distance_bins, value_bins, ::Type{OT},
+) where {OT}
+    return (
+        S2   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.S2, distance_bins, _sp_valuebins(value_bins, 1), _sp_rowview(sums, 1), _sp_rowview(counts, 1)), OT),
+        L2   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.L2, distance_bins, _sp_valuebins(value_bins, 2), _sp_rowview(sums, 2), _sp_rowview(counts, 2)), OT),
+        T2   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.T2, distance_bins, _sp_valuebins(value_bins, 3), _sp_rowview(sums, 3), _sp_rowview(counts, 3)), OT),
+        S3   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.S3, distance_bins, _sp_valuebins(value_bins, 4), _sp_rowview(sums, 4), _sp_rowview(counts, 4)), OT),
+        L3   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.L3, distance_bins, _sp_valuebins(value_bins, 5), _sp_rowview(sums, 5), _sp_rowview(counts, 5)), OT),
+        L1T2 = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.L1T2, distance_bins, _sp_valuebins(value_bins, 6), _sp_rowview(sums, 6), _sp_rowview(counts, 6)), OT),
+    )
+end
+
+"""
+    calculate_structure_functions_single_pass_2d(x, u, distance_bins, value_bins; backend=AutoBackend(),
+                                                 output_type=StructureFunction2DSumsAndCounts, kwargs...)
+
+Compute the six invariant 2D joint structure-function histograms in one pass, returned as a
+`NamedTuple` keyed by invariant (`S2, L2, T2, S3, L3, L1T2`). Each entry is a
+[`StructureFunction2DSumsAndCounts`](@ref) view into the stacked accumulator (the 2D joint
+histogram has no averaged form, so `output_type` must be `StructureFunction2DSumsAndCounts`).
 """
 function calculate_structure_functions_single_pass_2d(
     x::AbstractArray{FT1},
@@ -820,12 +907,14 @@ function calculate_structure_functions_single_pass_2d(
     distance_bins::AbstractVector{FT3},
     value_bins::SinglePass2DValueBins;
     backend::AbstractExecutionBackend = AutoBackend(),
+    output_type::Type{OT} = SFO.StructureFunction2DSumsAndCounts,
     count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     shape = _validate_array_shape(x, u)
-    return _dispatch_single_pass_2d(
+    raw = _dispatch_single_pass_2d(
         backend, shape, x, u, distance_bins, value_bins;
         count_eltype = count_eltype, kwargs...,
     )
+    return _single_pass_collection_2d(raw[1], raw[2], distance_bins, value_bins, output_type)
 end
