@@ -53,7 +53,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             show_progress = false
         )
 
-        @test sf2d isa SFO.StructureFunction2D
+        @test sf2d isa SFO.StructureFunction2DSumsAndCounts
         @test size(sf2d.sums) == (n_dist, 10)
         @test size(sf2d.counts) == (n_dist, 10)
 
@@ -96,7 +96,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             show_progress = false
         )
 
-        @test sf2d isa SFO.StructureFunction2D
+        @test sf2d isa SFO.StructureFunction2DSumsAndCounts
         @test size(sf2d.sums) == (n_dist, 10)
 
         # Assert Mass Conservation

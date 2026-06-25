@@ -5,8 +5,8 @@ using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 export AbstractStructureFunction,
     StructureFunction,
     StructureFunctionSumsAndCounts,
-    StructureFunction2D,
-    StructureFunctionTensor,
+    StructureFunction2DSumsAndCounts,
+    StructureFunctionTensorSumsAndCounts,
     HelmholtzDecomposition2D,
     marginalize
 
@@ -73,7 +73,7 @@ struct StructureFunctionSumsAndCounts{
 end
 
 """
-    StructureFunction2D{FT, OT, BT, VT, MT}
+    StructureFunction2DSumsAndCounts{FT, OT, BT, VT, MT}
 
 2D Joint-Probability intermediate result container containing raw sums and counts matrices.
 Useful for analyzing the PDF of structure function values across separation distance bins.
@@ -84,7 +84,7 @@ Useful for analyzing the PDF of structure function values across separation dist
 - `sums`: 2D matrix of accumulated exact values of shape (N_distance_bins, N_value_bins).
 - `counts`: 2D matrix of accumulated contribution counts of shape (N_distance_bins, N_value_bins).
 """
-struct StructureFunction2D{
+struct StructureFunction2DSumsAndCounts{
     FT,
     OT <: SFT.AbstractStructureFunctionType,
     BT,
@@ -98,7 +98,7 @@ struct StructureFunction2D{
     sums::MT
     counts::CT
 
-    function StructureFunction2D(
+    function StructureFunction2DSumsAndCounts(
         operator::OT,
         distance_bins::BT,
         value_bins::VT,
@@ -114,19 +114,19 @@ struct StructureFunction2D{
 end
 
 """
-    StructureFunctionTensor(order, distance_bins, sums, counts)
+    StructureFunctionTensorSumsAndCounts(order, distance_bins, sums, counts)
 
 Raw binned tensor structure-function result. For tensor order `P` and spatial
 dimension `D`, `sums` has leading axes `(D, D, ..., D, n_bins, auxiliary...)`
 with `P` repeated component axes. `counts` has shape `(n_bins, auxiliary...)`.
 """
-struct StructureFunctionTensor{P, FT, BT, VT, CT} <: AbstractStructureFunction
+struct StructureFunctionTensorSumsAndCounts{P, FT, BT, VT, CT} <: AbstractStructureFunction
     order::Val{P}
     distance_bins::BT
     sums::VT
     counts::CT
 
-    function StructureFunctionTensor(
+    function StructureFunctionTensorSumsAndCounts(
         order::Val{P},
         distance_bins::BT,
         sums::VT,
@@ -210,8 +210,8 @@ import Base: show, length, +
 
 Base.length(sf::StructureFunction) = length(sf.values)
 Base.length(sf::StructureFunctionSumsAndCounts) = length(sf.sums)
-Base.length(sf::StructureFunction2D) = length(sf.distance_bins) - 1
-Base.length(sf::StructureFunctionTensor) = length(sf.distance_bins) - 1
+Base.length(sf::StructureFunction2DSumsAndCounts) = length(sf.distance_bins) - 1
+Base.length(sf::StructureFunctionTensorSumsAndCounts) = length(sf.distance_bins) - 1
 Base.length(sf::HelmholtzDecomposition2D) = length(sf.distance_bins) - 1
 
 function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSumsAndCounts)
@@ -225,10 +225,10 @@ function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSums
     )
 end
 
-function Base.:+(sf1::StructureFunctionTensor{P}, sf2::StructureFunctionTensor{P}) where {P}
+function Base.:+(sf1::StructureFunctionTensorSumsAndCounts{P}, sf2::StructureFunctionTensorSumsAndCounts{P}) where {P}
     (sf1.distance_bins == sf2.distance_bins) ||
         throw(ArgumentError("Cannot add tensor results with different distance binning"))
-    return StructureFunctionTensor(
+    return StructureFunctionTensorSumsAndCounts(
         sf1.order,
         sf1.distance_bins,
         sf1.sums + sf2.sums,
@@ -236,11 +236,11 @@ function Base.:+(sf1::StructureFunctionTensor{P}, sf2::StructureFunctionTensor{P
     )
 end
 
-function Base.:+(sf1::StructureFunction2D, sf2::StructureFunction2D)
+function Base.:+(sf1::StructureFunction2DSumsAndCounts, sf2::StructureFunction2DSumsAndCounts)
     (sf1.operator == sf2.operator) || throw(ArgumentError("Cannot add results with different operators: got $(sf1.operator) and $(sf2.operator)"))
     (sf1.distance_bins == sf2.distance_bins) || throw(ArgumentError("Cannot add results with different distance binning"))
     (sf1.value_bins == sf2.value_bins) || throw(ArgumentError("Cannot add results with different value binning"))
-    return StructureFunction2D(
+    return StructureFunction2DSumsAndCounts(
         sf1.operator,
         sf1.distance_bins,
         sf1.value_bins,
@@ -269,13 +269,13 @@ function Base.show(io::IO, sf::StructureFunctionSumsAndCounts{FT, OT}) where {FT
     print(io, "(operator=", sf.operator, ", points=", length(sf), ")")
 end
 
-function Base.show(io::IO, sf::StructureFunction2D{FT, OT}) where {FT, OT}
-    print(io, "StructureFunction2D{", FT, "}")
+function Base.show(io::IO, sf::StructureFunction2DSumsAndCounts{FT, OT}) where {FT, OT}
+    print(io, "StructureFunction2DSumsAndCounts{", FT, "}")
     print(io, "(operator=", sf.operator, ", distance_bins=", length(sf.distance_bins), ", value_bins=", length(sf.value_bins), ")")
 end
 
-function Base.show(io::IO, sf::StructureFunctionTensor{P, FT}) where {P, FT}
-    print(io, "StructureFunctionTensor{", P, ", ", FT, "}")
+function Base.show(io::IO, sf::StructureFunctionTensorSumsAndCounts{P, FT}) where {P, FT}
+    print(io, "StructureFunctionTensorSumsAndCounts{", P, ", ", FT, "}")
     print(io, "(distance_bins=", length(sf.distance_bins), ", size=", size(sf.sums), ")")
 end
 
@@ -287,7 +287,7 @@ end
 # Specialized getters
 operator(sf::AbstractStructureFunction) = sf.operator
 SFT.order(sf::AbstractStructureFunction) = SFT.order(sf.operator)
-SFT.order(sf::StructureFunctionTensor{P}) where {P} = P
+SFT.order(sf::StructureFunctionTensorSumsAndCounts{P}) where {P} = P
 
 # Comparison & Conversion
 import Base: isapprox, Float32, Float64
@@ -314,12 +314,12 @@ function Base.Float64(sf::StructureFunction)
 end
 
 """
-    marginalize(sf2d::StructureFunction2D)
+    marginalize(sf2d::StructureFunction2DSumsAndCounts)
 
 Sum ``sums`` and ``counts`` over the value-bin axis to produce a 1D
 ``StructureFunctionSumsAndCounts`` (mass-conserving reduction of a 2D joint histogram).
 """
-function marginalize(sf2d::StructureFunction2D)
+function marginalize(sf2d::StructureFunction2DSumsAndCounts)
     sums_1d = vec(sum(sf2d.sums, dims = 2))
     counts_1d = vec(sum(sf2d.counts, dims = 2))
     return StructureFunctionSumsAndCounts(

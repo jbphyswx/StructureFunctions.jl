@@ -196,11 +196,14 @@ function threaded_calculate_structure_function!(args...; kwargs...)
     )
 end
 
-# Flipped to `true` by the OhMyThreads extension when it loads. AutoBackend gates its threaded
-# choice on this rather than `hasmethod`, because the throwing stub above makes `hasmethod`
-# always true — which previously fooled AutoBackend into the threaded path (then it threw)
-# when OhMyThreads was not loaded. With this flag, AutoBackend cleanly falls back to serial.
-_ohmythreads_loaded() = false
+# Set to `true` by the OhMyThreads extension's `__init__` when it loads. AutoBackend gates its
+# threaded choice on this rather than `hasmethod`, because the throwing stub above makes
+# `hasmethod` always true — which previously fooled AutoBackend into the threaded path (then it
+# threw) when OhMyThreads was not loaded. With this flag, AutoBackend falls back to serial.
+# A `Ref` (set at load via `__init__`) is used instead of a method override, which would be an
+# illegal method-overwrite during the extension's precompilation.
+const _OHMYTHREADS_LOADED = Ref(false)
+_ohmythreads_loaded() = _OHMYTHREADS_LOADED[]
 
 function _threaded_backend_available(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,

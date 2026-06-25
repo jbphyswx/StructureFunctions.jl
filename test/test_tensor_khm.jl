@@ -8,7 +8,7 @@ Test.@testset "Tensor Structure Functions" begin
     bins = [0.0, 1.1, 2.0]
 
     t2 = SFC.calculate_structure_function_tensor(Val(2), x, u, bins; backend = SFC.SerialBackend())
-    Test.@test t2 isa SF.StructureFunctionTensor{2}
+    Test.@test t2 isa SF.StructureFunctionTensorSumsAndCounts{2}
     Test.@test size(t2.sums) == (2, 2, 2)
     Test.@test size(t2.counts) == (2,)
     Test.@test t2.counts == UInt32[2, 1]
@@ -29,7 +29,7 @@ Test.@testset "Tensor Structure Functions" begin
     Test.@test t2.counts == s2.counts
 
     t3 = SFC.calculate_structure_function_tensor(Val(3), x, u, bins; backend = SFC.SerialBackend())
-    Test.@test t3 isa SF.StructureFunctionTensor{3}
+    Test.@test t3 isa SF.StructureFunctionTensorSumsAndCounts{3}
     Test.@test size(t3.sums) == (2, 2, 2, 2)
     Test.@test t3.counts == t2.counts
     Test.@test t3.sums[1, 2, 2, 1] ≈ du12[1] * du12[2] * du12[2] +
