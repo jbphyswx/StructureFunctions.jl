@@ -363,5 +363,5 @@ function _gpu_calculate_structure_function_2d_batch(
     sums = reshape(Array(out_dev)[1, :, :, :], n_dist, n_val, bdims...)
     counts_u32 = reshape(Array(cnt_dev)[1, :, :, :], n_dist, n_val, bdims...)
     counts = CT === UInt32 ? counts_u32 : CT.(counts_u32)
-    return SF.StructureFunction2D(sf_type, distance_bins, value_bins, sums, counts)
+    return SF.StructureFunction2DSumsAndCounts(sf_type, distance_bins, value_bins, sums, counts)
 end

@@ -13,8 +13,13 @@ using StructureFunctions:
     BinEdges,
     n_histogram_bins
 
-# Signal to AutoBackend that threading is genuinely available (see backends.jl).
-SFC._ohmythreads_loaded() = true
+# Signal to AutoBackend that threading is genuinely available (see backends.jl). Set in
+# __init__ (load time) via a Ref — overriding the method here would be an illegal
+# method-overwrite during this extension's precompilation.
+function __init__()
+    SFC._OHMYTHREADS_LOADED[] = true
+    return nothing
+end
 
 """
     _triangle_outer_chunks(indices, n_tasks)
@@ -266,6 +271,14 @@ function SFC.threaded_calculate_structure_function!(
     N3 = n_histogram_bins(distance_bins)
     N4 = n_histogram_bins(value_bins)
 
+    # Fast path: Euclidean + D ∈ (2,3) threads the 2D SIMD compute/scatter kernel.
+    D = length(x_vecs)
+    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
+        _threaded_2d_simd!(sums_2d, counts_2d, structure_function_type, x_vecs, u_vecs,
+                           distance_bins, value_bins, D == 2 ? Val(2) : Val(3))
+        return nothing
+    end
+
     # Chunked tmapreduce: O(n_tasks) allocations instead of O(N_points)
     result = OMT.tmapreduce(+, _triangle_outer_chunks(eachindex(x_vecs[1]), Threads.nthreads())) do chunk
         local_sums = zeros(OT, N3, N4)
@@ -273,29 +286,40 @@ function SFC.threaded_calculate_structure_function!(
         vN = Val(length(x_vecs))
         for i in chunk
             SFC.calculate_structure_function_2d_i!(
-                local_sums,
-                local_counts,
-                vN,
-                structure_function_type,
-                i,
-                x_vecs,
-                u_vecs,
-                distance_bins,
-                value_bins;
-                distance_metric = distance_metric,
+                local_sums, local_counts, vN, structure_function_type, i,
+                x_vecs, u_vecs, distance_bins, value_bins; distance_metric = distance_metric,
             )
         end
-        SFO.StructureFunction2D(
-            structure_function_type,
-            distance_bins,
-            value_bins,
-            local_sums,
-            local_counts,
-        )
+        SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, local_sums, local_counts)
     end
 
     sums_2d .+= result.sums
     counts_2d .+= result.counts
+    return nothing
+end
+
+# Threaded 2D-joint point-field SIMD: contiguous components shared, per-task buffers + local
+# (n_dist,n_val) accumulators, round-robin i-chunks reduced by +.
+function _threaded_2d_simd!(
+    sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
+    sf::SFT.AbstractPairwiseStructureFunctionType, x_vecs, u_vecs, dist_be, val_be, ::Val{D},
+) where {OT, CT, D}
+    xc = ntuple(d -> collect(x_vecs[d]), Val(D))
+    uc = ntuple(d -> collect(u_vecs[d]), Val(D))
+    Np = length(xc[1])
+    n_dist = n_histogram_bins(dist_be)
+    n_val = n_histogram_bins(val_be)
+    FTx = eltype(xc[1])
+    result = OMT.tmapreduce(+, _triangle_outer_chunks(1:(Np - 1), Threads.nthreads())) do chunk
+        local_sums = zeros(OT, n_dist, n_val)
+        local_counts = zeros(CT, n_dist, n_val)
+        distbuf = Vector{FTx}(undef, Np)
+        valbuf = Vector{OT}(undef, Np)
+        SFC._pf_2d_simd_pairs!(local_sums, local_counts, sf, xc, uc, dist_be, val_be, Val(D), distbuf, valbuf, chunk)
+        SFO.StructureFunction2DSumsAndCounts(sf, dist_be, val_be, local_sums, local_counts)
+    end
+    sums2d .+= result.sums
+    counts2d .+= result.counts
     return nothing
 end
 
@@ -328,7 +352,7 @@ function SFC.threaded_calculate_structure_function(
         kwargs...,
     )
 
-    return SFO.StructureFunction2D(
+    return SFO.StructureFunction2DSumsAndCounts(
         structure_function_type,
         distance_bins,
         value_bins,
@@ -391,7 +415,7 @@ function SFC.threaded_calculate_structure_function(
         kwargs...,
     )
 
-    return SFO.StructureFunction2D(
+    return SFO.StructureFunction2DSumsAndCounts(
         structure_function_type,
         distance_bins,
         value_bins,
@@ -811,7 +835,7 @@ function SFC.threaded_calculate_structure_function(
     sums = zeros(OT, n_dist, n_val, bdims...)
     counts = zeros(CT, n_dist, n_val, bdims...)
     SFC.auxiliary_joint2d_threaded!(sums, counts, structure_function_type, x_arr, u_arr, distance_bins, value_bins; kwargs...)
-    return SFO.StructureFunction2D(structure_function_type, distance_bins, value_bins, sums, counts)
+    return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts)
 end
 
 # Threaded partial over an explicit outer-index list (hybrid distributed+threaded: a worker

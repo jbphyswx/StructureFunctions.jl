@@ -20,7 +20,7 @@ function calculate_structure_function_tensor(
     calculate_structure_function_tensor!(
         sums, counts, order, x, u, distance_bins; backend = backend, kwargs...
     )
-    return SFO.StructureFunctionTensor(order, distance_bins, sums, counts)
+    return SFO.StructureFunctionTensorSumsAndCounts(order, distance_bins, sums, counts)
 end
 
 function calculate_structure_function_tensor!(

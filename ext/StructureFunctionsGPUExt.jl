@@ -1572,7 +1572,7 @@ end
     gpu_calculate_structure_function_2d(sf_type, backend, x_mat, u_mat, distance_bins, value_bins; kwargs...)
 
 Compute one 2D joint histogram (distance × SF value) for `sf_type` on `backend`.
-Returns [`StructureFunction2D`](@ref) with the same flat edge vectors passed in.
+Returns [`StructureFunction2DSumsAndCounts`](@ref) with the same flat edge vectors passed in.
 
 Uses tiled128 block-local histograms when ``n_dist × n_val ≤ SF_GPU_MAX_2D_HIST``
 (with each axis ``≤ SF_GPU_MAX_BINS``); otherwise falls back to ``(N_points, N_points)``
@@ -1619,7 +1619,7 @@ function _gpu_calculate_structure_function_2d_snapshot(
     )
     sums = Array(out_sums_dev)
     counts = _download_gpu_counts(out_cnts_dev, CT)
-    return SF.StructureFunction2D(sf_type, distance_bins, value_bins, sums, counts)
+    return SF.StructureFunction2DSumsAndCounts(sf_type, distance_bins, value_bins, sums, counts)
 end
 
 # ---------------------------------------------------------------------------

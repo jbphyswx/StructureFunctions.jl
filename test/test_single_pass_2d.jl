@@ -63,7 +63,7 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
             verbose = false,
             show_progress = false,
         )
-        Test.@test sf2d isa SFO.StructureFunction2D
+        Test.@test sf2d isa SFO.StructureFunction2DSumsAndCounts
         Test.@test sums_2d[t, :, :] ≈ sf2d.sums
         Test.@test counts_2d[t, :, :] ≈ sf2d.counts
     end
