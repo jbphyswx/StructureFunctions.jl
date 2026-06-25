@@ -21,6 +21,9 @@ _finalize(r::SFO.StructureFunctionSumsAndCounts, ::Type{<:SFO.StructureFunctionS
 _finalize(r::SFO.StructureFunctionSumsAndCounts, ::Type{<:SFO.StructureFunction}) =
     SFO.StructureFunction(r.operator, r.distance, _bin_average(r.sums, r.counts))
 _finalize(r::SFO.StructureFunction2DSumsAndCounts, ::Type{<:SFO.StructureFunction2DSumsAndCounts}) = r
+_finalize(r::SFO.StructureFunctionTensorSumsAndCounts, ::Type{<:SFO.StructureFunctionTensorSumsAndCounts}) = r
+_finalize(r::SFO.StructureFunctionTensorSumsAndCounts{P}, ::Type{<:SFO.StructureFunctionTensor}) where {P} =
+    SFO.StructureFunctionTensor(r.order, r.distance_bins, _tensor_bin_average(r.sums, r.counts, Val(P)))
 _finalize(r, ::Type{R}) where {R} = throw(ArgumentError(
     "Cannot produce a $R from this calculation (got a $(typeof(r))). Check the `output_type` keyword.",
 ))
