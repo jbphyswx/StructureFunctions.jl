@@ -532,7 +532,10 @@ function _single_pass_collection_1d(
         L3   = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.L3, distance_bins, _sp_rowview(sums, 5), cc), OT),
         L1T2 = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.L1T2, distance_bins, _sp_rowview(sums, 6), cc), OT),
     )
-    if ndims(sums) == 2 && size(sums, 1) >= SINGLE_PASS_WITH_HELMHOLTZ_N
+    # Helmholtz exists exactly for point-field input (a 2D stacked matrix); batched input is
+    # ndims ≥ 3. Branch on `ndims(sums)` ALONE (compile-time) — not a runtime size check — so the
+    # return type is a single concrete NamedTuple (type-stable), not a Union of 6/7-key tuples.
+    if ndims(sums) == 2
         return merge(base, (; helmholtz = helmholtz_decompose_2d(distance_bins, sums, counts)))
     end
     return base

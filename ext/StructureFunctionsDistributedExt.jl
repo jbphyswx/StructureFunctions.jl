@@ -89,29 +89,31 @@ function _parallel_calculate_structure_function_core(
         @info("calculating structure function (distributed reduction, inner=$(nameof(typeof(inner))))")
     end
 
-    # One balanced i-list per worker; each worker computes its partial via `inner`
-    # (Serial, or Threaded for hybrid distributed+threaded). Reduce partials by +.
+    # One balanced i-list per worker; each worker computes its partial via `inner` (Serial, or
+    # Threaded for hybrid distributed+threaded). Collect the partials and accumulate them into a
+    # preallocated, concretely-typed buffer. (We deliberately avoid `@distributed (+)`, whose
+    # reduction is inferred as `Any` and would force a return-type assertion and make
+    # AutoBackend+Distributed type-unstable. `pmap`-into-typed-buffer mirrors the batched path
+    # and infers natively.)
     N = length(x_vecs[1])
     nw = max(1, Distributed.nworkers())
     chunks = SFC._balanced_index_chunks(N, nw)
-    sums_and_counts =
-        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for w in 1:nw
-            SFC._partial_sums_counts(
-                inner,
-                structure_function_type,
-                x_vecs,
-                u_vecs,
-                distance_bins,
-                chunks[w];
-                distance_metric = distance_metric,
-                count_eltype = count_eltype,
-            )
-        end
+    partials = Distributed.pmap(chunks) do ch
+        SFC._partial_sums_counts(
+            inner, structure_function_type, x_vecs, u_vecs, distance_bins, ch;
+            distance_metric = distance_metric, count_eltype = count_eltype,
+        )
+    end
 
-    # Pin the reduction's element type: `@distributed (+)` infers `Any`, which would otherwise
-    # make `AutoBackend`'s union (and the public `_finalize`) type-unstable when Distributed is
-    # loaded. `_partial_sums_counts` and `+` both yield a `StructureFunctionSumsAndCounts`.
-    return sums_and_counts::SFO.StructureFunctionSumsAndCounts
+    OT = promote_type(float(eltype(x_vecs[1])), float(eltype(u_vecs[1])))
+    nb = SFC.n_histogram_bins(distance_bins)
+    sums = zeros(OT, nb)
+    counts = zeros(CT, nb)
+    for p in partials
+        sums .+= p.sums
+        counts .+= p.counts
+    end
+    return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
 end
 
 # --- Batched (auxiliary-axis) distributed dispatch ---
@@ -250,21 +252,42 @@ function SFC._dispatch_execution_backend(
         @info("calculating 2D joint structure function (distributed reduction)")
     end
 
-    sums_and_counts =
-        PM.@showprogress enabled = show_progress Distributed.@distributed (+) for i in _balanced_triangle_perm(length(x_vecs[1]))
-            SFC.calculate_structure_function_2d_i(
-                structure_function_type,
-                i,
-                x_vecs,
-                u_vecs,
-                distance_bins,
-                value_bins;
+    # Round-robin the balanced triangle permutation across workers (an interleaved subset of a
+    # balance-ordered list stays load-balanced); each worker accumulates its i's into a local 2D
+    # buffer, then we sum the partials into a preallocated typed buffer. (Same rationale as the 1D
+    # core: avoids `@distributed (+)`'s `Any`-typed reduction / the return-type assertion.)
+    N = length(x_vecs[1])
+    nw = max(1, Distributed.nworkers())
+    perm = _balanced_triangle_perm(N)
+    chunks = [perm[w:nw:length(perm)] for w in 1:nw]
+
+    D = length(x_vecs)
+    vD = Val(D)
+    nd = SFC.n_histogram_bins(distance_bins)
+    nv = SFC.n_histogram_bins(value_bins)
+    OT = promote_type(float(eltype(x_vecs[1])), float(eltype(u_vecs[1])))
+    dist_be = SFC.BinEdges(distance_bins)
+    val_be = SFC.BinEdges(value_bins)
+
+    partials = Distributed.pmap(chunks) do ichunk
+        ls = zeros(OT, nd, nv)
+        lc = zeros(CT, nd, nv)
+        for i in ichunk
+            SFC.calculate_structure_function_2d_i!(
+                ls, lc, vD, structure_function_type, i, x_vecs, u_vecs, dist_be, val_be;
                 distance_metric = distance_metric,
-                count_eltype = count_eltype,
             )
         end
-    # Pin the reduction's element type (see the 1D note above): keeps `AutoBackend` type-stable.
-    return sums_and_counts::SFO.StructureFunction2DSumsAndCounts
+        (ls, lc)
+    end
+
+    sums = zeros(OT, nd, nv)
+    counts = zeros(CT, nd, nv)
+    for (ls, lc) in partials
+        sums .+= ls
+        counts .+= lc
+    end
+    return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts)
 end
 
 function SFC._dispatch_execution_backend(
