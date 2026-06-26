@@ -95,7 +95,7 @@ function main()
         backend; warmup = warmup,
     )
 
-    println("--- slice_driver: calculate_structure_function_slices! ---")
+    println("--- slice_driver: calculate_structure_function_batch! ---")
     t_slice = run_timed_gpu(
         () -> bench_slice_driver!(backend, x_batch, u_batch, bins, sft, sums_c, counts_c, ws),
         backend; warmup = warmup,

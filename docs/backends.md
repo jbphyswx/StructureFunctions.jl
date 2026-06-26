@@ -254,7 +254,7 @@ for workspace reuse, slice batches, testing tiers, and benchmark regeneration.
 ### When to Use
 - ✅ **Large datasets**: roughly **few×10³ points and up** (see committed GPU scaling JSON)
 - ✅ **GPUs available**: NVIDIA A100, RTX 4090, AMD MI200, etc.
-- ✅ **Repeated calls or time series**: `GPUSFWorkspace` and `calculate_structure_function_slices!`
+- ✅ **Repeated calls or time series**: `GPUSFWorkspace` and `calculate_structure_function_batch!`
 - ✅ **Research clusters**: Many HPC centers provide GPUs
 
 ### When NOT to Use
@@ -301,7 +301,7 @@ x_batch = CUDA.CuArray{FT}(rand(FT, 3, N, T))
 u_batch = CUDA.CuArray{FT}(rand(FT, 3, N, T))
 sums = zeros(FT, length(bins) - 1, T)
 counts = zeros(UInt32, length(bins) - 1, T)
-SFC.gpu_calculate_structure_function_slices!(
+SFC.gpu_calculate_structure_function_batch!(
     sums, counts, sft, backend, x_batch, u_batch, bins; workspace = ws,
 )
 ```

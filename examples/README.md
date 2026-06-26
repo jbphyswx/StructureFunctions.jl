@@ -90,7 +90,7 @@ julia --project=examples examples/gpu_time_slices.jl
 ```
 
 **What it does**:
-- Builds `(3, N, T)` batch and calls `gpu_calculate_structure_function_slices!`
+- Builds `(3, N, T)` batch and calls `gpu_calculate_structure_function_batch!`
 - Validates slice 1 against serial CPU
 
 ---

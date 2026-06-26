@@ -40,7 +40,7 @@ sums_slice = zeros(FT, NB, T)
 counts_slice = zeros(UInt32, NB, T)
 ws = SFC.GPUSFWorkspace(backend, bins)
 
-@time SFC.gpu_calculate_structure_function_slices!(
+@time SFC.gpu_calculate_structure_function_batch!(
     sums_slice, counts_slice, sft, backend, x_dev, u_dev, bins; workspace = ws,
 )
 
@@ -54,6 +54,6 @@ ref = SFC.calculate_structure_function(
 
 println("Slice 1 counts match serial CPU: ", counts_slice[:, 1] == ref.counts)
 println("Backend: ", typeof(backend), "  N=$N  T=$T")
-println("Use calculate_structure_function_slices! for production time series.")
+println("Use calculate_structure_function_batch! for production time series.")
 
 SFC.release!(ws)

@@ -83,7 +83,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
         gpu_s = zeros(Float32, NB, B)
         gpu_c = zeros(UInt32, NB, B)
-        SFC.calculate_structure_function_slices!(
+        SFC.calculate_structure_function_batch!(
             gpu_s, gpu_c, SF_TYPE, x, u, lbe; backend = GPU_BE,
         )
         @test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
@@ -125,7 +125,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
         gpu_s = zeros(Float32, 6, n_bins, B)
         gpu_c = zeros(UInt32, 6, n_bins, B)
-        SFC.calculate_structure_functions_single_pass_slices!(
+        SFC.calculate_structure_functions_single_pass_batch!(
             gpu_s, gpu_c, x, u, lbe; backend = GPU_BE,
         )
         @test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
@@ -162,7 +162,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
         gpu_s = zeros(Float32, 6, n_bins, n_val, B)
         gpu_c = zeros(UInt32, 6, n_bins, n_val, B)
-        SFC.calculate_structure_functions_single_pass_2d_slices!(
+        SFC.calculate_structure_functions_single_pass_2d_batch!(
             gpu_s, gpu_c, x, u, lbe, val_edges; backend = GPU_BE,
         )
         @test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)

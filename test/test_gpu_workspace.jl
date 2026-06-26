@@ -163,14 +163,14 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     sums_drv = zeros(FT, NB, T)
     counts_drv = zeros(UInt32, NB, T)
     ws_slice = SFC.GPUSFWorkspace(backend, linear_bins)
-    SFC.gpu_calculate_structure_function_slices!(
+    SFC.gpu_calculate_structure_function_batch!(
         sums_drv, counts_drv, sft, backend, x_batch, u_batch, linear_bins;
         workspace = ws_slice,
     )
     Test.@test sums_drv ≈ sums_slices atol = 1e-12
     Test.@test counts_drv ≈ counts_slices
 
-    SFC.calculate_structure_function_slices!(
+    SFC.calculate_structure_function_batch!(
         sums_drv, counts_drv, sft, x_batch, u_batch, linear_bins;
         backend = SFC.GPUBackend(backend), workspace = ws_slice,
     )
@@ -190,7 +190,7 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     end
     sums_2d_drv = zeros(FT, n_dist, n_val, T)
     counts_2d_drv = zeros(UInt32, n_dist, n_val, T)
-    SFC.gpu_calculate_structure_function_2d_slices!(
+    SFC.gpu_calculate_structure_function_2d_batch!(
         sums_2d_drv, counts_2d_drv, sft, backend, x_batch, u_batch, linear_bins, value_bins;
         workspace = ws2d,
     )
@@ -213,7 +213,7 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     end
     sums_sp_drv = zeros(FT, 6, NB, T)
     counts_sp_drv = zeros(UInt32, 6, NB, T)
-    SFC.gpu_calculate_structure_functions_single_pass_slices!(
+    SFC.gpu_calculate_structure_functions_single_pass_batch!(
         sums_sp_drv, counts_sp_drv, backend, x_batch, u_batch, linear_bins;
         workspace = ws_sp,
     )
@@ -235,7 +235,7 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     end
     sums_sp2d_drv = zeros(FT, 6, NB, n_val, T)
     counts_sp2d_drv = zeros(UInt32, 6, NB, n_val, T)
-    SFC.gpu_calculate_structure_functions_single_pass_2d_slices!(
+    SFC.gpu_calculate_structure_functions_single_pass_2d_batch!(
         sums_sp2d_drv, counts_sp2d_drv, backend, x_batch, u_batch,
         linear_bins, value_bins_ntuple; workspace = ws_sp2d,
     )

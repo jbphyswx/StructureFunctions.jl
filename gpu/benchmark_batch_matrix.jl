@@ -374,7 +374,7 @@ function run_batch_matrix_benchmark(;
         push!(rows, :individual_varying => _bench_row("individual 1D varying-x (GPU slices)", () -> begin
             s = zeros(Float32, NB, B)
             c = zeros(UInt32, NB, B)
-            SFC.calculate_structure_function_slices!(s, c, sf, x_var, u_var, edges; backend = gpu_backend)
+            SFC.calculate_structure_function_batch!(s, c, sf, x_var, u_var, edges; backend = gpu_backend)
         end, ka_backend; warmup = warmup))
     end
 
@@ -404,7 +404,7 @@ function run_batch_matrix_benchmark(;
             () -> begin
                 s = zeros(Float32, 6, NB, B_sample)
                 c = zeros(UInt32, 6, NB, B_sample)
-                SFC.calculate_structure_functions_single_pass_slices!(
+                SFC.calculate_structure_functions_single_pass_batch!(
                     s, c, x_sample, u_sample, edges; backend = gpu_backend,
                 )
             end,
@@ -431,7 +431,7 @@ function run_batch_matrix_benchmark(;
         push!(rows, :sp1d_varying => _bench_row("SP1D six-invariant varying-x (GPU slices full B)", () -> begin
             s = zeros(Float32, 6, NB, B)
             c = zeros(UInt32, 6, NB, B)
-            SFC.calculate_structure_functions_single_pass_slices!(s, c, x_var, u_var, edges; backend = gpu_backend)
+            SFC.calculate_structure_functions_single_pass_batch!(s, c, x_var, u_var, edges; backend = gpu_backend)
         end, ka_backend; warmup = warmup))
     end
 
@@ -451,7 +451,7 @@ function run_batch_matrix_benchmark(;
             () -> begin
                 s = zeros(Float32, 6, NB, nv, B_sample)
                 c = zeros(UInt32, 6, NB, nv, B_sample)
-                SFC.calculate_structure_functions_single_pass_2d_slices!(
+                SFC.calculate_structure_functions_single_pass_2d_batch!(
                     s, c, x_sample, u_sample, edges, val_edges; backend = gpu_backend,
                 )
             end,
@@ -478,7 +478,7 @@ function run_batch_matrix_benchmark(;
         push!(rows, :sp2d_varying => _bench_row("SP2D six-invariant varying-x (GPU slices full B)", () -> begin
             s = zeros(Float32, 6, NB, nv, B)
             c = zeros(UInt32, 6, NB, nv, B)
-            SFC.calculate_structure_functions_single_pass_2d_slices!(
+            SFC.calculate_structure_functions_single_pass_2d_batch!(
                 s, c, x_var, u_var, edges, val_edges; backend = gpu_backend,
             )
         end, ka_backend; warmup = warmup))

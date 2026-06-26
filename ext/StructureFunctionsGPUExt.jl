@@ -1980,13 +1980,13 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d!(
 end
 
 """
-    gpu_calculate_structure_function_slices!(sums, counts, sf_type, backend, x, u, distance_bins; workspace=nothing, ...)
+    gpu_calculate_structure_function_batch!(sums, counts, sf_type, backend, x, u, distance_bins; workspace=nothing, ...)
 
 Batch 1D structure functions over the third dimension of `x`, `u` with layout
 `(N_dims, N_points, T)`. Host outputs `sums`, `counts` have shape `(NB, T)`.
 Uploads `x`, `u` once and loops over optimized point-field GPU kernels.
 """
-function SFC.gpu_calculate_structure_function_slices!(
+function SFC.gpu_calculate_structure_function_batch!(
     sums::AbstractMatrix{OT},
     counts::AbstractMatrix{CT},
     sf_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -2017,11 +2017,11 @@ function SFC.gpu_calculate_structure_function_slices!(
 end
 
 """
-    gpu_calculate_structure_function_2d_slices!(sums, counts, sf_type, backend, x, u, distance_bins, value_bins; workspace=nothing, ...)
+    gpu_calculate_structure_function_2d_batch!(sums, counts, sf_type, backend, x, u, distance_bins, value_bins; workspace=nothing, ...)
 
 Batch 2D joint histograms over `(N_dims, N_points, T)`; outputs `(n_dist, n_val, T)`.
 """
-function SFC.gpu_calculate_structure_function_2d_slices!(
+function SFC.gpu_calculate_structure_function_2d_batch!(
     sums::AbstractArray{OT, 3},
     counts::AbstractArray{CT, 3},
     sf_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -2052,12 +2052,12 @@ function SFC.gpu_calculate_structure_function_2d_slices!(
 end
 
 """
-    gpu_calculate_structure_functions_single_pass_slices!(sums, counts, backend, x, u, distance_bins; workspace=nothing, ...)
+    gpu_calculate_structure_functions_single_pass_batch!(sums, counts, backend, x, u, distance_bins; workspace=nothing, ...)
 
 Batch six invariant 1D distance histograms over `(N_dims, N_points, T)`;
 outputs `(6, NB, T)`.
 """
-function SFC.gpu_calculate_structure_functions_single_pass_slices!(
+function SFC.gpu_calculate_structure_functions_single_pass_batch!(
     sums::AbstractArray{OT, 3},
     counts::AbstractArray{CT, 3},
     backend::KA.Backend,
@@ -2086,12 +2086,12 @@ function SFC.gpu_calculate_structure_functions_single_pass_slices!(
 end
 
 """
-    gpu_calculate_structure_functions_single_pass_2d_slices!(sums, counts, backend, x, u, distance_bins, value_bins; workspace=nothing, ...)
+    gpu_calculate_structure_functions_single_pass_2d_batch!(sums, counts, backend, x, u, distance_bins, value_bins; workspace=nothing, ...)
 
 Batch six invariant distance × value joint histograms over `(N_dims, N_points, T)`;
 outputs `(6, NB, n_val, T)`.
 """
-function SFC.gpu_calculate_structure_functions_single_pass_2d_slices!(
+function SFC.gpu_calculate_structure_functions_single_pass_2d_batch!(
     sums::AbstractArray{OT, 4},
     counts::AbstractArray{CT, 4},
     backend::KA.Backend,

@@ -90,7 +90,7 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     sums_drv = zeros(Float64, NB, T)
     counts_drv = zeros(UInt32, NB, T)
     ws_slice = SFC.GPUSFWorkspace(backend, bins)
-    SFC.gpu_calculate_structure_function_slices!(
+    SFC.gpu_calculate_structure_function_batch!(
         sums_drv, counts_drv, sft, backend, x_batch, u_batch, bins;
         workspace = ws_slice,
     )
