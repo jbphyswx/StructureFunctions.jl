@@ -17,8 +17,9 @@ import .StructureFunctionObjects:
     AbstractStructureFunction,
     StructureFunction,
     StructureFunctionSumsAndCounts,
-    StructureFunction2D,
+    StructureFunction2DSumsAndCounts,
     StructureFunctionTensor,
+    StructureFunctionTensorSumsAndCounts,
     HelmholtzDecomposition2D
 
 using .HelperFunctions
@@ -43,8 +44,8 @@ export calculate_structure_function, calculate_structure_function!, calculate_st
 export marginalize
 export AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
     GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend
-export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2D
-export StructureFunctionTensor, HelmholtzDecomposition2D
+export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2DSumsAndCounts
+export StructureFunctionTensor, StructureFunctionTensorSumsAndCounts, HelmholtzDecomposition2D
 export LongitudinalSecondOrderStructureFunctionType,
     TransverseSecondOrderStructureFunctionType
 export AbstractPairwiseStructureFunctionType, AbstractDerivedStructureFunctionType

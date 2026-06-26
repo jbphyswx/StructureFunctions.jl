@@ -19,23 +19,80 @@ function serial_calculate_structure_function!(
         @info("calculating 2D joint structure function (serial reduction)")
     end
 
-    iter_inds = eachindex(x_vecs[1])
-    vN = Val(length(x_vecs))
-    
-    PM.@showprogress enabled = show_progress for i in iter_inds
+    # Fast path: Euclidean + D ∈ (2,3) via the SIMD compute/scatter split (distance + SF value
+    # vectorize over j; the 2D (dist,value) scatter stays scalar).
+    D = length(x_vecs)
+    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
+        _pf_2d_simd_run!(sums_2d, counts_2d, structure_function_type, x_vecs, u_vecs,
+                         distance_bins, value_bins, D == 2 ? Val(2) : Val(3))
+        return nothing
+    end
+
+    vN = Val(D)
+    PM.@showprogress enabled = show_progress for i in eachindex(x_vecs[1])
         calculate_structure_function_2d_i!(
-            sums_2d,
-            counts_2d,
-            vN,
-            structure_function_type,
-            i,
-            x_vecs,
-            u_vecs,
-            distance_bins,
-            value_bins;
-            distance_metric = distance_metric,
+            sums_2d, counts_2d, vN, structure_function_type, i, x_vecs, u_vecs,
+            distance_bins, value_bins; distance_metric = distance_metric,
         )
     end
+    return nothing
+end
+
+"""
+    _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, dist_be, val_be, ::Val{D}, distbuf, valbuf, irange)
+
+2D-joint point-field SIMD compute/scatter kernel over outer indices `irange`: `@simd` over `j>i`
+computes distance + SF value into buffers (no scatter ⇒ vectorizes), then a scalar loop digitizes
+both axes and scatters into the (dist,value) cell. Loop lives in this one kernel (called once per
+range) so the `@simd` vectorizes; shared by serial + threaded.
+"""
+function _pf_2d_simd_pairs!(
+    sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
+    sf::SFT.AbstractPairwiseStructureFunctionType,
+    xc::NTuple{D}, uc::NTuple{D}, dist_be, val_be, ::Val{D},
+    distbuf::AbstractVector, valbuf::AbstractVector, irange,
+) where {OT, CT, D}
+    N = length(xc[1])
+    n_dist = n_histogram_bins(dist_be)
+    n_val = n_histogram_bins(val_be)
+    FTx = eltype(xc[1])
+    @inbounds for i in irange
+        Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
+        Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
+        @simd for j in (i + 1):N
+            Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
+            dx = Xj - Xi
+            dist = sqrt(LA.dot(dx, dx))
+            rh = dx / dist
+            Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
+            distbuf[j] = dist
+            valbuf[j] = sf(Uj - Ui, rh)
+        end
+        for j in (i + 1):N
+            dbin = SFH.digitize(distbuf[j], dist_be)
+            if 1 <= dbin <= n_dist
+                vbin = SFH.digitize(valbuf[j], val_be)
+                if 1 <= vbin <= n_val
+                    sums2d[dbin, vbin] += valbuf[j]
+                    counts2d[dbin, vbin] += one(CT)
+                end
+            end
+        end
+    end
+    return nothing
+end
+
+function _pf_2d_simd_run!(
+    sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
+    sf::SFT.AbstractPairwiseStructureFunctionType,
+    x_vecs::Tuple, u_vecs::Tuple, dist_be, val_be, ::Val{D},
+) where {OT, CT, D}
+    xc = ntuple(d -> collect(x_vecs[d]), Val(D))
+    uc = ntuple(d -> collect(u_vecs[d]), Val(D))
+    N = length(xc[1])
+    distbuf = Vector{eltype(xc[1])}(undef, N)
+    valbuf = Vector{OT}(undef, N)
+    _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, dist_be, val_be, Val(D), distbuf, valbuf, 1:(N - 1))
     return nothing
 end
 
@@ -68,7 +125,7 @@ function serial_calculate_structure_function(
         kwargs...,
     )
 
-    return SFO.StructureFunction2D(
+    return SFO.StructureFunction2DSumsAndCounts(
         structure_function_type,
         distance_bins,
         value_bins,
@@ -118,7 +175,7 @@ function serial_calculate_structure_function(
         sums = zeros(FT, n_dist, n_val, bdims...)
         counts = zeros(UInt32, n_dist, n_val, bdims...)
         auxiliary_joint2d!(sums, counts, structure_function_type, x_arr, u_arr, distance_bins, value_bins; kwargs...)
-        return SFO.StructureFunction2D(structure_function_type, distance_bins, value_bins, sums, counts)
+        return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts)
     end
     N_dims = size(x_arr, 1)
     x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
@@ -207,7 +264,7 @@ function calculate_structure_function_2d_i(
         distance_metric = distance_metric,
     )
 
-    return SFO.StructureFunction2D(
+    return SFO.StructureFunction2DSumsAndCounts(
         structure_function_type,
         distance_bins,
         value_bins,

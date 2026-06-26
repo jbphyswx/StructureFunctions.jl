@@ -158,12 +158,12 @@ Test.@testset "BinEdges Tests" begin
         ref_lin = SFC.calculate_structure_function(
             sft, x, u, SF.LinearBinEdges(lin_range);
             backend = SFC.SerialBackend(), verbose = false, show_progress = false,
-            return_sums_and_counts = true,
+            output_type = SF.StructureFunctionSumsAndCounts,
         )
         via_range = SFC.calculate_structure_function(
             sft, x, u, collect(lin_range);
             backend = SFC.SerialBackend(), verbose = false, show_progress = false,
-            return_sums_and_counts = true,
+            output_type = SF.StructureFunctionSumsAndCounts,
         )
         Test.@test via_range.sums ≈ ref_lin.sums
         Test.@test via_range.counts == ref_lin.counts
@@ -171,12 +171,12 @@ Test.@testset "BinEdges Tests" begin
         ref_log = SFC.calculate_structure_function(
             sft, x, u, SF.LogBinEdges(log_vec);
             backend = SFC.SerialBackend(), verbose = false, show_progress = false,
-            return_sums_and_counts = true,
+            output_type = SF.StructureFunctionSumsAndCounts,
         )
         via_log_vec = SFC.calculate_structure_function(
             sft, x, u, log_vec;
             backend = SFC.SerialBackend(), verbose = false, show_progress = false,
-            return_sums_and_counts = true,
+            output_type = SF.StructureFunctionSumsAndCounts,
         )
         Test.@test via_log_vec.sums ≈ ref_log.sums
         Test.@test via_log_vec.counts == ref_log.counts

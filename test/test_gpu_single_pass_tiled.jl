@@ -112,15 +112,19 @@ Test.@testset "GPU single-pass global fallback parity — 2D and 3D" begin
             end,
         )
 
+        inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         for bins in bin_sets
-            sums_cpu, counts_cpu = SFC.calculate_structure_functions_single_pass(
+            sp_cpu = SFC.calculate_structure_functions_single_pass(
                 x, u, bins; backend = SFC.SerialBackend(),
+                output_type = SF.StructureFunctionSumsAndCounts,
             )
-            sums_gpu, counts_gpu = SFC.calculate_structure_functions_single_pass(
-                x, u, bins; backend,
+            sp_gpu = SFC.calculate_structure_functions_single_pass(
+                x, u, bins; backend, output_type = SF.StructureFunctionSumsAndCounts,
             )
-            Test.@test counts_gpu[1:6, :] == counts_cpu[1:6, :]
-            Test.@test sums_gpu[1:6, :] ≈ sums_cpu[1:6, :] atol = FT(1e-4)
+            for k in inv
+                Test.@test sp_gpu[k].counts == sp_cpu[k].counts
+                Test.@test sp_gpu[k].sums ≈ sp_cpu[k].sums atol = FT(1e-4)
+            end
         end
     end
 end
@@ -142,14 +146,17 @@ Test.@testset "GPU single-pass 2D global fallback parity" begin
         end,
     )
 
+    inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
     for bins in bin_sets
-        sums_cpu, counts_cpu = SFC.calculate_structure_functions_single_pass_2d(
+        sp_cpu = SFC.calculate_structure_functions_single_pass_2d(
             x, u, bins, value_bins; backend = SFC.SerialBackend(),
         )
-        sums_gpu, counts_gpu = SFC.calculate_structure_functions_single_pass_2d(
+        sp_gpu = SFC.calculate_structure_functions_single_pass_2d(
             x, u, bins, value_bins; backend, force_global_atomic = true,
         )
-        Test.@test counts_gpu == counts_cpu
-        Test.@test sums_gpu ≈ sums_cpu atol = FT(1e-4)
+        for k in inv
+            Test.@test sp_gpu[k].counts == sp_cpu[k].counts
+            Test.@test sp_gpu[k].sums ≈ sp_cpu[k].sums atol = FT(1e-4)
+        end
     end
 end

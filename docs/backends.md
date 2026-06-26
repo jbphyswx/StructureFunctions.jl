@@ -288,8 +288,8 @@ sft = SF.LongitudinalSecondOrderStructureFunctionType()
 
 ws = SFC.GPUSFWorkspace(backend, bins)
 result = SFC.gpu_calculate_structure_function(
-    sft, backend, x, u, bins; workspace = ws, return_sums_and_counts = true,
-)
+    sft, backend, x, u, bins; workspace = ws,
+)  # returns a StructureFunctionSumsAndCounts (raw sums + counts)
 SFC.release!(ws)
 ```
 
@@ -388,6 +388,25 @@ end
 ---
 
 ## Performance Tuning
+
+### CPU performance tips (important)
+
+- **Use `LinearBinEdges`/`LogBinEdges`, not a plain `Vector` of edges.** Digitizing each of the
+  O(N²) pairs is on the hot path; the wrapped edge types use an O(1) FMA lookup while a plain
+  `Vector` falls back to binary search. For point-field 1D this is ~**3.8×** end-to-end. Pass a
+  `range` (auto-wrapped to `LinearBinEdges`) or wrap explicitly — never `collect(range(...))`.
+- **Batched inputs are fastest by far.** The batch paths (velocity `u` with trailing
+  axes; positions fixed `(D,N)` or batched) are `Val{D}`-specialized and SIMD-vectorized over
+  the batch axis — multiple Gpair/s. For repeated calls on huge batches you can pass
+  `BatchLeading(u)` (data already stored `(B, D, N)`) to skip the internal transpose.
+- **Threaded throughput saturates near one socket.** On a 2-socket box the batch threaded path
+  is memory-bandwidth-bound and plateaus around the per-socket core count (more threads don't
+  help). Set **`JULIA_EXCLUSIVE=1`** (built-in thread pinning) for ~**+25%**. To scale *past* one
+  socket, use the hybrid backend below (one process per socket).
+- **Hybrid distributed + threaded** via `DistributedBackend(ThreadedBackend())`: each worker
+  threads over its share. With one worker pinned per NUMA node
+  (`addprocs(2; exeflags="-t 24"); numactl --membind`), each process keeps its data socket-local,
+  beating the single-socket bandwidth ceiling of pure threading.
 
 ### Choice Decision Tree
 

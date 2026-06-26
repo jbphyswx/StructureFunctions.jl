@@ -12,14 +12,13 @@ Random.seed!(42)
 function _cpu_ref(sft, x, u, bin_edges)
     return SFC.calculate_structure_function(
         sft, x, u, bin_edges;
-        verbose = false, show_progress = false, return_sums_and_counts = true,
+        verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts,
     )
 end
 
 function _gpu_tiled(sft, x, u, bin_edges)
     return SFC.gpu_calculate_structure_function(
-        sft, KA.CPU(), x, u, bin_edges;
-        return_sums_and_counts = true,
+        sft, KA.CPU(), x, u, bin_edges,
     )
 end
 
@@ -163,6 +162,6 @@ Test.@testset "GPU tiled parity — NB > SF_GPU_MAX_BINS errors" begin
     bin_edges = collect(FT, range(0.0, 2.0; length = 130))  # 129 bins (> 128 cap)
     sft = SFT.L2SFType()
     Test.@test_throws ErrorException SFC.gpu_calculate_structure_function(
-        sft, KA.CPU(), x, u, bin_edges; return_sums_and_counts = true,
+        sft, KA.CPU(), x, u, bin_edges,
     )
 end

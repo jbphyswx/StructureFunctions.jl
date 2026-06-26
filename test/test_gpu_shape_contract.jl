@@ -4,6 +4,7 @@ using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
     Calculations as SFC,
     StructureFunctionTypes as SFT,
+    StructureFunctionObjects as SFO,
     batch_histograms_equal
 
 Random.seed!(20260621)
@@ -14,7 +15,7 @@ const GPU_SHAPE_CPU_BE = SFC.SerialBackend()
 function _gpu_shape_pairwise(sf, x, u, bins)
     return SFC.calculate_structure_function(
         sf, x, u, bins;
-        backend = GPU_SHAPE_BE, return_sums_and_counts = true,
+        backend = GPU_SHAPE_BE, output_type = SFO.StructureFunctionSumsAndCounts,
         verbose = false, show_progress = false,
     )
 end
@@ -22,7 +23,7 @@ end
 function _cpu_shape_pairwise(sf, x, u, bins)
     return SFC.calculate_structure_function(
         sf, x, u, bins;
-        backend = GPU_SHAPE_CPU_BE, return_sums_and_counts = true,
+        backend = GPU_SHAPE_CPU_BE, output_type = SFO.StructureFunctionSumsAndCounts,
         verbose = false, show_progress = false,
     )
 end
@@ -101,18 +102,29 @@ end
     end
 
     @testset "single-pass auxiliary axes preserve public shape" begin
+        inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         x = rand(Float32, 2, 10)
         u = rand(Float32, 2, 10, 2, 3)
 
-        gpu = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = GPU_SHAPE_BE)
-        cpu = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = GPU_SHAPE_CPU_BE)
-        @test size(gpu.sums) == (6, n_bins, 2, 3)
-        @test batch_histograms_equal(gpu.sums, gpu.counts, cpu.sums, cpu.counts; atol = 1f-4)
+        gpu = SFC.calculate_structure_functions_single_pass(
+            x, u, bins; backend = GPU_SHAPE_BE, output_type = SFO.StructureFunctionSumsAndCounts,
+        )
+        cpu = SFC.calculate_structure_functions_single_pass(
+            x, u, bins; backend = GPU_SHAPE_CPU_BE, output_type = SFO.StructureFunctionSumsAndCounts,
+        )
+        @test keys(gpu) == inv
+        for k in inv
+            @test size(gpu[k].sums) == (n_bins, 2, 3)
+            @test batch_histograms_equal(gpu[k].sums, gpu[k].counts, cpu[k].sums, cpu[k].counts; atol = 1f-4)
+        end
 
         gpu2d = SFC.calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend = GPU_SHAPE_BE)
         cpu2d = SFC.calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend = GPU_SHAPE_CPU_BE)
-        @test size(gpu2d.sums) == (6, n_bins, length(value_bins) - 1, 2, 3)
-        @test batch_histograms_equal(gpu2d.sums, gpu2d.counts, cpu2d.sums, cpu2d.counts; atol = 1f-4)
+        @test keys(gpu2d) == inv
+        for k in inv
+            @test size(gpu2d[k].sums) == (n_bins, length(value_bins) - 1, 2, 3)
+            @test batch_histograms_equal(gpu2d[k].sums, gpu2d[k].counts, cpu2d[k].sums, cpu2d[k].counts; atol = 1f-4)
+        end
     end
 
     @testset "invalid shapes fail before GPU launch" begin

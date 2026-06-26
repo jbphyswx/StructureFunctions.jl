@@ -27,13 +27,13 @@ Test.@testset "Core Correctness - Block A" begin
         sf_type = SFT.SecondOrderStructureFunction
 
         res = SFC.calculate_structure_function(sf_type, x, u, bins;
-            verbose = false, show_progress = false, return_sums_and_counts = true)
+            verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts)
         Test.@test sum(res.counts) == 3
 
         # N=4 points -> 4*3/2 = 6 pairs
         x4 = [0.0 1.0 2.0 3.0; 0.0 0.0 0.0 0.0]
         res4 = SFC.calculate_structure_function(sf_type, x4, zeros(2, 4), bins;
-            verbose = false, show_progress = false, return_sums_and_counts = true)
+            verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts)
         Test.@test sum(res4.counts) == 6
     end
 
@@ -176,7 +176,7 @@ Test.@testset "Type Stability and Performance - Block C" begin
     # Test inference of the calculator
     Test.@testset "Inference of calculate_structure_function" begin
         # We manually check the type to account for the intentional Union return
-        # from the return_sums_and_counts flag.
+        # from the output_type keyword.
         res = Test.@test_nowarn SFC.calculate_structure_function(
             sf_type,
             x,

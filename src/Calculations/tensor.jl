@@ -6,9 +6,10 @@ function calculate_structure_function_tensor(
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3};
     backend::AbstractExecutionBackend = SerialBackend(),
+    output_type::Type{OTT} = SFO.StructureFunctionTensor,
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {P, FT1, FT2, FT3, CT}
+) where {P, FT1, FT2, FT3, OTT, CT}
     shape = _validate_array_shape(x, u)
     D = spatial_dimension(shape)
     n_bins = n_histogram_bins(distance_bins)
@@ -20,7 +21,10 @@ function calculate_structure_function_tensor(
     calculate_structure_function_tensor!(
         sums, counts, order, x, u, distance_bins; backend = backend, kwargs...
     )
-    return SFO.StructureFunctionTensor(order, distance_bins, sums, counts)
+    # The backend produces the raw accumulator; `_finalize` returns it as-is or as the averaged
+    # mean tensor (the default), mirroring the 1D output-type dispatch.
+    raw = SFO.StructureFunctionTensorSumsAndCounts(order, distance_bins, sums, counts)
+    return _finalize(raw, output_type)
 end
 
 function calculate_structure_function_tensor!(

@@ -54,7 +54,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
         gpu_out = SFC.calculate_structure_function(
             SF_TYPE, x, u, lbe;
-            backend = GPU_BE, return_sums_and_counts = true, verbose = false,
+            backend = GPU_BE, output_type = SF.StructureFunctionSumsAndCounts, verbose = false,
         )
         @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
@@ -68,7 +68,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
         gpu_out = SFC.calculate_structure_function(
             SF_TYPE, x, u, lbe;
-            backend = GPU_BE, return_sums_and_counts = true, verbose = false,
+            backend = GPU_BE, output_type = SF.StructureFunctionSumsAndCounts, verbose = false,
         )
         @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
@@ -105,10 +105,15 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         serial_calculate_structure_functions_single_pass!(cpu_s, cpu_c, x, u, lbe)
         @test batch_histograms_equal(cpu_s, cpu_c, ref_s, ref_c)
 
+        inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         gpu_sp = SFC.calculate_structure_functions_single_pass(
-            x, u, lbe; backend = GPU_BE,
+            x, u, lbe; backend = GPU_BE, output_type = SF.StructureFunctionSumsAndCounts,
         )
-        @test batch_histograms_equal(gpu_sp.sums, gpu_sp.counts, cpu_s, cpu_c; atol = 1f-4)
+        for (t, k) in enumerate(inv)
+            @test batch_histograms_equal(
+                gpu_sp[k].sums, gpu_sp[k].counts, cpu_s[t, :, :], cpu_c[t, :, :]; atol = 1f-4,
+            )
+        end
     end
 
     @testset "row4 SP1D varying-x slices" begin
@@ -135,10 +140,15 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         cpu_c = zeros(UInt32, 6, n_bins, n_val, B)
         serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges)
 
+        inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         gpu_sp = SFC.calculate_structure_functions_single_pass_2d(
             x, u, lbe, val_edges; backend = GPU_BE,
         )
-        @test batch_histograms_equal(gpu_sp.sums, gpu_sp.counts, cpu_s, cpu_c; atol = 1f-4)
+        for (t, k) in enumerate(inv)
+            @test batch_histograms_equal(
+                gpu_sp[k].sums, gpu_sp[k].counts, cpu_s[t, :, :, :], cpu_c[t, :, :, :]; atol = 1f-4,
+            )
+        end
     end
 
     @testset "row6 SP2D varying-x slices" begin
@@ -185,9 +195,14 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         cpu_c = zeros(UInt32, 6, n_bins, n_val, Bp)
         serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges)
 
+        inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         gpu_sp = SFC.calculate_structure_functions_single_pass_2d(
             x, u, lbe, val_edges; backend = GPU_BE,
         )
-        @test batch_histograms_equal(gpu_sp.sums, gpu_sp.counts, cpu_s, cpu_c; atol = 1f-4)
+        for (t, k) in enumerate(inv)
+            @test batch_histograms_equal(
+                gpu_sp[k].sums, gpu_sp[k].counts, cpu_s[t, :, :, :], cpu_c[t, :, :, :]; atol = 1f-4,
+            )
+        end
     end
 end

@@ -365,10 +365,10 @@ Compute structure functions on `backend` (any KernelAbstractions backend).
   happens at download (see module docstring).
 
 # Returns
-When `return_sums_and_counts=true`, a `StructureFunctionSumsAndCounts` with
-`Vector{Float64}` sums and count vector of type `count_eltype` (default `UInt32`,
-length `N_bins - 1`).
-Otherwise a binned-mean `StructureFunction`.
+The raw `StructureFunctionSumsAndCounts` accumulator with `Vector{Float64}` sums and a count
+vector of type `count_eltype` (default `UInt32`, length `N_bins - 1`). The public
+`calculate_structure_function` boundary maps this to the requested `output_type` (e.g. the
+binned-mean `StructureFunction`) via `_finalize`.
 """
 function SFC.gpu_calculate_structure_function(
     sf_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -376,42 +376,20 @@ function SFC.gpu_calculate_structure_function(
     x_mat::AbstractMatrix{FT},
     u_mat::AbstractMatrix{FT},
     distance_bins::AbstractVector{FT};
-    return_sums_and_counts::Bool = false,
     kwargs...,
 ) where {FT}
-    return SFC.gpu_calculate_structure_function(
-        sf_type,
-        backend,
-        x_mat,
-        u_mat,
-        distance_bins,
-        Val(return_sums_and_counts);
-        kwargs...,
-    )
-end
-
-function SFC.gpu_calculate_structure_function(
-    sf_type::SFT.AbstractPairwiseStructureFunctionType,
-    backend::KA.Backend,
-    x_mat::AbstractMatrix{FT},
-    u_mat::AbstractMatrix{FT},
-    distance_bins::AbstractVector{FT},
-    ::Val{RSAC};
-    kwargs...,
-) where {FT, RSAC}
     return _gpu_calculate_structure_function_core(
         sf_type,
         backend,
         x_mat,
         u_mat,
-        distance_bins,
-        Val(RSAC);
+        distance_bins;
         kwargs...,
     )
 end
 
 """
-    _gpu_calculate_structure_function_core(sf_type, backend, x_mat, u_mat, distance_bins, ::Val{RSAC}; workgroup_size=64)
+    _gpu_calculate_structure_function_core(sf_type, backend, x_mat, u_mat, distance_bins; workgroup_size=64)
 
 GPU kernel execution core for structure-function evaluation on dense matrix inputs.
 
@@ -831,31 +809,20 @@ function _gpu_calculate_structure_function_core(
     backend::KA.Backend,
     x_mat::AbstractMatrix{FT},
     u_mat::AbstractMatrix{FT},
-    distance_bins::AbstractVector{FT},
-    ::Val{RSAC};
+    distance_bins::AbstractVector{FT};
     workgroup_size::Int = 64,
     count_eltype::Type{CT} = UInt32,
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     kwargs...,
-) where {FT, RSAC, CT}
+) where {FT, CT}
     out_dev, cnt_dev, edges_host = _launch_gpu_structure_function!(
         sf_type, backend, x_mat, u_mat, distance_bins;
         workgroup_size = workgroup_size,
         workspace = workspace,
     )
-    N_bins = length(edges_host)
     output, counts = _download_gpu_sf_results(out_dev, cnt_dev, FT, CT)
 
-    if RSAC
-        return SF.StructureFunctionSumsAndCounts(sf_type, edges_host, output, counts)
-    else
-        output_div = similar(output)
-        for k in eachindex(output)
-            c = counts[k]
-            output_div[k] = c == 0 ? FT(NaN) : output[k] / c
-        end
-        return SF.StructureFunction(sf_type, edges_host, output_div)
-    end
+    return SF.StructureFunctionSumsAndCounts(sf_type, edges_host, output, counts)
 end
 
 
@@ -1572,7 +1539,7 @@ end
     gpu_calculate_structure_function_2d(sf_type, backend, x_mat, u_mat, distance_bins, value_bins; kwargs...)
 
 Compute one 2D joint histogram (distance × SF value) for `sf_type` on `backend`.
-Returns [`StructureFunction2D`](@ref) with the same flat edge vectors passed in.
+Returns [`StructureFunction2DSumsAndCounts`](@ref) with the same flat edge vectors passed in.
 
 Uses tiled128 block-local histograms when ``n_dist × n_val ≤ SF_GPU_MAX_2D_HIST``
 (with each axis ``≤ SF_GPU_MAX_BINS``); otherwise falls back to ``(N_points, N_points)``
@@ -1619,7 +1586,7 @@ function _gpu_calculate_structure_function_2d_snapshot(
     )
     sums = Array(out_sums_dev)
     counts = _download_gpu_counts(out_cnts_dev, CT)
-    return SF.StructureFunction2D(sf_type, distance_bins, value_bins, sums, counts)
+    return SF.StructureFunction2DSumsAndCounts(sf_type, distance_bins, value_bins, sums, counts)
 end
 
 # ---------------------------------------------------------------------------
@@ -1951,9 +1918,8 @@ function SFC._dispatch_single_pass(
 
     sums = Array(out_sums_dev)
     counts = _download_gpu_counts(out_cnts_dev, CT)
-    edges_host = _gpu_host_edge_vector(distance_bins)
 
-    return SFC.append_helmholtz_rotational_divergent_rows(sums, counts, edges_host)
+    return (sums = sums, counts = counts)  # raw 6-row; public wrapper adds Helmholtz once
 end
 
 """
@@ -2221,26 +2187,11 @@ function SFC.gpu_calculate_structure_function_batch(
     backend::KA.Backend,
     x::AbstractArray{FT},
     u::AbstractArray{FT},
-    distance_bins::AbstractVector{FT},
-    ::Val{RSAC};
-    kwargs...,
-) where {FT, RSAC}
-    return _gpu_calculate_structure_function_batch(
-        sf_type, backend, x, u, distance_bins, Val(RSAC); kwargs...,
-    )
-end
-
-function SFC.gpu_calculate_structure_function_batch(
-    sf_type::SFT.AbstractPairwiseStructureFunctionType,
-    backend::KA.Backend,
-    x::AbstractArray{FT},
-    u::AbstractArray{FT},
     distance_bins::AbstractVector{FT};
-    return_sums_and_counts::Bool = false,
     kwargs...,
 ) where {FT}
-    return gpu_calculate_structure_function_batch(
-        sf_type, backend, x, u, distance_bins, Val(return_sums_and_counts); kwargs...,
+    return _gpu_calculate_structure_function_batch(
+        sf_type, backend, x, u, distance_bins; kwargs...,
     )
 end
 

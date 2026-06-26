@@ -112,7 +112,7 @@ function _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins,
 end
 
 """
-    _gpu_calculate_structure_function_batch(sf_type, backend, x, u, distance_bins, ::Val{RSAC}; ...)
+    _gpu_calculate_structure_function_batch(sf_type, backend, x, u, distance_bins; ...)
 
 Fused GPU batch driver for individual 1D structure functions.
 """
@@ -121,11 +121,10 @@ function _gpu_calculate_structure_function_batch(
     backend::KA.Backend,
     x::AbstractArray{FT},
     u::AbstractArray{FT},
-    distance_bins::AbstractVector{FT},
-    ::Val{RSAC};
+    distance_bins::AbstractVector{FT};
     count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {FT, RSAC, CT}
+) where {FT, CT}
     fixed_x = ndims(x) == 2
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
@@ -133,17 +132,9 @@ function _gpu_calculate_structure_function_batch(
     out_host, cnt_host = _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins, NB, B, fixed_x, FT)
     sums = reshape(out_host, NB, bdims...)
     counts = reshape(cnt_host, NB, bdims...)
-    if RSAC
-        return (sums = sums, counts = CT === UInt32 ? counts : CT.(counts),
-                operator = sf_type, distance_bins = distance_bins)
-    else
-        out_div = similar(sums)
-        @inbounds for k in eachindex(sums)
-            c = counts[k]
-            out_div[k] = c == 0 ? FT(NaN) : sums[k] / c
-        end
-        return SF.StructureFunction(sf_type, distance_bins, out_div)
-    end
+    return SF.StructureFunctionSumsAndCounts(
+        sf_type, distance_bins, sums, CT === UInt32 ? counts : CT.(counts),
+    )
 end
 
 function _gpu_calculate_structure_function_batch!(
@@ -363,5 +354,5 @@ function _gpu_calculate_structure_function_2d_batch(
     sums = reshape(Array(out_dev)[1, :, :, :], n_dist, n_val, bdims...)
     counts_u32 = reshape(Array(cnt_dev)[1, :, :, :], n_dist, n_val, bdims...)
     counts = CT === UInt32 ? counts_u32 : CT.(counts_u32)
-    return SF.StructureFunction2D(sf_type, distance_bins, value_bins, sums, counts)
+    return SF.StructureFunction2DSumsAndCounts(sf_type, distance_bins, value_bins, sums, counts)
 end

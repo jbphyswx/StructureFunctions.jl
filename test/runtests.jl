@@ -55,6 +55,9 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Parallel Equivalence Test ---")
     include("test_parallel_equivalence.jl")
 
+    println("--- Running MPI Backend Test ---")
+    include("test_mpi.jl")
+
     println("--- Running GPU Parity Test ---")
     include("test_gpu_parity.jl")
 
