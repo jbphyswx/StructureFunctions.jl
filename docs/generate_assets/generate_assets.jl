@@ -239,9 +239,48 @@ end
 
 # ─── Execute ──────────────────────────────────────────────────────────────
 
+# ─── Figure 5: Single-pass invariants + Helmholtz ─────────────────────────
+
+function generate_single_pass_figure()
+    x, u = make_synthetic_field(N=1500)
+
+    r_min, r_max = 5.0, 400.0
+    bins = exp.(range(log(r_min), log(r_max); length=29))
+    rdist = bin_midpoints(bins)
+
+    # One O(N²) pass → NamedTuple of the six isotropic invariants; point-field input also
+    # yields a `:helmholtz` entry (rotational/divergent decomposition).
+    res = SF.calculate_structure_functions_single_pass(x, u, bins; backend=SF.SerialBackend())
+
+    fig = CM.Figure(size=(900, 560), fontsize=14)
+    CM.Label(fig[0, 1],
+        "Single-Pass Invariants + Helmholtz Decomposition",
+        fontsize=16, font=:bold)
+    ax = CM.Axis(fig[1, 1],
+        xlabel="Separation r  [km]", ylabel="|S(r)|",
+        xscale=CM.log10, yscale=CM.log10,
+        title="Six isotropic invariants + rotational/divergent — one pass")
+
+    for k in (:S2, :L2, :T2, :S3, :L3, :L1T2)
+        v = abs.(getproperty(res, k).values) .+ 1e-12
+        CM.scatterlines!(ax, rdist, v; label=string(k), markersize=5, linewidth=1.3)
+    end
+    h = res.helmholtz
+    rot = abs.(h.rotational_sums ./ max.(h.rotational_counts, 1)) .+ 1e-12
+    div = abs.(h.divergent_sums ./ max.(h.divergent_counts, 1)) .+ 1e-12
+    CM.lines!(ax, rdist, rot; label="Rotational", color=:black, linestyle=:dash, linewidth=2)
+    CM.lines!(ax, rdist, div; label="Divergent", color=:gray, linestyle=:dashdot, linewidth=2)
+    CM.axislegend(ax, position=:rb, nbanks=2)
+
+    outpath = joinpath(ASSETS_DIR, "sf_single_pass.png")
+    CM.save(outpath, fig)
+    println("Saved: $outpath")
+end
+
 println("Generating StructureFunctions.jl figure assets...")
 generate_kolmogorov_figure()
 generate_long_vs_trans_figure()
+generate_single_pass_figure()
 generate_parity_figure()
 generate_gpu_parity_figure()
 

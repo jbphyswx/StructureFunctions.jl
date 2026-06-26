@@ -419,6 +419,12 @@ where $\langle \cdot \rangle$ is ensemble/spatial average over all displacement 
 
 *Comparison of longitudinal (L2SF) and transverse (T2SF) 2nd-order structure functions on the same field.*
 
+### Single-Pass Invariants + Helmholtz Decomposition
+
+![Single-pass invariants and Helmholtz](docs/src/assets/sf_single_pass.png)
+
+*All six isotropic invariants (S2, L2, T2, S3, L3, L1T2) plus the rotational/divergent Helmholtz decomposition — computed in **one** O(N²) pair pass via `calculate_structure_functions_single_pass`.*
+
 ### Backend Parity Validation
 
 ![Backend Parity](docs/src/assets/sf_backend_parity.png)

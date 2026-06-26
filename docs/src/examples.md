@@ -20,6 +20,8 @@ julia --project=examples examples/simple_2d.jl
 
 ### Single pass: six invariants + Helmholtz
 
+![Single-pass invariants and Helmholtz decomposition](assets/sf_single_pass.png)
+
 One O(N²) pair pass returns all six isotropic invariants (and, for point-field input, the
 rotational/divergent Helmholtz decomposition) as a `NamedTuple` keyed by invariant:
 
