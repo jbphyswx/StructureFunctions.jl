@@ -1,7 +1,11 @@
 # StructureFunctions.jl v0.3.0
 
-[![DOI][zenodo-img]][zenodo-latest-url]
+[![Docs (stable)][docs-stable-img]][docs-stable-url] [![Docs (dev)][docs-dev-img]][docs-dev-url] [![DOI][zenodo-img]][zenodo-latest-url]
 
+[docs-stable-img]: https://img.shields.io/badge/docs-stable-blue.svg
+[docs-stable-url]: https://jbphyswx.github.io/StructureFunctions.jl/stable/
+[docs-dev-img]: https://img.shields.io/badge/docs-dev-blue.svg
+[docs-dev-url]: https://jbphyswx.github.io/StructureFunctions.jl/dev/
 [zenodo-img]: https://zenodo.org/badge/734119226.svg
 [zenodo-latest-url]: https://doi.org/10.5281/zenodo.14945669
 
@@ -202,7 +206,7 @@ result = SFC.calculate_structure_function(sf_type, x, u, bins;
 ```
 
 - **Ideal for**: Large datasets (few×10³+ points) where GPU memory is sufficient
-- **Docs**: [`docs/gpu.md`](docs/gpu.md) — workspace, slice batches, testing tiers
+- **Docs**: [`docs/src/gpu.md`](docs/src/gpu.md) — workspace, batch driver, testing tiers
 
 ### AutoBackend (Recommended Default)
 
@@ -399,7 +403,7 @@ where $\langle \cdot \rangle$ is ensemble/spatial average over all displacement 
 3. **Wikipedia**: [Turbulence](https://en.wikipedia.org/wiki/Turbulence#Kolmogorov's_theory_of_1941)  
    - Accessible overview of Kolmogorov theory
 
-**See also**: `docs/theory.md` for detailed mathematical formulations and dimensional projections.
+**See also**: [`docs/src/theory.md`](docs/src/theory.md) for detailed mathematical formulations and dimensional projections.
 
 ## Example Figures
 
@@ -459,11 +463,11 @@ where $\langle \cdot \rangle$ is ensemble/spatial average over all displacement 
 
 *Fixed hardware (**1 GPU + serial CPU**, always 1 worker), sweep N. **Not** HPC strong/weak scaling. CPU threading is in the strong/weak figures above. Regenerate: [`gpu/collect_benchmark_assets.jl`](gpu/collect_benchmark_assets.jl), then [`generate_gpu_figures.jl`](docs/generate_assets/generate_gpu_figures.jl).*
 
-#### GPU slice-batch scaling — fixed N, vary T (time slices)
+#### GPU batch scaling — fixed N, vary T (time slices)
 
-![GPU slice-batch scaling](docs/src/assets/gpu_slice_batch_scaling.png)
+![GPU batch scaling](docs/src/assets/gpu_slice_batch_scaling.png)
 
-*Fixed `N_SLICE` (default 1000), sweep T. CPU per-slice loop vs GPU naive loop vs GPU slice-batch driver on **1 GPU**. Not HPC weak scaling.*
+*Fixed `N_SLICE` (default 1000), sweep T. CPU per-slice loop vs GPU naive loop vs GPU batch driver (`*_batch!`) on **1 GPU**. Not HPC weak scaling.*
 
 #### GPU kernel parity (KA.CPU vs serial)
 

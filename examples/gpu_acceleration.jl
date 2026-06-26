@@ -43,11 +43,12 @@ println("N = $N  bins = $(length(bins) - 1)")
 
 ws = SFC.GPUSFWorkspace(backend, bins)
 
+# gpu_calculate_structure_function returns the raw StructureFunctionSumsAndCounts accumulator.
 result_fresh = @time SFC.gpu_calculate_structure_function(
-    sft, backend, x, u, bins; return_sums_and_counts = true,
+    sft, backend, x, u, bins,
 )
 result_ws = @time SFC.gpu_calculate_structure_function(
-    sft, backend, x, u, bins; return_sums_and_counts = true, workspace = ws,
+    sft, backend, x, u, bins; workspace = ws,
 )
 
 println("Counts match (fresh vs workspace): ", result_fresh.counts == result_ws.counts)

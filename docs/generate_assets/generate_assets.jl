@@ -202,10 +202,10 @@ function generate_gpu_parity_figure()
 
     res_serial = SFC.calculate_structure_function(
         sft, x, u, bin_edges;
-        verbose = false, show_progress = false, return_sums_and_counts = true,
+        verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts,
     )
     res_gpu = SFC.gpu_calculate_structure_function(
-        sft, KA.CPU(), x, u, bin_edges; return_sums_and_counts = true,
+        sft, KA.CPU(), x, u, bin_edges,
     )
 
     rd = [(bin_edges[i] + bin_edges[i + 1]) / 2 for i in 1:(length(bin_edges) - 1)]

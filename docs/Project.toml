@@ -4,3 +4,6 @@ StructureFunctions = "e93fee26-4d5e-49c1-899d-490508cfd19b"
 
 [compat]
 Documenter = "1"
+
+[sources]
+StructureFunctions = { path = ".." }

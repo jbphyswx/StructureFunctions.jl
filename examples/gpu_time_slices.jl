@@ -44,12 +44,13 @@ ws = SFC.GPUSFWorkspace(backend, bins)
     sums_slice, counts_slice, sft, backend, x_dev, u_dev, bins; workspace = ws,
 )
 
-# Reference: one slice via serial CPU
-x_t = (x_batch[1, :, 1], x_batch[2, :, 1], x_batch[3, :, 1])
-u_t = (u_batch[1, :, 1], u_batch[2, :, 1], u_batch[3, :, 1])
+# Reference: one slice via serial CPU. Inputs are plain (D, N) matrices (tuple/SVector inputs
+# are no longer accepted); pass output_type=StructureFunctionSumsAndCounts for the raw histogram.
+x_t = x_batch[:, :, 1]
+u_t = u_batch[:, :, 1]
 ref = SFC.calculate_structure_function(
     sft, x_t, u_t, bins;
-    verbose = false, show_progress = false, return_sums_and_counts = true,
+    verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts,
 )
 
 println("Slice 1 counts match serial CPU: ", counts_slice[:, 1] == ref.counts)

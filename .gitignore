@@ -65,3 +65,5 @@ gpu/archive/
 *.sqlite-shm
 *.sqlite-wal
 *.ncu-rep
+# Serialized Julia profile/allocation dumps (benchmark/profile/*.jls etc.)
+*.jls
