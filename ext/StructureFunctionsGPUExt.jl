@@ -1918,9 +1918,8 @@ function SFC._dispatch_single_pass(
 
     sums = Array(out_sums_dev)
     counts = _download_gpu_counts(out_cnts_dev, CT)
-    edges_host = _gpu_host_edge_vector(distance_bins)
 
-    return SFC.append_helmholtz_rotational_divergent_rows(sums, counts, edges_host)
+    return (sums = sums, counts = counts)  # raw 6-row; public wrapper adds Helmholtz once
 end
 
 """
