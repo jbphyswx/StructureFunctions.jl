@@ -44,6 +44,29 @@ function make_synthetic_field(; N=2000, seed=42)
     return x, u
 end
 
+# Ramp-cliff (sawtooth) shock field: smooth rises + sharp drops ⇒ negatively skewed velocity
+# increments ⇒ S3(r) < 0 (the forward-cascade 4/5-law sign). Contrast with the symmetric
+# random-phase field above, whose odd-order structure functions vanish.
+_saw(θ) = mod(θ, 2π) / π - 1   # rises linearly on [0, 2π), jumps down — a 1D shock profile
+
+function make_cascade_field(; N=2500, seed=7)
+    Random.seed!(seed)
+    x = Random.rand(2, N) .* 1000.0   # scattered points (avoid regular-grid banding artifacts)
+    u = zeros(2, N)
+    L = 1000.0
+    for k in 1:18
+        amp = k^(-5.0/6.0)
+        φu = 2π * Random.rand(); φv = 2π * Random.rand()
+        kx = Float64(k); ky = Float64(k ÷ 2 + 1)
+        for q in 1:N
+            arg = 2π * (kx * x[1, q] + ky * x[2, q]) / L
+            u[1, q] += amp * _saw(arg + φu)
+            u[2, q] += amp * _saw(arg + φv)
+        end
+    end
+    return x, u
+end
+
 # ─── Figure 1: S2 Kolmogorov scaling ──────────────────────────────────────
 
 function generate_kolmogorov_figure()
@@ -277,10 +300,86 @@ function generate_single_pass_figure()
     println("Saved: $outpath")
 end
 
+# ─── Figure 6: 2D joint-probability binning ───────────────────────────────
+
+# Column-normalize a (n_dist, n_val) count matrix → conditional PDF P(value | r); empty cells NaN.
+function _conditional_pdf(counts)
+    pdf = Float64.(counts)
+    for i in 1:size(pdf, 1)
+        s = sum(@view pdf[i, :])
+        s > 0 && (pdf[i, :] ./= s)
+    end
+    pdf[pdf .<= 0] .= NaN
+    return pdf
+end
+
+function generate_2d_binning_figure()
+    r_min, r_max = 5.0, 400.0
+    dist_bins = exp.(range(log(r_min), log(r_max); length=25))
+    rmid = bin_midpoints(dist_bins)
+    nval = 40
+    CMAP = CM.cgrad(:cubehelix; rev=true)
+    NANC = CM.RGBAf(0.86, 0.86, 0.88, 0.55)
+
+    # Six single-pass invariants (computed together in one calculate_structure_functions_single_pass_2d
+    # call per field). `signed` ⇒ 3rd-order, value bins straddle 0.
+    invs = [(:S2, false, "S₂"), (:L2, false, "L₂"), (:T2, false, "T₂"),
+            (:S3, true, "S₃"), (:L3, true, "L₃"), (:L1T2, true, "L1T2")]
+    fields = [("Symmetric field\n(no cascade)", make_synthetic_field),
+              ("Shock field\n(forward cascade)", make_cascade_field)]
+
+    fig = CM.Figure(size=(1640, 820), fontsize=14)
+    CM.Label(fig[0, 1:length(invs)],
+        "2D Joint-Probability Binning — all six single-pass invariants, two fields",
+        fontsize=18, font=:bold)
+
+    local hm
+    for (row, (fname, mk)) in enumerate(fields)
+        x, u = mk(N=2500)
+        # Velocity-increment scale σ from L2(r); set per-order value ranges around it.
+        l2 = SF.calculate_structure_function(SF.LongitudinalSecondOrderStructureFunctionType(),
+            x, u, dist_bins; backend=SF.SerialBackend(), show_progress=false, verbose=false)
+        σ2 = maximum(filter(isfinite, l2.values)); σ = sqrt(σ2)
+        seq(hi) = collect(range(0.0, hi; length=nval + 1))         # ≥0 (2nd order)
+        sym(hi) = collect(range(-hi, hi; length=nval + 1))         # ± (3rd order)
+        # One pass → all six joint histograms (per-invariant value bins, common bin count).
+        value_bins = (seq(24σ2), seq(12σ2), seq(12σ2), sym(15σ^3), sym(15σ^3), sym(15σ^3))
+        res = SF.calculate_structure_functions_single_pass_2d(x, u, dist_bins, value_bins;
+            backend=SF.SerialBackend())
+
+        for (col, (key, signed, lab)) in enumerate(invs)
+            vmid = bin_midpoints(value_bins[col])
+            pdf = _conditional_pdf(getproperty(res, key).counts)
+            ax = CM.Axis(fig[row, col]; xscale=CM.log10,
+                title = row == 1 ? lab : "",
+                xlabel = row == length(fields) ? "r  [km]" : "",
+                ylabel = col == 1 ? fname : "",
+                xlabelsize=12, ylabelsize=12)
+            hm = CM.heatmap!(ax, rmid, vmid, pdf; colormap=CMAP, colorscale=CM.log10,
+                colorrange=(1.0e-3, 1.0), lowclip=:white, nan_color=NANC)
+            if signed
+                CM.hlines!(ax, [0.0]; color=(:black, 0.35), linewidth=0.8)
+                # Conditional mean ⟨value | r⟩ (= the 1D SF): ≈0 for the symmetric field, dips
+                # negative for the cascade field — the visible 3rd-order / energy-flux signal.
+                sf = getproperty(res, key)
+                meanline = [sum(@view sf.sums[i, :]) / max(sum(@view sf.counts[i, :]), 1)
+                            for i in 1:length(rmid)]
+                CM.lines!(ax, rmid, meanline; color=:orangered, linewidth=2)
+            end
+        end
+    end
+    CM.Colorbar(fig[1:length(fields), length(invs) + 1], hm; label="P(value | r)")
+
+    outpath = joinpath(ASSETS_DIR, "sf_2d_binning.png")
+    CM.save(outpath, fig)
+    println("Saved: $outpath")
+end
+
 println("Generating StructureFunctions.jl figure assets...")
 generate_kolmogorov_figure()
 generate_long_vs_trans_figure()
 generate_single_pass_figure()
+generate_2d_binning_figure()
 generate_parity_figure()
 generate_gpu_parity_figure()
 

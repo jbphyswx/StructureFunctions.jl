@@ -45,6 +45,8 @@ raw.L2.sums, raw.L2.counts
 
 ### 2D joint (distance × value) histogram
 
+![2D joint-probability binning across all invariants, with vs without a cascade](assets/sf_2d_binning.png)
+
 ```julia
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, LogBinEdges, LinearBinEdges
 

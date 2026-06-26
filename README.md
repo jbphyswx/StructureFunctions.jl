@@ -425,6 +425,12 @@ where $\langle \cdot \rangle$ is ensemble/spatial average over all displacement 
 
 *All six isotropic invariants (S2, L2, T2, S3, L3, L1T2) plus the rotational/divergent Helmholtz decomposition — computed in **one** O(N²) pair pass via `calculate_structure_functions_single_pass`.*
 
+### 2D Joint-Probability Binning — all invariants, with vs without a cascade
+
+![2D joint-probability binning](docs/src/assets/sf_2d_binning.png)
+
+*Conditional PDFs `P(value | r)` for all six single-pass invariants (one `calculate_structure_functions_single_pass_2d` call per field), comparing a symmetric random field (top) with a shock/forward-cascade field (bottom). 2nd-order PDFs broaden with separation in both; the **signed 3rd-order** panels (zero line + orange conditional-mean `⟨value|r⟩`) are symmetric for the random field but **skew negative for the cascade field** — the 4/5-law / energy-flux sign. White = low, gray = empty bins.*
+
 ### Backend Parity Validation
 
 ![Backend Parity](docs/src/assets/sf_backend_parity.png)
