@@ -373,8 +373,13 @@ function _dispatch_single_pass(
     # Cast to Matrix explicitly to run the serial matrix implementation
     x_mat = reshape(x, size(x, 1), size(x, 2))
     u_mat = reshape(u, size(u, 1), size(u, 2))
-    sums, counts = serial_calculate_structure_functions_single_pass(x_mat, u_mat, distance_bins, ts, tc; kwargs...)
-    return append_helmholtz_rotational_divergent_rows(sums, counts, distance_bins)
+    # `serial_…single_pass` fills `ts`/`tc` in place; return those concretely-typed buffers
+    # (Matrix{OT}/Matrix{CT}) rather than the mutating chain's abstractly-typed return value, so
+    # the result type is concrete (the chain infers `counts::Matrix`, losing the element type).
+    serial_calculate_structure_functions_single_pass(x_mat, u_mat, distance_bins, ts, tc; kwargs...)
+    # Return the raw six-row accumulator; the public wrapper builds the Helmholtz entry once
+    # (avoids the old double-compute and the 8-row copy, and matches the batched path's shape).
+    return (sums = ts, counts = tc)
 end
 
 function _dispatch_single_pass(
@@ -553,22 +558,29 @@ entry (a [`HelmholtzDecomposition2D`](@ref)) is included.
 """
 function calculate_structure_functions_single_pass(
     x::AbstractArray{FT1},
-    u::AbstractArray{FT2},
+    u::AbstractArray{FT2, M},
     distance_bins::AbstractVector{FT3};
     backend::AbstractExecutionBackend = AutoBackend(),
     output_type::Type{OT} = SFO.StructureFunction,
     count_eltype::Type{CT} = UInt32,
     kwargs...
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
+) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, M, OT, CT}
     shape = _validate_array_shape(x, u)
-    # `_dispatch_single_pass` returns a `(sums, counts)` pair (a plain Tuple for point-field,
-    # a NamedTuple for batched); index positionally to handle both.
     raw = _dispatch_single_pass(
         backend, shape, x, u, distance_bins;
         count_eltype = count_eltype,
         kwargs...,
     )
-    return _single_pass_collection_1d(raw[1], raw[2], distance_bins, output_type)
+    # The accumulator's element/rank are fully determined by the inputs: the sum element type is
+    # `promote_type(float(eltype(x)), float(eltype(u)))`, the count element type is `count_eltype`,
+    # and the stacked accumulator's rank equals `ndims(u)` (point-field `(6, n_bins)` → rank 2;
+    # batched `(6, n_bins, aux...)` → rank `M`). Asserting these recovers the concrete type that the
+    # multi-backend `_dispatch_single_pass` return does not preserve through inference, making the
+    # whole call type-stable without changing any computation.
+    OTv = promote_type(float(FT1), float(FT2))
+    sums = raw.sums::AbstractArray{OTv, M}
+    counts = raw.counts::AbstractArray{CT, M}
+    return _single_pass_collection_1d(sums, counts, distance_bins, output_type)
 end
 
 

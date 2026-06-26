@@ -439,7 +439,7 @@ function SFC._dispatch_single_pass(
         sums = zeros(OT, SFC.SINGLE_PASS_N, n_bins)
         counts = zeros(CT, SFC.SINGLE_PASS_N, n_bins)
         _threaded_sp_simd!(sums, counts, x, u, BinEdges(distance_bins), D == 2 ? Val(2) : Val(3))
-        return SFC.append_helmholtz_rotational_divergent_rows(sums, counts, distance_bins)
+        return (sums = sums, counts = counts)  # raw 6-row; public wrapper adds Helmholtz once
     end
 
     # tmapreduce: each chunk gets its own task-local (sums, counts) buffers.
@@ -489,7 +489,7 @@ function SFC._dispatch_single_pass(
         (local_sums, local_counts)
     end
 
-    return SFC.append_helmholtz_rotational_divergent_rows(sums, counts, distance_bins)
+    return (sums = sums, counts = counts)  # raw 6-row; public wrapper adds Helmholtz once
 end
 
 function SFC._dispatch_single_pass!(

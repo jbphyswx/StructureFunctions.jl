@@ -367,7 +367,7 @@ function SFC._dispatch_single_pass(
     sums = OT.(combined_reduced[1:SFC.SINGLE_PASS_N, :])
     counts = CT.(combined_reduced[(SFC.SINGLE_PASS_N + 1):(2 * SFC.SINGLE_PASS_N), :])
 
-    return SFC.append_helmholtz_rotational_divergent_rows(sums, counts, distance_bins)
+    return (sums = sums, counts = counts)  # raw 6-row; public wrapper adds Helmholtz once
 end
 
 function SFC._dispatch_single_pass_2d(

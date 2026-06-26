@@ -26,6 +26,13 @@ Test.@testset "Stability Verification" begin
     res_true = SFC.calculate_structure_function(sft, x, u, bins; backend = SFC.SerialBackend(), output_type = SFO.StructureFunctionSumsAndCounts, count_eltype = UInt32)
     Test.@test res_true isa SFO.StructureFunctionSumsAndCounts
 
+    # 1b. Single-pass default (averaged) path must infer concretely too — for point-field and
+    #     batched (auxiliary-axis) input. The keyed result is a single concrete NamedTuple per rank.
+    println("Checking type stability for single-pass (point-field + batched)...")
+    @inferred SFC.calculate_structure_functions_single_pass(x, u, bins; backend = SFC.SerialBackend())
+    u_batched = rand(FT, 2, N, 2)
+    @inferred SFC.calculate_structure_functions_single_pass(x, u_batched, bins; backend = SFC.SerialBackend())
+
     # 2. Distributed Stability Check (if DistributedExt is loaded)
     # We'll just check if the method exists for now, or skip if not tested here.
 end
