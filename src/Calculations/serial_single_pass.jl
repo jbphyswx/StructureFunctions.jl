@@ -555,6 +555,14 @@ pass, returned as a `NamedTuple` keyed by invariant. Each entry is a single-oper
 the requested `output_type` (default the averaged `StructureFunction`; pass
 `StructureFunctionSumsAndCounts` for the raw sums+counts). For point-field input a `:helmholtz`
 entry (a [`HelmholtzDecomposition2D`](@ref)) is included.
+
+!!! note "Why only six invariants (no L2T1 / T3)"
+    The single-pass set is the six **isotropic** invariants. The directional third-order
+    invariants `L2T1` (`DiagonalInconsistentThirdOrderStructureFunction`) and `T3`
+    (`OffDiagonalConsistentThirdOrderStructureFunction`) are intentionally excluded: they require
+    choosing a basis direction for the transverse/normal component (the isotropy does not cancel),
+    so they are not basis-independent and are uncommon in practice. They remain available as
+    standalone operator types for an explicit [`calculate_structure_function`](@ref) call.
 """
 function calculate_structure_functions_single_pass(
     x::AbstractArray{FT1},

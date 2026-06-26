@@ -129,13 +129,13 @@ end
 """
     bench_slice_driver!(backend, x_batch, u_batch, bins, sft, sums, counts, ws; warmup=1)
 
-Batch slice driver API (`gpu_calculate_structure_function_slices!`).
+Batch slice driver API (`gpu_calculate_structure_function_batch!`).
 """
 function bench_slice_driver!(
     backend, x_batch, u_batch, bins, sft, sums, counts, ws; warmup::Int = 1,
 )
     function run!()
-        SFC.gpu_calculate_structure_function_slices!(
+        SFC.gpu_calculate_structure_function_batch!(
             sums, counts, sft, backend, x_batch, u_batch, bins; workspace = ws,
         )
     end

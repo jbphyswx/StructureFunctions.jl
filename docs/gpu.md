@@ -67,7 +67,7 @@ sums = zeros(FT, length(bins) - 1, T)
 counts = zeros(UInt32, length(bins) - 1, T)
 ws = SFC.GPUSFWorkspace(backend, bins)
 
-SFC.gpu_calculate_structure_function_slices!(
+SFC.gpu_calculate_structure_function_batch!(
     sums, counts, sft, backend, x_batch, u_batch, bins; workspace = ws,
 )
 ```
@@ -77,9 +77,9 @@ The slice driver keeps the batch on device, reuses the workspace, and performs o
 
 Public stubs with backend dispatch:
 
-- `calculate_structure_function_slices!`
-- `calculate_structure_function_2d_slices!`
-- `calculate_structure_functions_single_pass_slices!` (GPU-only for now)
+- `calculate_structure_function_batch!`
+- `calculate_structure_function_2d_batch!`
+- `calculate_structure_functions_single_pass_batch!` (GPU-only for now)
 - `calculate_structure_functions_single_pass_2d!` — six `(dist × value)` histograms; GPU HTP-EJ when eligible
 
 ## Production route table

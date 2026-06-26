@@ -46,9 +46,9 @@ export calculate_structure_function,
     gpu_calculate_structure_function!, calculate_structure_function!,
     GPUSFWorkspace, reset_histogram!, release!,
     joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256,
-    calculate_structure_function_slices!, calculate_structure_function_2d_slices!,
-    calculate_structure_functions_single_pass_slices!,
-    calculate_structure_functions_single_pass_2d_slices!,
+    calculate_structure_function_batch!, calculate_structure_function_2d_batch!,
+    calculate_structure_functions_single_pass_batch!,
+    calculate_structure_functions_single_pass_2d_batch!,
     auxiliary_shared_positions!, auxiliary_varying_positions!,
     serial_calculate_structure_functions_single_pass!,
     serial_calculate_structure_functions_single_pass_2d!,
@@ -57,7 +57,7 @@ export calculate_structure_function,
 # Re-include backend types, GPU stubs, batch CPU drivers, serial solvers, and main entry dispatch.
 include("Calculations/backends.jl")
 include("Calculations/shapes.jl")
-include("Calculations/slices.jl")
+include("Calculations/batch_api.jl")
 include("Calculations/gpu_stubs.jl")
 include("Calculations/batch_leading.jl")
 include("Calculations/batch.jl")

@@ -115,11 +115,11 @@ function gpu_calculate_structure_function!(args...; kwargs...)
 end
 
 """
-    gpu_calculate_structure_function_slices!(sums, counts, sf_type, backend, x, u, distance_bins; workspace=nothing, ...)
+    gpu_calculate_structure_function_batch!(sums, counts, sf_type, backend, x, u, distance_bins; workspace=nothing, ...)
 
 GPU slice batch over `(N_dims, N_points, T)`; host outputs `(NB, T)`. Requires `GPUExt`.
 """
-function gpu_calculate_structure_function_slices!(args...; kwargs...)
+function gpu_calculate_structure_function_batch!(args...; kwargs...)
     throw(
         ArgumentError(
             "GPU slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
@@ -144,7 +144,7 @@ function gpu_calculate_structure_function_2d_batch(args...; kwargs...)
 end
 
 """GPU 2D joint slice batch; outputs `(n_dist, n_val, T)`. Requires `GPUExt`."""
-function gpu_calculate_structure_function_2d_slices!(args...; kwargs...)
+function gpu_calculate_structure_function_2d_batch!(args...; kwargs...)
     throw(
         ArgumentError(
             "GPU 2D joint slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
@@ -153,7 +153,7 @@ function gpu_calculate_structure_function_2d_slices!(args...; kwargs...)
 end
 
 """GPU single-pass slice batch; outputs `(6, NB, T)`. Requires `GPUExt`."""
-function gpu_calculate_structure_functions_single_pass_slices!(args...; kwargs...)
+function gpu_calculate_structure_functions_single_pass_batch!(args...; kwargs...)
     throw(
         ArgumentError(
             "GPU single-pass slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
@@ -162,7 +162,7 @@ function gpu_calculate_structure_functions_single_pass_slices!(args...; kwargs..
 end
 
 """GPU single-pass 2D slice batch; outputs `(6, NB, n_val, T)`. Requires `GPUExt`."""
-function gpu_calculate_structure_functions_single_pass_2d_slices!(args...; kwargs...)
+function gpu_calculate_structure_functions_single_pass_2d_batch!(args...; kwargs...)
     throw(
         ArgumentError(
             "GPU single-pass 2D slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",

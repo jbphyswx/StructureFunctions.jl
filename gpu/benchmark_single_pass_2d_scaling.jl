@@ -73,7 +73,7 @@ function main()
     ws_sp2d = SFC.GPUSFWorkspace(ka_backend, dist_vec, value_bins; kind = :single_pass_2d)
     sums_sp2d = zeros(FT, 6, n_dist, n_val, 1)
     counts_sp2d = zeros(Int64, 6, n_dist, n_val, 1)
-    sp2d_run = () -> SFC.calculate_structure_functions_single_pass_2d_slices!(
+    sp2d_run = () -> SFC.calculate_structure_functions_single_pass_2d_batch!(
         sums_sp2d, counts_sp2d, x_batch, u_batch, dist_vec, value_bins;
         backend = gpu_backend, workspace = ws_sp2d,
     )
