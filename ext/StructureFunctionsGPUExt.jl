@@ -1999,9 +1999,9 @@ function SFC.gpu_calculate_structure_function_batch!(
     kwargs...,
 ) where {OT, CT, FT}
     N_dims, N_points, T = size(x)
-    dist_bins = _gpu_batch_linear_distance_bins(distance_bins)
-    lbe = dist_bins
-    NB = length(lbe.edges) - 1
+    # Any distance-bin type: the unified device path digitizes via
+    # _sf_batch_dist_digitizer (linear, log, or general edges).
+    NB = length(distance_bins) - 1
     size(sums) == (NB, T) ||
         throw(DimensionMismatch("sums must have shape ($NB, $T); got $(size(sums))"))
     size(counts) == (NB, T) ||
@@ -2069,8 +2069,9 @@ function SFC.gpu_calculate_structure_functions_single_pass_batch!(
     kwargs...,
 ) where {OT, CT, FT}
     N_dims, N_points, T = size(x)
-    lbe = _gpu_batch_linear_distance_bins(distance_bins)
-    n_bins = length(lbe.edges) - 1
+    # Any distance-bin type: the unified device path digitizes via
+    # _sf_batch_dist_digitizer (linear, log, or general edges).
+    n_bins = length(distance_bins) - 1
     size(sums) == (SFC.SINGLE_PASS_N, n_bins, T) ||
         throw(DimensionMismatch("sums must have shape ($(SFC.SINGLE_PASS_N), $n_bins, $T); got $(size(sums))"))
     size(counts) == size(sums) ||
@@ -2104,8 +2105,9 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d_batch!(
     kwargs...,
 ) where {OT, CT, FT}
     N_dims, N_points, T = size(x)
-    lbe = _gpu_batch_linear_distance_bins(distance_bins)
-    n_bins = length(lbe.edges) - 1
+    # Any distance-bin type: the unified device path digitizes via
+    # _sf_batch_dist_digitizer (linear, log, or general edges).
+    n_bins = length(distance_bins) - 1
     n_val = size(sums, 3)
     SFC._validate_value_bins!(value_bins, n_val)
     size(sums) == (SFC.SINGLE_PASS_N, n_bins, n_val, T) ||

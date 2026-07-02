@@ -1419,6 +1419,24 @@ end
 # - `KA.CPU`: serial merge; other backends: grouped merge. Same kernel on both.
 # - Varying-x routes use `(tile, auxiliary)` grid scaling (`ndrange * B`), not host strips.
 
+"""FMA digitize params + edge count + log flag for the fixed-x tiled kernels, by
+bin type. Linear and log share the same 5-parameter FMA digitize — log runs it in
+log space (`log(dist)` at bin time; see `_batch_dist_bin`), so both bin types take
+the same fast kernels via `Val{LOG}` specialization."""
+@inline _batch_fma_dist_params(lbe::LinearBinEdges) = (
+    lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val,
+    length(lbe.edges), Val(false),
+)
+@inline function _batch_fma_dist_params(lbe::LogBinEdges)
+    ll = lbe.log_linear
+    return (
+        ll.first_edge, ll.last_edge, ll.inv_step, ll.offset, ll.step_val,
+        length(lbe.log_edges), Val(true),
+    )
+end
+
+const _BatchFMADistBins{FT} = Union{LinearBinEdges{FT}, LogBinEdges{FT}}
+
 function _launch_batch_fixed_x_sf!(
     backend::KA.CPU,
     sums_dev,
@@ -1428,16 +1446,15 @@ function _launch_batch_fixed_x_sf!(
     sf_type,
     N::Int,
     B::Int,
-    lbe::LinearBinEdges{FT};
+    lbe::_BatchFMADistBins{FT};
     workspace::Union{GPUBatchWorkspace{FT}, Nothing} = nothing,
 ) where {FT}
-    n_bins = length(lbe.edges)
+    fe, le, is_, off, sv, n_bins, logv = _batch_fma_dist_params(lbe)
     NB = n_bins - 1
     NB > SF_GPU_MAX_BINS &&
         error("batch tiled128 supports at most $SF_GPU_MAX_BINS bins (got NB=$NB)")
     n_tiles, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
     n_priv = _batch_usmem_n_priv(n_tile_blocks)
-    fe, le, is_, off, sv = lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val
     kernel! = _batch_fixed_x_sf_kernel(backend, ws)
     merge_sums! = _batch_merge_usmem_sums!(backend, ws)
     merge_cnts! = _batch_merge_usmem_cnts!(backend, ws)
@@ -1451,7 +1468,7 @@ function _launch_batch_fixed_x_sf!(
         kernel!(
             partial_sums, partial_cnts, x_dev, u_dev, sf_type,
             N, n_bins, NB, b_base, bw, fe, le, is_, off, sv,
-            n_tiles, n_tile_blocks, ws;
+            n_tiles, n_tile_blocks, ws, logv;
             ndrange = ndrange,
         )
         merge_sums!(
@@ -1483,16 +1500,15 @@ function _launch_batch_fixed_x_sf!(
     sf_type,
     N::Int,
     B::Int,
-    lbe::LinearBinEdges{FT};
+    lbe::_BatchFMADistBins{FT};
     workspace::Union{GPUBatchWorkspace{FT}, Nothing} = nothing,
 ) where {FT}
-    n_bins = length(lbe.edges)
+    fe, le, is_, off, sv, n_bins, logv = _batch_fma_dist_params(lbe)
     NB = n_bins - 1
     NB > SF_GPU_MAX_BINS &&
         error("batch tiled128 supports at most $SF_GPU_MAX_BINS bins (got NB=$NB)")
     n_tiles, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
     n_priv = _batch_usmem_n_priv(n_tile_blocks)
-    fe, le, is_, off, sv = lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val
     kernel! = _batch_fixed_x_sf_kernel(backend, ws)
     merge_sums! = _batch_merge_usmem_sums_grouped!(backend, ws)
     merge_cnts! = _batch_merge_usmem_cnts_grouped!(backend, ws)
@@ -1506,7 +1522,7 @@ function _launch_batch_fixed_x_sf!(
         kernel!(
             partial_sums, partial_cnts, x_dev, u_dev, sf_type,
             N, n_bins, NB, b_base, bw, fe, le, is_, off, sv,
-            n_tiles, n_tile_blocks, ws;
+            n_tiles, n_tile_blocks, ws, logv;
             ndrange = ndrange,
         )
         merge_sums!(

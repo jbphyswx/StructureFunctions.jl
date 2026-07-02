@@ -1,30 +1,21 @@
 # GPU batch routing — fixed-x / varying-x fused launches.
 # Included from StructureFunctionsGPUExt.jl after BatchLaunch.jl.
 
-"""Linear distance bins required by batch tiled GPU kernels (FMA digitize only)."""
-function _gpu_batch_linear_distance_bins(distance_bins)
-    if distance_bins isa LinearBinEdges
-        return distance_bins
-    elseif distance_bins isa AbstractRange
-        return LinearBinEdges(distance_bins)
-    elseif distance_bins isa BinEdges
-        return _gpu_batch_linear_distance_bins(distance_bins.edges)
-    elseif distance_bins isa AbstractVector
-        first_val = first(distance_bins)
-        last_val = last(distance_bins)
-        len = length(distance_bins)
-        if len >= 2
-            r = range(first_val, last_val; length = len)
-            if all(i -> isapprox(distance_bins[i], r[i]; atol = 1e-12), 1:len)
-                return LinearBinEdges(r)
-            end
-        end
-    end
-    throw(ArgumentError(
-        "GPU batch tiled kernels require linear distance bins (got $(typeof(distance_bins))). " *
-        "Use evenly spaced edges or LinearBinEdges; log/general batch GPU kernels are not implemented.",
-    ))
-end
+"""Typed fast-path selector for the fixed-x tiled FMA kernels.
+
+Purely type-driven: `LinearBinEdges` and `LogBinEdges` both qualify — they share
+the same 5-parameter O(1) FMA digitize, log just runs it in log space (see
+`_batch_fma_dist_params` / `_batch_dist_bin`'s `Val{LOG}` specialization). An
+`AbstractRange` is uniform by construction and wraps to `LinearBinEdges`. Raw
+edge vectors return `nothing` and take the unified digitizer path
+(`_sf_batch_dist_digitizer`), which bins them exactly by binary search. No
+runtime uniformity sniffing, no try/catch control flow — bin membership must
+never depend on an `isapprox` tolerance.
+"""
+_fma_distance_bins(distance_bins::LinearBinEdges) = distance_bins
+_fma_distance_bins(distance_bins::LogBinEdges) = distance_bins
+_fma_distance_bins(distance_bins::AbstractRange) = LinearBinEdges(distance_bins)
+_fma_distance_bins(::Any) = nothing
 
 function _gpu_batch_allocate_outputs(FT::Type, NB::Int, bdims::Dims)
     sums = zeros(FT, NB, bdims...)
@@ -79,26 +70,16 @@ function _gpu_1d_unified_device(
     return Array(out_dev), Array(cnt_dev)
 end
 
-"""Linear distance bins or `nothing` (non-throwing variant of
-`_gpu_batch_linear_distance_bins`)."""
-function _try_linear_distance_bins(distance_bins)
-    try
-        return _gpu_batch_linear_distance_bins(distance_bins)
-    catch
-        return nothing
-    end
-end
-
 """Individual (NMOM=1) 1D batch device launch, routed to the measured-optimal
 kernel per regime (job 239164, histograms verified equal):
-- fixed-x + linear bins → OLD global warp-replica + W-strip kernel (tiny-histogram
-  contention-bound regime: 147 vs 115 bapps for N-body).
-- varying-x, or general (non-linear) fixed-x bins → N-body broadcast (115 vs 61
+- fixed-x + linear/log FMA bins → OLD global warp-replica + W-strip kernel
+  (tiny-histogram contention-bound regime: 147 vs 115 bapps for N-body).
+- varying-x, or general (raw-vector) fixed-x bins → N-body broadcast (115 vs 61
   bapps for the old kernel on varying-x; also handles general bins).
 Returns host `(sums, counts)` of shape `(NB, B)`."""
 function _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins,
                                    NB::Int, B::Int, fixed_x::Bool, ::Type{OT}) where {OT}
-    lbe = fixed_x ? _try_linear_distance_bins(distance_bins) : nothing
+    lbe = fixed_x ? _fma_distance_bins(distance_bins) : nothing
     if lbe !== nothing
         N = size(x, 2)
         sums_dev = KA.adapt(backend, zeros(OT, NB, B))

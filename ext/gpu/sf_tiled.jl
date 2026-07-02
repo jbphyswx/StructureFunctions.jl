@@ -942,23 +942,17 @@ end
 # -----------------------------------------------------------------------------
 
 """Build a distance digitizer from whatever distance-bins form the public API
-passes (typed edges, range, uniform vector → linear; non-uniform vector →
-general device-array binary search). Supersedes the old `linear-only` batch
-restriction."""
+passes. Strictly type-driven: `LinearBinEdges` / `LogBinEdges` / `AbstractRange`
+(uniform by construction) take the O(1) FMA digitizers; raw edge vectors take the
+exact general device-array binary search. No approximate uniformity sniffing —
+bin membership must never depend on an `isapprox` tolerance; pass typed edges to
+opt into the fast digitizers. Supersedes the old `linear-only` batch restriction."""
 function _sf_batch_dist_digitizer(backend, distance_bins)
     distance_bins isa LinearBinEdges && return _sf_digitizer(distance_bins)
     distance_bins isa LogBinEdges && return _sf_digitizer(distance_bins)
     distance_bins isa BinEdges && return _sf_batch_dist_digitizer(backend, distance_bins.edges)
     distance_bins isa AbstractRange && return _sf_digitizer(LinearBinEdges(distance_bins))
     if distance_bins isa AbstractVector
-        n = length(distance_bins)
-        if n >= 2
-            f = first(distance_bins); l = last(distance_bins)
-            r = range(f, l; length = n)
-            if all(i -> isapprox(distance_bins[i], r[i]; atol = 1e-6), 1:n)
-                return _sf_digitizer(LinearBinEdges(r))
-            end
-        end
         edges_dev = KA.adapt(backend, collect(distance_bins))
         return _sf_digitizer_general(edges_dev)
     end

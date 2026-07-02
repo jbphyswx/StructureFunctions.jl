@@ -288,3 +288,91 @@ Test.@testset "GPU sp2d direct mode (KA.CPU)" begin
     Test.@test cnts_gpu == cnts_ref
     Test.@test ws.partition_sums_dev !== nothing
 end
+
+Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
+    # The GPU batch entry points route through the unified device path, whose
+    # _sf_batch_dist_digitizer handles linear, log, and general edges. Guard
+    # against regressing to the old linear-only host check (which rejected the
+    # production LogBinEdges + InfPaddedBinEdges shape used by varying-x
+    # conditioned batches). Varying-x (2, N, T) with per-slice coordinates.
+    backend = KA.CPU()
+    FT = Float32
+    N = 40
+    T = 3
+    x = rand(FT, 2, N, T)
+    u = rand(FT, 2, N, T)
+    n_dist_bins = 50
+    log_dist = LogBinEdges_from_log_edges(
+        range(log(FT(0.01)), log(FT(1.5)); length = n_dist_bins + 1)
+    )
+    inner = LinearBinEdges(range(FT(-0.5), FT(1.5); length = 51))
+    inf_val = InfPaddedBinEdges(inner)
+    n_val = length(inf_val) - 1
+
+    # sp2d batch (the production conditioned-run path)
+    sums_ref = zeros(FT, 6, n_dist_bins, n_val, T)
+    cnts_ref = zeros(UInt32, 6, n_dist_bins, n_val, T)
+    for t in 1:T
+        SFC.calculate_structure_functions_single_pass_2d!(
+            view(sums_ref, :, :, :, t), view(cnts_ref, :, :, :, t),
+            x[:, :, t], u[:, :, t], log_dist, inf_val;
+            backend = SFC.SerialBackend(),
+        )
+    end
+    sums_gpu = zeros(FT, 6, n_dist_bins, n_val, T)
+    cnts_gpu = zeros(UInt32, 6, n_dist_bins, n_val, T)
+    SFC.calculate_structure_functions_single_pass_2d_batch!(
+        sums_gpu, cnts_gpu, x, u, log_dist, inf_val;
+        backend = SFC.GPUBackend(backend),
+    )
+    Test.@test sums_gpu ≈ sums_ref rtol = 1e-5 atol = 1e-6
+    Test.@test cnts_gpu == cnts_ref
+
+    # sp1d batch with log bins
+    sums1_ref = zeros(FT, 6, n_dist_bins, T)
+    cnts1_ref = zeros(UInt32, 6, n_dist_bins, T)
+    SFC.calculate_structure_functions_single_pass_batch!(
+        sums1_ref, cnts1_ref, x, u, log_dist; backend = SFC.SerialBackend(),
+    )
+    sums1_gpu = zeros(FT, 6, n_dist_bins, T)
+    cnts1_gpu = zeros(UInt32, 6, n_dist_bins, T)
+    SFC.calculate_structure_functions_single_pass_batch!(
+        sums1_gpu, cnts1_gpu, x, u, log_dist; backend = SFC.GPUBackend(backend),
+    )
+    Test.@test sums1_gpu ≈ sums1_ref rtol = 1e-5 atol = 1e-6
+    Test.@test cnts1_gpu == cnts1_ref
+
+    # individual 1D batch with log bins
+    sf_type = SFT.LongitudinalSecondOrderStructureFunction
+    sumsi_ref = zeros(FT, n_dist_bins, T)
+    cntsi_ref = zeros(UInt32, n_dist_bins, T)
+    SFC.calculate_structure_function_batch!(
+        sumsi_ref, cntsi_ref, sf_type, x, u, log_dist; backend = SFC.SerialBackend(),
+    )
+    sumsi_gpu = zeros(FT, n_dist_bins, T)
+    cntsi_gpu = zeros(UInt32, n_dist_bins, T)
+    SFC.calculate_structure_function_batch!(
+        sumsi_gpu, cntsi_gpu, sf_type, x, u, log_dist; backend = SFC.GPUBackend(backend),
+    )
+    Test.@test sumsi_gpu ≈ sumsi_ref rtol = 1e-5 atol = 1e-6
+    Test.@test cntsi_gpu == cntsi_ref
+
+    # Typed FMA fast-path routing: linear AND log qualify (same 5-param FMA
+    # digitize, log in log space); raw vectors take the exact general digitizer.
+    GPUExt = Base.get_extension(SF, :StructureFunctionsGPUExt)
+    Test.@test GPUExt._fma_distance_bins(log_dist) === log_dist
+    lin = LinearBinEdges(range(FT(0.0), FT(1.5); length = n_dist_bins + 1))
+    Test.@test GPUExt._fma_distance_bins(lin) === lin
+    Test.@test GPUExt._fma_distance_bins(collect(range(0.0, 1.5; length = 11))) === nothing
+
+    # fixed-x individual 1D with log bins → the tiled FMA fast kernel (Val{LOG}=true)
+    x_fixed = x[:, :, 1]
+    sumsf_ref = zeros(FT, n_dist_bins, T)
+    cntsf_ref = zeros(UInt32, n_dist_bins, T)
+    SFC.calculate_structure_function_batch!(
+        sumsf_ref, cntsf_ref, sf_type, x_fixed, u, log_dist; backend = SFC.SerialBackend(),
+    )
+    res = SFC.gpu_calculate_structure_function_batch(sf_type, backend, x_fixed, u, log_dist)
+    Test.@test res.sums ≈ sumsf_ref rtol = 1e-5 atol = 1e-6
+    Test.@test res.counts == cntsf_ref
+end
