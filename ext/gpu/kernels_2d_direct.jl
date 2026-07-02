@@ -19,14 +19,18 @@ end
     return t, dbin, vbin
 end
 
+# Index args are ::Integer, not ::Int: on CUDA, @index(Local, Linear) yields Int32
+# (threadIdx().x), and ::Int-typed methods would not match — the resulting
+# MethodError cannot even be thrown in device code, so the kernel fails to compile
+# (InvalidIRError: gpu_gc_pool_alloc / jl_f_throw_methoderror). Coerce once inside.
 @inline function _sp2d_zero_shared_hist!(
     shared_sums,
     shared_cnts,
-    C::Int,
-    lid::Int,
-    workgroup_size::Int,
+    C::Integer,
+    lid::Integer,
+    workgroup_size::Integer,
 )
-    g = lid
+    g = Int(lid)
     FT = eltype(shared_sums)
     while g <= C
         @inbounds begin
@@ -268,18 +272,18 @@ end
     partition_counts,
     shared_sums,
     shared_cnts,
-    type_pass::Int,
-    types_per_pass::Int,
-    plane::Int,
-    n_dist::Int,
-    n_val::Int,
-    block_id::Int,
-    lid::Int,
-    workgroup_size::Int,
+    type_pass::Integer,
+    types_per_pass::Integer,
+    plane::Integer,
+    n_dist::Integer,
+    n_val::Integer,
+    block_id::Integer,
+    lid::Integer,
+    workgroup_size::Integer,
 )
     t_lo = (type_pass - 1) * types_per_pass + 1
     t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
-    g = lid
+    g = Int(lid)
     while g <= plane
         dbin = (g - 1) ÷ n_val + 1
         vbin = (g - 1) % n_val + 1
@@ -302,17 +306,17 @@ end
     out_cnts,
     shared_sums,
     shared_cnts,
-    type_pass::Int,
-    types_per_pass::Int,
-    plane::Int,
-    n_dist::Int,
-    n_val::Int,
-    lid::Int,
-    workgroup_size::Int,
+    type_pass::Integer,
+    types_per_pass::Integer,
+    plane::Integer,
+    n_dist::Integer,
+    n_val::Integer,
+    lid::Integer,
+    workgroup_size::Integer,
 )
     t_lo = (type_pass - 1) * types_per_pass + 1
     t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
-    g = lid
+    g = Int(lid)
     while g <= plane
         dbin = (g - 1) ÷ n_val + 1
         vbin = (g - 1) % n_val + 1
@@ -520,7 +524,7 @@ end
 # --- direct partitioned accumulation (block-partitioned global atomics) ---
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_linear_val!(
-    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
+    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
 ) where {FT}
@@ -542,7 +546,7 @@ end
 end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_linear_val_cols!(
-    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
+    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     val_first, val_last, val_inv_step, val_offset, val_step,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
 )
@@ -565,7 +569,7 @@ end
 end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_inflinear_val!(
-    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
+    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
     n_inner_edges::Int, inner_last::FT,
@@ -589,7 +593,7 @@ end
 end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_inflinear_val_cols!(
-    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
+    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     val_first, val_last, val_inv_step, val_offset, val_step, inner_last,
     dbin::Int, du_L, du_T, du_L2, du_T2, n_inner_edges::Int, N_val_edges::Int,
 )
@@ -612,7 +616,7 @@ end
 end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_log_val!(
-    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
+    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
 ) where {FT}
@@ -634,7 +638,7 @@ end
 end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_log_val_cols!(
-    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
+    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
     val_first, val_last, val_inv_step, val_offset, val_step,
 )
@@ -656,7 +660,7 @@ end
 end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_vector_val_cols!(
-    partition_sums, partition_counts, block_id::Int, n_dist, n_val,
+    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
     value_edges,
 )

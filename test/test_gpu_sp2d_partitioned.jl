@@ -210,6 +210,49 @@ Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
     Test.@test cnts_gpu == cnts_ref
 end
 
+Test.@testset "GPU sp2d typeplane production shape log+infpadded (KA.CPU)" begin
+    # Production LLC4320 SF shape: 50 log distance bins × 52 inf-padded linear value
+    # bins in Float32. This is the first shape class that selects :typeplane AND the
+    # log_linear/inflinear_cols kernel variant, whose flush helper takes lid::Int —
+    # the combination that failed to compile on CUDA when @index returned Int32
+    # (see the Int(@index(...)) bindings in ext/gpu). KA.CPU verifies numerics; the
+    # Int32 dispatch itself is pinned by the script-hygiene test.
+    backend = KA.CPU()
+    FT = Float32
+    N = 64
+    x = rand(FT, 2, N)
+    u = rand(FT, 2, N)
+    n_dist_bins = 50
+    log_dist = LogBinEdges_from_log_edges(
+        range(log(FT(0.01)), log(FT(1.5)); length = n_dist_bins + 1)
+    )
+    inner = LinearBinEdges(range(FT(-0.5), FT(1.5); length = 51))
+    inf_val = InfPaddedBinEdges(inner)
+    n_val = length(inf_val) - 1
+    Test.@test n_val == 52
+    _, mode_ref, _, _, _, _, _ = _host_sp2d_accumulation_strategy(n_dist_bins, n_val, FT)
+    Test.@test mode_ref == :typeplane
+
+    sums_ref = zeros(FT, 6, n_dist_bins, n_val)
+    cnts_ref = zeros(UInt32, 6, n_dist_bins, n_val)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_ref, cnts_ref, x, u, log_dist, inf_val;
+        backend = SFC.SerialBackend(),
+    )
+
+    ws = SFC.GPUSFWorkspace(backend, log_dist, inf_val; kind = :single_pass_2d)
+    Test.@test ws.sp2d_accumulation_strategy.accum_mode == :typeplane
+    Test.@test !ws.sp2d_accumulation_strategy.needs_partition_merge
+    sums_gpu = zeros(FT, 6, n_dist_bins, n_val)
+    cnts_gpu = zeros(UInt32, 6, n_dist_bins, n_val)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_gpu, cnts_gpu, x, u, log_dist, inf_val;
+        backend = SFC.GPUBackend(backend), workspace = ws,
+    )
+    Test.@test sums_gpu ≈ sums_ref rtol = 1e-5 atol = 1e-6
+    Test.@test cnts_gpu == cnts_ref
+end
+
 Test.@testset "GPU sp2d direct mode (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float64

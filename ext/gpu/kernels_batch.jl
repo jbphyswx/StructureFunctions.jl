@@ -7,13 +7,16 @@ const BATCH_USMEM_STRIP_W = 16
 """Warps per batch tile block (`SF_GPU_TILED_WS ÷ 32`)."""
 const BATCH_USMEM_WARPS = SF_GPU_TILED_WS ÷ 32
 
-@inline _batch_warp_id(lid::Int) = (lid - 1) >> 5
+# Thread/block index args are ::Integer, not ::Int: CUDA @index(Local/Group, Linear)
+# yields Int32, and ::Int-typed methods fail dispatch inside device code
+# (InvalidIRError at kernel compile; see _sp2d_flush_typeplane_to_output!).
+@inline _batch_warp_id(lid::Integer) = (Int(lid) - 1) >> 5
 
 """`partial_{sums,cnts}` third-axis length: one slot per `(tile_block, warp)`."""
 @inline _batch_usmem_n_priv(n_tile_blocks::Int) = n_tile_blocks * BATCH_USMEM_WARPS
 
-@inline _batch_usmem_priv_idx(block_id::Int, lid::Int) =
-    (block_id - 1) * BATCH_USMEM_WARPS + _batch_warp_id(lid) + 1
+@inline _batch_usmem_priv_idx(block_id::Integer, lid::Integer) =
+    (Int(block_id) - 1) * BATCH_USMEM_WARPS + _batch_warp_id(lid) + 1
 
 """Production fixed-x 1D batch kernel (u staged in shared memory, strip 16)."""
 _batch_fixed_x_sf_kernel(backend::KA.Backend, ws::Int) =
@@ -44,13 +47,13 @@ end
     bw::Int,
     i0::Int,
     ni::Int,
-    workgroup_size::Int,
-    lid::Int,
+    workgroup_size::Integer,
+    lid::Integer,
 )
     col = 1
     while col <= bw
         b_idx = b_base + col - 1
-        k = lid
+        k = Int(lid)
         while k <= ni
             gi = i0 + k - 1
             @inbounds begin
