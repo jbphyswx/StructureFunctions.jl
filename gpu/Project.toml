@@ -13,6 +13,8 @@ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 StructureFunctions = { path = ".." }
 
 [compat]
+CUDA = "6.2.1"
+JSON = "1.6.1"
 KernelAbstractions = "0.9"
 OhMyThreads = "0.8"
 StaticArrays = "1.9"
