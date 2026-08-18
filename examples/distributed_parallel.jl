@@ -7,6 +7,7 @@ Run from package root:
     julia --project=examples examples/distributed_parallel.jl 4
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using Distributed: Distributed
 using StructureFunctions: StructureFunctions as SF
 
@@ -28,7 +29,7 @@ result = @time SF.calculate_structure_function(
     x,
     u,
     bins;
-    backend = SF.DistributedBackend(),
+    backend = CB.DistributedBackend(),
     show_progress = false,
     verbose = false,
 )

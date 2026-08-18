@@ -5,7 +5,6 @@ struct GPUValueLinearShared{T}
     first::T
     last::T
     inv_step::T
-    offset::T
     step::T
 end
 
@@ -14,7 +13,6 @@ struct GPUValueLinearCols{T}
     first::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     last::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     inv_step::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
-    offset::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     step::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
 end
 
@@ -23,7 +21,6 @@ struct GPUValueInfLinearShared{T}
     first::T
     last::T
     inv_step::T
-    offset::T
     step::T
     n_inner_edges::Int
     inner_last::T
@@ -34,7 +31,6 @@ struct GPUValueInfLinearCols{T}
     first::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     last::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     inv_step::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
-    offset::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     step::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     inner_last::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     n_inner_edges::Int
@@ -45,7 +41,6 @@ struct GPUValueLogLinearShared{T}
     first::T
     last::T
     inv_step::T
-    offset::T
     step::T
 end
 
@@ -54,7 +49,6 @@ struct GPUValueLogLinearCols{T}
     first::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     last::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     inv_step::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
-    offset::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
     step::SA.SVector{SF_GPU_SINGLE_PASS_N, T}
 end
 
@@ -105,7 +99,6 @@ function _linear_plan_fields(lbe::LinearBinEdges)
         lbe.first_edge,
         lbe.last_edge,
         lbe.inv_step,
-        lbe.offset,
         lbe.step_val,
     )
 end
@@ -121,8 +114,8 @@ function _gpu_build_value_digitize_plan(
     ::KA.Backend,
     vb::LinearBinEdges,
 )
-    f, l, inv, off, st = _linear_plan_fields(vb)
-    return GPUValueLinearShared(f, l, inv, off, st)
+    f, l, inv, st = _linear_plan_fields(vb)
+    return GPUValueLinearShared(f, l, inv, st)
 end
 
 function _gpu_build_value_digitize_plan(
@@ -133,9 +126,8 @@ function _gpu_build_value_digitize_plan(
     f = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_linear_plan_fields(vb[t])[1] for t in 1:SF_GPU_SINGLE_PASS_N)
     l = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_linear_plan_fields(vb[t])[2] for t in 1:SF_GPU_SINGLE_PASS_N)
     inv = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_linear_plan_fields(vb[t])[3] for t in 1:SF_GPU_SINGLE_PASS_N)
-    off = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_linear_plan_fields(vb[t])[4] for t in 1:SF_GPU_SINGLE_PASS_N)
-    st = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_linear_plan_fields(vb[t])[5] for t in 1:SF_GPU_SINGLE_PASS_N)
-    return GPUValueLinearCols(f, l, inv, off, st)
+    st = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_linear_plan_fields(vb[t])[4] for t in 1:SF_GPU_SINGLE_PASS_N)
+    return GPUValueLinearCols(f, l, inv, st)
 end
 
 function _gpu_build_value_digitize_plan(
@@ -143,8 +135,8 @@ function _gpu_build_value_digitize_plan(
     vb::InfPaddedBinEdges,
 )
     inner = _inflinear_inner(vb)
-    f, l, inv, off, st = _linear_plan_fields(inner)
-    return GPUValueInfLinearShared(f, l, inv, off, st, length(inner.edges), inner.last_edge)
+    f, l, inv, st = _linear_plan_fields(inner)
+    return GPUValueInfLinearShared(f, l, inv, st, length(inner.edges), inner.last_edge)
 end
 
 function _gpu_build_value_digitize_plan(
@@ -161,10 +153,9 @@ function _gpu_build_value_digitize_plan(
     f = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(inners[t].first_edge for t in 1:SF_GPU_SINGLE_PASS_N)
     l = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(inners[t].last_edge for t in 1:SF_GPU_SINGLE_PASS_N)
     inv = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(inners[t].inv_step for t in 1:SF_GPU_SINGLE_PASS_N)
-    off = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(inners[t].offset for t in 1:SF_GPU_SINGLE_PASS_N)
     st = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(inners[t].step_val for t in 1:SF_GPU_SINGLE_PASS_N)
     il = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(inners[t].last_edge for t in 1:SF_GPU_SINGLE_PASS_N)
-    return GPUValueInfLinearCols(f, l, inv, off, st, il, n_inner)
+    return GPUValueInfLinearCols(f, l, inv, st, il, n_inner)
 end
 
 function _log_linear_plan_fields(lbe::LogBinEdges)
@@ -175,8 +166,8 @@ function _gpu_build_value_digitize_plan(
     ::KA.Backend,
     vb::LogBinEdges,
 )
-    f, l, inv, off, st = _log_linear_plan_fields(vb)
-    return GPUValueLogLinearShared(f, l, inv, off, st)
+    f, l, inv, st = _log_linear_plan_fields(vb)
+    return GPUValueLogLinearShared(f, l, inv, st)
 end
 
 function _gpu_build_value_digitize_plan(
@@ -192,9 +183,8 @@ function _gpu_build_value_digitize_plan(
     f = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_log_linear_plan_fields(vb[t])[1] for t in 1:SF_GPU_SINGLE_PASS_N)
     l = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_log_linear_plan_fields(vb[t])[2] for t in 1:SF_GPU_SINGLE_PASS_N)
     inv = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_log_linear_plan_fields(vb[t])[3] for t in 1:SF_GPU_SINGLE_PASS_N)
-    off = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_log_linear_plan_fields(vb[t])[4] for t in 1:SF_GPU_SINGLE_PASS_N)
-    st = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_log_linear_plan_fields(vb[t])[5] for t in 1:SF_GPU_SINGLE_PASS_N)
-    return GPUValueLogLinearCols{T}(f, l, inv, off, st)
+    st = SA.SVector{SF_GPU_SINGLE_PASS_N, T}(_log_linear_plan_fields(vb[t])[4] for t in 1:SF_GPU_SINGLE_PASS_N)
+    return GPUValueLogLinearCols{T}(f, l, inv, st)
 end
 
 function _gpu_build_value_vector_cols_plan(
@@ -306,7 +296,7 @@ end
     n_edges::Int,
 )
     return _gpu_digitize_linear(
-        x, plan.first, plan.last, plan.inv_step, plan.offset, plan.step, n_edges,
+        x, plan.first, plan.last, plan.inv_step, plan.step, n_edges,
     )
 end
 
@@ -321,7 +311,6 @@ end
         plan.first[col],
         plan.last[col],
         plan.inv_step[col],
-        plan.offset[col],
         plan.step[col],
         n_edges,
     )
@@ -338,7 +327,6 @@ end
         plan.first,
         plan.last,
         plan.inv_step,
-        plan.offset,
         plan.step,
         plan.n_inner_edges,
         plan.inner_last,
@@ -356,7 +344,6 @@ end
         plan.first[col],
         plan.last[col],
         plan.inv_step[col],
-        plan.offset[col],
         plan.step[col],
         plan.n_inner_edges,
         plan.inner_last[col],
@@ -370,7 +357,7 @@ end
     n_edges::Int,
 )
     return _gpu_digitize_log_spaced(
-        x, plan.first, plan.last, plan.inv_step, plan.offset, plan.step, n_edges,
+        x, plan.first, plan.last, plan.inv_step, plan.step, n_edges,
     )
 end
 
@@ -385,7 +372,6 @@ end
         plan.first,
         plan.last,
         plan.inv_step,
-        plan.offset,
         plan.step,
         col,
         n_edges,

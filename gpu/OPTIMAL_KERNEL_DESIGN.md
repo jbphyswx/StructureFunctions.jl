@@ -255,6 +255,11 @@ wastes GPU time. Raw evidence is in `gpu/benchmark_results/` (job IDs cited).
 - **TILE=1024 for 2D**: 50% occupancy beats 25% (TILE=512) on the histogram-pinned 50×50 case — 8.36 vs 6.39 bapps (job 238806).
 - **O(1) FMA value digitize** (`GPUValueLinearShared` from `LinearBinEdges`) vs general binary-search (`GPUValueVectorCols`): ~3× in the 6-per-pair hot loop → 58 s vs the proto's 193 s estimate. **Always benchmark with the production value-plan type, not a general fallback.**
 - **Single fused launch** for batch/slices (no host `for b`/`for slice` loop): the original ~17 s batch-joint2d regression was a naive per-cell `(N,N)` kernel inside a host loop.
+- **Global-`u` strip kernel for fixed-x individual SF** (strip 128 / 63 sweeps): ~48 s at NB=50-64 vs
+  ~12 s for the u-smem strip-16 / 504-sweep kernel (A100, Mar 2026). Fewer geometry replays were
+  canceled by 8x more inner-loop atomics per pair and uncached global `u` loads. The kernel carried
+  this note in `kernels_batch.jl` while unreachable from any launcher; deleted in Stage 6i, recorded
+  here. Do not re-wire without profiling.
 - **Stagger the REPLICA index, never the bin index** (if replication is ever used): offsetting the bin corrupts the histogram — the prior botched attempt.
 
 ## Compile pitfalls (KA.CPU() catches NONE — only `@cuda` compile does)

@@ -18,15 +18,15 @@ Environment:
 
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
-using Printf: @printf, @sprintf
+using Printf: Printf
 using Random: Random
 using StructureFunctions: StructureFunctions as SF
 using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges, joint2d_smem_max
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
 
-const _GPUExt = Base.get_extension(SF, :StructureFunctionsGPUExt)
-_GPUExt === nothing && error("StructureFunctionsGPUExt not loaded — use julia --project=gpu")
+const _GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+_GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded — use julia --project=gpu")
 
 function _dist_bins(n_dist::Int, ::Type{FT}) where {FT}
     return LogBinEdges(Vector{FT}(exp.(range(log(FT(1000)), log(FT(50000)); length = n_dist + 1))))
@@ -96,7 +96,7 @@ function main()
     dist_r = _GPUExt._joint2d_dist_route(ws.dist_bins)
     val_r = _GPUExt._joint2d_val_route(ws.val_plan)
     gpu_fn = ws.joint2d_kernel === nothing ? :unknown : nameof(ws.joint2d_kernel.f)
-    msg = @sprintf(
+    msg = Printf.@sprintf(
         "ncu workload: N=%d n_dist=%d n_val=%d NB2=%d route=%s/%s compile_cells=%d prewarm=%d gpu_fn=%s",
         N, n_dist, length(value_bins) - 1, nb2, dist_r, val_r, ws.joint2d_compile_cells, prewarm, gpu_fn,
     )

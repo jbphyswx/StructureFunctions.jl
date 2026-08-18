@@ -1,5 +1,5 @@
 # GPU batch routing — fixed-x / varying-x fused launches.
-# Included from StructureFunctionsGPUExt.jl after BatchLaunch.jl.
+# Included from StructureFunctionsKernelAbstractionsExt.jl after BatchLaunch.jl.
 
 """Typed fast-path selector for the fixed-x tiled FMA kernels.
 
@@ -50,7 +50,7 @@ fixed-x and varying-x, `D ∈ {2,3}`, any distance-bin type
 `(NMOM, NB, B)`. `u` is staged `(D,N,B)` with NO batch-major permute."""
 function _gpu_1d_unified_device(
     backend, x, u, sf_type, distance_bins,
-    ::Val{NMOM}, NB::Int, B::Int, fixed_x::Bool, ::Type{OT},
+    ::Val{NMOM}, NB::Int, B::Int, fixed_x::Bool, ::Type{OT}, geom,
 ) where {NMOM, OT}
     D = size(x, 1)
     N = size(x, 2)
@@ -65,7 +65,7 @@ function _gpu_1d_unified_device(
         u_dev = KA.adapt(backend, reshape(u, D, N, B))
     end
     _sf_launch_1d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dig,
-                         N, NB, B, D, Val(NMOM), fixed_x)
+                         N, NB, B, D, Val(NMOM), fixed_x, geom)
     KA.synchronize(backend)
     return Array(out_dev), Array(cnt_dev)
 end
@@ -78,17 +78,17 @@ kernel per regime (job 239164, histograms verified equal):
   bapps for the old kernel on varying-x; also handles general bins).
 Returns host `(sums, counts)` of shape `(NB, B)`."""
 function _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins,
-                                   NB::Int, B::Int, fixed_x::Bool, ::Type{OT}) where {OT}
+                                   NB::Int, B::Int, fixed_x::Bool, ::Type{OT}, geom) where {OT}
     lbe = fixed_x ? _fma_distance_bins(distance_bins) : nothing
     if lbe !== nothing
         N = size(x, 2)
         sums_dev = KA.adapt(backend, zeros(OT, NB, B))
         counts_dev = KA.adapt(backend, zeros(UInt32, NB, B))
         x_dev, u_dev = _stage_batch_device(backend, x, u; fixed_x = true)
-        _launch_batch_fixed_x_sf!(backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N, B, lbe)
+        _launch_batch_fixed_x_sf!(backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N, B, lbe, geom)
         return Array(sums_dev), Array(counts_dev)
     end
-    oh, ch = _gpu_1d_unified_device(backend, x, u, sf_type, distance_bins, Val(1), NB, B, fixed_x, OT)
+    oh, ch = _gpu_1d_unified_device(backend, x, u, sf_type, distance_bins, Val(1), NB, B, fixed_x, OT, geom)
     return reshape(oh, NB, B), reshape(ch, NB, B)
 end
 
@@ -104,13 +104,16 @@ function _gpu_calculate_structure_function_batch(
     u::AbstractArray{FT},
     distance_bins::AbstractVector{FT};
     count_eltype::Type{CT} = UInt32,
-    kwargs...,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose::Bool = true,
+    show_progress::Bool = true,
 ) where {FT, CT}
     fixed_x = ndims(x) == 2
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
     bdims = SFC.batch_dims(u)
-    out_host, cnt_host = _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins, NB, B, fixed_x, FT)
+    out_host, cnt_host = _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins, NB, B, fixed_x, FT,
+        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
     sums = reshape(out_host, NB, bdims...)
     counts = reshape(cnt_host, NB, bdims...)
     return SF.StructureFunctionSumsAndCounts(
@@ -126,13 +129,16 @@ function _gpu_calculate_structure_function_batch!(
     x::AbstractArray{FT},
     u::AbstractArray{FT},
     distance_bins::AbstractVector{FT};
-    kwargs...,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose::Bool = true,
+    show_progress::Bool = true,
 ) where {FT}
     fixed_x = ndims(x) == 2
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
     out_host, cnt_host = _gpu_1d_individual_device(
-        backend, sf_type, x, u, distance_bins, NB, B, fixed_x, eltype(output_sums))
+        backend, sf_type, x, u, distance_bins, NB, B, fixed_x, eltype(output_sums),
+        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
     output_sums .+= reshape(out_host, size(output_sums)...)
     cflat = reshape(cnt_host, size(output_counts)...)
     if eltype(output_counts) === UInt32
@@ -163,7 +169,9 @@ function _gpu_dispatch_single_pass_batch(
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3};
     count_eltype::Type{CT} = UInt32,
-    kwargs...,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose::Bool = true,
+    show_progress::Bool = true,
 ) where {FT1, FT2, FT3, CT}
     FT = promote_type(float(FT1), float(FT2))
     fixed_x = ndims(x) == 2
@@ -171,7 +179,8 @@ function _gpu_dispatch_single_pass_batch(
     B = SFC.batch_size(u)
     bdims = SFC.batch_dims(u)
     out_host, cnt_host = _gpu_1d_unified_device(
-        backend, x, u, nothing, distance_bins, Val(SFC.SINGLE_PASS_N), NB, B, fixed_x, FT)
+        backend, x, u, nothing, distance_bins, Val(SFC.SINGLE_PASS_N), NB, B, fixed_x, FT,
+        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
     sums = reshape(out_host, SFC.SINGLE_PASS_N, NB, bdims...)
     counts_u32 = reshape(cnt_host, SFC.SINGLE_PASS_N, NB, bdims...)
     return (sums = sums, counts = CT === UInt32 ? counts_u32 : CT.(counts_u32))
@@ -184,13 +193,16 @@ function _gpu_dispatch_single_pass_batch!(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3};
-    kwargs...,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose::Bool = true,
+    show_progress::Bool = true,
 ) where {OT, CT, FT1, FT2, FT3}
     fixed_x = ndims(x) == 2
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
     out_host, cnt_host = _gpu_1d_unified_device(
-        backend, x, u, nothing, distance_bins, Val(SFC.SINGLE_PASS_N), NB, B, fixed_x, OT)
+        backend, x, u, nothing, distance_bins, Val(SFC.SINGLE_PASS_N), NB, B, fixed_x, OT,
+        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
     sums .+= reshape(out_host, size(sums)...)
     cflat = reshape(cnt_host, size(counts)...)
     if CT === UInt32
@@ -211,7 +223,7 @@ otherwise. Covers fixed-x and varying-x, `D ∈ {2,3}`, and any distance-bin typ
 unified kernels read `u[d, point, b]` directly)."""
 function _gpu_2d_unified_device(
     backend, x, u, sf_type, distance_bins, value_bins, ::Val{NMOM},
-    n_dist::Int, n_val::Int, B::Int, fixed_x::Bool, ::Type{OT},
+    n_dist::Int, n_val::Int, B::Int, fixed_x::Bool, ::Type{OT}, geom,
 ) where {NMOM, OT}
     D = size(x, 1)
     N = size(x, 2)
@@ -227,16 +239,16 @@ function _gpu_2d_unified_device(
         u_dev = KA.adapt(backend, reshape(u, D, N, B))
     end
     _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
-                         N, n_dist, n_val, B, D, Val(NMOM), fixed_x)
+                         N, n_dist, n_val, B, D, Val(NMOM), fixed_x, geom)
     KA.synchronize(backend)
     return Array(out_dev), Array(cnt_dev)
 end
 
 """Single-pass (NMOM=6) 2D batch device launch — thin wrapper over the unified
 `_gpu_2d_unified_device`."""
-_gpu_sp2d_unified_device(backend, x, u, distance_bins, value_bins, n_dist, n_val, B, fixed_x, ::Type{OT}) where {OT} =
+_gpu_sp2d_unified_device(backend, x, u, distance_bins, value_bins, n_dist, n_val, B, fixed_x, ::Type{OT}, geom) where {OT} =
     _gpu_2d_unified_device(backend, x, u, nothing, distance_bins, value_bins,
-                           Val(SFC.SINGLE_PASS_N), n_dist, n_val, B, fixed_x, OT)
+                           Val(SFC.SINGLE_PASS_N), n_dist, n_val, B, fixed_x, OT, geom)
 
 function _gpu_dispatch_single_pass_2d_batch(
     backend::KA.Backend,
@@ -245,7 +257,9 @@ function _gpu_dispatch_single_pass_2d_batch(
     distance_bins::AbstractVector{FT3},
     value_bins::SFC.SinglePass2DValueBins;
     count_eltype::Type{CT} = UInt32,
-    kwargs...,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose::Bool = true,
+    show_progress::Bool = true,
 ) where {FT1, FT2, FT3, CT}
     FT = promote_type(float(FT1), float(FT2))
     fixed_x = ndims(x) == 2
@@ -255,7 +269,8 @@ function _gpu_dispatch_single_pass_2d_batch(
     B = SFC.batch_size(u)
     bdims = SFC.batch_dims(u)
     out_host, cnt_host = _gpu_sp2d_unified_device(
-        backend, x, u, distance_bins, value_bins, n_dist, n_val, B, fixed_x, FT)
+        backend, x, u, distance_bins, value_bins, n_dist, n_val, B, fixed_x, FT,
+        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
     sums = reshape(out_host, SFC.SINGLE_PASS_N, n_dist, n_val, bdims...)
     counts_u32 = reshape(cnt_host, SFC.SINGLE_PASS_N, n_dist, n_val, bdims...)
     return (sums = sums, counts = CT === UInt32 ? counts_u32 : CT.(counts_u32))
@@ -269,14 +284,17 @@ function _gpu_dispatch_single_pass_2d_batch!(
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3},
     value_bins::SFC.SinglePass2DValueBins;
-    kwargs...,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose::Bool = true,
+    show_progress::Bool = true,
 ) where {OT, CT, FT1, FT2, FT3}
     fixed_x = ndims(x) == 2
     n_dist = length(distance_bins) - 1
     n_val = size(sums, 3)
     B = SFC.batch_size(u)
     out_host, cnt_host = _gpu_sp2d_unified_device(
-        backend, x, u, distance_bins, value_bins, n_dist, n_val, B, fixed_x, OT)
+        backend, x, u, distance_bins, value_bins, n_dist, n_val, B, fixed_x, OT,
+        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
     sums .+= reshape(out_host, size(sums)...)
     if CT === UInt32
         counts .+= reshape(cnt_host, size(counts)...)
@@ -305,7 +323,9 @@ function _gpu_calculate_structure_function_2d_batch(
     distance_bins::AbstractVector{FT},
     value_bins::AbstractVector{FT};
     count_eltype::Type{CT} = UInt32,
-    kwargs...,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose::Bool = true,
+    show_progress::Bool = true,
 ) where {FT, CT}
     fixed_x = ndims(x) == 2
     n_dist = length(distance_bins) - 1
@@ -329,7 +349,8 @@ function _gpu_calculate_structure_function_2d_batch(
         u_dev = KA.adapt(backend, reshape(u, D, N, B))
     end
     _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
-                         N, n_dist, n_val, B, D, Val(1), fixed_x)
+                         N, n_dist, n_val, B, D, Val(1), fixed_x,
+                         SFH.pair_geometry_for(distance_metric, D == 3 ? Val(3) : Val(2)))
     KA.synchronize(backend)
 
     sums = reshape(Array(out_dev)[1, :, :, :], n_dist, n_val, bdims...)

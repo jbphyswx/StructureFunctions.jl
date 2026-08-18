@@ -35,6 +35,9 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Shape Contract Test ---")
     include("test_shape_contract.jl")
 
+    println("--- Running Spherical Geometry Test ---")
+    include("test_spherical_geometry.jl")
+
     println("--- Running GPU Shape Contract Test ---")
     include("test_gpu_shape_contract.jl")
 
@@ -46,6 +49,9 @@ Test.@testset "StructureFunctions.jl" begin
 
     println("--- Running Triangle Outer Chunks Test ---")
     include("test_triangle_outer_chunks.jl")
+
+    println("--- Running CPU Workspace Test ---")
+    include("test_cpu_workspace.jl")
 
 
     # println("--- Running Performance Benchmark Test ---") # This need not run all the time, but it's here for reference
@@ -69,6 +75,9 @@ Test.@testset "StructureFunctions.jl" begin
 
     println("--- Running GPU sp2d HTP-EJ Partitioned Test ---")
     include("test_gpu_sp2d_partitioned.jl")
+
+    println("--- Running GPU sp2d 3D Test ---")
+    include("test_gpu_sp2d_3d.jl")
 
     println("--- Running GPU joint2d smem Test ---")
     include("test_gpu_joint2d_smem.jl")

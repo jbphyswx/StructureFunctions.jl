@@ -7,12 +7,13 @@ against the serial CPU reference.
 Included by `runtests.jl`; not run from the main `test/` suite.
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    LinearBinEdges, LogBinEdges
+    StructureFunctionObjects as SFO, LinearBinEdges, LogBinEdges
 using Random: Random
 
 Random.seed!(42)
@@ -34,12 +35,12 @@ Test.@testset "CUDA structure-function parity" begin
         sft, x_cpu, u_cpu, bin_edges;
         verbose = false,
         show_progress = false,
-        return_sums_and_counts = true,
+        output_type = SFO.StructureFunctionSumsAndCounts,
     )
 
+    # The GPU 1D entry returns sums and counts unconditionally.
     res_cuda = SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges;
-        return_sums_and_counts = true,
+        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges,
     )
     CUDA.synchronize()
 
@@ -70,12 +71,11 @@ Test.@testset "CUDA log-spaced bin parity" begin
         sft, x_cpu, u_cpu, bin_edges;
         verbose = false,
         show_progress = false,
-        return_sums_and_counts = true,
+        output_type = SFO.StructureFunctionSumsAndCounts,
     )
 
     res_cuda = SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges;
-        return_sums_and_counts = true,
+        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges,
     )
     CUDA.synchronize()
 
@@ -103,7 +103,7 @@ Test.@testset "CUDA joint 2D structure-function parity" begin
     )
     gpu = SFC.calculate_structure_function(
         sft, x_cpu, u_cpu, distance_bins, value_bins;
-        backend = SF.GPUBackend(CUDA.CUDABackend()),
+        backend = CB.GPUBackend(CUDA.CUDABackend()),
         verbose = false, show_progress = false,
     )
     CUDA.synchronize()
@@ -128,12 +128,12 @@ Test.@testset "CUDA joint 2D log distance bins" begin
 
     ref = SFC.calculate_structure_function(
         sft, x_cpu, u_cpu, distance_bins, value_bins;
-        backend = SFC.SerialBackend(),
+        backend = CB.SerialBackend(),
         verbose = false, show_progress = false,
     )
     gpu = SFC.calculate_structure_function(
         sft, x_cpu, u_cpu, distance_bins, value_bins;
-        backend = SF.GPUBackend(CUDA.CUDABackend()),
+        backend = CB.GPUBackend(CUDA.CUDABackend()),
         verbose = false, show_progress = false,
     )
     CUDA.synchronize()
@@ -165,13 +165,13 @@ Test.@testset "CUDA single-pass 2D parity" begin
     counts_ref = zeros(UInt32, size(sums_ref))
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_ref, counts_ref, x_cpu, u_cpu, distance_bins, value_bins;
-        backend = SFC.SerialBackend(),
+        backend = CB.SerialBackend(),
     )
 
     inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
     sp_gpu = SFC.calculate_structure_functions_single_pass_2d(
         x_cpu, u_cpu, distance_bins, value_bins;
-        backend = SF.GPUBackend(CUDA.CUDABackend()),
+        backend = CB.GPUBackend(CUDA.CUDABackend()),
     )
     CUDA.synchronize()
 

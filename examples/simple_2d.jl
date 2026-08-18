@@ -7,6 +7,7 @@ Run from package root:
     julia --project=examples examples/simple_2d.jl
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF
 using Statistics: Statistics
 using CairoMakie: CairoMakie as CM
@@ -36,7 +37,7 @@ println("  Mean velocity: $(round.(Statistics.mean(u; dims = 1); digits = 2)) m/
 println("  Velocity std: $(round.(Statistics.std(u; dims = 1); digits = 2)) m/s")
 
 operator = SF.FullVectorStructureFunctionType{Float64}(order = 2)
-backend = SF.SerialBackend()
+backend = CB.SerialBackend()
 
 r_min = 10.0
 r_max = grid_size * spacing / 2

@@ -1,7 +1,7 @@
 # GPU acceleration guide
 
 StructureFunctions.jl provides GPU structure-function kernels via
-[`StructureFunctionsGPUExt`](@ref) (loaded when `KernelAbstractions.jl` is available).
+[`StructureFunctionsKernelAbstractionsExt`](@ref) (loaded when `KernelAbstractions.jl` is available).
 This guide covers production APIs: single snapshots, workspace reuse, and time-slice batches.
 
 For backend selection across serial / threaded / distributed / GPU, see [backends.md](backends.md).

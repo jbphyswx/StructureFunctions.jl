@@ -24,6 +24,7 @@ Run on GPU:
     N_DIST=50 N_VAL=50 julia --project=gpu gpu/benchmark_2d_grid_scaling.jl
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
@@ -60,8 +61,8 @@ end
 
 using Dates: Dates
 
-const _GPUExt = Base.get_extension(SF, :StructureFunctionsGPUExt)
-_GPUExt === nothing && error("StructureFunctionsGPUExt not loaded — activate gpu project with CUDA")
+const _GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+_GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded — activate gpu project with CUDA")
 
 function main()
     CUDA.functional() || error("CUDA not functional")
@@ -73,7 +74,7 @@ function main()
     repeat_ = parse(Int, get(ENV, "REPEAT", "5"))
     FT = Float32
     backend = CUDA.CUDABackend()
-    gpu = SF.GPUBackend(backend)
+    gpu = CB.GPUBackend(backend)
 
     dist = _dist_bins(n_dist, FT)
     value_bins = _value_shared(n_val_inner, FT)

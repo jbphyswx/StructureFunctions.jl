@@ -29,7 +29,7 @@ All notable changes to this project will be documented in this file.
 - **Benefit**: All code paths now validated by JET; zero runtime overhead from dispatch selection
 
 #### GPU Acceleration
-- Added `StructureFunctionsGPUExt` extension for portable GPU kernels
+- Added `StructureFunctionsKernelAbstractionsExt` extension for portable GPU kernels
 - Supports NVIDIA (CUDA), AMD (ROCm), CPU (for testing) via KernelAbstractions
 - `GPUBackend` passes to kernels seamlessly; full parity with CPU implementations validated
 

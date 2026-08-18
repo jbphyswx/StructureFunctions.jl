@@ -14,6 +14,7 @@
 #
 # The explicit slice baselines in this file are GPU baselines. CPU serial baselines
 # belong in CPU benchmark scripts and are intentionally not mixed into this matrix.
+using ComputationalBackends: ComputationalBackends as CB
 using Printf: @printf
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
@@ -66,17 +67,17 @@ end
 
 function _resolve_gpu_backend(backend)
     if backend !== nothing
-        backend isa SFC.GPUBackend && return backend, backend.backend
-        return SFC.GPUBackend(backend), backend
+        backend isa CB.GPUBackend && return backend, backend.backend
+        return CB.GPUBackend(backend), backend
     end
     if CUDA.functional()
         ka_backend = CUDA.CUDABackend()
         println("backend: CUDA ($(CUDA.name(CUDA.device())))")
-        return SFC.GPUBackend(ka_backend), ka_backend
+        return CB.GPUBackend(ka_backend), ka_backend
     end
     ka_backend = KA.CPU()
     println("backend: KA.CPU (CUDA not functional)")
-    return SFC.GPUBackend(ka_backend), ka_backend
+    return CB.GPUBackend(ka_backend), ka_backend
 end
 
 function _bench_row(label::String, f::Function, ka_backend; warmup::Int = 1)
@@ -129,8 +130,7 @@ function _bench_explicit_gpu_shared_loop(
         () -> begin
             @views for b in sample_indices
                 SFC.gpu_calculate_structure_function(
-                    sf, ka_backend, xd, ud[:, :, b], edges;
-                    return_sums_and_counts = true,
+                    sf, ka_backend, xd, ud[:, :, b], edges
                 )
             end
         end,
@@ -186,8 +186,7 @@ function _bench_explicit_gpu_varying_sf_loop(
         () -> begin
             @views for b in sample_indices
                 SFC.gpu_calculate_structure_function(
-                    sf, ka_backend, xd[:, :, b], ud[:, :, b], edges;
-                    return_sums_and_counts = true,
+                    sf, ka_backend, xd[:, :, b], ud[:, :, b], edges
                 )
             end
         end,
@@ -349,7 +348,7 @@ function run_batch_matrix_benchmark(;
         push!(rows, :individual_fixed => _bench_row("individual 1D fixed-x (GPU batch)", () -> begin
             SFC.calculate_structure_function(
                 sf, x_fix, u_fix, edges;
-                backend = gpu_backend, return_sums_and_counts = true, verbose = false,
+                backend = gpu_backend, verbose = false,
             )
         end, ka_backend; warmup = warmup))
     end
@@ -488,7 +487,7 @@ function run_batch_matrix_benchmark(;
         push!(rows, :joint2d_fixed => _bench_row("joint 2D single-type fixed-x (GPU batch)", () -> begin
             SFC.calculate_structure_function(
                 sf, x_fix, u_fix, edges, val_edges;
-                backend = gpu_backend, return_sums_and_counts = true, verbose = false,
+                backend = gpu_backend, verbose = false,
             )
         end, ka_backend; warmup = warmup))
     end

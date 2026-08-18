@@ -1,7 +1,10 @@
 [deps]
+ComputationalBackends = "5c6e2104-4040-447f-8fc0-66ec2223b019"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+Distances = "b4f34e82-e78d-54a5-968a-f98e89d6e8f7"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"

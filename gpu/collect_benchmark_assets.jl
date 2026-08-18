@@ -56,7 +56,7 @@ function _warmup_gpu_session!(backend, warmup::Int)
         for _ in 1:warmup
             SFC.gpu_calculate_structure_function(
                 SCALING_SFT, backend, x_dev, u_dev, bins;
-                return_sums_and_counts = true, workspace = ws,
+                workspace = ws,
             )
         end
         gpu_sync!(backend)

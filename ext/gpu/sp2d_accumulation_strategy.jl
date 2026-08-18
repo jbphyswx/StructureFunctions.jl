@@ -26,10 +26,12 @@ Frozen HTP-EJ histogram accumulation strategy for one `(n_dist, n_val, FT)` work
 """
 struct SP2DAccumulationStrategy
     n_joint_cells::Int
+    shared_cells::Int
     accum_mode::Symbol
     smem_per_block::Int
     max_shared_cells::Int
     plane_cells::Int
+    plane_shared_cells::Int
     types_per_pass::Int
     n_type_passes::Int
     needs_partition_merge::Bool
@@ -82,27 +84,41 @@ end
 end
 
 """
-    _sp2d_accumulation_strategy(n_dist, n_val, FT) -> SP2DAccumulationStrategy
+    _sp2d_accumulation_strategy(n_dist, n_val, FT, caps) -> SP2DAccumulationStrategy
 
-Select `:shared`, `:typeplane`, or `:direct` from the 48 KiB shared-memory budget.
-Typeplane packs `types_per_pass` SF planes per pair traversal (`n_type_passes` total).
-Sets `needs_partition_merge = (mode == :direct)` for host launch/workspace routing.
+Select `:shared`, `:typeplane`, or `:direct` from the budget this device allows a *static*
+`@localmem` kernel — `gpu_static_smem_budget(caps)`, not a fixed constant, so a device offering less
+than the architectural static cap is handled. Typeplane packs `types_per_pass` SF planes per pair
+traversal (`n_type_passes` total). Sets `needs_partition_merge = (mode == :direct)` for host
+launch/workspace routing.
+
+The budget is bounded by [`GPU_SMEM_STATIC_MAX`] however generous the device is: static shared has a
+hard architectural cap, and the larger opt-in figure applies only to dynamic shared memory, which
+KernelAbstractions cannot express portably.
 """
-function _sp2d_accumulation_strategy(n_dist::Int, n_val::Int, ::Type{FT}) where {FT}
+function _sp2d_accumulation_strategy(
+    n_dist::Int, n_val::Int, ::Type{FT},
+    caps::SFC.GPUDeviceCaps = SFC.gpu_device_caps(nothing),
+) where {FT}
     C = _sp2d_joint_cells(n_dist, n_val)
     plane = n_dist * n_val
-    smem = SF_GPU_SMEM_DEFAULT
+    # What must fit on chip is the bank-conflict-padded layout, which is larger than the cell count.
+    Cs = _sp2d_shared_cells(n_dist, n_val)
+    plane_s = _sp2d_plane_cells(n_dist, n_val)
+    smem = SFC.gpu_static_smem_budget(caps)
     max_shared = _sp2d_max_shared_cells(smem, FT)
-    mode = if C <= max_shared
+    mode = if Cs <= max_shared
         :shared
-    elseif plane <= max_shared
+    elseif plane_s <= max_shared
         :typeplane
     else
         :direct
     end
-    tpp = mode == :typeplane ? _sp2d_types_per_pass(plane, max_shared) : SF_GPU_SINGLE_PASS_N
+    tpp = mode == :typeplane ? _sp2d_types_per_pass(plane_s, max_shared) : SF_GPU_SINGLE_PASS_N
     ntp = mode == :typeplane ? _sp2d_n_type_passes(tpp) : 1
-    return SP2DAccumulationStrategy(C, mode, smem, max_shared, plane, tpp, ntp, mode == :direct)
+    return SP2DAccumulationStrategy(
+        C, Cs, mode, smem, max_shared, plane, plane_s, tpp, ntp, mode == :direct,
+    )
 end
 
 """Block-private partition bytes for `n_tile_blocks` upper-triangle tile blocks."""
@@ -111,9 +127,30 @@ end
     return n_tile_blocks * config.n_joint_cells * cell_bytes
 end
 
-"""Compile-time `@localmem` histogram width for shared-histogram kernels."""
+"""Cell granularity for the compile-time histogram width; coarse so distinct configs share kernels."""
+const SP2D_COMPILE_CELL_QUANTUM = 1024
+
+"""
+    _sp2d_sharedhist_compile_cells(config) -> Int
+
+Compile-time `@localmem` histogram width. Sized to what the config actually needs, rounded up to
+[`SP2D_COMPILE_CELL_QUANTUM`] so nearby configs reuse one compiled kernel instead of each forcing
+its own. Reserving the whole budget instead would cost residency: a config needing 3072 cells would
+hold 5371 cells of shared and drop from 5 blocks per SM to 3.
+"""
 @inline function _sp2d_sharedhist_compile_cells(config::SP2DAccumulationStrategy)
-    return config.max_shared_cells
+    # Both branches must use the PADDED extents: the kernel indexes and bounds its loops with the
+    # padded layout, so sizing `@localmem` from the logical cell counts runs it off the end.
+    need = if config.accum_mode === :shared
+        config.shared_cells
+    elseif config.accum_mode === :typeplane
+        config.types_per_pass * config.plane_shared_cells
+    else
+        0
+    end
+    need <= 0 && return 1
+    quantized = cld(need, SP2D_COMPILE_CELL_QUANTUM) * SP2D_COMPILE_CELL_QUANTUM
+    return min(quantized, config.max_shared_cells)
 end
 
 function _sp2d_dist_variant(::LinearBinEdges)
@@ -121,4 +158,8 @@ function _sp2d_dist_variant(::LinearBinEdges)
 end
 function _sp2d_dist_variant(::LogBinEdges)
     return :log_linear
+end
+"""Arbitrary (non-uniform, non-log) distance edges: device binary search."""
+function _sp2d_dist_variant(::AbstractVector)
+    return :general
 end

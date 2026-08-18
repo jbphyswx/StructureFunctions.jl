@@ -1,5 +1,6 @@
 module Test2DBinning
 
+using ComputationalBackends: ComputationalBackends as CB
 using Test
 using Random
 using OhMyThreads
@@ -36,7 +37,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins;
             output_type = SF.StructureFunctionSumsAndCounts,
-            backend = SFC.SerialBackend(),
+            backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false
         )
@@ -48,7 +49,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l2_value_bins;
-            backend = SFC.SerialBackend(),
+            backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false
         )
@@ -79,7 +80,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins;
             output_type = SF.StructureFunctionSumsAndCounts,
-            backend = SFC.SerialBackend(),
+            backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false
         )
@@ -91,7 +92,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l3_value_bins;
-            backend = SFC.SerialBackend(),
+            backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false
         )
@@ -114,7 +115,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l2_value_bins;
-            backend = SFC.SerialBackend(),
+            backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false
         )
@@ -125,7 +126,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l2_value_bins;
-            backend = SFC.SerialBackend(),
+            backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false
         )
@@ -142,7 +143,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l2_value_bins;
-            backend = SFC.SerialBackend(),
+            backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false
         )
@@ -153,7 +154,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l2_value_bins;
-            backend = SFC.ThreadedBackend(),
+            backend = CB.ThreadedBackend(),
             verbose = false,
             show_progress = false
         )

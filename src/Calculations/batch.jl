@@ -36,8 +36,11 @@ end
 Fixed geometry batch: `x` is (N_dims, N), `u` has trailing batch dims.
 """
 function auxiliary_shared_positions!(sums, counts, x_mat::AbstractMatrix, u_batch,
-        sf_type::SFT.AbstractPairwiseStructureFunctionType, distance_bins; kwargs...)
-    _bl_run_1d!(sums, counts, sf_type, x_mat, u_batch, BinEdges(distance_bins), _bl_serial_exec)
+        sf_type::SFT.AbstractPairwiseStructureFunctionType, distance_bins;
+        workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
+        verbose::Bool = true, show_progress::Bool = true)
+    _bl_run_1d!(sums, counts, sf_type, x_mat, u_batch, BinEdges(distance_bins), distance_metric,
+        _bl_serial_exec, workspace)
 end
 
 """
@@ -46,8 +49,11 @@ end
 Varying geometry batch: `x` and `u` have matching trailing batch dims.
 """
 function auxiliary_varying_positions!(sums, counts, x_batch, u_batch,
-        sf_type::SFT.AbstractPairwiseStructureFunctionType, distance_bins; kwargs...)
-    _bl_run_1d!(sums, counts, sf_type, x_batch, u_batch, BinEdges(distance_bins), _bl_serial_exec)
+        sf_type::SFT.AbstractPairwiseStructureFunctionType, distance_bins;
+        workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
+        verbose::Bool = true, show_progress::Bool = true)
+    _bl_run_1d!(sums, counts, sf_type, x_batch, u_batch, BinEdges(distance_bins), distance_metric,
+        _bl_serial_exec, workspace)
 end
 
 """
@@ -55,8 +61,10 @@ end
 
 Six-invariant-type single-pass 1D batch (serial).
 """
-function serial_calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins; kwargs...)
-    _bl_run_sp1d!(sums, counts, x, u, BinEdges(distance_bins), _bl_serial_exec)
+function serial_calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins;
+        workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
+        verbose::Bool = true, show_progress::Bool = true)
+    _bl_run_sp1d!(sums, counts, x, u, BinEdges(distance_bins), distance_metric, _bl_serial_exec, workspace)
 end
 
 """
@@ -65,8 +73,11 @@ end
 Six-invariant-type SP2D batch (serial); output `(6, n_dist, n_val, batch…)`.
 """
 function serial_calculate_structure_functions_single_pass_2d!(sums, counts, x, u, distance_bins,
-        value_bins::SinglePass2DValueBins; kwargs...)
-    _bl_run_sp2d!(sums, counts, x, u, BinEdges(distance_bins), value_bins, _bl_serial_exec)
+        value_bins::SinglePass2DValueBins; workspace = nothing,
+        distance_metric::DI.PreMetric = DI.Euclidean(),
+        verbose::Bool = true, show_progress::Bool = true)
+    _bl_run_sp2d!(sums, counts, x, u, BinEdges(distance_bins), value_bins, distance_metric,
+        _bl_serial_exec, workspace)
 end
 
 """
@@ -75,8 +86,11 @@ end
 Single-type joint 2D batch (serial); output `(n_dist, n_val, batch…)`.
 """
 function auxiliary_joint2d!(sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType,
-        x, u, distance_bins, value_bins; kwargs...)
-    _bl_run_joint2d!(sums, counts, sf_type, x, u, BinEdges(distance_bins), BinEdges(value_bins), _bl_serial_exec)
+        x, u, distance_bins, value_bins; workspace = nothing,
+        distance_metric::DI.PreMetric = DI.Euclidean(),
+        verbose::Bool = true, show_progress::Bool = true)
+    _bl_run_joint2d!(sums, counts, sf_type, x, u, BinEdges(distance_bins), BinEdges(value_bins),
+        distance_metric, _bl_serial_exec, workspace)
 end
 
 """Loop-over-slice gold reference for batch parity."""
@@ -149,14 +163,16 @@ function _serial_calculate_structure_function_point(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector,
-    vD::Val{D};
-    count_eltype::Type{CT} = UInt32,
+    vD::Val{D},
+    ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     verbose::Bool = true,
     show_progress::Bool = true,
-    kwargs...,
 ) where {FT1, FT2, D, CT}
-    x_tuple = _component_vector_views(x, vD)
+    _assert_counts_representable(CT, size(x, 2))
+    # `D` is static here, so the geometry — and with it the coordinate width, which differs from `D`
+    # on a shell — is a concrete type.
+    x_tuple = _component_vector_views(x, SFH.coordinate_width(SFH.pair_geometry_for(distance_metric, vD)))
     u_tuple = _component_vector_views(u, vD)
     OT = promote_type(float(FT1), float(FT2))
     output = zeros(OT, n_histogram_bins(distance_bins))
@@ -186,8 +202,8 @@ function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
-    distance_bins::AbstractVector;
-    count_eltype::Type{CT} = UInt32,
+    distance_bins::AbstractVector,
+    count_eltype::Type{CT} = UInt32;
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, CT}
     if ndims(u) >= 3
@@ -201,34 +217,22 @@ function serial_calculate_structure_function(
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
     # Point-field route:
-    D = size(x, 1)
+    D = size(u, 1)
     D == 2 && return _serial_calculate_structure_function_point(
-        structure_function_type,
-        x,
-        u,
-        distance_bins,
-        Val(2);
-        count_eltype = count_eltype,
-        kwargs...,
+        structure_function_type, x, u, distance_bins, Val(2), count_eltype; kwargs...,
     )
     D == 3 && return _serial_calculate_structure_function_point(
-        structure_function_type,
-        x,
-        u,
-        distance_bins,
-        Val(3);
-        count_eltype = count_eltype,
-        kwargs...,
+        structure_function_type, x, u, distance_bins, Val(3), count_eltype; kwargs...,
     )
-    throw(DimensionMismatch("expected spatial/velocity dimension D=2 or D=3 on axis 1; got D=$D"))
+    return _validate_spatial_dimension(D)
 end
 
 function threaded_calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
-    distance_bins::AbstractVector;
-    count_eltype::Type{CT} = UInt32,
+    distance_bins::AbstractVector,
+    count_eltype::Type{CT} = UInt32;
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, CT}
     if ndims(u) >= 3
@@ -241,5 +245,5 @@ function threaded_calculate_structure_function(
         auxiliary_structure_function_threaded!(sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
-    throw(ArgumentError("Threaded backend is unavailable for non-batch inputs. Load the OhMyThreads extension or use backend=SerialBackend()."))
+    throw(ArgumentError("Threaded backend is unavailable for non-batch inputs. Load the OhMyThreads extension or use backend=CB.SerialBackend()."))
 end

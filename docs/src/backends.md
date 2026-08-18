@@ -56,7 +56,7 @@ bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
 result = SFC.calculate_structure_function(
     SFT.S2SFType(),
     x, u, bins;
-    backend=SFC.SerialBackend(),
+    backend=CB.SerialBackend(),
     show_progress=true
 )
 
@@ -81,7 +81,7 @@ counts = zeros(Float64, n_bins)
 SFC.calculate_structure_function!(
     sums, counts, SFT.S2SFType(),
     x, u, bins;
-    backend=SFC.SerialBackend()
+    backend=CB.SerialBackend()
 )
 ```
 
@@ -130,7 +130,7 @@ bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
 result = SFC.calculate_structure_function(
     SFT.L2SFType(),
     x, u, bins;
-    backend=SFC.ThreadedBackend(),
+    backend=CB.ThreadedBackend(),
     show_progress=true
 )
 ```
@@ -154,7 +154,7 @@ counts = zeros(Float64, n_bins)
 SFC.calculate_structure_function!(
     sums, counts, SFT.L2SFType(),
     x, u, bins;
-    backend=SFC.ThreadedBackend()
+    backend=CB.ThreadedBackend()
 )
 ```
 
@@ -248,7 +248,7 @@ srun julia -p $((${SLURM_NNODES} * ${SLURM_CPUS_PER_TASK})) compute_sf.jl
 
 ### Definition
 GPU-accelerated computation using KernelAbstractions.jl. Production kernels live in
-`StructureFunctionsGPUExt` (tiled pair histograms, UInt32 counts). See **[gpu.md](gpu.md)**
+`StructureFunctionsKernelAbstractionsExt` (tiled pair histograms, UInt32 counts). See **[gpu.md](gpu.md)**
 for workspace reuse, slice batches, testing tiers, and benchmark regeneration.
 
 ### When to Use
@@ -467,7 +467,7 @@ raw_bins = collect(exp.(range(log(0.01), log(10.0), length=51)))
 distance_bins = LogBinEdges(raw_bins)
 
 # Bypasses binary search bottleneck completely
-results = SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=SFC.ThreadedBackend())
+results = SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.ThreadedBackend())
 ```
 
 ### Profiling

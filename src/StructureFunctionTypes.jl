@@ -211,6 +211,38 @@ const T3SF = OffDiagonalConsistentThirdOrderStructureFunction
 const L2T1SF = DiagonalInconsistentThirdOrderStructureFunction
 const L1T2SF = OffDiagonalInconsistentThirdOrderStructureFunction
 
+# ---------------------------------------------------------------------------
+# Raw-geometry evaluation (pair kernels)
+# ---------------------------------------------------------------------------
+
+"""
+    _sf_raw(sf, δu, dx, r2)
+
+Evaluate `sf` from raw pair geometry: separation `dx`, its squared length `r2 = dx⋅dx`, and `δu`.
+
+Identical to `sf(δu, dx/√r2)` for every operator. The second-order specializations below are
+polynomials in `p = δu⋅dx` and `‖δu‖²` over a power of `r²`, so they need no `sqrt`; odd orders and
+odd transverse orders need `r̂` and fall through to the generic method.
+"""
+@inline _sf_raw(sf::AbstractStructureFunctionType, δu, dx, r2) = sf(δu, dx / sqrt(r2))
+
+@inline _sf_raw(::SecondOrderStructureFunctionType, δu, dx, r2) = norm2(δu)
+
+@inline function _sf_raw(::ProjectedStructureFunctionType{2, 0}, δu, dx, r2)
+    p = LA.dot(δu, dx)
+    return p * p / r2
+end
+
+@inline function _sf_raw(::ProjectedStructureFunctionType{0, 2}, δu, dx, r2)
+    p = LA.dot(δu, dx)
+    return norm2(δu) - p * p / r2
+end
+
+@inline function _sf_raw(::TransverseComponentSecondOrderStructureFunctionType, δu, dx, r2)
+    p = LA.dot(δu, dx)
+    return (norm2(δu) - p * p / r2) / (length(dx) - 1)
+end
+
 """
     RotationalSecondOrderStructureFunctionType()
 

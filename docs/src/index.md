@@ -34,7 +34,7 @@ u = randn(2, 2048)                  # (D, N) velocity components
 bins = LogBinEdges(collect(exp10.(range(log10(50.0), log10(5.0e3); length = 41))))
 
 # Second-order longitudinal SF, averaged S₂(r):
-sf = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = SFC.AutoBackend())
+sf = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.AutoBackend())
 sf.distance, sf.values
 
 # All six invariants (+ Helmholtz) in one pass:
@@ -60,5 +60,5 @@ Pkg.add(url = "https://github.com/jbphyswx/StructureFunctions.jl.git")
 ```
 
 Optional backends/visualization load via package extensions when you bring their trigger packages
-(`OhMyThreads`, `Distributed` + `SharedArrays`, `KernelAbstractions` + `CUDA`, `MPI`, `CairoMakie`);
+(`OhMyThreads`, `Distributed`, `KernelAbstractions` + `CUDA`, `MPI`, `CairoMakie`);
 see [Extensions](extensions.md).

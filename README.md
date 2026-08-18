@@ -61,7 +61,7 @@ using Base.Threads
 if nthreads() > 1
     result_threaded = SFC.calculate_structure_function(
         sf_type, x, u, bins;
-        backend=SFC.ThreadedBackend()
+        backend=CB.ThreadedBackend()
     )
 end
 ```
@@ -84,7 +84,7 @@ sums = zeros(Float64, n_bins)
 counts = zeros(Float64, n_bins)
 
 # Compute in-place (accumulates into provided buffers)
-SFC.calculate_structure_function!(sums, counts, sf_type, x, u, bins; backend=SFC.ThreadedBackend())
+SFC.calculate_structure_function!(sums, counts, sf_type, x, u, bins; backend=CB.ThreadedBackend())
 
 # Obtain structure function values via division
 sf_values = sums ./ counts
@@ -143,7 +143,7 @@ Single-threaded CPU execution. Use when:
 ```julia
 result = SFC.calculate_structure_function(sf_type, x, u, bins)  # Defaults to Serial
 result = SFC.calculate_structure_function(sf_type, x, u, bins; 
-                                        backend=SFC.SerialBackend())
+                                        backend=CB.SerialBackend())
 ```
 
 **Performance**: O(N²) pairwise distance/SF evaluations.  
@@ -157,7 +157,7 @@ Multi-threaded execution using [OhMyThreads.jl](https://github.com/JuliaFolds2/O
 using Base.Threads
 
 result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=SFC.ThreadedBackend())
+                                        backend=CB.ThreadedBackend())
 ```
 
 - **Prerequisites**: `Threads.nthreads() > 1`, OhMyThreads.jl loaded (extension auto-loads)
@@ -176,7 +176,7 @@ using Distributed: addprocs
 addprocs(4)  # Or specify SSH workers, etc.
 
 result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=SFC.DistributedBackend())
+                                        backend=CB.DistributedBackend())
 ```
 
 - **Prerequisites**: Workers launched via `addprocs()` or similar
@@ -193,16 +193,16 @@ using KernelAbstractions as KA
 # NVIDIA GPU (after loading CUDA.jl)
 using CUDA
 result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=SFC.GPUBackend(CUDA.CUDABackend()))
+                                        backend=CB.GPUBackend(CUDA.CUDABackend()))
 
 # AMD GPU (after loading AMDGPU.jl)
 using AMDGPU
 result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=SFC.GPUBackend(AMDGPU.ROCBackend()))
+                                        backend=CB.GPUBackend(AMDGPU.ROCBackend()))
 
 # CPU backend for testing (no GPU required)
 result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=SFC.GPUBackend(KA.CPU()))
+                                        backend=CB.GPUBackend(KA.CPU()))
 ```
 
 - **Ideal for**: Large datasets (few×10³+ points) where GPU memory is sufficient
@@ -214,7 +214,7 @@ Automatic selection based on environment:
 
 ```julia
 result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=SFC.AutoBackend())
+                                        backend=CB.AutoBackend())
 
 # Selection order:
 # 1. Distributed  (if nworkers() > 1)
@@ -369,7 +369,7 @@ distance_bins = LogBinEdges(log_bins_raw)
 # Returns a NamedTuple keyed by invariant: results.S2, results.L2, results.T2,
 # results.S3, results.L3, results.L1T2 (+ results.helmholtz for point-field input).
 # Each entry is a StructureFunction (pass output_type=StructureFunctionSumsAndCounts for raw).
-results = SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=SFC.SerialBackend())
+results = SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.SerialBackend())
 ```
 
 ## Theory & References
@@ -513,7 +513,7 @@ StructureFunctionsOhMyThreadsExt = "OhMyThreads"
 
 ### DistributedExt (DistributedBackend)
 
-Requires `Distributed.jl` (stdlib) + `SharedArrays.jl` (stdlib):
+Requires `Distributed.jl` (stdlib):
 
 ```julia
 using Distributed: addprocs
@@ -530,7 +530,7 @@ Requires `KernelAbstractions.jl` + GPU package (CUDA.jl, AMDGPU.jl, etc.):
 KernelAbstractions = "63c18a36-062a-441e-b365-b594b6ce51b1"
 
 [extensions]
-StructureFunctionsGPUExt = "KernelAbstractions"
+StructureFunctionsKernelAbstractionsExt = "KernelAbstractions"
 ```
 
 ## Migration from v0.2

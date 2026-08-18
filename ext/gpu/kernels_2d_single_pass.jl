@@ -8,7 +8,6 @@
     value_edges,
     bin::Int,
     du_L,
-    du_T,
     du_L2,
     du_T2,
     N_val_edges::Int,
@@ -36,14 +35,12 @@ end
     output_counts,
     bin::Int,
     du_L,
-    du_T,
     du_L2,
     du_T2,
     N_val_edges::Int,
     val_first::FT,
     val_last::FT,
     val_inv_step::FT,
-    val_offset::FT,
     val_step::FT,
 ) where {FT}
     vals = SA.SVector(
@@ -56,7 +53,7 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
+            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
             @atomic output_sums[t, bin, vbin] += vals[t]
@@ -72,11 +69,9 @@ end
     val_first,
     val_last,
     val_inv_step,
-    val_offset,
     val_step,
     bin::Int,
     du_L,
-    du_T,
     du_L2,
     du_T2,
     N_val_edges::Int,
@@ -92,7 +87,7 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
-            vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
+            vals[t], val_first[t], val_last[t], val_inv_step[t], val_step[t],
             N_val_edges,
         )
         if 1 <= vbin < N_val_edges
@@ -108,14 +103,12 @@ end
     output_counts,
     bin::Int,
     du_L,
-    du_T,
     du_L2,
     du_T2,
     N_val_edges::Int,
     val_first::FT,
     val_last::FT,
     val_inv_step::FT,
-    val_offset::FT,
     val_step::FT,
     n_inner_edges::Int,
     inner_last::FT,
@@ -130,7 +123,7 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
+            vals[t], val_first, val_last, val_inv_step, val_step,
             n_inner_edges, inner_last,
         )
         if 1 <= vbin < N_val_edges
@@ -147,12 +140,10 @@ end
     val_first,
     val_last,
     val_inv_step,
-    val_offset,
     val_step,
     inner_last,
     bin::Int,
     du_L,
-    du_T,
     du_L2,
     du_T2,
     n_inner_edges::Int,
@@ -168,7 +159,7 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
+            vals[t], val_first[t], val_last[t], val_inv_step[t], val_step[t],
             n_inner_edges, inner_last[t],
         )
         if 1 <= vbin < N_val_edges
@@ -185,11 +176,9 @@ end
     val_first::FT,
     val_last::FT,
     val_inv_step::FT,
-    val_offset::FT,
     val_step::FT,
     bin::Int,
     du_L,
-    du_T,
     du_L2,
     du_T2,
     N_val_edges::Int,
@@ -203,7 +192,7 @@ end
         du_L * du_T2,
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_log_spaced(vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges)
+        vbin = _gpu_digitize_log_spaced(vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges)
         if 1 <= vbin < N_val_edges
             @atomic output_sums[t, bin, vbin] += vals[t]
             @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
@@ -218,11 +207,9 @@ end
     val_first,
     val_last,
     val_inv_step,
-    val_offset,
     val_step,
     bin::Int,
     du_L,
-    du_T,
     du_L2,
     du_T2,
     N_val_edges::Int,
@@ -236,7 +223,7 @@ end
         du_L * du_T2,
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_log_spaced_col(vals[t], val_first, val_last, val_inv_step, val_offset, val_step, t, N_val_edges)
+        vbin = _gpu_digitize_log_spaced_col(vals[t], val_first, val_last, val_inv_step, val_step, t, N_val_edges)
         if 1 <= vbin < N_val_edges
             @atomic output_sums[t, bin, vbin] += vals[t]
             @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
@@ -257,16 +244,15 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
     dist_first::FT,
     dist_last::FT,
     dist_inv_step::FT,
-    dist_offset::FT,
     dist_step::FT,
     val_first::FT,
     val_last::FT,
     val_inv_step::FT,
-    val_offset::FT,
     val_step::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
@@ -334,23 +320,18 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
                     U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
                     U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist = sqrt(dX[1]^2 + dX[2]^2)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 bin = _gpu_digitize_linear(
-                    dist, dist_first, dist_last, dist_inv_step, dist_offset, dist_step, N_bins,
+                    dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins,
                 )
-                if 1 <= bin < N_bins
-                    dU = U2 - U1
-                    r̂ = dX / dist
-                    n̂ = SA.SVector{2, FT}(r̂[2], -r̂[1])
-                    du_L = SA.dot(dU, r̂)
-                    du_T = SA.dot(dU, n̂)
+                if ok && 1 <= bin < N_bins
+                    du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                     du_L2 = du_L * du_L
-                    du_T2 = du_T * du_T
+                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_linear_val!(
                         output_sums, output_counts, bin,
-                        du_L, du_T, du_L2, du_T2, N_val_edges,
-                        val_first, val_last, val_inv_step, val_offset, val_step,
+                        du_L, du_L2, du_T2, N_val_edges,
+                        val_first, val_last, val_inv_step, val_step,
                     )
                 end
                 p += workgroup_size
@@ -372,11 +353,11 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
     dist_first::FT,
     dist_last::FT,
     dist_inv_step::FT,
-    dist_offset::FT,
     dist_step::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
@@ -444,20 +425,15 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
                     U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
                     U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist = sqrt(dX[1]^2 + dX[2]^2)
-                bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_offset, dist_step, N_bins)
-                if 1 <= bin < N_bins
-                    dU = U2 - U1
-                    r̂ = dX / dist
-                    n̂ = SA.SVector{2, FT}(r̂[2], -r̂[1])
-                    du_L = SA.dot(dU, r̂)
-                    du_T = SA.dot(dU, n̂)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
+                bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
+                if ok && 1 <= bin < N_bins
+                    du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                     du_L2 = du_L * du_L
-                    du_T2 = du_T * du_T
+                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global!(
                         output_sums, output_counts, value_edges, bin,
-                        du_L, du_T, du_L2, du_T2, N_val_edges,
+                        du_L, du_L2, du_T2, N_val_edges,
                     )
                 end
                 p += workgroup_size
@@ -478,16 +454,15 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
     dist_first::FT,
     dist_last::FT,
     dist_inv_step::FT,
-    dist_offset::FT,
     dist_step::FT,
     val_first::FT,
     val_last::FT,
     val_inv_step::FT,
-    val_offset::FT,
     val_step::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
@@ -555,21 +530,16 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
                     U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
                     U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist = sqrt(dX[1]^2 + dX[2]^2)
-                bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_offset, dist_step, N_bins)
-                if 1 <= bin < N_bins
-                    dU = U2 - U1
-                    r̂ = dX / dist
-                    n̂ = SA.SVector{2, FT}(r̂[2], -r̂[1])
-                    du_L = SA.dot(dU, r̂)
-                    du_T = SA.dot(dU, n̂)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
+                bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
+                if ok && 1 <= bin < N_bins
+                    du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                     du_L2 = du_L * du_L
-                    du_T2 = du_T * du_T
+                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_linear_val!(
                         output_sums, output_counts, bin,
-                        du_L, du_T, du_L2, du_T2, N_val_edges,
-                        val_first, val_last, val_inv_step, val_offset, val_step,
+                        du_L, du_L2, du_T2, N_val_edges,
+                        val_first, val_last, val_inv_step, val_step,
                     )
                 end
                 p += workgroup_size

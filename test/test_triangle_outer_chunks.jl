@@ -1,4 +1,5 @@
 # Partition balance for O(N²) triangle pair loops (OhMyThreads outer chunks).
+using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using Random: Random
 using OhMyThreads: OhMyThreads as OMT
@@ -48,10 +49,10 @@ Test.@testset "Triangle outer chunks (OMT RoundRobin)" begin
 
         inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         sp_ref = SFC.calculate_structure_functions_single_pass_2d(
-            x, u, distance_bins, value_bins; backend = SFC.SerialBackend(),
+            x, u, distance_bins, value_bins; backend = CB.SerialBackend(),
         )
         sp_thr = SFC.calculate_structure_functions_single_pass_2d(
-            x, u, distance_bins, value_bins; backend = SFC.ThreadedBackend(),
+            x, u, distance_bins, value_bins; backend = CB.ThreadedBackend(),
         )
         for k in inv
             Test.@test sp_thr[k].counts == sp_ref[k].counts
@@ -61,12 +62,12 @@ Test.@testset "Triangle outer chunks (OMT RoundRobin)" begin
         sf_type = SFT.LongitudinalSecondOrderStructureFunctionType()
         r1 = SFC.calculate_structure_function(
             sf_type, x, u, distance_bins;
-            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(), verbose = false, show_progress = false,
             output_type = SFO.StructureFunctionSumsAndCounts,
         )
         r2 = SFC.calculate_structure_function(
             sf_type, x, u, distance_bins;
-            backend = SFC.ThreadedBackend(), verbose = false, show_progress = false,
+            backend = CB.ThreadedBackend(), verbose = false, show_progress = false,
             output_type = SFO.StructureFunctionSumsAndCounts,
         )
         Test.@test r2.counts == r1.counts

@@ -8,6 +8,7 @@ Run from the repository root:
     julia --project=gpu gpu/smoke_cuda.jl
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
@@ -38,8 +39,7 @@ function main()
     sft = SFT.L2SFType()
 
     res = SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x, u, bin_edges;
-        return_sums_and_counts = true,
+        sft, CUDA.CUDABackend(), x, u, bin_edges
     )
     CUDA.synchronize()
 
@@ -48,7 +48,7 @@ function main()
     println("Total pair count: ", n_pairs)
     println("Max bin sum: ", maximum(res.sums))
 
-    backend = SF.GPUBackend(CUDA.CUDABackend())
+    backend = CB.GPUBackend(CUDA.CUDABackend())
     x_cpu = Array(x)
     u_cpu = Array(u)
     result = SFC.calculate_structure_function(

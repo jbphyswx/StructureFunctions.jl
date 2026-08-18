@@ -17,12 +17,11 @@ result = calculate_structure_function(sf, x, u, bins; backend = ThreadedBackend(
 
 ### Distributed
 
-Loading `Distributed` and `SharedArrays` activates distributed CPU methods used by `DistributedBackend()`.
+Loading `Distributed` activates the distributed CPU methods used by `DistributedBackend()`.
 
 ```julia
 using StructureFunctions
 using Distributed
-using SharedArrays
 
 addprocs(4)
 result = calculate_structure_function(sf, x, u, bins; backend = DistributedBackend())
@@ -71,12 +70,11 @@ CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
-SharedArrays = "1a1011a3-84de-559e-8e89-a11a2f7dc383"
 
 [extensions]
 StructureFunctionsCairoMakieExt = ["CairoMakie"]
-StructureFunctionsDistributedExt = ["Distributed", "SharedArrays"]
-StructureFunctionsGPUExt = ["KernelAbstractions"]
+StructureFunctionsDistributedExt = ["Distributed"]
+StructureFunctionsKernelAbstractionsExt = ["KernelAbstractions"]
 StructureFunctionsOhMyThreadsExt = ["OhMyThreads"]
 ```
 

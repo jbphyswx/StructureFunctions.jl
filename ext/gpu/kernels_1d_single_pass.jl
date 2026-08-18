@@ -1,5 +1,5 @@
 # Tiled128 six-invariant-type single-pass 1D distance histogram kernels (linear/log/general).
-# Included from StructureFunctionsGPUExt.jl — block-local (6, NB) sums + one count row.
+# Included from StructureFunctionsKernelAbstractionsExt.jl — block-local (6, NB) sums + one count row.
 
 """Accumulate six invariant native 1D SF types into flat `@localmem` sums `(6*NB,)`.
 du_norm2 = du_L2 + du_T2 (= ||dU||²) must be pre-computed by the caller."""
@@ -34,11 +34,11 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_linear_
     first_edge::FT,
     last_edge::FT,
     inv_step::FT,
-    offset::FT,
     step_val::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
@@ -120,17 +120,13 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_linear_
                     U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
                     U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist = sqrt(dX[1]^2 + dX[2]^2)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 bin = _gpu_digitize_linear(
-                    dist, first_edge, last_edge, inv_step, offset, step_val, N_bins,
+                    dist, first_edge, last_edge, inv_step, step_val, N_bins,
                 )
-                if 1 <= bin < N_bins
-                    dU = U2 - U1
-                    r̂ = dX / dist
-                    du_L = SA.dot(dU, r̂)
+                if ok && 1 <= bin < N_bins
+                    du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                     du_L2 = du_L * du_L
-                    du_norm2 = SA.dot(dU, dU)
                     du_T2 = du_norm2 - du_L2
                     _gpu_accumulate_single_pass_1d_shared!(
                         shared_sums, shared_cnts, bin, du_L, du_L2, du_T2, du_norm2, NB,
@@ -175,7 +171,6 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
     first_edge::FT,
     last_edge::FT,
     inv_step::FT,
-    offset::FT,
     step_val::FT,
     N_points::Int,
     N_bins::Int,
@@ -183,6 +178,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
@@ -264,15 +260,11 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
                     U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
                     U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist = sqrt(dX[1]^2 + dX[2]^2)
-                bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, offset, step_val, N_bins)
-                if 1 <= bin < N_bins
-                    dU = U2 - U1
-                    r̂ = dX / dist
-                    du_L = SA.dot(dU, r̂)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
+                bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, step_val, N_bins)
+                if ok && 1 <= bin < N_bins
+                    du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                     du_L2 = du_L * du_L
-                    du_norm2 = SA.dot(dU, dU)
                     du_T2 = du_norm2 - du_L2
                     _gpu_accumulate_single_pass_1d_shared!(
                         shared_sums, shared_cnts, bin, du_L, du_L2, du_T2, du_norm2, NB,
@@ -322,6 +314,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_general
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
@@ -403,15 +396,11 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_general
                     U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
                     U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist = sqrt(dX[1]^2 + dX[2]^2)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 bin = _gpu_digitize_general(dist, bins, N_bins)
-                if 1 <= bin < N_bins
-                    dU = U2 - U1
-                    r̂ = dX / dist
-                    du_L = SA.dot(dU, r̂)
+                if ok && 1 <= bin < N_bins
+                    du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                     du_L2 = du_L * du_L
-                    du_norm2 = SA.dot(dU, dU)
                     du_T2 = du_norm2 - du_L2
                     _gpu_accumulate_single_pass_1d_shared!(
                         shared_sums, shared_cnts, bin, du_L, du_L2, du_T2, du_norm2, NB,

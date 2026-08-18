@@ -32,7 +32,7 @@ x = rand(2, 4096) .* 1.0e4          # (D, N) coordinates
 u = randn(2, 4096)                  # (D, N) velocities
 bins = LogBinEdges(collect(exp10.(range(log10(50.0), log10(5.0e3); length = 41))))
 
-res = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = SFC.AutoBackend())
+res = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = CB.AutoBackend())
 res.S2          # StructureFunction (averaged) for S2; also res.L2, res.T2, res.S3, res.L3, res.L1T2
 res.helmholtz   # HelmholtzDecomposition2D (rotational/divergent), point-field input only
 
@@ -52,7 +52,7 @@ using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, Lo
 
 dist = LogBinEdges(collect(exp10.(range(log10(50.0), log10(5.0e3); length = 41))))
 vbins = LinearBinEdges(collect(range(-5.0, 5.0; length = 51)))
-sf2d = SFC.calculate_structure_function(SFT.L2SFType(), x, u, dist, vbins; backend = SFC.AutoBackend())
+sf2d = SFC.calculate_structure_function(SFT.L2SFType(), x, u, dist, vbins; backend = CB.AutoBackend())
 sf2d.sums, sf2d.counts   # (n_dist, n_val) joint histogram
 ```
 
@@ -65,7 +65,7 @@ once per pair and the batch axis is vectorized — far faster than looping `t`:
 sums  = zeros(SFC.SINGLE_PASS_N, length(dist) - 1, length(vbins) - 1, T)
 counts = zeros(Int, size(sums))
 SFC.calculate_structure_functions_single_pass_2d_batch!(sums, counts, x, u_batch, dist, vbins;
-                                                        backend = SFC.AutoBackend())
+                                                        backend = CB.AutoBackend())
 ```
 
 See [Backends](backends.md) for choosing serial / threaded / distributed / GPU, and

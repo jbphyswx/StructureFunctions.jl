@@ -5,10 +5,48 @@
 # Direct (:direct): global atomics into block-private partition; merge on host.
 #
 # See gpu/SP2D_HTP_EJ.md for strategy, benchmarks, and future perf notes.
-# Included from StructureFunctionsGPUExt.jl after TiledSinglePass2DValueKernels.jl.
+# Included from StructureFunctionsKernelAbstractionsExt.jl after TiledSinglePass2DValueKernels.jl.
+
+"""Load point `k`'s D-vector from a tile buffer staged as `(d-1)*SF_GPU_TILE + k`."""
+@inline _sp2d_ld_tile(buf, ::Val{2}, k) =
+    @inbounds SA.SVector{2}(buf[k], buf[SF_GPU_TILE + k])
+@inline _sp2d_ld_tile(buf, ::Val{3}, k) =
+    @inbounds SA.SVector{3}(buf[k], buf[SF_GPU_TILE + k], buf[2 * SF_GPU_TILE + k])
 
 @inline function _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
     return (t - 1) * n_dist * n_val + (dbin - 1) * n_val + vbin
+end
+
+"""
+    _sp2d_val_stride(n_val)
+
+Row stride of the shared histogram's value axis, forced odd.
+
+Shared memory has 32 banks. With a stride of `n_val = 16`, the flat index
+`(dbin-1)*n_val + vbin` puts every row of the value axis in the same 2 banks, so lanes that differ
+only in `dbin` serialize up to 16 ways on bank conflicts alone — before any same-address atomic
+contention. An odd stride is coprime with 32 and spreads them over all banks. The cost is one unused
+column per row.
+"""
+@inline _sp2d_val_stride(n_val) = isodd(n_val) ? n_val : n_val + 1
+
+"""Cells in the bank-conflict-padded shared histogram."""
+@inline _sp2d_shared_cells(n_dist, n_val) =
+    SF_GPU_SINGLE_PASS_N * n_dist * _sp2d_val_stride(n_val)
+
+"""Flat index into the padded shared histogram."""
+@inline function _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
+    s = _sp2d_val_stride(n_val)
+    return (t - 1) * n_dist * s + (dbin - 1) * s + vbin
+end
+
+"""Invert [`_sp2d_shared_index`](@ref); `vbin > n_val` marks a padding hole to skip."""
+@inline function _sp2d_shared_decode(g, n_dist, n_val)
+    s = _sp2d_val_stride(n_val)
+    plane = n_dist * s
+    t = (g - 1) ÷ plane + 1
+    r = (g - 1) % plane
+    return t, r ÷ s + 1, r % s + 1
 end
 
 @inline function _sp2d_decode_flat_index(g, n_dist, n_val)
@@ -57,11 +95,13 @@ end
 )
     g = lid
     while g <= C
-        t, dbin, vbin = _sp2d_decode_flat_index(g, n_dist, n_val)
-        @inbounds begin
-            partition_sums[t, dbin, vbin, block_id] += shared_sums[g]
-            if shared_cnts[g] != UInt32(0)
-                partition_counts[t, dbin, vbin, block_id] += shared_cnts[g]
+        t, dbin, vbin = _sp2d_shared_decode(g, n_dist, n_val)
+        if vbin <= n_val
+            @inbounds begin
+                partition_sums[t, dbin, vbin, block_id] += shared_sums[g]
+                if shared_cnts[g] != UInt32(0)
+                    partition_counts[t, dbin, vbin, block_id] += shared_cnts[g]
+                end
             end
         end
         g += workgroup_size
@@ -83,11 +123,13 @@ end
 )
     g = lid
     while g <= C
-        t, dbin, vbin = _sp2d_decode_flat_index(g, n_dist, n_val)
-        @inbounds begin
-            @atomic out_sums[t, dbin, vbin] += shared_sums[g]
-            if shared_cnts[g] != UInt32(0)
-                @atomic out_cnts[t, dbin, vbin] += shared_cnts[g]
+        t, dbin, vbin = _sp2d_shared_decode(g, n_dist, n_val)
+        if vbin <= n_val
+            @inbounds begin
+                @atomic out_sums[t, dbin, vbin] += shared_sums[g]
+                if shared_cnts[g] != UInt32(0)
+                    @atomic out_cnts[t, dbin, vbin] += shared_cnts[g]
+                end
             end
         end
         g += workgroup_size
@@ -99,8 +141,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_sharedhist_linear_val!(
     shared_sums, shared_cnts, n_dist, n_val,
-    dbin, du_L, du_T, du_L2, du_T2, N_val_edges,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
+    dbin, du_L, du_L2, du_T2, N_val_edges,
+    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -109,10 +151,10 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
+            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            g = _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
+            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
             @atomic shared_sums[g] += vals[t]
             @atomic shared_cnts[g] += UInt32(1)
         end
@@ -122,8 +164,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_sharedhist_linear_val_cols!(
     shared_sums, shared_cnts, n_dist, n_val,
-    val_first, val_last, val_inv_step, val_offset, val_step,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
+    val_first, val_last, val_inv_step, val_step,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -132,11 +174,11 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
-            vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
+            vals[t], val_first[t], val_last[t], val_inv_step[t], val_step[t],
             N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            g = _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
+            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
             @atomic shared_sums[g] += vals[t]
             @atomic shared_cnts[g] += UInt32(1)
         end
@@ -146,8 +188,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_sharedhist_inflinear_val!(
     shared_sums, shared_cnts, n_dist, n_val,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
     n_inner_edges::Int, inner_last::FT,
 ) where {FT}
     vals = SA.SVector(
@@ -157,11 +199,11 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
+            vals[t], val_first, val_last, val_inv_step, val_step,
             n_inner_edges, inner_last,
         )
         if 1 <= vbin < N_val_edges
-            g = _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
+            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
             @atomic shared_sums[g] += vals[t]
             @atomic shared_cnts[g] += UInt32(1)
         end
@@ -171,8 +213,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_sharedhist_inflinear_val_cols!(
     shared_sums, shared_cnts, n_dist, n_val,
-    val_first, val_last, val_inv_step, val_offset, val_step, inner_last,
-    dbin::Int, du_L, du_T, du_L2, du_T2, n_inner_edges::Int, N_val_edges::Int,
+    val_first, val_last, val_inv_step, val_step, inner_last,
+    dbin::Int, du_L, du_L2, du_T2, n_inner_edges::Int, N_val_edges::Int,
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -181,11 +223,11 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
+            vals[t], val_first[t], val_last[t], val_inv_step[t], val_step[t],
             n_inner_edges, inner_last[t],
         )
         if 1 <= vbin < N_val_edges
-            g = _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
+            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
             @atomic shared_sums[g] += vals[t]
             @atomic shared_cnts[g] += UInt32(1)
         end
@@ -195,8 +237,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_sharedhist_log_val!(
     shared_sums, shared_cnts, n_dist, n_val,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -205,10 +247,10 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
+            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            g = _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
+            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
             @atomic shared_sums[g] += vals[t]
             @atomic shared_cnts[g] += UInt32(1)
         end
@@ -218,8 +260,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_sharedhist_log_val_cols!(
     shared_sums, shared_cnts, n_dist, n_val,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first, val_last, val_inv_step, val_offset, val_step,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first, val_last, val_inv_step, val_step,
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -228,10 +270,10 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced_col(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step, t, N_val_edges,
+            vals[t], val_first, val_last, val_inv_step, val_step, t, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            g = _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
+            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
             @atomic shared_sums[g] += vals[t]
             @atomic shared_cnts[g] += UInt32(1)
         end
@@ -241,7 +283,7 @@ end
 
 @inline function _gpu_accumulate_sp2d_sharedhist_vector_val_cols!(
     shared_sums, shared_cnts, n_dist, n_val,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
     value_edges,
 )
     vals = SA.SVector(
@@ -252,7 +294,7 @@ end
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
-            g = _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
+            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
             @atomic shared_sums[g] += vals[t]
             @atomic shared_cnts[g] += UInt32(1)
         end
@@ -262,9 +304,13 @@ end
 
 # --- type-plane shared accumulation (one SF type per pass; plane = n_dist × n_val) ---
 
+"""Flat index within one padded type plane; same bank argument as [`_sp2d_val_stride`](@ref)."""
 @inline function _sp2d_plane_flat_index(dbin::Int, vbin::Int, n_val::Int)
-    return (dbin - 1) * n_val + vbin
+    return (dbin - 1) * _sp2d_val_stride(n_val) + vbin
 end
+
+"""Cells in one padded type plane."""
+@inline _sp2d_plane_cells(n_dist::Int, n_val::Int) = n_dist * _sp2d_val_stride(n_val)
 
 """Flush type-plane shared histogram into block-private partition (`:direct` path only)."""
 @inline function _sp2d_flush_typeplane!(
@@ -316,16 +362,19 @@ end
 )
     t_lo = (type_pass - 1) * types_per_pass + 1
     t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
+    stride = _sp2d_val_stride(n_val)
     g = Int(lid)
     while g <= plane
-        dbin = (g - 1) ÷ n_val + 1
-        vbin = (g - 1) % n_val + 1
-        for t in t_lo:t_hi
-            slot = t - t_lo
-            @inbounds idx = slot * plane + g
-            @inbounds @atomic out_sums[t, dbin, vbin] += shared_sums[idx]
-            @inbounds if shared_cnts[idx] != UInt32(0)
-                @atomic out_cnts[t, dbin, vbin] += shared_cnts[idx]
+        dbin = (g - 1) ÷ stride + 1
+        vbin = (g - 1) % stride + 1
+        if vbin <= n_val
+            for t in t_lo:t_hi
+                slot = t - t_lo
+                @inbounds idx = slot * plane + g
+                @inbounds @atomic out_sums[t, dbin, vbin] += shared_sums[idx]
+                @inbounds if shared_cnts[idx] != UInt32(0)
+                    @atomic out_cnts[t, dbin, vbin] += shared_cnts[idx]
+                end
             end
         end
         g += workgroup_size
@@ -336,8 +385,8 @@ end
 @inline function _gpu_accumulate_sp2d_typeplane_linear_val!(
     shared_sums, shared_cnts, n_val, plane::Int,
     type_pass::Int, types_per_pass::Int,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -348,7 +397,7 @@ end
     t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_linear(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
+            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
             slot = t - t_lo
@@ -362,8 +411,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_typeplane_linear_val_cols!(
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    val_first, val_last, val_inv_step, val_offset, val_step,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
+    val_first, val_last, val_inv_step, val_step,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -375,7 +424,7 @@ end
     for t in t_lo:t_hi
         vbin = _gpu_digitize_linear(
             vals[t], val_first[t], val_last[t],
-            val_inv_step[t], val_offset[t], val_step[t],
+            val_inv_step[t], val_step[t],
             N_val_edges,
         )
         if 1 <= vbin < N_val_edges
@@ -390,8 +439,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_typeplane_inflinear_val!(
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
     n_inner_edges::Int, inner_last::FT,
 ) where {FT}
     vals = SA.SVector(
@@ -403,7 +452,7 @@ end
     t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
+            vals[t], val_first, val_last, val_inv_step, val_step,
             n_inner_edges, inner_last,
         )
         if 1 <= vbin < N_val_edges
@@ -418,8 +467,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_typeplane_inflinear_val_cols!(
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    val_first, val_last, val_inv_step, val_offset, val_step, inner_last,
-    dbin::Int, du_L, du_T, du_L2, du_T2, n_inner_edges::Int, N_val_edges::Int,
+    val_first, val_last, val_inv_step, val_step, inner_last,
+    dbin::Int, du_L, du_L2, du_T2, n_inner_edges::Int, N_val_edges::Int,
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -431,7 +480,7 @@ end
     for t in t_lo:t_hi
         vbin = _gpu_digitize_inf_padded_linear(
             vals[t], val_first[t], val_last[t],
-            val_inv_step[t], val_offset[t], val_step[t],
+            val_inv_step[t], val_step[t],
             n_inner_edges, inner_last[t],
         )
         if 1 <= vbin < N_val_edges
@@ -446,8 +495,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_typeplane_log_val!(
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -458,7 +507,7 @@ end
     t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_log_spaced(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
+            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
             slot = t - t_lo
@@ -472,8 +521,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_typeplane_log_val_cols!(
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first, val_last, val_inv_step, val_offset, val_step,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first, val_last, val_inv_step, val_step,
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -484,7 +533,7 @@ end
     t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
         vbin = _gpu_digitize_log_spaced_col(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
+            vals[t], val_first, val_last, val_inv_step, val_step,
             t, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
@@ -499,7 +548,7 @@ end
 
 @inline function _gpu_accumulate_sp2d_typeplane_vector_val_cols!(
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
     value_edges,
 )
     vals = SA.SVector(
@@ -525,8 +574,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_linear_val!(
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -535,7 +584,7 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
+            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
             @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
@@ -547,8 +596,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_linear_val_cols!(
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    val_first, val_last, val_inv_step, val_offset, val_step,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
+    val_first, val_last, val_inv_step, val_step,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -557,7 +606,7 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_linear(
-            vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
+            vals[t], val_first[t], val_last[t], val_inv_step[t], val_step[t],
             N_val_edges,
         )
         if 1 <= vbin < N_val_edges
@@ -570,8 +619,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_inflinear_val!(
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
     n_inner_edges::Int, inner_last::FT,
 ) where {FT}
     vals = SA.SVector(
@@ -581,7 +630,7 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step,
+            vals[t], val_first, val_last, val_inv_step, val_step,
             n_inner_edges, inner_last,
         )
         if 1 <= vbin < N_val_edges
@@ -594,8 +643,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_inflinear_val_cols!(
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    val_first, val_last, val_inv_step, val_offset, val_step, inner_last,
-    dbin::Int, du_L, du_T, du_L2, du_T2, n_inner_edges::Int, N_val_edges::Int,
+    val_first, val_last, val_inv_step, val_step, inner_last,
+    dbin::Int, du_L, du_L2, du_T2, n_inner_edges::Int, N_val_edges::Int,
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -604,7 +653,7 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first[t], val_last[t], val_inv_step[t], val_offset[t], val_step[t],
+            vals[t], val_first[t], val_last[t], val_inv_step[t], val_step[t],
             n_inner_edges, inner_last[t],
         )
         if 1 <= vbin < N_val_edges
@@ -617,8 +666,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_log_val!(
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_offset::FT, val_step::FT,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
 ) where {FT}
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -627,7 +676,7 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
+            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
             @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
@@ -639,8 +688,8 @@ end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_log_val_cols!(
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
-    val_first, val_last, val_inv_step, val_offset, val_step,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
+    val_first, val_last, val_inv_step, val_step,
 )
     vals = SA.SVector(
         du_L2 + du_T2, du_L2, du_T2,
@@ -649,7 +698,7 @@ end
     )
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced_col(
-            vals[t], val_first, val_last, val_inv_step, val_offset, val_step, t, N_val_edges,
+            vals[t], val_first, val_last, val_inv_step, val_step, t, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
             @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
@@ -661,7 +710,7 @@ end
 
 @inline function _gpu_accumulate_sp2d_partitioned_direct_vector_val_cols!(
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    dbin::Int, du_L, du_T, du_L2, du_T2, N_val_edges::Int,
+    dbin::Int, du_L, du_L2, du_T2, N_val_edges::Int,
     value_edges,
 )
     vals = SA.SVector(
@@ -818,28 +867,32 @@ end
 
 # --- kernel codegen ---
 
-"""Compile-time max shared histogram cells (48 KiB default smem, Float32 cell width)."""
-const _SP2D_SHAREDHIST_COMPILE_CELLS = _sp2d_max_shared_cells(SF_GPU_SMEM_DEFAULT, Float32)
-
 function _sp2d_partition_dist_spec(::Val{:linear})
     params = [
-        :(dist_first::FT), :(dist_last::FT), :(dist_inv_step::FT),
-        :(dist_offset::FT), :(dist_step::FT),
+        :(dist_first), :(dist_last), :(dist_inv_step),
+        :(dist_step),
     ]
     bin = :(_gpu_digitize_linear(
-        dist, dist_first, dist_last, dist_inv_step, dist_offset, dist_step, N_bins,
+        dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins,
     ))
     return params, bin
 end
 
 function _sp2d_partition_dist_spec(::Val{:log_linear})
     params = [
-        :(dist_first::FT), :(dist_last::FT), :(dist_inv_step::FT),
-        :(dist_offset::FT), :(dist_step::FT),
+        :(dist_first), :(dist_last), :(dist_inv_step),
+        :(dist_step),
     ]
     bin = :(_gpu_digitize_log_spaced(
-        dist, dist_first, dist_last, dist_inv_step, dist_offset, dist_step, N_bins,
+        dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins,
     ))
+    return params, bin
+end
+
+"""Arbitrary distance edges: binary search on device, so no bin spacing is assumed."""
+function _sp2d_partition_dist_spec(::Val{:general})
+    params = [:(@Const(distance_edges))]
+    bin = :(_gpu_digitize_general(dist, distance_edges, N_bins))
     return params, bin
 end
 
@@ -847,8 +900,8 @@ function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_linear_val!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
         )
     end
 end
@@ -856,8 +909,8 @@ function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:direct})
     return quote
         _gpu_accumulate_sp2d_partitioned_direct_linear_val!(
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
         )
     end
 end
@@ -866,8 +919,8 @@ function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_linear_val_cols!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
-            val_first, val_last, val_inv_step, val_offset, val_step,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
         )
     end
 end
@@ -875,8 +928,8 @@ function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:direct})
     return quote
         _gpu_accumulate_sp2d_partitioned_direct_linear_val_cols!(
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            val_first, val_last, val_inv_step, val_offset, val_step,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
         )
     end
 end
@@ -885,8 +938,8 @@ function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_inflinear_val!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step, n_inner_edges, inner_last,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
         )
     end
 end
@@ -894,8 +947,8 @@ function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:direct})
     return quote
         _gpu_accumulate_sp2d_partitioned_direct_inflinear_val!(
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step, n_inner_edges, inner_last,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
         )
     end
 end
@@ -904,8 +957,8 @@ function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_inflinear_val_cols!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
-            val_first, val_last, val_inv_step, val_offset, val_step, inner_last,
-            bin, du_L, du_T, du_L2, du_T2, n_inner_edges, N_val_edges,
+            val_first, val_last, val_inv_step, val_step, inner_last,
+            bin, du_L, du_L2, du_T2, n_inner_edges, N_val_edges,
         )
     end
 end
@@ -913,8 +966,8 @@ function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:direct})
     return quote
         _gpu_accumulate_sp2d_partitioned_direct_inflinear_val_cols!(
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            val_first, val_last, val_inv_step, val_offset, val_step, inner_last,
-            bin, du_L, du_T, du_L2, du_T2, n_inner_edges, N_val_edges,
+            val_first, val_last, val_inv_step, val_step, inner_last,
+            bin, du_L, du_L2, du_T2, n_inner_edges, N_val_edges,
         )
     end
 end
@@ -923,8 +976,8 @@ function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_log_val!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
         )
     end
 end
@@ -932,8 +985,8 @@ function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:direct})
     return quote
         _gpu_accumulate_sp2d_partitioned_direct_log_val!(
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
         )
     end
 end
@@ -942,8 +995,8 @@ function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_log_val_cols!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
         )
     end
 end
@@ -951,8 +1004,8 @@ function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:direct})
     return quote
         _gpu_accumulate_sp2d_partitioned_direct_log_val_cols!(
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
         )
     end
 end
@@ -961,7 +1014,7 @@ function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:shared})
     return quote
         _gpu_accumulate_sp2d_sharedhist_vector_val_cols!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges, value_edges,
+            bin, du_L, du_L2, du_T2, N_val_edges, value_edges,
         )
     end
 end
@@ -969,7 +1022,7 @@ function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:direct})
     return quote
         _gpu_accumulate_sp2d_partitioned_direct_vector_val_cols!(
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges, value_edges,
+            bin, du_L, du_L2, du_T2, N_val_edges, value_edges,
         )
     end
 end
@@ -979,8 +1032,8 @@ function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_linear_val!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
         )
     end
 end
@@ -988,8 +1041,8 @@ function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_linear_val_cols!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            val_first, val_last, val_inv_step, val_offset, val_step,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
         )
     end
 end
@@ -997,8 +1050,8 @@ function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_inflinear_val!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step, n_inner_edges, inner_last,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
         )
     end
 end
@@ -1006,8 +1059,8 @@ function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_inflinear_val_cols!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            val_first, val_last, val_inv_step, val_offset, val_step, inner_last,
-            bin, du_L, du_T, du_L2, du_T2, n_inner_edges, N_val_edges,
+            val_first, val_last, val_inv_step, val_step, inner_last,
+            bin, du_L, du_L2, du_T2, n_inner_edges, N_val_edges,
         )
     end
 end
@@ -1015,8 +1068,8 @@ function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_log_val!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
         )
     end
 end
@@ -1024,8 +1077,8 @@ function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_log_val_cols!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges,
-            val_first, val_last, val_inv_step, val_offset, val_step,
+            bin, du_L, du_L2, du_T2, N_val_edges,
+            val_first, val_last, val_inv_step, val_step,
         )
     end
 end
@@ -1033,7 +1086,7 @@ function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:typeplane})
     return quote
         _gpu_accumulate_sp2d_typeplane_vector_val_cols!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            bin, du_L, du_T, du_L2, du_T2, N_val_edges, value_edges,
+            bin, du_L, du_L2, du_T2, N_val_edges, value_edges,
         )
     end
 end
@@ -1049,35 +1102,28 @@ function _sp2d_partition_kernel_prefix(::Val{:direct})
 end
 
 function _sp2d_partition_val_params(::Val{:linear_shared})
-    return [
-        :(val_first::FT), :(val_last::FT), :(val_inv_step::FT),
-        :(val_offset::FT), :(val_step::FT),
-    ]
+    return [:(val_first), :(val_last), :(val_inv_step), :(val_step)]
 end
 function _sp2d_partition_val_params(::Val{:linear_cols})
-    return [:(val_first), :(val_last), :(val_inv_step), :(val_offset), :(val_step)]
+    return [:(val_first), :(val_last), :(val_inv_step), :(val_step)]
 end
 function _sp2d_partition_val_params(::Val{:inflinear_shared})
     return [
-        :(val_first::FT), :(val_last::FT), :(val_inv_step::FT),
-        :(val_offset::FT), :(val_step::FT),
-        :(n_inner_edges::Int), :(inner_last::FT),
+        :(val_first), :(val_last), :(val_inv_step), :(val_step),
+        :(n_inner_edges::Int), :(inner_last),
     ]
 end
 function _sp2d_partition_val_params(::Val{:inflinear_cols})
     return [
-        :(val_first), :(val_last), :(val_inv_step), :(val_offset), :(val_step),
+        :(val_first), :(val_last), :(val_inv_step), :(val_step),
         :(inner_last), :(n_inner_edges::Int),
     ]
 end
 function _sp2d_partition_val_params(::Val{:log_linear_shared})
-    return [
-        :(val_first::FT), :(val_last::FT), :(val_inv_step::FT),
-        :(val_offset::FT), :(val_step::FT),
-    ]
+    return [:(val_first), :(val_last), :(val_inv_step), :(val_step)]
 end
 function _sp2d_partition_val_params(::Val{:log_linear_cols})
-    return [:(val_first), :(val_last), :(val_inv_step), :(val_offset), :(val_step)]
+    return [:(val_first), :(val_last), :(val_inv_step), :(val_step)]
 end
 function _sp2d_partition_val_params(::Val{:vector_cols})
     return [:(@Const(value_edges))]
@@ -1089,16 +1135,17 @@ end
 
 """Emit one HTP-EJ tiled128 kernel for `accum_mode` (`:shared`, `:typeplane`, or `:direct`)."""
 function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbol)
-    hist_cells = _SP2D_SHAREDHIST_COMPILE_CELLS
     prefix = _sp2d_partition_kernel_prefix(Val(accum_mode))
     fname = Symbol(prefix, dist, :_, val, :_u32!)
     dist_params, dist_bin = _sp2d_partition_dist_spec(dist)
     val_params = _sp2d_partition_val_params(Val(val))
     accum = _sp2d_partition_val_accum(Val(val), Val(accum_mode))
     uses_shared = accum_mode in (:shared, :typeplane)
+    # Width is a kernel type parameter, so one definition specializes per config instead of every
+    # config paying for the largest one the budget allows.
     shared_hist_decl = uses_shared ? quote
-        shared_sums = @localmem FT ($(hist_cells),)
-        shared_cnts = @localmem UInt32 ($(hist_cells),)
+        shared_sums = @localmem OT (HC,)
+        shared_cnts = @localmem UInt32 (HC,)
     end : quote end
     type_pass_decl = accum_mode == :typeplane ? quote
         shared_type_pass = @localmem Int (1,)
@@ -1106,6 +1153,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
     kernel_tail_params = [
         :(n_tiles::Int), :(n_tile_blocks::Int), :(workgroup_size::Int),
         :(C::Int), :(plane::Int), :(types_per_pass::Int), :(n_type_passes::Int),
+        :(::Val{HC}), :(::Val{D}), :(geom),
     ]
     pair_loop = quote
         p = lid
@@ -1113,28 +1161,27 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
             if ti < tj
                 ia = (p - 1) ÷ nj + 1
                 jb = (p - 1) - (ia - 1) * nj + 1
-                X1 = SA.SVector{2, FT}(shared_xi[ia], shared_xi[SF_GPU_TILE + ia])
-                X2 = SA.SVector{2, FT}(shared_xj[jb], shared_xj[SF_GPU_TILE + jb])
-                U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
-                U2 = SA.SVector{2, FT}(shared_uj[jb], shared_uj[SF_GPU_TILE + jb])
+                X1 = _sp2d_ld_tile(shared_xi, Val(D), ia)
+                X2 = _sp2d_ld_tile(shared_xj, Val(D), jb)
+                U1 = _sp2d_ld_tile(shared_ui, Val(D), ia)
+                U2 = _sp2d_ld_tile(shared_uj, Val(D), jb)
             else
                 ia, jb = _pair_from_linear(p, ni)
-                X1 = SA.SVector{2, FT}(shared_xi[ia], shared_xi[SF_GPU_TILE + ia])
-                X2 = SA.SVector{2, FT}(shared_xi[jb], shared_xi[SF_GPU_TILE + jb])
-                U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
-                U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
+                X1 = _sp2d_ld_tile(shared_xi, Val(D), ia)
+                X2 = _sp2d_ld_tile(shared_xi, Val(D), jb)
+                U1 = _sp2d_ld_tile(shared_ui, Val(D), ia)
+                U2 = _sp2d_ld_tile(shared_ui, Val(D), jb)
             end
-            dX = X2 - X1
-            dist = sqrt(dX[1]^2 + dX[2]^2)
+            ok, dist, frame = SFH.pair_frame(geom, X1, X2)
             bin = $(dist_bin)
-            if 1 <= bin < N_bins
-                dU = U2 - U1
-                r̂ = dX / dist
-                n̂ = SA.SVector{2, FT}(r̂[2], -r̂[1])
-                du_L = SA.dot(dU, r̂)
-                du_T = SA.dot(dU, n̂)
+            if ok && 1 <= bin < N_bins
+                # |du_T|² from the norm rather than a transverse basis vector: the six invariants
+                # use only du_L, du_L², du_T², never the signed du_T, and building n̂ = (r̂₂, -r̂₁)
+                # is both wasted work and the kernel's only 2D-specific assumption. This is also
+                # exactly the CPU's formula, so the two agree to the last bit of the algorithm.
+                du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                 du_L2 = du_L * du_L
-                du_T2 = du_T * du_T
+                du_T2 = du_n2 - du_L2
                 $(accum)
             end
             p += workgroup_size
@@ -1163,7 +1210,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                     let g_zero = lid
                         while g_zero <= types_per_pass * plane
                             @inbounds begin
-                                shared_sums[g_zero] = zero(FT)
+                                shared_sums[g_zero] = zero(OT)
                                 shared_cnts[g_zero] = zero(UInt32)
                             end
                             g_zero += workgroup_size
@@ -1204,7 +1251,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                 let g_zero = lid
                     while g_zero <= C
                         @inbounds begin
-                            shared_sums[g_zero] = zero(FT)
+                            shared_sums[g_zero] = zero(OT)
                             shared_cnts[g_zero] = zero(UInt32)
                         end
                         g_zero += workgroup_size
@@ -1247,20 +1294,20 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
         end
     end
     hist_params = accum_mode == :direct ?
-        [:(partition_sums), :(partition_counts)] :
-        [:(out_sums), :(out_cnts)]
+        [:(partition_sums::AbstractArray{OT}), :(partition_counts)] :
+        [:(out_sums::AbstractArray{OT}), :(out_cnts)]
     return quote
         KA.@kernel unsafe_indices=true function $(fname)(
-            $(hist_params...), x_mat, u_mat,
+            $(hist_params...), x_mat::AbstractMatrix{FT}, u_mat::AbstractMatrix{FT},
             N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
             $(dist_params...),
             $(val_params...),
             $(kernel_tail_params...),
-        ) where {FT}
-            shared_xi = @localmem FT (256,)
-            shared_ui = @localmem FT (256,)
-            shared_xj = @localmem FT (256,)
-            shared_uj = @localmem FT (256,)
+        ) where {OT, FT, HC, D}
+            shared_xi = @localmem FT (D * SF_GPU_TILE,)
+            shared_ui = @localmem FT (D * SF_GPU_TILE,)
+            shared_xj = @localmem FT (D * SF_GPU_TILE,)
+            shared_uj = @localmem FT (D * SF_GPU_TILE,)
             $(shared_hist_decl)
             $(type_pass_decl)
             shared_block_id = @localmem Int (1,)
@@ -1280,7 +1327,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                 nj = min(SF_GPU_TILE, N_points - j0 + 1)
                 _sp2d_tiled_load_tile!(
                     shared_xi, shared_ui, shared_xj, shared_uj, x_mat, u_mat,
-                    ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size,
+                    ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(D),
                 )
             end
             @synchronize
@@ -1310,6 +1357,7 @@ const _SP2D_PARTITION_DIST_VAL = [
     (:linear, :inflinear_cols),
     (:linear, :log_linear_shared),
     (:linear, :log_linear_cols),
+    (:linear, :vector_cols),
     (:log_linear, :linear_shared),
     (:log_linear, :linear_cols),
     (:log_linear, :inflinear_shared),
@@ -1317,6 +1365,13 @@ const _SP2D_PARTITION_DIST_VAL = [
     (:log_linear, :log_linear_shared),
     (:log_linear, :log_linear_cols),
     (:log_linear, :vector_cols),
+    (:general, :linear_shared),
+    (:general, :linear_cols),
+    (:general, :inflinear_shared),
+    (:general, :inflinear_cols),
+    (:general, :log_linear_shared),
+    (:general, :log_linear_cols),
+    (:general, :vector_cols),
 ]
 
 for accum_mode in (:shared, :typeplane, :direct), (dist, val) in _SP2D_PARTITION_DIST_VAL

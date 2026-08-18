@@ -1,5 +1,5 @@
 # Six production tiled128 SF histogram kernels (2D/3D × linear/log/general).
-# Included from StructureFunctionsGPUExt.jl — no macro codegen.
+# Included from StructureFunctionsKernelAbstractionsExt.jl — no macro codegen.
 #
 # Block-local `shared_cnts` is `@localmem UInt32` (compile-time fixed width).
 # Global `counts` is also device UInt32 at launch; `count_eltype` applies on host only.
@@ -22,11 +22,11 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_linear_u32!(
     first_edge::FT,
     last_edge::FT,
     inv_step::FT,
-    offset::FT,
     step_val::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
@@ -104,15 +104,13 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_linear_u32!(
                     U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
                     U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist_sq = dX[1]^2 + dX[2]^2
-                dist = sqrt(dist_sq)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 bin = _gpu_digitize_linear(
-                    dist, first_edge, last_edge, inv_step, offset, step_val, N_bins,
+                    dist, first_edge, last_edge, inv_step, step_val, N_bins,
                 )
-                if 1 <= bin < N_bins
-                    r̂ = dX / dist
-                    val = sf_type(U2 - U1, r̂)
+                if ok && 1 <= bin < N_bins
+                    dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
+                    val = sf_type(dU, r̂)
                     @atomic shared_sums[bin] += val
                     @atomic shared_cnts[bin] += UInt32(1)
                 end
@@ -148,11 +146,11 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_linear_u32!(
     first_edge::FT,
     last_edge::FT,
     inv_step::FT,
-    offset::FT,
     step_val::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (384,)
     shared_ui = @localmem FT (384,)
@@ -234,15 +232,13 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_linear_u32!(
                     U1 = SA.SVector{3, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia], shared_ui[2 * SF_GPU_TILE + ia])
                     U2 = SA.SVector{3, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb], shared_ui[2 * SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist_sq = dX[1]^2 + dX[2]^2 + dX[3]^2
-                dist = sqrt(dist_sq)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 bin = _gpu_digitize_linear(
-                    dist, first_edge, last_edge, inv_step, offset, step_val, N_bins,
+                    dist, first_edge, last_edge, inv_step, step_val, N_bins,
                 )
-                if 1 <= bin < N_bins
-                    r̂ = SFH.r̂(X1, X2)
-                    val = sf_type(U2 - U1, r̂)
+                if ok && 1 <= bin < N_bins
+                    dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
+                    val = sf_type(dU, r̂)
                     @atomic shared_sums[bin] += val
                     @atomic shared_cnts[bin] += UInt32(1)
                 end
@@ -278,11 +274,11 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_log_u32!(
     first_edge::FT,
     last_edge::FT,
     inv_step::FT,
-    offset::FT,
     step_val::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
@@ -360,13 +356,11 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_log_u32!(
                     U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
                     U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist_sq = dX[1]^2 + dX[2]^2
-                dist = sqrt(dist_sq)
-                bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, offset, step_val, N_bins)
-                if 1 <= bin < N_bins
-                    r̂ = dX / dist
-                    val = sf_type(U2 - U1, r̂)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
+                bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, step_val, N_bins)
+                if ok && 1 <= bin < N_bins
+                    dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
+                    val = sf_type(dU, r̂)
                     @atomic shared_sums[bin] += val
                     @atomic shared_cnts[bin] += UInt32(1)
                 end
@@ -402,11 +396,11 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_log_u32!(
     first_edge::FT,
     last_edge::FT,
     inv_step::FT,
-    offset::FT,
     step_val::FT,
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (384,)
     shared_ui = @localmem FT (384,)
@@ -488,13 +482,11 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_log_u32!(
                     U1 = SA.SVector{3, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia], shared_ui[2 * SF_GPU_TILE + ia])
                     U2 = SA.SVector{3, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb], shared_ui[2 * SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist_sq = dX[1]^2 + dX[2]^2 + dX[3]^2
-                dist = sqrt(dist_sq)
-                bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, offset, step_val, N_bins)
-                if 1 <= bin < N_bins
-                    r̂ = SFH.r̂(X1, X2)
-                    val = sf_type(U2 - U1, r̂)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
+                bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, step_val, N_bins)
+                if ok && 1 <= bin < N_bins
+                    dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
+                    val = sf_type(dU, r̂)
                     @atomic shared_sums[bin] += val
                     @atomic shared_cnts[bin] += UInt32(1)
                 end
@@ -532,6 +524,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_general_u32!(
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
@@ -609,13 +602,11 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_general_u32!(
                     U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
                     U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist_sq = dX[1]^2 + dX[2]^2
-                dist = sqrt(dist_sq)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 bin = _gpu_digitize_general(dist, distance_bins, N_bins)
-                if 1 <= bin < N_bins
-                    r̂ = dX / dist
-                    val = sf_type(U2 - U1, r̂)
+                if ok && 1 <= bin < N_bins
+                    dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
+                    val = sf_type(dU, r̂)
                     @atomic shared_sums[bin] += val
                     @atomic shared_cnts[bin] += UInt32(1)
                 end
@@ -653,6 +644,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_general_u32!(
     n_tiles::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    geom,
 ) where {FT}
     shared_xi = @localmem FT (384,)
     shared_ui = @localmem FT (384,)
@@ -734,13 +726,11 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_general_u32!(
                     U1 = SA.SVector{3, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia], shared_ui[2 * SF_GPU_TILE + ia])
                     U2 = SA.SVector{3, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb], shared_ui[2 * SF_GPU_TILE + jb])
                 end
-                dX = X2 - X1
-                dist_sq = dX[1]^2 + dX[2]^2 + dX[3]^2
-                dist = sqrt(dist_sq)
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 bin = _gpu_digitize_general(dist, distance_bins, N_bins)
-                if 1 <= bin < N_bins
-                    r̂ = SFH.r̂(X1, X2)
-                    val = sf_type(U2 - U1, r̂)
+                if ok && 1 <= bin < N_bins
+                    dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
+                    val = sf_type(dU, r̂)
                     @atomic shared_sums[bin] += val
                     @atomic shared_cnts[bin] += UInt32(1)
                 end

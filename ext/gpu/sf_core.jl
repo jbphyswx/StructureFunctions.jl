@@ -35,13 +35,12 @@ struct SFLinearDigitizer{T}
     first_edge::T
     last_edge::T
     inv_step::T
-    offset::T
     step_val::T
     n_edges::Int
 end
 
 @inline (d::SFLinearDigitizer{T})(r::T) where {T} =
-    _gpu_digitize_linear(r, d.first_edge, d.last_edge, d.inv_step, d.offset, d.step_val, d.n_edges)
+    _gpu_digitize_linear(r, d.first_edge, d.last_edge, d.inv_step, d.step_val, d.n_edges)
 
 """Log-grid distance digitizer: `log(r)` then a linear digitize on the log grid
 (matches `LogBinEdges`). Non-positive `r` falls below the first edge (→ 0)."""
@@ -49,14 +48,13 @@ struct SFLogDigitizer{T}
     first_edge::T
     last_edge::T
     inv_step::T
-    offset::T
     step_val::T
     n_edges::Int
 end
 
 @inline (d::SFLogDigitizer{T})(r::T) where {T} =
     r <= zero(T) ? 0 :
-    _gpu_digitize_linear(log(r), d.first_edge, d.last_edge, d.inv_step, d.offset, d.step_val, d.n_edges)
+    _gpu_digitize_linear(log(r), d.first_edge, d.last_edge, d.inv_step, d.step_val, d.n_edges)
 
 """General (arbitrary edges) distance digitizer: binary search over a device
 edge vector. `edges` is adapted to the backend alongside the kernel arguments."""
@@ -64,6 +62,11 @@ struct SFGeneralDigitizer{E}
     edges::E
     n_edges::Int
 end
+
+# Without this the struct reaches the kernel holding a host-side `CuArray` and the launch fails
+# with `KernelError: passing non-bitstype argument`.
+KA.Adapt.adapt_structure(to, d::SFGeneralDigitizer) =
+    SFGeneralDigitizer(KA.Adapt.adapt(to, d.edges), d.n_edges)
 
 @inline (d::SFGeneralDigitizer)(r) = _gpu_digitize_general(r, d.edges, d.n_edges)
 
@@ -74,11 +77,11 @@ end
 
 # Host-side constructors from the bin-edge wrapper types.
 @inline _sf_digitizer(lbe::LinearBinEdges) =
-    SFLinearDigitizer(lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.offset, lbe.step_val, length(lbe.edges))
+    SFLinearDigitizer(lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val, length(lbe.edges))
 
 @inline function _sf_digitizer(lbe::LogBinEdges)
     ll = lbe.log_linear
-    return SFLogDigitizer(ll.first_edge, ll.last_edge, ll.inv_step, ll.offset, ll.step_val, length(lbe.log_edges))
+    return SFLogDigitizer(ll.first_edge, ll.last_edge, ll.inv_step, ll.step_val, length(lbe.log_edges))
 end
 
 # General edges: caller passes a device array of edges (already on backend).
@@ -121,6 +124,24 @@ end
   1-tuple so the accumulate path is uniform with the single-pass case."""
 @inline _sf_moments(::Val{6}, sf_type, dU, rhat) = _sf_moments6(dU, rhat)
 @inline _sf_moments(::Val{1}, sf_type, dU, rhat) = (sf_type(dU, rhat),)
+
+"""
+Moments needing a per-pair atomic. `T2 = S2 - L2` and `L1T2 = S3 - L3` hold for every pair, and a
+histogram bin is a sum, so both are recovered exactly at flush by [`_sf_flush_moment`](@ref)
+rather than costing an atomic on each pair.
+"""
+@inline _sf_accum_moments(::Val{6}) = (1, 2, 4, 5)
+@inline _sf_accum_moments(::Val{1}) = (1,)
+
+"""Value of moment `m` in bin `bin`, differencing the two moments that are never accumulated."""
+@inline function _sf_flush_moment(::Val{6}, ssum, NB::Int, m::Int, bin::Int)
+    @inbounds begin
+        m == 3 && return ssum[bin] - ssum[NB + bin]
+        m == 6 && return ssum[3 * NB + bin] - ssum[4 * NB + bin]
+        return ssum[(m - 1) * NB + bin]
+    end
+end
+@inline _sf_flush_moment(::Val{1}, ssum, ::Int, ::Int, bin::Int) = @inbounds ssum[bin]
 
 # -----------------------------------------------------------------------------
 # Shared-histogram layout (lane axis = R replicas or W batch strip)

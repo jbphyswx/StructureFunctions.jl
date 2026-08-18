@@ -7,6 +7,7 @@ Run from package root:
     JULIA_NUM_THREADS=4 julia --project=examples examples/threaded_calculation.jl
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF
 using Base.Threads: Threads
 
@@ -24,7 +25,7 @@ serial_time = @elapsed begin
         x,
         u,
         bins;
-        backend = SF.SerialBackend(),
+        backend = CB.SerialBackend(),
         show_progress = false,
         verbose = false,
     )
@@ -38,7 +39,7 @@ if Threads.nthreads() > 1
             x,
             u,
             bins;
-            backend = SF.ThreadedBackend(),
+            backend = CB.ThreadedBackend(),
             show_progress = false,
             verbose = false,
         )
@@ -49,5 +50,5 @@ if Threads.nthreads() > 1
     println("Speedup:       $(round(serial_time / threaded_time; digits = 2))x")
     println("Pairs counted: $(sum(threaded_result.counts))")
 else
-    println("Run with JULIA_NUM_THREADS>1 to use SF.ThreadedBackend().")
+    println("Run with JULIA_NUM_THREADS>1 to use CB.ThreadedBackend().")
 end

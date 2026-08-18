@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
@@ -81,6 +82,24 @@ Test.@testset "GPU tiled parity — general monotone bins 2D" begin
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
 end
 
+# A struct carrying a device array into a kernel must adapt that field, or the launch dies with
+# "KernelError: passing non-bitstype argument" on CUDA. KA.CPU cannot reach that failure — adapt is
+# a no-op there — so assert the rule itself recurses.
+struct _EdgeAdaptProbe end
+KA.Adapt.adapt_storage(::_EdgeAdaptProbe, ::AbstractArray) = :adapted
+
+Test.@testset "device-array kernel args recurse through adapt" begin
+    GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+
+    dig = GPUExt.SFGeneralDigitizer(rand(Float32, 6), 6)
+    adapted = KA.Adapt.adapt(_EdgeAdaptProbe(), dig)
+    Test.@test adapted.edges === :adapted
+    Test.@test adapted.n_edges == 6
+
+    vcols = GPUExt.GPUValueVectorCols{Float32}(rand(Float32, 6, 6))
+    Test.@test KA.Adapt.adapt(_EdgeAdaptProbe(), vcols).edges_dev === :adapted
+end
+
 Test.@testset "GPU tiled parity — medium N linear 2D" begin
     N = 500
     FT = Float32
@@ -124,11 +143,11 @@ Test.@testset "GPU joint 2D parity — L2SF linear bins N=50" begin
     sft = SFT.L2SFType()
     ref = SFC.calculate_structure_function(
         sft, x, u, distance_bins, value_bins;
-        backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+        backend = CB.SerialBackend(), verbose = false, show_progress = false,
     )
     gpu = SFC.calculate_structure_function(
         sft, x, u, distance_bins, value_bins;
-        backend = SF.GPUBackend(KA.CPU()), verbose = false, show_progress = false,
+        backend = CB.GPUBackend(KA.CPU()), verbose = false, show_progress = false,
     )
     Test.@test gpu.counts == ref.counts
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -144,11 +163,11 @@ Test.@testset "GPU joint 2D parity — L3SF log distance bins" begin
     sft = SFT.L3SFType()
     ref = SFC.calculate_structure_function(
         sft, x, u, distance_bins, value_bins;
-        backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+        backend = CB.SerialBackend(), verbose = false, show_progress = false,
     )
     gpu = SFC.calculate_structure_function(
         sft, x, u, distance_bins, value_bins;
-        backend = SF.GPUBackend(KA.CPU()), verbose = false, show_progress = false,
+        backend = CB.GPUBackend(KA.CPU()), verbose = false, show_progress = false,
     )
     Test.@test gpu.counts == ref.counts
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -164,4 +183,35 @@ Test.@testset "GPU tiled parity — NB > SF_GPU_MAX_BINS errors" begin
     Test.@test_throws ErrorException SFC.gpu_calculate_structure_function(
         sft, KA.CPU(), x, u, bin_edges,
     )
+end
+
+# The tiled kernels size `@localmem` from the compile-time SF_GPU_MAX_BINS but index it by the
+# runtime NB under `@inbounds`, so an unguarded NB > 128 writes out of bounds in shared memory and
+# corrupts the histogram silently. The batch entries had no guard at all; these pin it down.
+Test.@testset "GPU batch — NB > SF_GPU_MAX_BINS errors (no silent shared-mem overrun)" begin
+    FT = Float32
+    N, B = 20, 3
+    sft = SFT.L2SFType()
+    gpu_be = CB.GPUBackend(KA.CPU())
+    over = collect(FT, range(0.0f0, 2.0f0; length = 130))   # 129 bins (> 128 cap)
+    under = collect(FT, range(0.0f0, 2.0f0; length = 65))   # 64 bins (must still run)
+
+    x_fixed = rand(FT, 2, N)
+    x_vary = rand(FT, 2, N, B)
+    u = rand(FT, 2, N, B)
+
+    for (name, x) in (("varying-x", x_vary), ("fixed-x", x_fixed))
+        Test.@testset "1D individual batch $name" begin
+            Test.@test_throws ErrorException SFC.gpu_calculate_structure_function_batch(
+                sft, KA.CPU(), x, u, over,
+            )
+            Test.@test SFC.gpu_calculate_structure_function_batch(
+                sft, KA.CPU(), x, u, under,
+            ) isa Any
+        end
+        Test.@testset "single-pass 1D batch $name" begin
+            Test.@test_throws ErrorException SFC._dispatch_single_pass(gpu_be, x, u, over)
+            Test.@test SFC._dispatch_single_pass(gpu_be, x, u, under) isa Any
+        end
+    end
 end

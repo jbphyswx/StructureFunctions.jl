@@ -12,7 +12,8 @@ on the same small problem as `test_cuda_parity.jl`.
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    StructureFunctionObjects as SFO
 using Random: Random
 
 function main()
@@ -30,10 +31,11 @@ function main()
 
     ref = SFC.calculate_structure_function(
         sft, x_cpu, u_cpu, bins;
-        return_sums_and_counts = true, verbose = false, show_progress = false,
+        output_type = SFO.StructureFunctionSumsAndCounts,
+        verbose = false, show_progress = false,
     )
     gpu_res = SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bins; return_sums_and_counts = true,
+        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bins,
     )
     CUDA.synchronize()
 

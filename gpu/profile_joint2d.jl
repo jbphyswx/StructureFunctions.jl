@@ -35,8 +35,8 @@ using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
 
-const _GPUExt = Base.get_extension(SF, :StructureFunctionsGPUExt)
-_GPUExt === nothing && error("StructureFunctionsGPUExt not loaded — use julia --project=gpu")
+const _GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+_GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded — use julia --project=gpu")
 
 function _bench(f, warmup::Int, repeat_::Int)
     for _ in 1:warmup

@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC
@@ -21,7 +22,7 @@ Test.@testset "GPU single-pass tiled parity — 1D log bins" begin
     sums_cpu = zeros(FT, 6, length(dist_vec) - 1)
     counts_cpu = zeros(Int32, 6, length(dist_vec) - 1)
     SFC.calculate_structure_functions_single_pass!(
-        sums_cpu, counts_cpu, x, u, dist_vec; backend = SFC.SerialBackend(),
+        sums_cpu, counts_cpu, x, u, dist_vec; backend = CB.SerialBackend(),
     )
 
     sums_gpu = zeros(FT, 6, length(dist_vec) - 1)
@@ -29,7 +30,7 @@ Test.@testset "GPU single-pass tiled parity — 1D log bins" begin
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist_vec; kind = :single_pass)
     SFC.calculate_structure_functions_single_pass!(
         sums_gpu, counts_gpu, x, u, dist_vec;
-        backend = SF.GPUBackend(KA.CPU()), workspace = ws,
+        backend = CB.GPUBackend(KA.CPU()), workspace = ws,
     )
 
     Test.@test sums_gpu ≈ sums_cpu rtol = FT(1e-4)
@@ -50,7 +51,7 @@ Test.@testset "GPU single-pass tiled parity — 2D log dist + linear value" begi
     counts_cpu = zeros(Int32, 6, n_dist, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_cpu, counts_cpu, x, u, dist_vec, value_bins;
-        backend = SFC.SerialBackend(),
+        backend = CB.SerialBackend(),
     )
 
     sums_gpu = zeros(FT, 6, n_dist, n_val)
@@ -58,7 +59,7 @@ Test.@testset "GPU single-pass tiled parity — 2D log dist + linear value" begi
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist_vec, value_bins; kind = :single_pass_2d)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_gpu, counts_gpu, x, u, dist_vec, value_bins;
-        backend = SF.GPUBackend(KA.CPU()), workspace = ws,
+        backend = CB.GPUBackend(KA.CPU()), workspace = ws,
     )
 
     Test.@test sums_gpu ≈ sums_cpu rtol = FT(1e-4)
@@ -79,7 +80,7 @@ Test.@testset "GPU single-pass tiled parity — 2D InfPadded linear value catch-
     counts_cpu = zeros(Int32, 6, n_dist, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_cpu, counts_cpu, x, u, dist_vec, value_bins;
-        backend = SFC.SerialBackend(),
+        backend = CB.SerialBackend(),
     )
 
     sums_gpu = zeros(FT, 6, n_dist, n_val)
@@ -87,7 +88,7 @@ Test.@testset "GPU single-pass tiled parity — 2D InfPadded linear value catch-
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist_vec, value_bins; kind = :single_pass_2d, n_val = n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_gpu, counts_gpu, x, u, dist_vec, value_bins;
-        backend = SF.GPUBackend(KA.CPU()), workspace = ws,
+        backend = CB.GPUBackend(KA.CPU()), workspace = ws,
     )
 
     Test.@test sums_gpu ≈ sums_cpu rtol = FT(1e-4)
@@ -96,7 +97,7 @@ end
 
 Test.@testset "GPU single-pass global fallback parity — 2D and 3D" begin
     FT = Float32
-    backend = SF.GPUBackend(KA.CPU())
+    backend = CB.GPUBackend(KA.CPU())
 
     for D in (2, 3)
         N = 18
@@ -115,7 +116,7 @@ Test.@testset "GPU single-pass global fallback parity — 2D and 3D" begin
         inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         for bins in bin_sets
             sp_cpu = SFC.calculate_structure_functions_single_pass(
-                x, u, bins; backend = SFC.SerialBackend(),
+                x, u, bins; backend = CB.SerialBackend(),
                 output_type = SF.StructureFunctionSumsAndCounts,
             )
             sp_gpu = SFC.calculate_structure_functions_single_pass(
@@ -131,7 +132,7 @@ end
 
 Test.@testset "GPU single-pass 2D global fallback parity" begin
     FT = Float32
-    backend = SF.GPUBackend(KA.CPU())
+    backend = CB.GPUBackend(KA.CPU())
     N = 16
     x = rand(FT, 2, N)
     u = rand(FT, 2, N)
@@ -149,14 +150,16 @@ Test.@testset "GPU single-pass 2D global fallback parity" begin
     inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
     for bins in bin_sets
         sp_cpu = SFC.calculate_structure_functions_single_pass_2d(
-            x, u, bins, value_bins; backend = SFC.SerialBackend(),
+            x, u, bins, value_bins; backend = CB.SerialBackend(),
         )
-        sp_gpu = SFC.calculate_structure_functions_single_pass_2d(
-            x, u, bins, value_bins; backend, force_global_atomic = true,
+        # `force_global_atomic` is a GPU routing override, so it goes to the GPU entry rather
+        # than the backend-generic one, which would have to ignore it on a CPU backend.
+        gs, gc = SFC.gpu_calculate_structure_functions_single_pass_2d(
+            backend.backend, x, u, bins, value_bins; force_global_atomic = true,
         )
-        for k in inv
-            Test.@test sp_gpu[k].counts == sp_cpu[k].counts
-            Test.@test sp_gpu[k].sums ≈ sp_cpu[k].sums atol = FT(1e-4)
+        for (t, k) in enumerate(inv)
+            Test.@test gc[t, :, :] == sp_cpu[k].counts
+            Test.@test gs[t, :, :] ≈ sp_cpu[k].sums atol = FT(1e-4)
         end
     end
 end

@@ -8,6 +8,7 @@ Run from the package root:
     julia --project=examples examples/single_pass.jl
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC
 using Random: Random
 using CairoMakie: CairoMakie as CM
@@ -27,7 +28,7 @@ println("Single pass over N=$N points, $(length(edges) - 1) distance bins...")
 
 # Averaged invariants (default output_type = StructureFunction). One pass returns a NamedTuple
 # keyed by invariant; point-field input also yields a `:helmholtz` entry.
-res = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = SFC.AutoBackend())
+res = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = CB.AutoBackend())
 
 println("Invariants returned: ", keys(res))
 @assert haskey(res, :helmholtz) "point-field input should include the Helmholtz decomposition"

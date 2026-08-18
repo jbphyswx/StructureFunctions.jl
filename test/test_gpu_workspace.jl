@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
@@ -115,12 +116,12 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     # --- single_pass ---
     sp_inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
     ref_sp = SFC.calculate_structure_functions_single_pass(
-        x2, u2, linear_bins; backend = SFC.GPUBackend(backend),
+        x2, u2, linear_bins; backend = CB.GPUBackend(backend),
         output_type = SF.StructureFunctionSumsAndCounts,
     )
     ws_sp = SFC.GPUSFWorkspace(backend, linear_bins; kind = :single_pass)
     out_sp = SFC.calculate_structure_functions_single_pass(
-        x2, u2, linear_bins; backend = SFC.GPUBackend(backend), workspace = ws_sp,
+        x2, u2, linear_bins; backend = CB.GPUBackend(backend), workspace = ws_sp,
         output_type = SF.StructureFunctionSumsAndCounts,
     )
     for k in sp_inv
@@ -134,7 +135,7 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     counts_sp2d = zeros(UInt32, 6, NB, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_sp2d, counts_sp2d, x2, u2, linear_bins, value_bins_ntuple;
-        backend = SFC.SerialBackend(),
+        backend = CB.SerialBackend(),
     )
     ws_sp2d = SFC.GPUSFWorkspace(backend, linear_bins, value_bins_ntuple)
     sums_gpu = zeros(FT, 6, NB, n_val)
@@ -172,7 +173,7 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
 
     SFC.calculate_structure_function_batch!(
         sums_drv, counts_drv, sft, x_batch, u_batch, linear_bins;
-        backend = SFC.GPUBackend(backend), workspace = ws_slice,
+        backend = CB.GPUBackend(backend), workspace = ws_slice,
     )
     Test.@test sums_drv ≈ sums_slices atol = 1e-12
 
@@ -203,7 +204,7 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     for t in 1:T
         res = SFC.calculate_structure_functions_single_pass(
             x_batch[:, :, t], u_batch[:, :, t], linear_bins;
-            backend = SFC.GPUBackend(backend),
+            backend = CB.GPUBackend(backend),
             output_type = SF.StructureFunctionSumsAndCounts,
         )
         for (i, k) in enumerate(sp_inv)
@@ -228,7 +229,7 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
         ct = zeros(UInt32, 6, NB, n_val)
         SFC.calculate_structure_functions_single_pass_2d!(
             st, ct, x_batch[:, :, t], u_batch[:, :, t], linear_bins, value_bins_ntuple;
-            backend = SFC.SerialBackend(),
+            backend = CB.SerialBackend(),
         )
         sums_sp2d_ref[:, :, :, t] .= st
         counts_sp2d_ref[:, :, :, t] .= ct

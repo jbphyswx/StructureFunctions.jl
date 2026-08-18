@@ -24,7 +24,7 @@ primary computational bottleneck in the package.
 
 - Plain `AbstractVector` bin edges are valid everywhere but use generic `searchsortedfirst` / binary search.
 - Pass [`LinearBinEdges`](@ref), [`LogBinEdges`](@ref), or [`InfPaddedBinEdges`](@ref) for O(1) CPU digitize
-  and matching GPU tiled kernels (see `StructureFunctionsGPUExt`).
+  and matching GPU tiled kernels (see `StructureFunctionsKernelAbstractionsExt`).
 - [`InfPaddedBinEdges`](@ref) adds implicit catch-all under/overflow bins; do not `vcat(-Inf, …, Inf)` manually.
 - Classic serial/threaded pair-loop paths normalize once via [`BinEdges`](@ref); single-pass APIs expect callers
   to choose edge types explicitly (no auto-wrap on GPU).
@@ -94,7 +94,6 @@ Reduces lookup time from **~46 ns** to **~3 ns** (a 15x speedup), completely eli
 struct LinearBinEdges{T, RT <: AbstractRange{T}} <: AbstractBinEdges{T}
     edges::RT
     inv_step::T
-    offset::T
     first_edge::T
     last_edge::T
     step_val::T
@@ -104,9 +103,8 @@ end
 
 function LinearBinEdges(edges::AbstractRange{T}) where {T}
     inv_step = inv(step(edges))
-    offset = T(1.0) - first(edges) * inv_step
     return LinearBinEdges{T, typeof(edges)}(
-        edges, inv_step, offset, first(edges), last(edges), step(edges)
+        edges, inv_step, first(edges), last(edges), step(edges)
     )
 end
 
@@ -363,3 +361,199 @@ Normalize flat edge input to [`AbstractBinEdges`](@ref) for hot-loop `digitize`:
 """
 BinEdges(edges::AbstractBinEdges) = edges
 BinEdges(edges::AbstractRange) = LinearBinEdges(edges)
+
+# ========================================================================================= #
+# 5. Squared-distance digitize plans
+# ========================================================================================= #
+
+"""
+    _fast_log2(x)
+
+`log2(x)` for finite `x > 0`, max error ~4e-8 (Float64). Exponent extract plus an odd series on a
+mantissa recentred to `[1/√2, √2)`; vectorizes, unlike the scalar `libm log`. Approximate — the bin
+is decided by [`squared_digitize`](@ref)'s correction, not by this.
+"""
+@inline function _fast_log2(x::Float64)
+    ix = reinterpret(UInt64, x)
+    e = Int((ix >> 52) & 0x7ff) - 1023
+    m = reinterpret(Float64, (ix & 0x000f_ffff_ffff_ffff) | 0x3ff0_0000_0000_0000)
+    big = m > 1.4142135623730951
+    m = big ? 0.5m : m
+    e = big ? e + 1 : e
+    t = (m - 1) / (m + 1)
+    t2 = t * t
+    s = muladd(t2, muladd(t2, muladd(t2, 1 / 7, 1 / 5), 1 / 3), 1.0)
+    return e + 2 * t * s * 1.4426950408889634
+end
+
+@inline function _fast_log2(x::Float32)
+    ix = reinterpret(UInt32, x)
+    e = Int((ix >> 23) & 0xff) - 127
+    m = reinterpret(Float32, (ix & 0x007f_ffff) | 0x3f80_0000)
+    big = m > 1.4142135f0
+    m = big ? 0.5f0m : m
+    e = big ? e + 1 : e
+    t = (m - 1f0) / (m + 1f0)
+    t2 = t * t
+    s = muladd(t2, muladd(t2, 1f0 / 5, 1f0 / 3), 1f0)
+    return Float32(e) + 2f0 * t * s * 1.442695f0
+end
+
+"""
+    AbstractSquaredDigitizePlan
+
+Maps a squared separation `r²` to the bin index `digitize(r, edges)` would give.
+
+Edges are strictly positive, so `e_{i-1} < r ≤ e_i` iff `e_{i-1}² < r² ≤ e_i²`. The index is
+approximate; [`squared_digitize`](@ref) corrects it against the true squared edges.
+"""
+abstract type AbstractSquaredDigitizePlan{T} end
+
+"""Log-uniform edges: index from `_fast_log2(r²)` and one FMA, then corrected."""
+struct SquaredLogPlan{T, V <: AbstractVector{T}} <: AbstractSquaredDigitizePlan{T}
+    a::T          # ln2 / (2·log-step)
+    b::T          # -log(first edge) / log-step
+    n_bins::Int
+    sqedges::V
+end
+
+"""Uniform-in-`r` edges: squares of a uniform grid are not uniform, so this keeps one `sqrt` and the
+existing O(1) FMA search."""
+struct SquaredLinearPlan{T, E <: LinearBinEdges{T}, V <: AbstractVector{T}} <: AbstractSquaredDigitizePlan{T}
+    edges::E
+    n_bins::Int
+    sqedges::V
+end
+
+"""Arbitrary sorted edges: binary search on the precomputed squared edges (skips the `sqrt`)."""
+struct SquaredGeneralPlan{T, V <: AbstractVector{T}} <: AbstractSquaredDigitizePlan{T}
+    n_bins::Int
+    sqedges::V
+end
+
+"""Implicit ±Inf catch-all bins around an inner plan; every pair lands somewhere."""
+struct SquaredInfPaddedPlan{T, P <: AbstractSquaredDigitizePlan{T}} <: AbstractSquaredDigitizePlan{T}
+    inner::P
+end
+
+# Correctly-rounded squares of the actual edges; extended precision so the table adds no rounding.
+_sq_edges(::Type{T}, v) where {T} = T[T(big(v[i])^2) for i in eachindex(v)]
+
+"""
+    squared_digitize_plan(edges) -> AbstractSquaredDigitizePlan
+
+Build the `r²` digitize plan for `edges`, once per call (never in the pair loop).
+"""
+function squared_digitize_plan(v::LogBinEdges{T}) where {T}
+    le = v.log_edges
+    sq = _sq_edges(T, v)
+    return SquaredLogPlan{T, typeof(sq)}(
+        T(log(2) / (2 * step(le))), T(-first(le) / step(le)), length(le) - 1, sq,
+    )
+end
+
+function squared_digitize_plan(v::LinearBinEdges{T}) where {T}
+    sq = _sq_edges(T, v.edges)
+    return SquaredLinearPlan{T, typeof(v), typeof(sq)}(v, length(v.edges) - 1, sq)
+end
+
+function squared_digitize_plan(v::AbstractBinEdges{T}) where {T}
+    sq = _sq_edges(T, v)
+    return SquaredGeneralPlan{T, typeof(sq)}(length(v) - 1, sq)
+end
+
+# Explicit: `InfPaddedBinEdges(::AbstractVector)` wraps a `@view`, which would otherwise fall to
+# the generic binary-search plan.
+squared_digitize_plan(v::InfPaddedBinEdges) = SquaredInfPaddedPlan(squared_digitize_plan(v.edges))
+
+squared_digitize_plan(edges::AbstractVector) = squared_digitize_plan(BinEdges(edges))
+
+"""Bins covered by the plan (`digitize` results in `1:n_bins` are in range)."""
+@inline n_histogram_bins(p::AbstractSquaredDigitizePlan) = p.n_bins
+@inline n_histogram_bins(p::SquaredInfPaddedPlan) = n_histogram_bins(p.inner) + 2
+
+"""
+    has_vector_index(plan) -> Bool
+
+Whether the plan's index is branch-free, and so worth computing in the vectorized half of a pair
+kernel. False for the linear and general plans, whose `searchsortedfirst` branches would
+de-vectorize the whole `@simd` body.
+"""
+@inline has_vector_index(::AbstractSquaredDigitizePlan) = false
+@inline has_vector_index(::SquaredLogPlan) = true
+@inline has_vector_index(p::SquaredInfPaddedPlan) = has_vector_index(p.inner)
+
+"""
+    squared_approx_index(plan, r2) -> Int32
+
+Approximate `searchsortedfirst` index for `r²`, branch-free, for the vectorized half of a pair
+kernel. Meaningful only when [`has_vector_index`](@ref); other plans return `0`.
+"""
+@inline squared_approx_index(p::SquaredLogPlan, r2) =
+    unsafe_trunc(Int32, floor(muladd(_fast_log2(r2), p.a, p.b))) + Int32(1)
+@inline squared_approx_index(::AbstractSquaredDigitizePlan, r2) = Int32(0)
+@inline squared_approx_index(p::SquaredInfPaddedPlan, r2) = squared_approx_index(p.inner, r2)
+
+"""
+    digitize_key(plan, r2)
+
+The quantity the plan's scalar half compares against, computed in the vectorized half from `r²`.
+
+`r²` for the log and general plans; `√r²` for the linear plan, whose grid is uniform in `r`.
+"""
+@inline digitize_key(::SquaredLogPlan, r2) = r2
+@inline digitize_key(::SquaredGeneralPlan, r2) = r2
+@inline digitize_key(::SquaredLinearPlan, r2) = sqrt(r2)
+@inline digitize_key(p::SquaredInfPaddedPlan, r2) = digitize_key(p.inner, r2)
+
+"""
+    squared_bin(plan, key, i) -> Int
+
+The bin, in the scalar half, from [`digitize_key`](@ref). When [`has_vector_index`](@ref), `i` is
+the precomputed approximate index and this only corrects it; otherwise `i` is ignored.
+"""
+@inline squared_bin(p::SquaredLogPlan, key, i::Integer) = squared_correct(p, key, i) - 1
+@inline squared_bin(p::SquaredLinearPlan, key, ::Integer) = searchsortedfirst(p.edges, key) - 1
+@inline squared_bin(p::SquaredGeneralPlan, key, ::Integer) = searchsortedfirst(p.sqedges, key) - 1
+# The implicit -Inf edge shifts every inner index up by one; the inner plan already reports
+# `n_bins + 1` above its last edge, which becomes the overflow bin. No separate range test needed.
+@inline squared_bin(p::SquaredInfPaddedPlan, key, i::Integer) = squared_bin(p.inner, key, i) + 1
+
+"""
+    squared_correct(plan, r2, i) -> Int
+
+Walk `i` to the exact `searchsortedfirst(sqedges, r²)`. 0 or 1 step for random separations; a loop
+rather than a fixed step because within a few ulps of an edge more can be needed.
+"""
+@inline function squared_correct(p::AbstractSquaredDigitizePlan, r2, i::Integer)
+    sq = p.sqedges
+    n = p.n_bins
+    k = clamp(Int(i), 1, n + 2)
+    @inbounds begin
+        while k > 1 && sq[k - 1] >= r2
+            k -= 1
+        end
+        while k <= n + 1 && sq[k] < r2
+            k += 1
+        end
+    end
+    return k
+end
+
+"""
+    squared_digitize(plan, r2) -> Int
+
+Exact `digitize(r, edges)` computed from `r²` alone. Out-of-range gives `0` (below) or `n_bins + 1`
+(above), matching [`digitize`](@ref).
+"""
+@inline squared_digitize(p::AbstractSquaredDigitizePlan, r2) =
+    squared_bin(p, digitize_key(p, r2), squared_approx_index(p, r2))
+
+# The implicit -Inf edge shifts every inner index up by one.
+@inline function squared_correct(p::SquaredInfPaddedPlan, r2, i::Integer)
+    inner = p.inner
+    @inbounds hi = inner.sqedges[inner.n_bins + 1]
+    r2 > hi && return inner.n_bins + 3
+    return squared_correct(inner, r2, i) + 1
+end
+

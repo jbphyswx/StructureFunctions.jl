@@ -13,7 +13,8 @@ using Test: Test
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    StructureFunctionObjects as SFO
 using Random: Random
 
 Random.seed!(42)
@@ -35,11 +36,12 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
 
     ref = SFC.calculate_structure_function(
         sft, x_cpu, u_cpu, bins;
-        return_sums_and_counts = true, verbose = false, show_progress = false,
+        output_type = SFO.StructureFunctionSumsAndCounts,
+        verbose = false, show_progress = false,
     )
 
     res_fresh = SFC.gpu_calculate_structure_function(
-        sft, backend, x_gpu, u_gpu, bins; return_sums_and_counts = true,
+        sft, backend, x_gpu, u_gpu, bins,
     )
     CUDA.synchronize()
     Test.@test res_fresh.counts ≈ ref.counts atol = 0.0
@@ -49,7 +51,7 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
 
     ws = SFC.GPUSFWorkspace(backend, bins)
     res_ws = SFC.gpu_calculate_structure_function(
-        sft, backend, x_gpu, u_gpu, bins; return_sums_and_counts = true, workspace = ws,
+        sft, backend, x_gpu, u_gpu, bins; workspace = ws,
     )
     CUDA.synchronize()
     Test.@test res_ws.counts ≈ ref.counts atol = 0.0
@@ -79,8 +81,7 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     counts_ref = zeros(UInt32, NB, T)
     for t in 1:T
         ref_t = SFC.gpu_calculate_structure_function(
-            sft, backend, x_batch_cpu[:, :, t], u_batch_cpu[:, :, t], bins;
-            return_sums_and_counts = true,
+            sft, backend, x_batch_cpu[:, :, t], u_batch_cpu[:, :, t], bins,
         )
         CUDA.synchronize()
         sums_ref[:, t] .= ref_t.sums

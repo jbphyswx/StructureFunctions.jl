@@ -5,6 +5,7 @@
 # loops is correct on GPU, plus timing.
 #   julia --project=gpu gpu/test_slices_e2e.jl
 # =============================================================================
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions
 import KernelAbstractions as KA
 using CUDA, Printf
@@ -18,7 +19,7 @@ using StructureFunctions.Calculations:
     serial_calculate_structure_functions_single_pass_2d!,
     auxiliary_varying_positions!, auxiliary_joint2d!
 const FT = Float32
-const GPU_BE = SFC.GPUBackend(CUDA.CUDABackend())
+const GPU_BE = CB.GPUBackend(CUDA.CUDABackend())
 const sf2 = SFT.L2SFType()
 maxrel(a, b) = maximum(abs.(a .- b) ./ max.(abs.(b), 1f-3))
 

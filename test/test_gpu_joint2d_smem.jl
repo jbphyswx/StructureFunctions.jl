@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
@@ -6,15 +7,15 @@ using StructureFunctions:
     joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256
 using Random: Random
 
-const GPUExt = Base.get_extension(SF, :StructureFunctionsGPUExt)
-GPUExt === nothing && error("StructureFunctionsGPUExt not loaded")
+const GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded")
 
 Random.seed!(42)
 
 function _ref_joint(sft, x, u, dist, val)
     return SFC.calculate_structure_function(
         sft, x, u, dist, val;
-        backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+        backend = CB.SerialBackend(), verbose = false, show_progress = false,
     )
 end
 

@@ -24,6 +24,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
     ::Val{D},
     ::Val{NMOM},
     ::Val{R},
+    geom,
 ) where {D, NMOM, R}
     shared_xi = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_xj = @localmem eltype(x) (D * SF_GPU_TILE,)
@@ -120,12 +121,10 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
                     Ui = _sf_load_pt(Val(D), shared_ui, ia)
                     Uj = _sf_load_pt(Val(D), shared_ui, jb)
                 end
-                dX = Xj - Xi
-                dist = sqrt(_sf_dot(dX, dX))
+                ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
                 bin = digitizer(dist)
-                if 1 <= bin <= NB
-                    rhat = dX / dist
-                    dU = Uj - Ui
+                if ok && 1 <= bin <= NB
+                    dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                     moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
                     # accumulate into replica `lane` (inline localmem atomics)
                     abase = (bin - 1) * R + lane
@@ -181,6 +180,21 @@ end
 # Launch wrappers
 # -----------------------------------------------------------------------------
 
+"""
+    _sf_tiled_1d_check_nb(NB)
+
+Assert `NB` fits the 1D tiled kernels' shared histogram. Both `sf_tiled_1d_varying!` and
+`sf_tiled_1d_fixed!` size `@localmem` from the compile-time `SF_GPU_MAX_BINS` but index it by the
+runtime `NB` under `@inbounds`, so `NB > SF_GPU_MAX_BINS` would write out of bounds in shared memory
+and silently corrupt the histogram. Must be called by every launcher of those kernels.
+"""
+@inline function _sf_tiled_1d_check_nb(NB::Int)
+    NB > SF_GPU_MAX_BINS && error(
+        "GPUExt: 1D tiled kernels support at most $SF_GPU_MAX_BINS distance bins (got NB=$NB)",
+    )
+    return nothing
+end
+
 """Replication factor R for the 1D varying-x shared histogram, from the A100 R/W
 sweep (gpu/benchmark_results/tune_*.md). Regime-dependent:
 - Individual SF (NMOM=1): tiny histogram, extreme per-bin contention → R=2 helps
@@ -193,9 +207,10 @@ sweep (gpu/benchmark_results/tune_*.md). Regime-dependent:
 `x_dev`, `u_dev` are (D, N, B); `out_dev`, `cnt_dev` are (NMOM, NB, B)."""
 function _launch_sf_tiled_1d_varying!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer,
-    N::Int, NB::Int, B::Int, ::Val{D}, ::Val{NMOM};
+    N::Int, NB::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
     R::Int = _sf_tiled_1d_replication(eltype(out_dev), D, NMOM),
 ) where {D, NMOM}
+    _sf_tiled_1d_check_nb(NB)
     n_tiles = cld(N, SF_GPU_TILE)
     n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
     ws = SF_GPU_TILED_WS
@@ -203,19 +218,19 @@ function _launch_sf_tiled_1d_varying!(
     kernel! = sf_tiled_1d_varying!(backend, ws)
     if R == 16
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(16); ndrange = ndrange)
+                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(16), geom; ndrange = ndrange)
     elseif R == 8
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(8); ndrange = ndrange)
+                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(8), geom; ndrange = ndrange)
     elseif R == 4
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(4); ndrange = ndrange)
+                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(4), geom; ndrange = ndrange)
     elseif R == 2
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(2); ndrange = ndrange)
+                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(2), geom; ndrange = ndrange)
     else
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(1); ndrange = ndrange)
+                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(1), geom; ndrange = ndrange)
     end
     return nothing
 end
@@ -250,6 +265,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
     ::Val{D},
     ::Val{NMOM},
     ::Val{W},
+    geom,
 ) where {D, NMOM, W}
     shared_xi = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_xj = @localmem eltype(x) (D * SF_GPU_TILE,)
@@ -345,11 +361,11 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
                     Xi = _sf_load_pt(Val(D), shared_xi, ia)
                     Xj = _sf_load_pt(Val(D), shared_xi, jb)
                 end
-                dX = Xj - Xi
-                dist = sqrt(_sf_dot(dX, dX))
+                ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
                 bin = digitizer(dist)
-                if 1 <= bin <= NB
-                    rhat = dX / dist
+                if ok && 1 <= bin <= NB
+                    # Loop-invariant across the strip: one frame serves all bw fields.
+                    rhat = SFH.pair_direction(geom, frame, dist)
                     @inbounds for w in 1:bw
                         Ui = off_diag ?
                             _sf_load_field(Val(D), shared_ui, w, ia) :
@@ -357,7 +373,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
                         Uj = off_diag ?
                             _sf_load_field(Val(D), shared_uj, w, jb) :
                             _sf_load_field(Val(D), shared_ui, w, jb)
-                        dU = Uj - Ui
+                        dU = SFH.pair_delta(geom, frame, Xi, Xj, Ui, Uj)
                         moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
                         # sums: lane = field w (scatter, not summed)
                         base = (bin - 1) * W + w
@@ -426,9 +442,10 @@ end
 out_dev/cnt_dev=(NMOM,NB,B). Single synchronize after all strips."""
 function _launch_sf_tiled_1d_fixed!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer,
-    N::Int, NB::Int, B::Int, ::Val{D}, ::Val{NMOM};
+    N::Int, NB::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
     W::Int = _sf_tiled_1d_fixed_strip(eltype(out_dev), D, NMOM),
 ) where {D, NMOM}
+    _sf_tiled_1d_check_nb(NB)
     n_tiles = cld(N, SF_GPU_TILE)
     n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
     ws = SF_GPU_TILED_WS
@@ -439,7 +456,7 @@ function _launch_sf_tiled_1d_fixed!(
         while b_base <= B
             bw = min(Wv, B - b_base + 1)
             kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                    b_base, bw, n_tiles, n_tile_blocks, ws, Val(D), Val(NMOM), Val(Wv);
+                    b_base, bw, n_tiles, n_tile_blocks, ws, Val(D), Val(NMOM), Val(Wv), geom;
                     ndrange = ndrange)
             b_base += bw
         end
@@ -475,6 +492,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_varying!(
     B::Int,
     ::Val{D},
     ::Val{NMOM},
+    geom,
 ) where {D, NMOM}
     shared_xi = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_xj = @localmem eltype(x) (D * SF_GPU_TILE,)
@@ -548,12 +566,10 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_varying!(
                     Ui = _sf_load_pt(Val(D), shared_ui, ia)
                     Uj = _sf_load_pt(Val(D), shared_ui, jb)
                 end
-                dX = Xj - Xi
-                dist = sqrt(_sf_dot(dX, dX))
+                ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
                 dbin = dist_digitizer(dist)
-                if 1 <= dbin <= n_dist
-                    rhat = dX / dist
-                    dU = Uj - Ui
+                if ok && 1 <= dbin <= n_dist
+                    dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                     moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
                     @inbounds for m in 1:NMOM
                         vbin = _gpu_digitize_value_plan(moments[m], val_plan, m, n_val + 1)
@@ -573,14 +589,14 @@ end
 x_dev,u_dev=(D,N,B); out_dev,cnt_dev=(NMOM,n_dist,n_val,B)."""
 function _launch_sf_tiled_2d_varying!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM},
+    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom,
 ) where {D, NMOM}
     n_tiles = cld(N, SF_GPU_TILE)
     n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
     ws = SF_GPU_TILED_WS
     kernel! = sf_tiled_2d_varying!(backend, ws)
     kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-            N, n_dist, n_val, n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM);
+            N, n_dist, n_val, n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), geom;
             ndrange = n_tile_blocks * ws * B)
     return nothing
 end
@@ -612,6 +628,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
     ::Val{NMOM},
     ::Val{NCELLS},
     ::Val{FIXED_X},
+    geom,
 ) where {D, NMOM, NCELLS, FIXED_X}
     shared_xi = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_xj = @localmem eltype(x) (D * SF_GPU_TILE,)
@@ -702,12 +719,10 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
                     Ui = _sf_load_pt(Val(D), shared_ui, ia)
                     Uj = _sf_load_pt(Val(D), shared_ui, jb)
                 end
-                dX = Xj - Xi
-                dist = sqrt(_sf_dot(dX, dX))
+                ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
                 dbin = dist_digitizer(dist)
-                if 1 <= dbin <= n_dist
-                    rhat = dX / dist
-                    dU = Uj - Ui
+                if ok && 1 <= dbin <= n_dist
+                    dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                     moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
                     @inbounds for m in 1:NMOM
                         vbin = _gpu_digitize_value_plan(moments[m], val_plan, m, n_val + 1)
@@ -760,7 +775,7 @@ end
 `x_dev` is (D,N,B) for varying-x or (D,N,1) for fixed-x; `u_dev` is (D,N,B)."""
 function _launch_sf_tiled_2d_shared!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, fixed_x::Bool,
+    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, fixed_x::Bool, geom,
 ) where {D, NMOM}
     n_tiles = cld(N, SF_GPU_TILE)
     n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
@@ -769,11 +784,11 @@ function _launch_sf_tiled_2d_shared!(
     kernel! = sf_tiled_2d_shared!(backend, ws)
     if fixed_x
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-                N, n_dist, n_val, n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(n_dist * n_val), Val(true);
+                N, n_dist, n_val, n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(n_dist * n_val), Val(true), geom;
                 ndrange = ndrange)
     else
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-                N, n_dist, n_val, n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(n_dist * n_val), Val(false);
+                N, n_dist, n_val, n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(n_dist * n_val), Val(false), geom;
                 ndrange = ndrange)
     end
     return nothing
@@ -800,6 +815,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
     ::Val{D},
     ::Val{NMOM},
     ::Val{W},
+    geom,
 ) where {D, NMOM, W}
     shared_xi = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_xj = @localmem eltype(x) (D * SF_GPU_TILE,)
@@ -875,16 +891,16 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
                     Xi = _sf_load_pt(Val(D), shared_xi, ia)
                     Xj = _sf_load_pt(Val(D), shared_xi, jb)
                 end
-                dX = Xj - Xi
-                dist = sqrt(_sf_dot(dX, dX))
+                ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
                 dbin = dist_digitizer(dist)
-                if 1 <= dbin <= n_dist
-                    rhat = dX / dist
+                if ok && 1 <= dbin <= n_dist
+                    # Loop-invariant across the strip: one frame serves all bw fields.
+                    rhat = SFH.pair_direction(geom, frame, dist)
                     @inbounds for w in 1:bw
                         Ui = _sf_load_field(Val(D), shared_ui, w, ia)
                         Uj = off_diag ? _sf_load_field(Val(D), shared_uj, w, jb) :
                                         _sf_load_field(Val(D), shared_ui, w, jb)
-                        dU = Uj - Ui
+                        dU = SFH.pair_delta(geom, frame, Xi, Xj, Ui, Uj)
                         moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
                         bb = b_base + w - 1
                         for m in 1:NMOM
@@ -915,7 +931,7 @@ end
 """Launch fixed-x batch 2D over ⌈B/W⌉ strips. x_dev=(D,N), u_dev=(D,N,B)."""
 function _launch_sf_tiled_2d_fixed!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM};
+    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
     W::Int = _sf_tiled_2d_fixed_strip(eltype(out_dev), D),
 ) where {D, NMOM}
     n_tiles = cld(N, SF_GPU_TILE)
@@ -929,7 +945,7 @@ function _launch_sf_tiled_2d_fixed!(
             bw = min(Wv, B - b_base + 1)
             kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
                     N, n_dist, n_val, b_base, bw, n_tiles, n_tile_blocks, ws,
-                    Val(D), Val(NMOM), Val(Wv); ndrange = ndrange)
+                    Val(D), Val(NMOM), Val(Wv), geom; ndrange = ndrange)
             b_base += bw
         end
     end
@@ -961,11 +977,11 @@ end
 
 """Dispatch a 2D batch launch on runtime D ∈ {2,3} into the Val-specialized launchers."""
 function _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
-                              N, n_dist, n_val, B, D::Int, ::Val{NMOM}, fixed_x::Bool) where {NMOM}
+                              N, n_dist, n_val, B, D::Int, ::Val{NMOM}, fixed_x::Bool, geom) where {NMOM}
     # CUDA fast path (N-body broadcast + dynamic-shared privatized histogram,
     # TILE=1024) when StructureFunctionsCUDAExt is active and it fits the device.
     SFC.gpu_fast_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
-                                  N, n_dist, n_val, B, D, NMOM, fixed_x) && return nothing
+                                  N, n_dist, n_val, B, D, NMOM, fixed_x, geom) && return nothing
     # Prefer the shared-histogram kernel (fixed or varying) when the histogram
     # fits (~7× faster than direct global atomics); fall back to global for large
     # bin counts that don't fit in shared memory.
@@ -974,10 +990,10 @@ function _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, 
         use_shared ?
             _launch_sf_tiled_2d_shared!(backend, out_dev, cnt_dev,
                 (fixed_x ? reshape(x_dev, size(x_dev, 1), size(x_dev, 2), 1) : x_dev),
-                u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), fixed_x) :
+                u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), fixed_x, geom) :
         fixed_x ?
-            _launch_sf_tiled_2d_fixed!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM)) :
-            _launch_sf_tiled_2d_varying!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM))
+            _launch_sf_tiled_2d_fixed!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), geom) :
+            _launch_sf_tiled_2d_varying!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), geom)
     D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : error("GPU 2D batch requires D ∈ {2,3} (got $D)")
     return nothing
 end
@@ -985,14 +1001,14 @@ end
 """Dispatch a 1D batch launch on runtime D ∈ {2,3} into the Val-specialized launchers.
 `out`/`cnt` are (NMOM, NB, B); x_dev/u_dev are (D,N,B) varying or x=(D,N),u=(D,N,B) fixed."""
 function _sf_launch_1d_batch!(backend, out, cnt, x_dev, u_dev, sf_type, dig,
-                              N, NB, B, D::Int, ::Val{NMOM}, fixed_x::Bool) where {NMOM}
+                              N, NB, B, D::Int, ::Val{NMOM}, fixed_x::Bool, geom) where {NMOM}
     # CUDA fast path (N-body broadcast + static-shared privatized histogram,
     # TILE=256) when StructureFunctionsCUDAExt is active and NB fits.
     SFC.gpu_fast_launch_1d_batch!(backend, out, cnt, x_dev, u_dev, sf_type, dig,
-                                  N, NB, B, D, NMOM, fixed_x) && return nothing
+                                  N, NB, B, D, NMOM, fixed_x, geom) && return nothing
     go(Dv) = fixed_x ?
-        _launch_sf_tiled_1d_fixed!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM)) :
-        _launch_sf_tiled_1d_varying!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM))
+        _launch_sf_tiled_1d_fixed!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM), geom) :
+        _launch_sf_tiled_1d_varying!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM), geom)
     D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : error("GPU 1D batch requires D ∈ {2,3} (got $D)")
     return nothing
 end

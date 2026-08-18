@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, HelperFunctions as SFH,
     Calculations as SFC, StructureFunctionTypes as SFT
 using JET: JET
@@ -27,7 +28,7 @@ Test.@testset "JET Stability Audit" begin
             x,
             u,
             bins;
-            backend = SFC.SerialBackend(),
+            backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false,
         )
@@ -62,7 +63,7 @@ Test.@testset "JET Stability Audit" begin
             xa,
             ua,
             bins;
-            backend = SFC.SerialBackend(),
+            backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false,
         )
