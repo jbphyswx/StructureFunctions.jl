@@ -448,3 +448,56 @@ Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
     Test.@test res.sums ≈ sumsf_ref rtol = 1e-5 atol = 1e-6
     Test.@test res.counts == cntsf_ref
 end
+
+# Large 2D bin counts. Before these existed, nothing in the suite went past 60×60 on either axis,
+# which is why two defects lived here unnoticed: SP2D threw outright for any `n_dist > 128` (the
+# naive global-atomic route demanded a value-edge workspace that nothing supplies by default), and
+# the `:direct` strategy was chosen over plain global atomics well past the point where it loses
+# 2–4× (see `gpu/SPEED_OF_LIGHT.md`). Float64 because Float32 carries only ~7 digits and a histogram
+# this sparse (few pairs per cell, cancelling odd moments) disagrees with a Float64 reference by
+# percent even on the CPU — a Float32 assertion here would be testing arithmetic, not the kernel.
+Test.@testset "GPU sp2d large bin counts (KA.CPU)" begin
+    backend = KA.CPU()
+    FT = Float64
+    N = 64
+    x = rand(FT, 2, N)
+    u = randn(FT, 2, N)
+    for (nd, nv) in ((100, 100), (200, 200))
+        dist = LinearBinEdges(range(FT(0), FT(1); length = nd + 1))
+        val = _synthetic_value_bins_ntuple(nv, FT)
+        sums_ref = zeros(FT, 6, nd, nv)
+        cnts_ref = zeros(UInt32, 6, nd, nv)
+        SFC.calculate_structure_functions_single_pass_2d!(
+            sums_ref, cnts_ref, x, u, dist, val; backend = CB.SerialBackend(),
+        )
+        sums_gpu = zeros(FT, 6, nd, nv)
+        cnts_gpu = zeros(UInt32, 6, nd, nv)
+        # No workspace: the path that used to raise `ArgumentError` here.
+        SFC.calculate_structure_functions_single_pass_2d!(
+            sums_gpu, cnts_gpu, x, u, dist, val; backend = CB.GPUBackend(backend),
+        )
+        Test.@test cnts_gpu == cnts_ref
+        Test.@test sums_gpu ≈ sums_ref rtol = 1e-10 atol = 1e-12
+    end
+end
+
+# The routing decision itself, not just the numbers a route produces. Every SP2D defect found so far
+# was a *routing* fault that correctness assertions could not see, because each route computes the
+# right answer — just at very different speeds.
+Test.@testset "GPU sp2d strategy routing thresholds" begin
+    ext = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+    Test.@test ext !== nothing
+    cells_bytes(nd, nv, ::Type{FT}) where {FT} = 6 * nd * nv * (sizeof(FT) + sizeof(UInt32))
+    # Small histograms stay on chip; large ones must not select `:direct`, which loses to plain
+    # global atomics above the measured crossover.
+    Test.@test cells_bytes(60, 60, Float64) <= ext.SP2D_GLOBAL_ATOMIC_HIST_BYTES
+    Test.@test cells_bytes(100, 100, Float64) > ext.SP2D_GLOBAL_ATOMIC_HIST_BYTES
+    Test.@test cells_bytes(128, 128, Float32) > ext.SP2D_GLOBAL_ATOMIC_HIST_BYTES
+    # 80×80 Float32 (307 KB) measured `:direct` still ahead by ~11%; it must stay below the cut.
+    Test.@test cells_bytes(80, 80, Float32) <= ext.SP2D_GLOBAL_ATOMIC_HIST_BYTES
+    for (nd, nv, FT) in ((16, 8, Float32), (60, 60, Float64), (100, 100, Float64))
+        cfg = ext._sp2d_accumulation_strategy(nd, nv, FT, SFC.gpu_device_caps(nothing))
+        Test.@test cfg.accum_mode in (:shared, :typeplane, :direct)
+        Test.@test cfg.n_joint_cells == 6 * nd * nv
+    end
+end
