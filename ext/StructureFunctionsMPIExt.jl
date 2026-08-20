@@ -17,7 +17,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionObjects as SFO, StructureFunctionTypes as SFT, n_histogram_bins
 
-@inline _comm(b::CB.AbstractMPIBackend) = b.comm === nothing ? MPI.COMM_WORLD : b.comm
+@inline _comm(b::CB.AbstractMPIBackend) = isnothing(b.comm) ? MPI.COMM_WORLD : b.comm
 
 # Round-robin outer-index share: work for index i is ~ N - i, so a strided subset of the
 # triangular loop carries ~equal work on every rank.
@@ -47,15 +47,19 @@ end
 @inline _inner_exec(b::CB.AbstractMPIBackend) = SFC._bl_executor(CB.local_backend(b))
 
 # --- 1D ---
+# `count_eltype` is POSITIONAL, matching the core 1D dispatch in `dispatch.jl`, which passes it as
+# the 7th positional argument. Declaring it as a keyword makes this method fail to match, and the
+# call then falls through to the `(::AbstractMPIBackend, args...)` stub that reports "MPI
+# unavailable" — a signature mismatch disguised as a missing package.
 function SFC._dispatch_execution_backend(
     b::CB.AbstractMPIBackend,
     shape::SFC.AbstractFieldShape,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x,
     u,
-    distance_bins::AbstractVector;
+    distance_bins::AbstractVector,
+    count_eltype::Type{CT} = UInt32;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    count_eltype::Type{CT} = UInt32,
     verbose = false,
     show_progress = false,
     kwargs...,

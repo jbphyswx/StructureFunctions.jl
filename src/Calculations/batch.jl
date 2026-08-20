@@ -117,7 +117,7 @@ function cpu_slice_baseline!(
             u_slice = batch_field_slice(u, b)
         end
         local_output = zeros(eltype(sums), n_bins)
-        local_counts = zeros(UInt32, n_bins)
+        local_counts = zeros(eltype(counts), n_bins)
         serial_calculate_structure_function!(
             local_output,
             local_counts,

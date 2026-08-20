@@ -229,15 +229,18 @@ function serial_calculate_structure_function(
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
+    count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number}
+) where {FT1 <: Number, FT2 <: Number, CT}
     if ndims(u_arr) >= 3
         FT = promote_type(float(FT1), float(FT2))
         n_dist = length(distance_bins) - 1
         n_val = length(value_bins) - 1
         bdims = batch_dims(u_arr)
         sums = zeros(FT, n_dist, n_val, bdims...)
-        counts = zeros(UInt32, n_dist, n_val, bdims...)
+        # Consumed here, where `counts` is allocated. `auxiliary_joint2d!` takes already-allocated
+        # buffers, so forwarding `count_eltype` into it is a MethodError.
+        counts = zeros(CT, n_dist, n_val, bdims...)
         auxiliary_joint2d!(sums, counts, structure_function_type, x_arr, u_arr, distance_bins, value_bins; kwargs...)
         return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts)
     end
@@ -249,6 +252,7 @@ function serial_calculate_structure_function(
         u_tuple,
         distance_bins,
         value_bins;
+        count_eltype = count_eltype,
         kwargs...,
     )
 end

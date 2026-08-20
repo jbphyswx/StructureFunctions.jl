@@ -139,10 +139,10 @@ function SFC._dispatch_execution_backend(
     items = [(fixed_x ? x_flat : x_flat[:, :, bc], u_flat[:, :, bc]) for bc in chunks]
     parts = Distributed.pmap(items) do xu
         r = SFC.calculate_structure_function(
-            structure_function_type, xu[1], xu[2], distance_bins;
+            structure_function_type, xu[1], xu[2], distance_bins, count_eltype;
             backend = inner, output_type = SFO.StructureFunctionSumsAndCounts,
             verbose = false, show_progress = false,
-            distance_metric = distance_metric, count_eltype = count_eltype,
+            distance_metric = distance_metric,
         )
         (r.sums, r.counts)
     end
