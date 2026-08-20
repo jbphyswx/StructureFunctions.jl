@@ -1,4 +1,4 @@
-# StructureFunctions.jl v0.3.0
+# StructureFunctions.jl v0.4.0
 
 [![Docs (stable)][docs-stable-img]][docs-stable-url] [![Docs (dev)][docs-dev-img]][docs-dev-url] [![DOI][zenodo-img]][zenodo-latest-url]
 
