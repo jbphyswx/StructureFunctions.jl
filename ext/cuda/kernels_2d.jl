@@ -160,8 +160,14 @@ function _cuda_sf_2d_kernel!(
     return nothing
 end
 
-"""Largest TILE ∈ (1024,512,256) whose staging + dynamic histogram fit the device
-opt-in shared max; 0 if even 256 won't fit (caller falls back to the KA path)."""
+"""Largest TILE ∈ (1024,512,256) whose staging + the full `NMOM`-plane dynamic histogram fit the
+device opt-in shared max; 0 if even 256 won't fit.
+
+Returning 0 hands the call to the naive global-atomic kernel, which is the measured winner whenever
+the histogram does not fit on chip: contention spreads over many cells, and it beats every on-chip
+variant there (128×128 Float64: 5.95 vs 0.75 bapps). Splitting the histogram into moment planes to
+force it on chip was implemented and measured — it is ~2× *slower* than going global, so the
+all-or-nothing test below is deliberate. See `gpu/SPEED_OF_LIGHT.md`."""
 function _cuda_2d_pick_tile(::Type{FT}, D::Int, NMOM::Int, n_dist::Int, n_val::Int) where {FT}
     # Queried, never assumed: this is only reached via the CUDABackend hook, so a device is present
     # by construction and a failure here is a real driver fault. Defaulting to the 48 KB static cap

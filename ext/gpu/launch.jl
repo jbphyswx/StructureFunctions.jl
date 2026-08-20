@@ -1381,7 +1381,15 @@ function _launch_single_pass_2d_kernel!(
     lbe = dist_bins
     vp = val_plan
     value_edges_dev = workspace === nothing ? nothing : workspace.value_edges_sp2d_dev
-    value_edges_dev === nothing && throw(ArgumentError("naive single-pass 2D linear+linear requires vector value workspace"))
+    if value_edges_dev === nothing
+        # This kernel digitizes the value axis by binary search, so it needs the explicit edge
+        # vector. The linear plan carries `first`/`last`, so reconstruct it rather than demanding a
+        # workspace: this path is the only route when `n_dist > SF_GPU_MAX_BINS`, and requiring a
+        # workspace there made every large-bin call fail outright.
+        VT = typeof(vp.first)
+        value_edges_dev = KA.allocate(backend, VT, n_val_edges)
+        copyto!(value_edges_dev, collect(range(vp.first, vp.last; length = n_val_edges)))
+    end
     kernel! = _sf_single_pass_2d_kernel_linear!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
@@ -1508,6 +1516,25 @@ function _launch_single_pass_2d_kernel!(
     ))
 end
 
+"""
+Offer a non-batch single-pass 2D launch to the batch dispatcher as `B=1`, reaching the CUDA N-body
++ dynamic-shared kernel; `false` means the hook declined and the caller continues unchanged.
+Measured on A100 (N=20000): 1.24× Float32, 2.58× Float64. See `gpu/SPEED_OF_LIGHT.md`.
+"""
+@inline function _sp2d_try_fast_batch!(
+    backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, dist_bins, val_plan,
+    N_points::Int, N_dims::Int, n_dist::Int, n_val::Int, geom,
+)
+    return SFC.gpu_fast_launch_2d_batch!(
+        backend,
+        reshape(out_sums_dev, SF_GPU_SINGLE_PASS_N, n_dist, n_val, 1),
+        reshape(out_cnts_dev, SF_GPU_SINGLE_PASS_N, n_dist, n_val, 1),
+        x_dev, reshape(u_dev, N_dims, N_points, 1),
+        nothing, _sf_batch_dist_digitizer(backend, dist_bins), val_plan,
+        N_points, n_dist, n_val, 1, N_dims, SF_GPU_SINGLE_PASS_N, true, geom,
+    )
+end
+
 function _launch_single_pass_2d!(
     backend::KA.Backend,
     workgroup_size::Int,
@@ -1533,6 +1560,8 @@ function _launch_single_pass_2d!(
             workspace = workspace,
         )
     end
+    _sp2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, dist_bins, val_plan,
+                          N_points, N_dims, n_dist, n_val_edges - 1, geom) && return nothing
     # D ∈ {2,3}: the tiled kernel stages D components and builds D-vectors from `Val{D}`, and its
     # invariants use |du_T|² = |du|² - du_L², which needs no transverse basis and so no gauge choice.
     if (N_dims == 2 || N_dims == 3) && !force_global_atomic &&
@@ -1541,11 +1570,19 @@ function _launch_single_pass_2d!(
             _sp2d_accumulation_strategy(n_dist, n_val_edges - 1, eltype(out_sums_dev),
                 SFC.gpu_device_caps(backend)) :
             workspace.sp2d_accumulation_strategy
-        return _launch_single_pass_2d_strategy!(
-            backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
-            dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config, geom;
-            workspace = workspace,
-        )
+        # `:shared` and `:typeplane` keep the histogram on chip and always win. `:direct` does not —
+        # it abandons the on-chip histogram for block-private global partitions plus a merge pass, so
+        # its cost grows with cells × tile-blocks, while plain global atomics get *cheaper* as more
+        # cells spread the contention. Past `SP2D_GLOBAL_ATOMIC_HIST_BYTES` the naive kernel wins, so
+        # send `:direct` there; below it `:direct` is still ahead and stays.
+        if !_sp2d_prefers_global_atomics(n_dist, n_val_edges - 1, eltype(out_sums_dev),
+                                         SFC.gpu_device_caps(backend))
+            return _launch_single_pass_2d_strategy!(
+                backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
+                dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config, geom;
+                workspace = workspace,
+            )
+        end
     end
     return _launch_single_pass_2d_kernel!(
         backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
@@ -1558,7 +1595,7 @@ end
 #
 # Fixed-x launch invariant (do not regress):
 # - `ndrange = n_tile_blocks * workgroup_size` only — never multiply by `cld(B, strip_w)`.
-# - Host strip loop over `BATCH_USMEM_STRIP_W` (16) via `_batch_fixed_x_usmem_priv!`.
+# - Host strip loop over `_batch_usmem_strip_w(FT)` via `_batch_fixed_x_usmem_priv!`.
 # - `KA.CPU`: serial merge; other backends: grouped merge. Same kernel on both.
 # - Varying-x routes use `(tile, auxiliary)` grid scaling (`ndrange * B`), not host strips.
 
@@ -1602,11 +1639,12 @@ function _launch_batch_fixed_x_sf!(
     kernel! = _batch_fixed_x_sf_kernel(backend, ws)
     merge_sums! = _batch_merge_usmem_sums!(backend, ws)
     merge_cnts! = _batch_merge_usmem_cnts!(backend, ws)
-    partial_sums = KA.zeros(backend, FT, NB, BATCH_USMEM_STRIP_W, n_priv)
+    strip_w = _batch_usmem_strip_w(FT)
+    partial_sums = KA.zeros(backend, FT, NB, strip_w, n_priv)
     partial_cnts = KA.zeros(backend, UInt32, NB, n_priv)
     b_base = 1
     while b_base <= B
-        bw = min(BATCH_USMEM_STRIP_W, B - b_base + 1)
+        bw = min(strip_w, B - b_base + 1)
         fill!(partial_sums, zero(FT))
         fill!(partial_cnts, zero(UInt32))
         kernel!(
@@ -1657,11 +1695,12 @@ function _launch_batch_fixed_x_sf!(
     kernel! = _batch_fixed_x_sf_kernel(backend, ws)
     merge_sums! = _batch_merge_usmem_sums_grouped!(backend, ws)
     merge_cnts! = _batch_merge_usmem_cnts_grouped!(backend, ws)
-    partial_sums = KA.zeros(backend, FT, NB, BATCH_USMEM_STRIP_W, n_priv)
+    strip_w = _batch_usmem_strip_w(FT)
+    partial_sums = KA.zeros(backend, FT, NB, strip_w, n_priv)
     partial_cnts = KA.zeros(backend, UInt32, NB, n_priv)
     b_base = 1
     while b_base <= B
-        bw = min(BATCH_USMEM_STRIP_W, B - b_base + 1)
+        bw = min(strip_w, B - b_base + 1)
         fill!(partial_sums, zero(FT))
         fill!(partial_cnts, zero(UInt32))
         kernel!(

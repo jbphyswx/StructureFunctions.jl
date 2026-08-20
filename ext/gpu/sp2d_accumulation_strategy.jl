@@ -37,6 +37,44 @@ struct SP2DAccumulationStrategy
     needs_partition_merge::Bool
 end
 
+"""
+Joint-histogram bytes above which plain global atomics beat `:direct`, so `_launch_single_pass_2d!`
+routes past it.
+
+`:direct` gives up the on-chip histogram for block-private global partitions plus a merge pass, so
+its cost grows with cells × tile-blocks; plain global atomics get *cheaper* as more cells spread the
+contention. Measured on A100 at N=8000, `:direct` vs naive in bapps:
+
+| hist bytes | Float32 | Float64 |
+|---|---|---|
+| 253–307 KB | 3.85 vs 3.46 → `:direct` | 3.44 vs 3.47 → wash |
+| 373–389 KB | 3.52 vs 4.33 → naive | 3.41 vs 4.21 → naive |
+| 461–720 KB | 2.43 vs 6.22 → naive | 1.87 vs 6.70 → naive |
+
+The crossover falls between 307 and 373 KB for both element types, and naive's margin grows steeply
+above it. `:shared` and `:typeplane` keep the histogram on chip and are unaffected. See
+`gpu/SPEED_OF_LIGHT.md`.
+"""
+const SP2D_GLOBAL_ATOMIC_HIST_BYTES = 340 * 1024
+
+"""
+    _sp2d_prefers_global_atomics(n_dist, n_val, FT, caps) -> Bool
+
+Whether SP2D should hand this shape to the plain global-atomic kernel instead of `:direct`.
+
+Consulted in **two** places that must agree: where the value plan is built
+(`_gpu_run_single_pass_2d!`, which must produce a `GPUValueVectorCols` because that is the plan the
+global-atomic kernel has methods for) and where the kernel is launched
+(`_launch_single_pass_2d!`). Splitting the rule between them silently routes a typed value plan into
+a kernel with no matching method, which surfaces as
+`ArgumentError: single-pass 2D global-atomic path unsupported for ...`.
+"""
+function _sp2d_prefers_global_atomics(n_dist::Int, n_val::Int, ::Type{FT}, caps) where {FT}
+    hist_bytes = SF_GPU_SINGLE_PASS_N * n_dist * n_val * (sizeof(FT) + sizeof(UInt32))
+    hist_bytes <= SP2D_GLOBAL_ATOMIC_HIST_BYTES && return false
+    return _sp2d_accumulation_strategy(n_dist, n_val, FT, caps).accum_mode === :direct
+end
+
 """Total joint histogram cells `6 × n_dist × n_val`."""
 @inline _sp2d_joint_cells(n_dist::Int, n_val::Int) = SF_GPU_SINGLE_PASS_N * n_dist * n_val
 

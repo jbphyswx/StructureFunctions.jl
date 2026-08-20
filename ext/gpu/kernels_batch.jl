@@ -1,8 +1,18 @@
 # Production batch tiled128 kernels — fixed-x u-smem strips + block-private merge.
 # Included from StructureFunctionsKernelAbstractionsExt.jl after GPUBatchWorkspace.jl.
 
-"""u-smem strip width for small-strip reference (`_batch_fixed_x_usmem_priv!`)."""
-const BATCH_USMEM_STRIP_W = 16
+"""
+u-smem strip width for `_batch_fixed_x_usmem_priv!`, the widest strip whose static staging fits.
+
+The kernel stages `512 + 512W` elements of `FT`, so `W` is a shared-memory budget question, not a
+constant: 16 for `Float32` (34 KB) but at most 11 for `Float64`, which is why a hardcoded 16
+requested 68 KB against the 48 KB static cap and failed to compile. Rounded down to a power of two
+for a margin under the cap.
+"""
+@inline function _batch_usmem_strip_w(::Type{FT}) where {FT}
+    w = SFC.GPU_SMEM_STATIC_MAX ÷ (512 * sizeof(FT)) - 1
+    return w >= 16 ? 16 : w >= 8 ? 8 : w >= 4 ? 4 : w >= 2 ? 2 : 1
+end
 
 """Warps per batch tile block (`SF_GPU_TILED_WS ÷ 32`)."""
 const BATCH_USMEM_WARPS = SF_GPU_TILED_WS ÷ 32
@@ -324,8 +334,8 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
 ) where {FT, LOG}
     shared_xi = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
-    shared_ui = @localmem FT (256 * BATCH_USMEM_STRIP_W,)
-    shared_uj = @localmem FT (256 * BATCH_USMEM_STRIP_W,)
+    shared_ui = @localmem FT (256 * _batch_usmem_strip_w(FT),)
+    shared_uj = @localmem FT (256 * _batch_usmem_strip_w(FT),)
 
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1

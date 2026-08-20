@@ -32,7 +32,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 # KernelAbstractions alone, so it is loaded whenever this extension's triggers
 # (KernelAbstractions + CUDA) are satisfied.
 const GE = let m = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-    m === nothing &&
+    isnothing(m) &&
         error("StructureFunctionsCUDAExt: StructureFunctionsKernelAbstractionsExt must be loaded first " *
               "(load KernelAbstractions before / with CUDA).")
     m

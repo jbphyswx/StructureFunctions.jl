@@ -496,7 +496,7 @@ function _launch_sf_tiled_kernel!(
 ) where {FT}
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
     dim2 = N_dims == 2
-    if general_edges_dev === nothing
+    if isnothing(general_edges_dev)
         bins_dev = KA.allocate(backend, FT, N_bins)
         copyto!(bins_dev, edges)
     else
@@ -652,7 +652,7 @@ function _launch_gpu_structure_function!(
 
     x_dev, u_dev = _stage_sf_device_inputs(backend, x_mat, u_mat, N_dims, N_points; workspace = workspace)
 
-    if workspace === nothing
+    if isnothing(workspace)
         out_dev = KA.zeros(backend, FT, NB)
         cnt_dev = KA.zeros(backend, UInt32, NB)
         ws = nothing
@@ -685,7 +685,7 @@ function _accumulate_gpu_sf_host!(
     NB = length(output_sums)
     length(output_counts) == NB ||
         throw(ArgumentError("GPUExt: output_counts length ($(length(output_counts))) must match output_sums ($NB)"))
-    if workspace !== nothing && OT === workspace.FT
+    if !isnothing(workspace) && OT === workspace.FT
         copyto!(workspace.host_sums_scratch, out_dev)
         output_sums .+= workspace.host_sums_scratch
     elseif OT === eltype(out_dev) && _array_on_backend(out_dev, KA.CPU())
@@ -942,7 +942,7 @@ function _launch_single_pass_tiled_kernel!(
 ) where {FT}
     n_tiles, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points)
     _, _, gen_e = _workspace_dist_edge_bufs(workspace)
-    if gen_e === nothing
+    if isnothing(gen_e)
         bins_dev = KA.allocate(backend, FT, n_edges)
         copyto!(bins_dev, edges)
     else
@@ -1114,6 +1114,29 @@ KA.@kernel unsafe_indices=true function _sf_single_pass_kernel!(
     end
 end
 
+"""
+Offer a non-batch single-pass 1D launch to the batch dispatcher as `B=1`, which reaches the CUDA
+N-body kernel; `false` means the hook declined and the caller stays on the tiled128 path.
+
+Measured on A100 (N=20000): 1.90× Float32, 1.32× Float64. The batch machinery is not a win at
+`B=1` in general — 1D-individual measures 0.64× because its fixed-x path pays strip staging and two
+merge kernels for a strip of one — so this is applied per regime, not globally. See
+`gpu/SPEED_OF_LIGHT.md`.
+"""
+@inline function _sp1d_try_fast_batch!(
+    backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, dist_bins,
+    N_points::Int, N_dims::Int, NB::Int, geom,
+)
+    return SFC.gpu_fast_launch_1d_batch!(
+        backend,
+        reshape(out_sums_dev, SF_GPU_SINGLE_PASS_N, NB, 1),
+        reshape(out_cnts_dev, SF_GPU_SINGLE_PASS_N, NB, 1),
+        x_dev, reshape(u_dev, N_dims, N_points, 1),
+        nothing, _sf_batch_dist_digitizer(backend, dist_bins),
+        N_points, NB, 1, N_dims, SF_GPU_SINGLE_PASS_N, true, geom,
+    )
+end
+
 function _launch_single_pass_kernel!(
     backend::KA.Backend,
     workgroup_size::Int,
@@ -1129,6 +1152,8 @@ function _launch_single_pass_kernel!(
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     NB = n_edges - 1
+    _sp1d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
+                          lbe, N_points, N_dims, NB, geom) && return nothing
     if N_dims == 2 && _gpu_single_pass_tiled_eligible(NB)
         return _launch_single_pass_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
@@ -1160,6 +1185,8 @@ function _launch_single_pass_kernel!(
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 )
     NB = n_edges - 1
+    _sp1d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
+                          lbe, N_points, N_dims, NB, geom) && return nothing
     if N_dims == 2 && _gpu_single_pass_tiled_eligible(NB)
         return _launch_single_pass_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
@@ -1192,6 +1219,8 @@ function _launch_single_pass_kernel!(
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 ) where {FT}
     NB = n_edges - 1
+    _sp1d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
+                          edges, N_points, N_dims, NB, geom) && return nothing
     if N_dims == 2 && _gpu_single_pass_tiled_eligible(NB)
         return _launch_single_pass_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
@@ -1199,7 +1228,7 @@ function _launch_single_pass_kernel!(
         )
     end
     _, _, gen_e = _workspace_dist_edge_bufs(workspace)
-    if gen_e === nothing
+    if isnothing(gen_e)
         bins_dev = KA.allocate(backend, FT, n_edges)
         copyto!(bins_dev, edges)
     else
@@ -1328,6 +1357,29 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel!(
     end
 end
 
+"""
+Offer a non-batch joint 2D launch to the batch dispatcher as `B=1` (`NMOM=1`, so `sf_type` is
+carried through and does the per-pair math); `false` means the hook declined and the caller
+continues unchanged. `(n_dist, n_val)` reshapes to `(1, n_dist, n_val, 1)` at no cost — column-major
+layout is identical. Measured on A100 (N=20000): 1.48× Float32, 1.18× Float64.
+See `gpu/SPEED_OF_LIGHT.md`.
+"""
+@inline function _joint2d_try_fast_batch!(
+    backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type, dist_bins, vp,
+    N_points::Int, n_dist::Int, n_val::Int, geom,
+)
+    isnothing(vp) && return false
+    D = size(x_dev, 1)
+    return SFC.gpu_fast_launch_2d_batch!(
+        backend,
+        reshape(out_sums_dev, 1, n_dist, n_val, 1),
+        reshape(out_cnts_dev, 1, n_dist, n_val, 1),
+        x_dev, reshape(u_dev, D, N_points, 1),
+        sf_type, _sf_batch_dist_digitizer(backend, dist_bins), vp,
+        N_points, n_dist, n_val, 1, D, 1, true, geom,
+    )
+end
+
 function _launch_joint_2d_kernel!(
     backend::KA.Backend,
     workgroup_size::Int,
@@ -1347,7 +1399,9 @@ function _launch_joint_2d_kernel!(
 )
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
-    vp = val_plan === nothing && workspace !== nothing ? workspace.val_plan : val_plan
+    vp = isnothing(val_plan) && !isnothing(workspace) ? workspace.val_plan : val_plan
+    _joint2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
+                             dist_bins, vp, N_points, n_dist, n_val, geom) && return nothing
     if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
@@ -1381,7 +1435,9 @@ function _launch_joint_2d_kernel!(
 )
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
-    vp = val_plan === nothing && workspace !== nothing ? workspace.val_plan : val_plan
+    vp = isnothing(val_plan) && !isnothing(workspace) ? workspace.val_plan : val_plan
+    _joint2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
+                             dist_bins, vp, N_points, n_dist, n_val, geom) && return nothing
     if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
@@ -1415,7 +1471,9 @@ function _launch_joint_2d_kernel!(
 ) where {FT}
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
-    vp = val_plan === nothing && workspace !== nothing ? workspace.val_plan : val_plan
+    vp = isnothing(val_plan) && !isnothing(workspace) ? workspace.val_plan : val_plan
+    _joint2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
+                             dist_bins, vp, N_points, n_dist, n_val, geom) && return nothing
     if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
@@ -1497,7 +1555,7 @@ function _launch_joint_2d_global_kernel!(
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 ) where {FT}
     _, _, gen_e = _workspace_dist_edge_bufs(workspace)
-    if gen_e === nothing
+    if isnothing(gen_e)
         dist_dev = KA.allocate(backend, FT, n_dist_edges)
         copyto!(dist_dev, edges)
     else
@@ -1542,13 +1600,13 @@ function _launch_gpu_joint2d!(
 
     x_dev, u_dev = _stage_sf_device_inputs(backend, x_mat, u_mat, N_dims, N_points; workspace = workspace)
 
-    val_plan = if workspace === nothing
+    val_plan = if isnothing(workspace)
         _joint2d_build_val_plan(backend, value_bins)
     else
         workspace.val_plan
     end
 
-    if workspace === nothing
+    if isnothing(workspace)
         value_host = _gpu_host_edge_vector(value_bins)
         value_edges_dev = KA.allocate(backend, FT, n_val_edges)
         copyto!(value_edges_dev, value_host)
@@ -1802,8 +1860,12 @@ function _gpu_run_single_pass_2d!(
 
     x_dev, u_dev = _stage_sf_device_inputs(backend, x, u, N_dims, N_points; workspace = workspace)
 
-    if workspace === nothing
-        val_plan = force_global_atomic ?
+    # The global-atomic kernel only has methods for `GPUValueVectorCols`, so the plan choice must
+    # use the same predicate the launcher does — see `_sp2d_prefers_global_atomics`.
+    go_global = force_global_atomic ||
+        _sp2d_prefers_global_atomics(n_bins, n_val, FT, SFC.gpu_device_caps(backend))
+    if isnothing(workspace)
+        val_plan = go_global ?
             _gpu_build_value_vector_cols_plan(backend, value_bins) :
             _gpu_build_value_digitize_plan(backend, value_bins)
         out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, n_bins, n_val)
@@ -1812,7 +1874,7 @@ function _gpu_run_single_pass_2d!(
     else
         _validate_gpu_workspace!(workspace, backend, :single_pass_2d, n_bins; n_val = n_val)
         SFC.reset_histogram!(workspace)
-        val_plan = force_global_atomic ?
+        val_plan = go_global ?
             GPUValueVectorCols{FT}(workspace.value_edges_sp2d_dev) :
             workspace.val_plan
         out_sums_dev = workspace.out_sums_dev
@@ -1901,7 +1963,7 @@ function _launch_single_pass_2d_kernel!(
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
 ) where {FT}
     _, _, gen_e = _workspace_dist_edge_bufs(workspace)
-    if gen_e === nothing
+    if isnothing(gen_e)
         bins_dev = KA.allocate(backend, FT, n_dist_edges)
         copyto!(bins_dev, edges)
     else
@@ -1947,7 +2009,7 @@ function SFC._dispatch_single_pass(
 
     x_dev, u_dev = _stage_sf_device_inputs(backend, x, u, N_dims, N_points; workspace = workspace)
 
-    if workspace === nothing
+    if isnothing(workspace)
         out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, n_bins)
         out_cnts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, n_bins)
         ws = nothing
@@ -2220,7 +2282,7 @@ function SFC._dispatch_single_pass!(
 
     x_dev, u_dev = _stage_sf_device_inputs(backend, x, u, N_dims, N_points; workspace = workspace)
 
-    if workspace === nothing
+    if isnothing(workspace)
         out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, n_bins)
         out_cnts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, n_bins)
         ws = nothing
