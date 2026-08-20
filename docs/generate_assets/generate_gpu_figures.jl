@@ -74,7 +74,7 @@ function _warn_gpu_jit_outliers!(f32, f64)
         n = r["N"]
         t32 = r["gpu_elapsed_s"]
         t64 = get(f64_by_n, n, nothing)
-        t64 === nothing && continue
+        isnothing(t64) && continue
         if t32 > 5 * t64 && t32 > 0.01
             @warn "GPU Float32 at N=$n looks like JIT/outlier" gpu_f32_s=t32 gpu_f64_s=t64 hint="Re-run collect_benchmark_assets.jl (session warmup + median timing)."
         end
