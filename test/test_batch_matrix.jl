@@ -1,4 +1,5 @@
 # Parity matrix for production batch fast paths (KA.CPU).
+using ComputationalBackends: ComputationalBackends as CB
 using Test
 using Random
 using KernelAbstractions: KernelAbstractions as KA
@@ -13,8 +14,8 @@ using StructureFunctions.Calculations:
 Random.seed!(2025)
 
 const SF_TYPE = SFT.L2SFType()
-const CPU_BE = SFC.SerialBackend()
-const GPU_BE = SFC.GPUBackend(KA.CPU())
+const CPU_BE = CB.SerialBackend()
+const GPU_BE = CB.GPUBackend(KA.CPU())
 
 function _rand_batch_fixed(N::Int, B::Int)
     FT = Float32

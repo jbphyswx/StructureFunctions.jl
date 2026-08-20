@@ -11,7 +11,7 @@ using CUDA, StaticArrays, Printf
 using Statistics: median
 const SF = StructureFunctions
 const SFC = SF.Calculations
-const GE = Base.get_extension(SF, :StructureFunctionsGPUExt)
+const GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
 const SFT = SF.StructureFunctionTypes
 const FT = Float32
 

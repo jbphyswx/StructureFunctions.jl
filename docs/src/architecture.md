@@ -193,7 +193,7 @@ src/
 ext/
 ├── StructureFunctionsOhMyThreadsExt.jl    # OhMyThreads integration
 ├── StructureFunctionsDistributedExt.jl     # Distributed.jl integration
-├── StructureFunctionsGPUExt.jl             # KernelAbstractions integration
+├── StructureFunctionsKernelAbstractionsExt.jl             # KernelAbstractions integration
 ├── StructureFunctionsCairoMakieExt.jl      # Plotting helpers
 └── gpu/                                    # GPU kernel organization
 ```
@@ -290,8 +290,8 @@ To add support for a new backend (e.g., `CUDABackend`):
 | `src/HelperFunctions.jl` | Binning, distance metrics, utils |
 | `src/Backends.jl` | Backend type definitions |
 | `ext/StructureFunctionsOhMyThreadsExt.jl` | OhMyThreads integration |
-| `ext/StructureFunctionsDistributedExt.jl` | Distributed/SharedArrays integration |
-| `ext/StructureFunctionsGPUExt.jl` | KernelAbstractions + GPU kernels |
+| `ext/StructureFunctionsDistributedExt.jl` | Distributed.jl integration |
+| `ext/StructureFunctionsKernelAbstractionsExt.jl` | KernelAbstractions + GPU kernels |
 | `ext/StructureFunctionsCairoMakieExt.jl` | Plotting helpers |
 | `src/__init__.jl` | Exports public types/functions |
 

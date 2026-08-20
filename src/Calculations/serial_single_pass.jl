@@ -47,19 +47,16 @@ function helmholtz_decompose_2d(
     length(distance_bins) == n_bins + 1 ||
         throw(DimensionMismatch("distance_bins must have length n_bins + 1"))
 
-    # Calculate bin midpoints from log-spaced edges
-    min_log_dist = log(distance_bins[1])
-    max_log_dist = log(distance_bins[end])
-    log_step = (max_log_dist - min_log_dist) / n_bins
-    
+    # Geometric midpoint of each bin's actual edges; NaN where r <= 0 has no midpoint.
     bin_mids = zeros(FT3, n_bins)
     for k in 1:n_bins
-        bin_mids[k] = exp(min_log_dist + (k - 0.5f0) * log_step)
+        lo, hi = distance_bins[k], distance_bins[k + 1]
+        bin_mids[k] = lo > zero(FT3) ? sqrt(lo * hi) : FT3(NaN)
     end
-    
-    # Compute normalized second-order longitudinal (2) and transverse (3) functions
-    D_LL = L2_sums ./ max.(L2_counts, 1)
-    D_TT = T2_sums ./ max.(T2_counts, 1)
+
+    # Empty bins are NaN, never 0: the integral below is cumulative.
+    D_LL = _bin_average(L2_sums, L2_counts)
+    D_TT = _bin_average(T2_sums, T2_counts)
     
     # Evaluate cumulative trapezoidal integral
     I = zeros(OT, n_bins)
@@ -173,15 +170,13 @@ function _accumulate_single_pass_1d!(
     distance_bins::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
-    D = size(x, 1)
+    D = size(u, 1)
     n_points = size(x, 2)
     n_bins = length(distance_bins) - 1
     size(sums) == (SINGLE_PASS_N, n_bins) ||
         throw(DimensionMismatch("sums must have shape ($SINGLE_PASS_N, n_bins); got $(size(sums))"))
     size(counts) == (SINGLE_PASS_N, n_bins) ||
         throw(DimensionMismatch("counts must have shape ($SINGLE_PASS_N, n_bins); got $(size(counts))"))
-    vD = Val(D)
-
     # Fast path: Euclidean + D ∈ (2,3) via the SIMD compute/scatter split (vectorizes the
     # per-pair du_L / |du|² compute over j; the 6-way histogram scatter stays scalar).
     if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
@@ -189,41 +184,37 @@ function _accumulate_single_pass_1d!(
         return sums, counts
     end
 
-    for i in 1:n_points
-        x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
-        u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
+    vW, vD = _pair_dims(distance_metric, D)
+    _sp1d_pairs!(sums, counts, x, u, BinEdges(distance_bins), vW, vD,
+        distance_metric, n_bins, 1:n_points)
+    return sums, counts
+end
 
-        for j in (i + 1):n_points
-            x_j = SA.SVector{D, FT1}(ntuple(d -> x[d, j], vD))
+"""
+    _sp1d_derive_rows!(sums, counts)
 
-            r = distance_metric(x_i, x_j)
-            bin_idx = SFH.digitize(r, distance_bins)
+Fill the two derived invariant rows and replicate the shared count of a `(SINGLE_PASS_N, n_bins)`
+accumulator.
 
-            if 1 <= bin_idx <= n_bins
-                u_j = SA.SVector{D, FT2}(ntuple(d -> u[d, j], vD))
-                du = u_j - u_i
+`T2 = S2 - L2` and `L1T2 = S3 - L3` hold for every pair, and a bin is a sum, so the pair loops store
+only rows 1, 2, 4, 5 — four stores per pair instead of six — and these two are differenced once per
+call. The count is identical across all six rows, so it is accumulated into row 1 and broadcast here.
 
-                rh = SFH.r̂(x_i, x_j, distance_metric, r)
-                du_L = LA.dot(du, rh)
-                du_L2 = du_L * du_L
-                du_norm2 = LA.dot(du, du)
-                du_T2 = du_norm2 - du_L2
-
-                @inbounds sums[1, bin_idx] += du_norm2
-                @inbounds sums[2, bin_idx] += du_L2
-                @inbounds sums[3, bin_idx] += du_T2
-                @inbounds sums[4, bin_idx] += du_L * du_norm2
-                @inbounds sums[5, bin_idx] += du_L * du_L2
-                @inbounds sums[6, bin_idx] += du_L * du_T2
-
-                @inbounds for t in 1:SINGLE_PASS_N
-                    counts[t, bin_idx] += one(CT)
-                end
-            end
+Uses `=`, never `+=`, so it is **idempotent**: correct whether a kernel runs once or many times over
+the same buffer, and correct under threaded/partial reduction because the derivation is linear
+(`Σ(S2-L2) = ΣS2 - ΣL2`). That is why it belongs at the end of each pair kernel rather than at the
+callers' assembly points, of which there are more than twenty.
+"""
+@inline function _sp1d_derive_rows!(sums::AbstractMatrix, counts::AbstractMatrix)
+    @inbounds for b in axes(sums, 2)
+        sums[3, b] = sums[1, b] - sums[2, b]
+        sums[6, b] = sums[4, b] - sums[5, b]
+        c = counts[1, b]
+        for t in 2:SINGLE_PASS_N
+            counts[t, b] = c
         end
     end
-
-    return sums, counts
+    return nothing
 end
 
 """
@@ -237,11 +228,12 @@ and scatters the 6 invariants. Like `_pf_simd_pairs!`, the loop must live in thi
 """
 function _pf_sp_simd_pairs!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
-    xc::NTuple{D}, uc::NTuple{D}, dist_be, ::Val{D},
-    distbuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector, irange,
+    xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, ::Val{D},
+    keybuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector,
+    idxbuf::AbstractVector{Int32}, irange,
 ) where {OT, CT, D}
     N = length(xc[1])
-    nb = n_histogram_bins(dist_be)
+    nb = n_histogram_bins(plan)
     FTx = eltype(xc[1])
     @inbounds for i in irange
         Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
@@ -249,56 +241,167 @@ function _pf_sp_simd_pairs!(
         @simd for j in (i + 1):N
             Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
             dx = Xj - Xi
-            dist = sqrt(LA.dot(dx, dx))
-            rh = dx / dist
+            r2 = LA.dot(dx, dx)
             du = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D))) - Ui
-            distbuf[j] = dist
-            duLbuf[j] = LA.dot(du, rh)
+            # δu_L needs r, so one reciprocal-sqrt stays; it vectorizes.
+            inv_r = inv(sqrt(r2))
+            keybuf[j] = digitize_key(plan, r2)
+            duLbuf[j] = LA.dot(du, dx) * inv_r
             dn2buf[j] = LA.dot(du, du)
+            if has_vector_index(plan)
+                idxbuf[j] = squared_approx_index(plan, r2)
+            end
         end
         for j in (i + 1):N
-            bin = SFH.digitize(distbuf[j], dist_be)
+            bin = squared_bin(plan, keybuf[j], idxbuf[j])
             if 1 <= bin <= nb
                 duL = duLbuf[j]
                 dn2 = dn2buf[j]
                 duL2 = duL * duL
-                duT2 = dn2 - duL2
                 sums[1, bin] += dn2
                 sums[2, bin] += duL2
-                sums[3, bin] += duT2
                 sums[4, bin] += duL * dn2
                 sums[5, bin] += duL * duL2
-                sums[6, bin] += duL * duT2
-                for t in 1:SINGLE_PASS_N
-                    counts[t, bin] += one(CT)
-                end
+                counts[1, bin] += one(CT)
             end
         end
     end
+    _sp1d_derive_rows!(sums, counts)
     return nothing
 end
 
-# Serial driver: materialize contiguous component vectors + buffers, run over the full range.
+# Serial driver: the full outer range through the same per-worker kernel.
 function _sp_simd_run!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
     x::AbstractMatrix, u::AbstractMatrix, dist_be, ::Val{D},
+) where {OT, CT, D}
+    N = size(x, 2)
+    return _sp_simd_partial!(sums, counts, x, u, dist_be, Val(D), 1:(N - 1))
+end
+
+"""
+    _partial_single_pass_1d(x, u, distance_bins, ilist; distance_metric, count_eltype)
+
+Six-invariant partial sums/counts over an explicit outer-index list, for one distributed worker or
+MPI rank. Euclidean `D ∈ {2,3}` takes the SIMD kernel; other metrics use the scalar loop. The
+accumulator element type comes from the inputs.
+"""
+function _partial_single_pass_1d(
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector,
+    ilist;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
+) where {FT1 <: Number, FT2 <: Number, CT}
+    OT = promote_type(float(FT1), float(FT2))
+    D = size(u, 1)
+    nb = n_histogram_bins(distance_bins)
+    sums = zeros(OT, SINGLE_PASS_N, nb)
+    counts = zeros(CT, SINGLE_PASS_N, nb)
+    dist_be = BinEdges(distance_bins)
+
+    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
+        _sp_simd_partial!(sums, counts, x, u, dist_be, D == 2 ? Val(2) : Val(3), ilist)
+        return sums, counts
+    end
+
+    vW, vD = _pair_dims(distance_metric, D)
+    _sp1d_pairs!(sums, counts, x, u, dist_be, vW, vD, distance_metric, nb, ilist)
+    return sums, counts
+end
+
+"""
+    _sp1d_pairs!(sums, counts, x, u, dist_be, ::Val{W}, ::Val{D}, metric, n_bins, ilist)
+
+Six-invariant scalar pair loop over the outer indices `ilist`, for geometries with no SIMD fast
+path. `W` is the coordinate width and `D` the velocity width; both are type parameters so the
+`SVector`s stay concrete inside the loop.
+"""
+function _sp1d_pairs!(
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
+    x::AbstractMatrix{FT1}, u::AbstractMatrix{FT2},
+    dist_be, ::Val{W}, ::Val{D}, distance_metric, n_bins::Int, ilist,
+) where {OT, CT, FT1, FT2, W, D}
+    n_points = size(x, 2)
+    vW = Val(W)
+    vD = Val(D)
+    geom = SFH.pair_geometry_for(distance_metric, vD)
+    @inbounds for i in ilist
+        x_i = SA.SVector{W, FT1}(ntuple(d -> x[d, i], vW))
+        u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
+        for j in (i + 1):n_points
+            x_j = SA.SVector{W, FT1}(ntuple(d -> x[d, j], vW))
+            ok, r, frame = SFH.pair_frame(geom, x_i, x_j)
+            bin = SFH.digitize(r, dist_be)
+            if ok && 1 <= bin <= n_bins
+                u_j = SA.SVector{D, FT2}(ntuple(d -> u[d, j], vD))
+                du, rh = SFH.pair_increments(geom, frame, r, x_i, x_j, u_i, u_j)
+                duL = LA.dot(du, rh)
+                duL2 = duL * duL
+                dn2 = LA.dot(du, du)
+                sums[1, bin] += dn2
+                sums[2, bin] += duL2
+                sums[4, bin] += duL * dn2
+                sums[5, bin] += duL * duL2
+                counts[1, bin] += one(CT)
+            end
+        end
+    end
+    _sp1d_derive_rows!(sums, counts)
+    return nothing
+end
+
+"""Run [`_pf_sp_simd_pairs!`](@ref) over an explicit outer-index list, with this worker's buffers."""
+function _sp_simd_partial!(
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
+    x::AbstractMatrix, u::AbstractMatrix, dist_be, ::Val{D}, ilist,
 ) where {OT, CT, D}
     xc = ntuple(d -> collect(view(x, d, :)), Val(D))
     uc = ntuple(d -> collect(view(u, d, :)), Val(D))
     N = length(xc[1])
     FTx = eltype(xc[1])
-    distbuf = Vector{FTx}(undef, N)
+    keybuf = Vector{FTx}(undef, N)
     duLbuf = Vector{OT}(undef, N)
     dn2buf = Vector{OT}(undef, N)
-    _pf_sp_simd_pairs!(sums, counts, xc, uc, dist_be, Val(D), distbuf, duLbuf, dn2buf, 1:(N - 1))
+    idxbuf = Vector{Int32}(undef, N)
+    plan = squared_digitize_plan(dist_be)
+    _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf, idxbuf, ilist)
     return nothing
+end
+
+"""
+    _partial_single_pass_2d(x, u, distance_bins, value_bins, ilist; distance_metric, count_eltype)
+
+Six-invariant 2D joint partial sums/counts over an explicit outer-index list, for one distributed
+worker or MPI rank. The accumulator element type comes from the inputs.
+"""
+function _partial_single_pass_2d(
+    x::AbstractMatrix{FT1},
+    u::AbstractMatrix{FT2},
+    distance_bins::AbstractVector,
+    value_bins::SinglePass2DValueBins,
+    ilist;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
+) where {FT1 <: Number, FT2 <: Number, CT}
+    OT = promote_type(float(FT1), float(FT2))
+    n_bins = n_histogram_bins(distance_bins)
+    n_val = length(_sp2d_value_bin_at(value_bins, 1)) - 1
+    _validate_value_bins!(value_bins, n_val)
+    _assert_counts_representable(CT, size(x, 2))
+    sums = zeros(OT, SINGLE_PASS_N, n_bins, n_val)
+    counts = zeros(CT, SINGLE_PASS_N, n_bins, n_val)
+    _sp2d_accumulate_range!(sums, counts, x, u, BinEdges(distance_bins), value_bins,
+        distance_metric, n_bins, n_val, ilist)
+    return sums, counts
 end
 
 function _dispatch_single_pass end
 function _dispatch_single_pass! end
 
 """
-    calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins; backend=SerialBackend(), kwargs...)
+    calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins; backend=CB.SerialBackend(), kwargs...)
 
 Accumulate into pre-allocated ``(6, n_bins)`` buffers using the requested execution backend.
 """
@@ -308,53 +411,54 @@ function calculate_structure_functions_single_pass!(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
-    backend::AbstractExecutionBackend = SerialBackend(),
+    backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
-    _validate_array_shape(x, u)
-    _dispatch_single_pass!(backend, sums, counts, x, u, distance_bins; kwargs...)
+    _validate_array_shape(x, u, distance_metric)
+    _dispatch_single_pass!(backend, sums, counts, x, u, distance_bins; distance_metric, kwargs...)
     return sums, counts
 end
 
 function _dispatch_single_pass!(
-    ::SerialBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
+    ::CB.AbstractSerialBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
 )
     return _accumulate_single_pass_1d!(sums, counts, x, u, distance_bins; kwargs...)
 end
 
 function _dispatch_single_pass!(
-    ::ThreadedBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
+    ::CB.AbstractThreadedBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
 )
-    throw(ArgumentError("Threaded in-place single-pass is unavailable. Load OhMyThreads or use backend=SerialBackend()."))
+    throw(ArgumentError("Threaded in-place single-pass is unavailable. Load OhMyThreads or use backend=CB.SerialBackend()."))
 end
 
 function _dispatch_single_pass!(
-    ::DistributedBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
+    ::CB.AbstractDistributedBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
 )
-    throw(ArgumentError("Distributed in-place single-pass is unavailable. Load Distributed or use backend=SerialBackend()."))
+    throw(ArgumentError("Distributed in-place single-pass is unavailable. Load Distributed or use backend=CB.SerialBackend()."))
 end
 
 function _dispatch_single_pass!(
-    ::GPUBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
+    ::CB.AbstractGPUBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
 )
-    throw(ArgumentError("GPU in-place single-pass is unavailable. Load GPUExt or use backend=SerialBackend()."))
+    throw(ArgumentError("GPU in-place single-pass is unavailable. Load GPUExt or use backend=CB.SerialBackend()."))
 end
 
 function _dispatch_single_pass!(
-    ::AutoBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
+    ::CB.AbstractAutoBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
 )
     if distributed_workers_available(Val(:distributed)) &&
        _distributed_single_pass_available(x, u, distance_bins)
-        return _dispatch_single_pass!(DistributedBackend(), sums, counts, x, u, distance_bins; kwargs...)
+        return _dispatch_single_pass!(CB.DistributedBackend(), sums, counts, x, u, distance_bins; kwargs...)
     end
     if Threads.nthreads() > 1 && _threaded_single_pass_available(x, u, distance_bins)
-        return _dispatch_single_pass!(ThreadedBackend(), sums, counts, x, u, distance_bins; kwargs...)
+        return _dispatch_single_pass!(CB.ThreadedBackend(), sums, counts, x, u, distance_bins; kwargs...)
     end
-    return _dispatch_single_pass!(SerialBackend(), sums, counts, x, u, distance_bins; kwargs...)
+    return _dispatch_single_pass!(CB.SerialBackend(), sums, counts, x, u, distance_bins; kwargs...)
 end
 
 function _dispatch_single_pass(
-    ::SerialBackend,
+    ::CB.AbstractSerialBackend,
     ::PointField,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
@@ -383,7 +487,7 @@ function _dispatch_single_pass(
 end
 
 function _dispatch_single_pass(
-    ::SerialBackend,
+    ::CB.AbstractSerialBackend,
     ::Union{SharedPositionField, VaryingPositionField},
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
@@ -401,7 +505,7 @@ function _dispatch_single_pass(
 end
 
 function _dispatch_single_pass(
-    ::ThreadedBackend,
+    ::CB.AbstractThreadedBackend,
     ::PointField,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
@@ -409,11 +513,11 @@ function _dispatch_single_pass(
     count_eltype::Type{CT} = UInt32,
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
-    return _dispatch_single_pass(ThreadedBackend(), x, u, distance_bins; count_eltype = CT, kwargs...)
+    return _dispatch_single_pass(CB.ThreadedBackend(), x, u, distance_bins; count_eltype = CT, kwargs...)
 end
 
 function _dispatch_single_pass(
-    ::ThreadedBackend,
+    ::CB.AbstractThreadedBackend,
     ::Union{SharedPositionField, VaryingPositionField},
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
@@ -430,20 +534,24 @@ function _dispatch_single_pass(
     return (sums = sums, counts = counts)
 end
 
-function _dispatch_single_pass(::ThreadedBackend, args...; kwargs...)
-    throw(ArgumentError("Threaded single-pass backend is unavailable. Load the OhMyThreads extension or use backend=SerialBackend()."))
+function _dispatch_single_pass(::CB.AbstractThreadedBackend, args...; kwargs...)
+    throw(ArgumentError("Threaded single-pass backend is unavailable. Load the OhMyThreads extension or use backend=CB.SerialBackend()."))
 end
 
-function _dispatch_single_pass(::DistributedBackend, args...; kwargs...)
-    throw(ArgumentError("Distributed single-pass backend is unavailable. Load the Distributed/SharedArrays extension or use backend=SerialBackend()."))
+function _dispatch_single_pass(::CB.AbstractDistributedBackend, args...; kwargs...)
+    throw(ArgumentError("Distributed single-pass backend is unavailable. Load Distributed (`using Distributed`) or use backend=CB.SerialBackend()."))
 end
 
-function _dispatch_single_pass(::GPUBackend, args...; kwargs...)
-    throw(ArgumentError("GPU single-pass backend is unavailable. Load the GPUExt extension or use backend=SerialBackend()."))
+function _dispatch_single_pass(::CB.AbstractGPUBackend, args...; kwargs...)
+    throw(ArgumentError("GPU single-pass backend is unavailable. Load the GPUExt extension or use backend=CB.SerialBackend()."))
+end
+
+function _dispatch_single_pass(::CB.AbstractMPIBackend, args...; kwargs...)
+    throw(ArgumentError("MPI single-pass backend is unavailable. Load MPI (`using MPI`) or use backend=CB.SerialBackend()."))
 end
 
 function _dispatch_single_pass(
-    backend::GPUBackend,
+    backend::CB.AbstractGPUBackend,
     ::AbstractFieldShape,
     x::AbstractArray,
     u::AbstractArray,
@@ -454,7 +562,7 @@ function _dispatch_single_pass(
 end
 
 function _dispatch_single_pass(
-    backend::DistributedBackend,
+    backend::CB.AbstractDistributedBackend,
     ::AbstractFieldShape,
     x::AbstractArray,
     u::AbstractArray,
@@ -466,33 +574,21 @@ end
 
 _threaded_single_pass_available(x, u, distance_bins) = hasmethod(
     _dispatch_single_pass,
-    Tuple{ThreadedBackend, typeof(x), typeof(u), typeof(distance_bins)}
+    Tuple{CB.ThreadedBackend, typeof(x), typeof(u), typeof(distance_bins)}
 )
 
 _distributed_single_pass_available(x, u, distance_bins) = hasmethod(
     _dispatch_single_pass,
-    Tuple{DistributedBackend, typeof(x), typeof(u), typeof(distance_bins)}
+    Tuple{CB.DistributedBackend, typeof(x), typeof(u), typeof(distance_bins)}
 )
 
-function _dispatch_single_pass(::AutoBackend, shape::AbstractFieldShape, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector; kwargs...)
-    if distributed_workers_available(Val(:distributed)) &&
-       _distributed_single_pass_available(x, u, distance_bins)
-        return _dispatch_single_pass(DistributedBackend(), shape, x, u, distance_bins; kwargs...)
-    end
-    
-    if has_auxiliary_axes(shape)
-        if Threads.nthreads() > 1
-            return _dispatch_single_pass(ThreadedBackend(), shape, x, u, distance_bins; kwargs...)
-        end
-        return _dispatch_single_pass(SerialBackend(), shape, x, u, distance_bins; kwargs...)
-    end
-    
-    if Threads.nthreads() > 1 &&
-       _threaded_single_pass_available(x, u, distance_bins)
-        return _dispatch_single_pass(ThreadedBackend(), shape, x, u, distance_bins; kwargs...)
-    end
-    
-    return _dispatch_single_pass(SerialBackend(), shape, x, u, distance_bins; kwargs...)
+function _dispatch_single_pass(::CB.AbstractAutoBackend, shape::AbstractFieldShape, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector; kwargs...)
+    backend = resolve_auto_backend(
+        shape,
+        () -> _threaded_single_pass_available(x, u, distance_bins),
+        () -> _distributed_single_pass_available(x, u, distance_bins),
+    )
+    return _dispatch_single_pass(backend, shape, x, u, distance_bins; kwargs...)
 end
 
 # --- Single-pass result collections (keyed by invariant) ---
@@ -547,7 +643,7 @@ function _single_pass_collection_1d(
 end
 
 """
-    calculate_structure_functions_single_pass(x, u, distance_bins; backend=AutoBackend(),
+    calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.AutoBackend(),
                                               output_type=StructureFunction, kwargs...)
 
 Compute the six native invariant structure functions (S2, L2, T2, S3, L3, L1T2) in one pair
@@ -568,15 +664,18 @@ function calculate_structure_functions_single_pass(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2, M},
     distance_bins::AbstractVector{FT3};
-    backend::AbstractExecutionBackend = AutoBackend(),
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     output_type::Type{OT} = SFO.StructureFunction,
     count_eltype::Type{CT} = UInt32,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, M, OT, CT}
-    shape = _validate_array_shape(x, u)
+    shape = _validate_array_shape(x, u, distance_metric)
+    _assert_counts_representable(CT, size(x, 2))
     raw = _dispatch_single_pass(
         backend, shape, x, u, distance_bins;
         count_eltype = count_eltype,
+        distance_metric,
         kwargs...,
     )
     # The accumulator's element/rank are fully determined by the inputs: the sum element type is
@@ -617,12 +716,13 @@ function calculate_structure_functions_single_pass_2d!(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
     value_bins::SinglePass2DValueBins;
-    backend::AbstractExecutionBackend = SerialBackend(),
+    backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
-    _validate_array_shape(x, u)
+    _validate_array_shape(x, u, distance_metric)
     _dispatch_single_pass_2d!(
-        backend, sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...
+        backend, sums_3d, counts_3d, x, u, distance_bins, value_bins; distance_metric, kwargs...
     )
     return sums_3d, counts_3d
 end
@@ -637,7 +737,6 @@ function _accumulate_single_pass_2d!(
     value_bins::SinglePass2DValueBins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
-    D = size(x, 1)
     n_points = size(x, 2)
     n_bins = length(distance_bins) - 1
     n_val = size(sums_3d, 3)
@@ -646,89 +745,229 @@ function _accumulate_single_pass_2d!(
     size(counts_3d) == size(sums_3d) ||
         throw(DimensionMismatch("counts and sums must have the same shape"))
     _validate_value_bins!(value_bins, n_val)
+
+    dist_be = BinEdges(distance_bins)
+    _sp2d_accumulate_range!(sums_3d, counts_3d, x, u, dist_be, value_bins, distance_metric,
+        n_bins, n_val, 1:n_points)
+    return sums_3d, counts_3d
+end
+
+"""Accumulate single-pass 2D pairs for outer indices `ilist` into the caller's sums/counts."""
+function _sp2d_accumulate_range!(
+    sums_3d::AbstractArray{OT, 3}, counts_3d::AbstractArray{CT, 3},
+    x::AbstractMatrix, u::AbstractMatrix, dist_be, value_bins, distance_metric,
+    n_bins::Int, n_val::Int, ilist,
+) where {OT, CT}
+    h = _sp2d_histogram(OT, n_bins, n_val)
+    _sp2d_fill!(h, x, u, dist_be, value_bins, distance_metric, n_bins, n_val, ilist)
+    return _sp2d_unpack!(sums_3d, counts_3d, h, n_bins, n_val)
+end
+
+"""
+Fill the interleaved accumulator from pairs whose outer index is in `ilist`. Euclidean `D ∈ {2,3}`
+takes the SIMD compute/scatter split; other metrics or dimensions take the scalar loop. The `Val{D}`
+branch is a function barrier: `D` must be a type parameter inside the loop, or `SVector{D}` builds
+its type per point.
+"""
+function _sp2d_fill!(
+    h::AbstractArray{OT, 4},
+    x::AbstractMatrix, u::AbstractMatrix, dist_be, value_bins, distance_metric,
+    n_bins::Int, n_val::Int, ilist,
+) where {OT}
+    D = size(u, 1)
+    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
+        _sp2d_simd_partial!(h, x, u, dist_be, value_bins, D == 2 ? Val(2) : Val(3), n_val, ilist)
+        return nothing
+    end
+    plan = squared_digitize_plan(dist_be)
+    vW, vD = _pair_dims(distance_metric, D)
+    _sp2d_pairs!(h, x, u, dist_be, plan, value_bins, vW, vD,
+        distance_metric, n_bins, n_val, ilist)
+    return nothing
+end
+
+"""
+    _sp2d_histogram(OT, n_bins, n_val) -> Array{OT,4}
+
+The single-pass 2D accumulator, laid out `(sum|count, invariant, value_bin, distance_bin)`.
+
+Each pair writes all six invariants at ONE distance bin but six different value bins, so putting
+the value axis inside the distance axis keeps a pair's six updates inside one distance slab, and
+interleaving sum with count puts each invariant's two updates on one cache line: 6 lines touched
+per pair instead of 12, and the cost stops scaling with histogram size.
+"""
+@inline _sp2d_histogram(::Type{OT}, n_bins::Int, n_val::Int) where {OT} =
+    zeros(OT, 2, SINGLE_PASS_N, n_val, n_bins)
+
+"""Add the interleaved accumulator into the caller's `(6, n_bins, n_val)` sums/counts."""
+function _sp2d_unpack!(
+    sums_3d::AbstractArray{OT, 3}, counts_3d::AbstractArray{CT, 3},
+    h::AbstractArray, n_bins::Int, n_val::Int,
+) where {OT, CT}
+    @inbounds for d in 1:n_bins, v in 1:n_val, t in 1:SINGLE_PASS_N
+        sums_3d[t, d, v] += h[1, t, v, d]
+        counts_3d[t, d, v] += CT(h[2, t, v, d])
+    end
+    return nothing
+end
+
+"""
+    _sp2d_pairs!(h, x, u, dist_be, plan, value_bins, ::Val{D}, metric, n_bins, n_val, ilist)
+
+Single-pass 2D scalar pair loop over the outer indices `ilist`, for non-Euclidean metrics.
+Specialized on the spatial dimension `D` so the `SVector`s are concrete.
+"""
+function _sp2d_pairs!(
+    h::AbstractArray{OT, 4},
+    x::AbstractMatrix{FT1}, u::AbstractMatrix{FT2},
+    dist_be, plan, value_bins, ::Val{W}, ::Val{D}, distance_metric, n_bins::Int, n_val::Int, ilist,
+) where {OT, FT1, FT2, W, D}
+    n_points = size(x, 2)
+    vW = Val(W)
     vD = Val(D)
-
-    for i in 1:n_points
-        x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
+    geom = SFH.pair_geometry_for(distance_metric, vD)
+    @inbounds for i in ilist
+        x_i = SA.SVector{W, FT1}(ntuple(d -> x[d, i], vW))
         u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
-
         for j in (i + 1):n_points
-            x_j = SA.SVector{D, FT1}(ntuple(d -> x[d, j], vD))
-
-            r = distance_metric(x_i, x_j)
-            bin_idx = SFH.digitize(r, distance_bins)
-
-            if 1 <= bin_idx <= n_bins
+            x_j = SA.SVector{W, FT1}(ntuple(d -> x[d, j], vW))
+            ok, r, frame = SFH.pair_frame(geom, x_i, x_j)
+            bin_idx = SFH.digitize(r, dist_be)
+            if ok && 1 <= bin_idx <= n_bins
                 u_j = SA.SVector{D, FT2}(ntuple(d -> u[d, j], vD))
-                du = u_j - u_i
-
-                rh = SFH.r̂(x_i, x_j, distance_metric, r)
+                du, rh = SFH.pair_increments(geom, frame, r, x_i, x_j, u_i, u_j)
                 du_L = LA.dot(du, rh)
                 du_L2 = du_L * du_L
                 du_norm2 = LA.dot(du, du)
                 du_T2 = du_norm2 - du_L2
-
-                vals = (
-                    du_norm2,
-                    du_L2,
-                    du_T2,
-                    du_L * du_norm2,
-                    du_L * du_L2,
-                    du_L * du_T2,
-                )
-
-                for t in 1:SINGLE_PASS_N
-                    vb = _sp2d_value_bin_at(value_bins, t)
-                    vbin = SFH.digitize(vals[t], vb)
-                    n_val_t = length(vb) - 1
-                    if 1 <= vbin <= n_val_t && vbin <= n_val
-                        @inbounds sums_3d[t, bin_idx, vbin] += vals[t]
-                        @inbounds counts_3d[t, bin_idx, vbin] += 1
-                    end
-                end
+                vals = (du_norm2, du_L2, du_T2, du_L * du_norm2, du_L * du_L2, du_L * du_T2)
+                _sp2d_scatter!(h, bin_idx, vals, value_bins, n_val)
             end
         end
     end
+    return nothing
+end
 
-    return sums_3d, counts_3d
+"""Scatter the six invariants of one pair into their cells of the interleaved accumulator."""
+@inline function _sp2d_scatter!(
+    h::AbstractArray{OT, 4}, dbin::Int, vals::NTuple{SINGLE_PASS_N}, value_bins, n_val::Int,
+) where {OT}
+    @sp2d_each_invariant value_bins t vb begin
+        vbin = SFH.digitize(vals[t], vb)
+        if 1 <= vbin <= (length(vb) - 1) && vbin <= n_val
+            @inbounds h[1, t, vbin, dbin] += vals[t]
+            @inbounds h[2, t, vbin, dbin] += one(OT)
+        end
+    end
+    return nothing
+end
+
+"""
+    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, n_val, irange)
+
+Single-pass 2D point-field SIMD compute/scatter kernel over outer indices `irange`, the 2D analogue
+of [`_pf_sp_simd_pairs!`](@ref). The `@simd` half computes distance, `du_L` and `|du|²` into buffers;
+the scalar half derives the six invariants from those two scalars and scatters each into its own
+`(distance, value)` cell. Shared by serial + threaded.
+"""
+function _sp2d_simd_pairs!(
+    h::AbstractArray{OT, 4},
+    xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, value_bins, ::Val{D},
+    keybuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector,
+    idxbuf::AbstractVector{Int32}, n_val::Int, irange,
+) where {OT, D}
+    N = length(xc[1])
+    nb = n_histogram_bins(plan)
+    FTx = eltype(xc[1])
+    @inbounds for i in irange
+        Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
+        Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
+        @simd for j in (i + 1):N
+            Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
+            dx = Xj - Xi
+            r2 = LA.dot(dx, dx)
+            du = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D))) - Ui
+            inv_r = inv(sqrt(r2))
+            keybuf[j] = digitize_key(plan, r2)
+            duLbuf[j] = LA.dot(du, dx) * inv_r
+            dn2buf[j] = LA.dot(du, du)
+            if has_vector_index(plan)
+                idxbuf[j] = squared_approx_index(plan, r2)
+            end
+        end
+        for j in (i + 1):N
+            dbin = squared_bin(plan, keybuf[j], idxbuf[j])
+            if 1 <= dbin <= nb
+                duL = duLbuf[j]
+                dn2 = dn2buf[j]
+                duL2 = duL * duL
+                duT2 = dn2 - duL2
+                vals = (dn2, duL2, duT2, duL * dn2, duL * duL2, duL * duT2)
+                _sp2d_scatter!(h, dbin, vals, value_bins, n_val)
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    _sp2d_simd_partial!(h, x, u, dist_be, value_bins, ::Val{D}, n_val, ilist)
+
+Run [`_sp2d_simd_pairs!`](@ref) over an explicit outer-index list, with this worker's buffers.
+"""
+function _sp2d_simd_partial!(
+    h::AbstractArray{OT, 4},
+    x::AbstractMatrix, u::AbstractMatrix, dist_be, value_bins, ::Val{D}, n_val::Int, ilist,
+) where {OT, D}
+    xc = ntuple(d -> collect(view(x, d, :)), Val(D))
+    uc = ntuple(d -> collect(view(u, d, :)), Val(D))
+    N = length(xc[1])
+    keybuf = Vector{eltype(xc[1])}(undef, N)
+    duLbuf = Vector{OT}(undef, N)
+    dn2buf = Vector{OT}(undef, N)
+    idxbuf = Vector{Int32}(undef, N)
+    plan = squared_digitize_plan(dist_be)
+    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, Val(D),
+        keybuf, duLbuf, dn2buf, idxbuf, n_val, ilist)
+    return nothing
 end
 
 function _dispatch_single_pass_2d!(
-    ::SerialBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
+    ::CB.AbstractSerialBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
 )
     return _accumulate_single_pass_2d!(sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
 end
 
 function _dispatch_single_pass_2d!(
-    ::ThreadedBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
+    ::CB.AbstractThreadedBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
 )
-    throw(ArgumentError("Threaded in-place 2D single-pass is unavailable. Load OhMyThreads or use backend=SerialBackend()."))
+    throw(ArgumentError("Threaded in-place 2D single-pass is unavailable. Load OhMyThreads or use backend=CB.SerialBackend()."))
 end
 
 function _dispatch_single_pass_2d!(
-    ::DistributedBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
+    ::CB.AbstractDistributedBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
 )
-    throw(ArgumentError("Distributed in-place 2D single-pass is unavailable. Load Distributed or use backend=SerialBackend()."))
+    throw(ArgumentError("Distributed in-place 2D single-pass is unavailable. Load Distributed or use backend=CB.SerialBackend()."))
 end
 
 function _dispatch_single_pass_2d!(
-    backend::GPUBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
+    backend::CB.AbstractGPUBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
 )
     gpu_calculate_structure_functions_single_pass_2d!(sums_3d, counts_3d, backend.backend, x, u, distance_bins, value_bins; kwargs...)
     return sums_3d, counts_3d
 end
 
 function _dispatch_single_pass_2d!(
-    ::AutoBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
+    ::CB.AbstractAutoBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
 )
     if distributed_workers_available(Val(:distributed)) &&
        _distributed_single_pass_2d_available(x, u, distance_bins, value_bins)
-        return _dispatch_single_pass_2d!(DistributedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
+        return _dispatch_single_pass_2d!(CB.DistributedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
     end
     if Threads.nthreads() > 1 && _threaded_single_pass_2d_available(x, u, distance_bins, value_bins)
-        return _dispatch_single_pass_2d!(ThreadedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
+        return _dispatch_single_pass_2d!(CB.ThreadedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
     end
-    return _dispatch_single_pass_2d!(SerialBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
+    return _dispatch_single_pass_2d!(CB.SerialBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
 end
 
 # Specific method for matrix inputs to handle standard non-batch 2D single-pass
@@ -756,7 +995,7 @@ function _dispatch_single_pass_2d_matrix(
 end
 
 function _dispatch_single_pass_2d(
-    ::SerialBackend,
+    ::CB.AbstractSerialBackend,
     ::PointField,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
@@ -772,7 +1011,7 @@ function _dispatch_single_pass_2d(
 end
 
 function _dispatch_single_pass_2d(
-    ::SerialBackend,
+    ::CB.AbstractSerialBackend,
     ::Union{SharedPositionField, VaryingPositionField},
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
@@ -792,12 +1031,12 @@ function _dispatch_single_pass_2d(
     return (sums = sums, counts = counts)
 end
 
-function _dispatch_single_pass_2d(::ThreadedBackend, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...)
-    throw(ArgumentError("Threaded 2D single-pass backend is unavailable. Load the OhMyThreads extension or use backend=SerialBackend()."))
+function _dispatch_single_pass_2d(::CB.AbstractThreadedBackend, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...)
+    throw(ArgumentError("Threaded 2D single-pass backend is unavailable. Load the OhMyThreads extension or use backend=CB.SerialBackend()."))
 end
 
 function _dispatch_single_pass_2d(
-    backend::ThreadedBackend,
+    backend::CB.AbstractThreadedBackend,
     ::PointField,
     x::AbstractMatrix,
     u::AbstractMatrix,
@@ -809,7 +1048,7 @@ function _dispatch_single_pass_2d(
 end
 
 function _dispatch_single_pass_2d(
-    ::ThreadedBackend,
+    ::CB.AbstractThreadedBackend,
     ::Union{SharedPositionField, VaryingPositionField},
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
@@ -829,12 +1068,16 @@ function _dispatch_single_pass_2d(
     return (sums = sums, counts = counts)
 end
 
-function _dispatch_single_pass_2d(::DistributedBackend, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...)
-    throw(ArgumentError("Distributed 2D single-pass backend is unavailable. Load the Distributed extension or use backend=SerialBackend()."))
+function _dispatch_single_pass_2d(::CB.AbstractDistributedBackend, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...)
+    throw(ArgumentError("Distributed 2D single-pass backend is unavailable. Load the Distributed extension or use backend=CB.SerialBackend()."))
+end
+
+function _dispatch_single_pass_2d(::CB.AbstractMPIBackend, args...; kwargs...)
+    throw(ArgumentError("MPI 2D single-pass backend is unavailable. Load MPI (`using MPI`) or use backend=CB.SerialBackend()."))
 end
 
 function _dispatch_single_pass_2d(
-    backend::DistributedBackend,
+    backend::CB.AbstractDistributedBackend,
     ::AbstractFieldShape,
     x::AbstractArray,
     u::AbstractArray,
@@ -845,12 +1088,12 @@ function _dispatch_single_pass_2d(
     return _dispatch_single_pass_2d(backend, x, u, distance_bins, value_bins; kwargs...)
 end
 
-function _dispatch_single_pass_2d(backend::GPUBackend, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...)
+function _dispatch_single_pass_2d(backend::CB.AbstractGPUBackend, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...)
     return gpu_calculate_structure_functions_single_pass_2d(backend.backend, x, u, distance_bins, value_bins; kwargs...)
 end
 
 function _dispatch_single_pass_2d(
-    backend::GPUBackend,
+    backend::CB.AbstractGPUBackend,
     ::AbstractFieldShape,
     x::AbstractArray,
     u::AbstractArray,
@@ -863,30 +1106,21 @@ end
 
 _threaded_single_pass_2d_available(x, u, distance_bins, value_bins) = hasmethod(
     _dispatch_single_pass_2d,
-    Tuple{ThreadedBackend, typeof(x), typeof(u), typeof(distance_bins), typeof(value_bins)},
+    Tuple{CB.ThreadedBackend, typeof(x), typeof(u), typeof(distance_bins), typeof(value_bins)},
 )
 
 _distributed_single_pass_2d_available(x, u, distance_bins, value_bins) = hasmethod(
     _dispatch_single_pass_2d,
-    Tuple{DistributedBackend, typeof(x), typeof(u), typeof(distance_bins), typeof(value_bins)},
+    Tuple{CB.DistributedBackend, typeof(x), typeof(u), typeof(distance_bins), typeof(value_bins)},
 )
 
-function _dispatch_single_pass_2d(::AutoBackend, shape::AbstractFieldShape, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...)
-    if distributed_workers_available(Val(:distributed)) &&
-       _distributed_single_pass_2d_available(x, u, distance_bins, value_bins)
-        return _dispatch_single_pass_2d(DistributedBackend(), shape, x, u, distance_bins, value_bins; kwargs...)
-    end
-    if has_auxiliary_axes(shape)
-        if Threads.nthreads() > 1
-            return _dispatch_single_pass_2d(ThreadedBackend(), shape, x, u, distance_bins, value_bins; kwargs...)
-        end
-        return _dispatch_single_pass_2d(SerialBackend(), shape, x, u, distance_bins, value_bins; kwargs...)
-    end
-    if Threads.nthreads() > 1 &&
-       _threaded_single_pass_2d_available(x, u, distance_bins, value_bins)
-        return _dispatch_single_pass_2d(ThreadedBackend(), shape, x, u, distance_bins, value_bins; kwargs...)
-    end
-    return _dispatch_single_pass_2d(SerialBackend(), shape, x, u, distance_bins, value_bins; kwargs...)
+function _dispatch_single_pass_2d(::CB.AbstractAutoBackend, shape::AbstractFieldShape, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...)
+    backend = resolve_auto_backend(
+        shape,
+        () -> _threaded_single_pass_2d_available(x, u, distance_bins, value_bins),
+        () -> _distributed_single_pass_2d_available(x, u, distance_bins, value_bins),
+    )
+    return _dispatch_single_pass_2d(backend, shape, x, u, distance_bins, value_bins; kwargs...)
 end
 
 # Per-invariant value bins: a single vector is shared across invariants; a 6-tuple is per-invariant.
@@ -916,7 +1150,7 @@ function _single_pass_collection_2d(
 end
 
 """
-    calculate_structure_functions_single_pass_2d(x, u, distance_bins, value_bins; backend=AutoBackend(),
+    calculate_structure_functions_single_pass_2d(x, u, distance_bins, value_bins; backend=CB.AutoBackend(),
                                                  output_type=StructureFunction2DSumsAndCounts, kwargs...)
 
 Compute the six invariant 2D joint structure-function histograms in one pass, returned as a
@@ -929,15 +1163,19 @@ function calculate_structure_functions_single_pass_2d(
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3},
     value_bins::SinglePass2DValueBins;
-    backend::AbstractExecutionBackend = AutoBackend(),
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     output_type::Type{OT} = SFO.StructureFunction2DSumsAndCounts,
     count_eltype::Type{CT} = UInt32,
-    kwargs...
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose::Bool = true,
+    show_progress::Bool = true,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
-    shape = _validate_array_shape(x, u)
+    shape = _validate_array_shape(x, u, distance_metric)
+    _assert_counts_representable(CT, size(x, 2))
+    # Only forward knobs the kernels accept; they have no `kwargs...` sink.
     raw = _dispatch_single_pass_2d(
         backend, shape, x, u, distance_bins, value_bins;
-        count_eltype = count_eltype, kwargs...,
+        count_eltype = count_eltype, distance_metric = distance_metric,
     )
     return _single_pass_collection_2d(raw[1], raw[2], distance_bins, value_bins, output_type)
 end

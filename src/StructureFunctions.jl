@@ -39,11 +39,9 @@ export calculate_structure_function, calculate_structure_function!, calculate_st
     calculate_structure_function_tensor, calculate_structure_function_tensor!,
     calculate_structure_function_batch!, calculate_structure_function_2d_batch!,
     calculate_structure_functions_single_pass_batch!, calculate_structure_functions_single_pass_2d_batch!,
-    GPUSFWorkspace, reset_histogram!, release!,
+    GPUSFWorkspace, CPUSFWorkspace, reset_histogram!, release!,
     joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256
 export marginalize
-export AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
-    GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend
 export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2DSumsAndCounts
 export StructureFunctionTensor, StructureFunctionTensorSumsAndCounts, HelmholtzDecomposition2D
 export LongitudinalSecondOrderStructureFunctionType,

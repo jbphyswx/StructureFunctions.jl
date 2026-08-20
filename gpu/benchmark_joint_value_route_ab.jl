@@ -17,6 +17,7 @@ For isolated digitize impact at larger B, also run:
     julia --project=gpu gpu/benchmark_value_axis_dispatch.jl
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using Printf: @printf
@@ -26,8 +27,8 @@ using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
 
-const _GPUExt = Base.get_extension(SF, :StructureFunctionsGPUExt)
-_GPUExt === nothing && error("StructureFunctionsGPUExt not loaded — use julia --project=gpu")
+const _GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+_GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded — use julia --project=gpu")
 
 function _bench(f, warmup::Int, repeat_::Int)
     for _ in 1:warmup
@@ -124,7 +125,7 @@ function main()
     if check_parity
         ref = SFC.calculate_structure_function(
             sft, x, u, dist, val_typed;
-            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(), verbose = false, show_progress = false,
         )
         gpu_t = SFC.gpu_calculate_structure_function_2d(sft, backend, x, u, dist, val_typed; workspace = ws_typed)
         gpu_g = SFC.gpu_calculate_structure_function_2d(sft, backend, x, u, dist, val_general; workspace = ws_general)

@@ -4,6 +4,7 @@
 # serial CPU reference, plus headline real-N (20000) SP2D 50x50 wall-clock.
 #   julia --project=gpu gpu/test_e2e_2d_cuda.jl
 # =============================================================================
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions
 import KernelAbstractions as KA
 using CUDA, Printf
@@ -15,7 +16,7 @@ using StructureFunctions: LinearBinEdges
 using StructureFunctions.Calculations:
     serial_calculate_structure_functions_single_pass_2d!, auxiliary_joint2d!
 const FT = Float32
-const GPU_BE = SFC.GPUBackend(CUDA.CUDABackend())
+const GPU_BE = CB.GPUBackend(CUDA.CUDABackend())
 const SF_TYPE = SFT.L2SFType()
 const SP2D_INV = (:S2, :L2, :T2, :S3, :L3, :L1T2)
 

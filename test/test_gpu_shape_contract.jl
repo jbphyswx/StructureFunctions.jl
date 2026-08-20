@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using Test
 using Random
 using KernelAbstractions: KernelAbstractions as KA
@@ -6,11 +7,12 @@ using StructureFunctions:
     StructureFunctionTypes as SFT,
     StructureFunctionObjects as SFO,
     batch_histograms_equal
+using Distances: Distances as DI
 
 Random.seed!(20260621)
 
-const GPU_SHAPE_BE = SFC.GPUBackend(KA.CPU())
-const GPU_SHAPE_CPU_BE = SFC.SerialBackend()
+const GPU_SHAPE_BE = CB.GPUBackend(KA.CPU())
+const GPU_SHAPE_CPU_BE = CB.SerialBackend()
 
 function _gpu_shape_pairwise(sf, x, u, bins)
     return SFC.calculate_structure_function(
@@ -144,5 +146,145 @@ end
             sf, rand(Float32, 2, 5, 2), rand(Float32, 2, 5), bins;
             backend = GPU_SHAPE_BE, verbose = false, show_progress = false,
         )
+    end
+end
+
+# Every GPU kernel family carries the geometry, so a non-Euclidean metric produces the transported
+# answer on GPU exactly as on CPU — the two must agree, and neither may silently return a flat one.
+Test.@testset "GPU point-field families honour a spherical metric" begin
+    FT = Float64
+    N = 64
+    R = 6.371e6
+    m = DI.Haversine(R)
+    sft = SFT.L2SFType()
+    lon = 300 .* rand(N) .- 150
+    lat = 100 .* rand(N) .- 50
+    x = permutedims(hcat(lon, lat))
+    u = permutedims(hcat(randn(N), randn(N)))
+    db = collect(FT, range(0.0, 9.0e6; length = 11))
+    vb = collect(FT, range(-4.0, 4.0; length = 9))
+    kw = (; verbose = false, show_progress = false, distance_metric = m)
+
+    for (name, call) in (
+            ("sf1d", (be,) -> SFC.calculate_structure_function(
+                sft, x, u, db; backend = be, output_type = SFO.StructureFunctionSumsAndCounts, kw...)),
+            ("joint2d", (be,) -> SFC.calculate_structure_function(
+                sft, x, u, db, vb; backend = be, kw...)),
+            ("sp1d", (be,) -> SFC.calculate_structure_functions_single_pass(
+                x, u, db; backend = be, output_type = SFO.StructureFunctionSumsAndCounts,
+                distance_metric = m)),
+            ("sp2d", (be,) -> SFC.calculate_structure_functions_single_pass_2d(
+                x, u, db, vb; backend = be, distance_metric = m)),
+        )
+        g = call(GPU_SHAPE_BE); c = call(GPU_SHAPE_CPU_BE)
+        if g isa NamedTuple
+            for k in keys(c)
+                k === :helmholtz && continue
+                Test.@test g[k].counts == c[k].counts
+                Test.@test isapprox(g[k].sums, c[k].sums; rtol = 1e-8)
+            end
+        else
+            Test.@test g.counts == c.counts
+            Test.@test isapprox(g.sums, c.sums; rtol = 1e-8)
+        end
+    end
+
+    # The metric genuinely changes the answer: the transported result is not the flat one.
+    raw(mm) = SFC.calculate_structure_function(
+        sft, x, u, db; backend = CB.SerialBackend(), verbose = false, show_progress = false,
+        distance_metric = mm, output_type = SFO.StructureFunctionSumsAndCounts,
+    )
+    Test.@test raw(DI.Euclidean()).counts != raw(m).counts
+
+    # And a metric with NO geometry is refused outright on every backend rather than being assumed
+    # flat — a distance function does not define a separation direction or a transport rule.
+    Test.@test_throws ArgumentError raw(DI.Cityblock())
+end
+
+# The auxiliary-axis (batch) families carry the geometry into their kernels, so they honour a
+# spherical metric and must reproduce the CPU's transported answer rather than a flat one.
+Test.@testset "GPU batch families honour a spherical metric" begin
+    FT = Float64
+    N, B = 40, 3
+    R = 6.371e6
+    m = DI.Haversine(R)
+    lon = 300 .* rand(N) .- 150
+    lat = 100 .* rand(N) .- 50
+    x = permutedims(hcat(lon, lat))
+    u3 = reshape(randn(FT, 2, N, B), 2, N, B)
+    db = collect(FT, range(0.0, 9.0e6; length = 11))
+    vb = collect(FT, range(-4.0, 4.0; length = 9))
+    sft = SFT.L2SFType()
+    kw = (; verbose = false, show_progress = false, distance_metric = m)
+
+    for (name, call) in (
+            ("sf1d batch", (be,) -> SFC.calculate_structure_function(
+                sft, x, u3, db; backend = be, output_type = SFO.StructureFunctionSumsAndCounts, kw...)),
+            ("sp1d batch", (be,) -> SFC.calculate_structure_functions_single_pass(
+                x, u3, db; backend = be, output_type = SFO.StructureFunctionSumsAndCounts, kw...)),
+            ("sp2d batch", (be,) -> SFC.calculate_structure_functions_single_pass_2d(
+                x, u3, db, vb; backend = be, kw...)),
+        )
+        g = call(GPU_SHAPE_BE); c = call(GPU_SHAPE_CPU_BE)
+        if g isa NamedTuple
+            for k in keys(c)
+                k === :helmholtz && continue
+                Test.@test g[k].counts == c[k].counts
+                Test.@test isapprox(g[k].sums, c[k].sums; rtol = 1e-8)
+            end
+        else
+            Test.@test g.counts == c.counts
+            Test.@test isapprox(g.sums, c.sums; rtol = 1e-8)
+        end
+    end
+end
+
+# The point-field single-pass 2D family carries the geometry into its kernels, so it honors a
+# non-Euclidean metric rather than refusing it, and must produce the CPU's transported answer.
+Test.@testset "GPU single-pass 2D honors a spherical metric" begin
+    FT = Float64
+    N = 96
+    lon = 300 .* rand(N) .- 150
+    lat = 100 .* rand(N) .- 50
+    x = permutedims(hcat(lon, lat))
+    u = permutedims(hcat(randn(N), randn(N)))
+    db = collect(FT, range(0.0, 9.0e6; length = 11))
+    vbn = collect(FT, range(-4.0, 4.0; length = 9))
+    m = DI.Haversine(6.371e6)
+
+    got = SFC.calculate_structure_functions_single_pass_2d(
+        x, u, db, vbn; backend = GPU_SHAPE_BE, distance_metric = m,
+    )
+    ref = SFC.calculate_structure_functions_single_pass_2d(
+        x, u, db, vbn; backend = GPU_SHAPE_CPU_BE, distance_metric = m,
+    )
+    for k in (:S2, :L2, :T2, :S3, :L3, :L1T2)
+        Test.@test got[k].counts == ref[k].counts
+        Test.@test isapprox(got[k].sums, ref[k].sums; rtol = 1e-10)
+    end
+
+    # The metric genuinely changes the result: the transported answer is not the flat one.
+    flat = SFC.calculate_structure_functions_single_pass_2d(
+        x, u, db, vbn; backend = GPU_SHAPE_BE, distance_metric = DI.Euclidean(),
+    )
+    Test.@test flat.L2.counts != got.L2.counts
+end
+
+# The single-pass 2D GPU boundary used to splat display-only kwargs into a core with no `kwargs...`
+# sink, so the package's own standard `verbose`/`show_progress` pair was a MethodError.
+Test.@testset "GPU single-pass 2D accepts the standard display kwargs" begin
+    FT = Float64
+    N = 16
+    x, u = rand(FT, 2, N), rand(FT, 2, N)
+    db = collect(FT, range(0.0, 2.0; length = 9))
+    vb = collect(FT, range(-2.0, 2.0; length = 7))
+    ref = SFC.calculate_structure_functions_single_pass_2d(x, u, db, vb; backend = GPU_SHAPE_BE)
+    got = SFC.calculate_structure_functions_single_pass_2d(
+        x, u, db, vb; backend = GPU_SHAPE_BE, verbose = false, show_progress = false,
+    )
+    Test.@test keys(got) == keys(ref)
+    for k in keys(ref)
+        Test.@test got[k].counts == ref[k].counts
+        Test.@test got[k].sums ≈ ref[k].sums
     end
 end

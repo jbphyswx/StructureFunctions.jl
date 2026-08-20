@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using OhMyThreads: OhMyThreads
 using StructureFunctions: StructureFunctions as SF
@@ -11,7 +12,7 @@ serial = SF.calculate_structure_function(
     x,
     u,
     bins;
-    backend = SF.SerialBackend(),
+    backend = CB.SerialBackend(),
     verbose = false,
     show_progress = false,
 )
@@ -21,7 +22,7 @@ threaded = SF.calculate_structure_function(
     x,
     u,
     bins;
-    backend = SF.ThreadedBackend(),
+    backend = CB.ThreadedBackend(),
     verbose = false,
     show_progress = false,
 )
@@ -31,7 +32,7 @@ auto_backend = SF.calculate_structure_function(
     x,
     u,
     bins;
-    backend = SF.AutoThreadingBackend(),
+    backend = CB.AutoBackend(),
     verbose = false,
     show_progress = false,
 )

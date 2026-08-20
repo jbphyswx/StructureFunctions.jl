@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
     LogBinEdges, LinearBinEdges
@@ -16,7 +17,7 @@ Distributed.@everywhere using StructureFunctions:
     LogBinEdges, LinearBinEdges
 Distributed.@everywhere using StaticArrays: StaticArrays as SA
 Distributed.@everywhere using SharedArrays: SharedArrays
-Distributed.@everywhere using OhMyThreads: OhMyThreads  # for hybrid DistributedBackend(ThreadedBackend())
+Distributed.@everywhere using OhMyThreads: OhMyThreads  # for hybrid CB.DistributedBackend(CB.ThreadedBackend())
 
 Test.@testset "Parallel Equivalence Verification" begin
     # Dataset
@@ -67,7 +68,7 @@ Test.@testset "Parallel Equivalence Verification" begin
         sx,
         su,
         bins;
-        backend = SFC.DistributedBackend(),
+        backend = CB.DistributedBackend(),
         verbose = false,
         show_progress = false,
         output_type = SF.StructureFunctionSumsAndCounts,
@@ -80,13 +81,13 @@ Test.@testset "Parallel Equivalence Verification" begin
         Test.@test counts_serial == counts_dist
     end
 
-    # 3b. Hybrid: DistributedBackend(ThreadedBackend()) — each worker threads over its share.
+    # 3b. Hybrid: CB.DistributedBackend(CB.ThreadedBackend()) — each worker threads over its share.
     res_hybrid = SFC.calculate_structure_function(
         sf_type,
         sx,
         su,
         bins;
-        backend = SFC.DistributedBackend(SFC.ThreadedBackend()),
+        backend = CB.DistributedBackend(CB.ThreadedBackend()),
         verbose = false,
         show_progress = false,
         output_type = SF.StructureFunctionSumsAndCounts,
@@ -102,14 +103,14 @@ Test.@testset "Parallel Equivalence Verification" begin
     ub = rand(2, N, 4)
     res_ser_b = SFC.calculate_structure_function(
         sf_type, xb, ub, bins;
-        backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+        backend = CB.SerialBackend(), verbose = false, show_progress = false,
         output_type = SF.StructureFunctionSumsAndCounts,
     )
     Test.@testset "Serial vs Distributed batched" begin
-        for inner in (SFC.SerialBackend(), SFC.ThreadedBackend())
+        for inner in (CB.SerialBackend(), CB.ThreadedBackend())
             res_db = SFC.calculate_structure_function(
                 sf_type, xb, ub, bins;
-                backend = SFC.DistributedBackend(inner), verbose = false, show_progress = false,
+                backend = CB.DistributedBackend(inner), verbose = false, show_progress = false,
                 output_type = SF.StructureFunctionSumsAndCounts,
             )
             Test.@test res_ser_b.counts == res_db.counts
@@ -123,7 +124,7 @@ Test.@testset "Parallel Equivalence Verification" begin
         sx,
         su,
         2;  # n_bins = 2
-        backend = SFC.DistributedBackend(),
+        backend = CB.DistributedBackend(),
         bin_spacing = LogBinEdges,
         verbose = false,
         show_progress = false,

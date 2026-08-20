@@ -17,6 +17,19 @@
 # D ∈ {2,3} — all via Val type params. Validated in proto_nbody2d / proto_settle.
 # =============================================================================
 
+"""
+    _cuda_val_stride(n_val)
+
+Row stride of the value axis in the privatized histogram, forced odd.
+
+Shared memory has 32 banks. With a power-of-two `n_val`, the flat index `(dbin-1)*n_val + vbin` puts
+every value-axis row into the same couple of banks, so lanes differing only in `dbin` serialize on
+bank conflicts even though they target different cells. An odd stride is coprime with 32 and spreads
+them across banks, at the cost of one unused column per row. Measured 2.0–2.3× on the sibling
+single-pass 2D kernel, which had identical indexing.
+"""
+@inline _cuda_val_stride(n_val::Int) = isodd(n_val) ? n_val : n_val + 1
+
 """Map linear tile id `k` (1-based) to upper-triangle `(ti,tj)`, `ti ≤ tj`."""
 @inline function _cuda_tile_pair(k::Int, nt::Int)
     ti = 1
@@ -45,6 +58,7 @@ function _cuda_sf_2d_kernel!(
     N::Int, n_dist::Int, n_val::Int,
     nt::Int, ntb::Int,
     ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, ::Val{HCELLS},
+    geom,
 ) where {D, NMOM, FIXED_X, TILE, HCELLS}
     FT = eltype(output)
     lid = Int(threadIdx().x)
@@ -57,6 +71,7 @@ function _cuda_sf_2d_kernel!(
     sxj = CuStaticSharedArray(FT, D * TILE)
     sui = CuStaticSharedArray(FT, D * TILE)
     suj = CuStaticSharedArray(FT, D * TILE)
+    vstride = _cuda_val_stride(n_val)
     sums = CuDynamicSharedArray(FT, NMOM * HCELLS)
     cnts = CuDynamicSharedArray(UInt32, NMOM * HCELLS, NMOM * HCELLS * sizeof(FT))
 
@@ -107,16 +122,15 @@ function _cuda_sf_2d_kernel!(
                 Xj = _cuda_ld(sxj, Val(D), Val(TILE), jj)
                 Uj = _cuda_ld(suj, Val(D), Val(TILE), jj)
             end
-            dX = Xj - Xi
-            dist = sqrt(GE._sf_dot(dX, dX))
+            ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
             dbin = ddig(dist)
-            if 1 <= dbin <= n_dist
-                rhat = dX / dist
-                moments = GE._sf_moments(Val(NMOM), sf_type, Uj - Ui, rhat)
+            if ok && 1 <= dbin <= n_dist
+                dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
+                moments = GE._sf_moments(Val(NMOM), sf_type, dU, rhat)
                 @inbounds for m in 1:NMOM
                     vb = GE._gpu_digitize_value_plan(moments[m], vplan, m, n_val + 1)
                     if 1 <= vb <= n_val
-                        cell = (m - 1) * HCELLS + (dbin - 1) * n_val + vb
+                        cell = (m - 1) * HCELLS + (dbin - 1) * vstride + vb
                         CUDA.@atomic sums[cell] += moments[m]
                         CUDA.@atomic cnts[cell] += UInt32(1)
                     end
@@ -132,11 +146,12 @@ function _cuda_sf_2d_kernel!(
     while cell <= NMOM * HCELLS
         @inbounds s = sums[cell]
         @inbounds cc = cnts[cell]
-        if cc != UInt32(0)
-            m = (cell - 1) ÷ HCELLS + 1
-            lc = (cell - 1) % HCELLS
-            dbin = lc ÷ n_val + 1
-            vb = lc % n_val + 1
+        m = (cell - 1) ÷ HCELLS + 1
+        lc = (cell - 1) % HCELLS
+        dbin = lc ÷ vstride + 1
+        vb = lc % vstride + 1
+        # vb > n_val is a padding column, never written
+        if cc != UInt32(0) && vb <= n_val
             CUDA.@atomic output[m, dbin, vb, b] += s
             CUDA.@atomic counts[m, dbin, vb, b] += cc
         end
@@ -145,19 +160,26 @@ function _cuda_sf_2d_kernel!(
     return nothing
 end
 
-"""Largest TILE ∈ (1024,512,256) whose staging + dynamic histogram fit the device
-opt-in shared max; 0 if even 256 won't fit (caller falls back to the KA path)."""
+"""Largest TILE ∈ (1024,512,256) whose staging + the full `NMOM`-plane dynamic histogram fit the
+device opt-in shared max; 0 if even 256 won't fit.
+
+Returning 0 hands the call to the naive global-atomic kernel, which is the measured winner whenever
+the histogram does not fit on chip: contention spreads over many cells, and it beats every on-chip
+variant there (128×128 Float64: 5.95 vs 0.75 bapps). Splitting the histogram into moment planes to
+force it on chip was implemented and measured — it is ~2× *slower* than going global, so the
+all-or-nothing test below is deliberate. See `gpu/SPEED_OF_LIGHT.md`."""
 function _cuda_2d_pick_tile(::Type{FT}, D::Int, NMOM::Int, n_dist::Int, n_val::Int) where {FT}
-    optin = try
-        dev = CUDA.device()
-        Int(CUDA.attribute(dev, CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN))
-    catch
-        48 * 1024
-    end
-    dynb = NMOM * n_dist * n_val * (sizeof(FT) + sizeof(UInt32))
+    # Queried, never assumed: this is only reached via the CUDABackend hook, so a device is present
+    # by construction and a failure here is a real driver fault. Defaulting to the 48 KB static cap
+    # instead would silently forfeit ~3.4× the shared budget on an A100 (163 KB opt-in).
+    optin = Int(CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN))
+    dynb = NMOM * n_dist * _cuda_val_stride(n_val) * (sizeof(FT) + sizeof(UInt32))
     for TILE in (1024, 512, 256)
         staging = 4 * D * TILE * sizeof(FT)
-        if staging + dynb <= optin
+        # Staging is `CuStaticSharedArray`, capped by the architecture independently of the opt-in;
+        # only `dynb` may draw on the larger budget. Testing the sum against `optin` alone lets ptxas
+        # reject the kernel at compile time (Float64, D=2, TILE=1024 needs 64 KiB of static shared).
+        if staging <= SFC.GPU_SMEM_STATIC_MAX && staging + dynb <= optin
             return TILE, dynb
         end
     end
@@ -170,39 +192,39 @@ histogram doesn't fit any supported TILE (caller uses the KA fallback).
 `(D,N,1)` fixed; `u` is `(D,N,B)`."""
 function _cuda_launch_2d!(out, cnt, x, u, sf_type, ddig, vplan,
                           N::Int, n_dist::Int, n_val::Int, B::Int,
-                          D::Int, NMOM::Int, fixed_x::Bool)
+                          D::Int, NMOM::Int, fixed_x::Bool, geom)
     FT = eltype(out)
     TILE, dynb = _cuda_2d_pick_tile(FT, D, NMOM, n_dist, n_val)
     TILE == 0 && return false
     xv = fixed_x ? reshape(x, D, N, 1) : reshape(x, D, N, B)
     uv = reshape(u, D, N, B)
-    hcells = n_dist * n_val
+    hcells = n_dist * _cuda_val_stride(n_val)
     _cuda_launch_2d_specialized!(out, cnt, xv, uv, sf_type, ddig, vplan,
-                                 N, n_dist, n_val, B, D, NMOM, fixed_x, TILE, hcells, dynb)
+                                 N, n_dist, n_val, B, D, NMOM, fixed_x, TILE, hcells, dynb, geom)
     return true
 end
 
 # Resolve the runtime (D, NMOM, FIXED_X, TILE) into Val type params, then launch.
 function _cuda_launch_2d_specialized!(out, cnt, x, u, sf_type, ddig, vplan,
-                                      N, n_dist, n_val, B, D, NMOM, fixed_x, TILE, hcells, dynb)
+                                      N, n_dist, n_val, B, D, NMOM, fixed_x, TILE, hcells, dynb, geom)
     Dv = D == 3 ? Val(3) : Val(2)
     Mv = NMOM == 6 ? Val(6) : Val(1)
     Fv = fixed_x ? Val(true) : Val(false)
     Tv = TILE == 1024 ? Val(1024) : TILE == 512 ? Val(512) : Val(256)
     _cuda_launch_2d_valed!(out, cnt, x, u, sf_type, ddig, vplan,
-                           N, n_dist, n_val, B, Dv, Mv, Fv, Tv, Val(hcells), dynb)
+                           N, n_dist, n_val, B, Dv, Mv, Fv, Tv, Val(hcells), dynb, geom)
     return nothing
 end
 
 function _cuda_launch_2d_valed!(out, cnt, x, u, sf_type, ddig, vplan,
                                 N, n_dist, n_val, B,
                                 ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, ::Val{HCELLS},
-                                dynb) where {D, NMOM, FIXED_X, TILE, HCELLS}
+                                dynb, geom) where {D, NMOM, FIXED_X, TILE, HCELLS}
     nt = cld(N, TILE)
     ntb = nt * (nt + 1) ÷ 2
     kern = @cuda launch=false _cuda_sf_2d_kernel!(
         out, cnt, x, u, sf_type, ddig, vplan, N, n_dist, n_val, nt, ntb,
-        Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), Val(HCELLS))
+        Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), Val(HCELLS), geom)
     # Opt into the larger shared budget. This must be set whenever the TOTAL
     # (static staging + dynamic histogram) exceeds the 48 KB default cap — not
     # only when the dynamic part alone does — so set it unconditionally. The
@@ -210,7 +232,7 @@ function _cuda_launch_2d_valed!(out, cnt, x, u, sf_type, ddig, vplan,
     # ≤ the device opt-in max.
     CUDA.attributes(kern.fun)[CUDA.FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES] = dynb
     kern(out, cnt, x, u, sf_type, ddig, vplan, N, n_dist, n_val, nt, ntb,
-         Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), Val(HCELLS);
+         Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), Val(HCELLS), geom;
          threads = TILE, blocks = ntb * B, shmem = dynb)
     return nothing
 end

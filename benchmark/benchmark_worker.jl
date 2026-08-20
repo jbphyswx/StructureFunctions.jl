@@ -12,6 +12,7 @@ Usage (internal, called automatically by benchmark_scaling.jl):
     julia --project=benchmark -t 8 benchmark/benchmark_worker.jl 5000
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions, Calculations as SFC
 using OhMyThreads: OhMyThreads # Trigger extension
 using JSON: JSON
@@ -31,11 +32,11 @@ bins = scaling_bins(FT)
 sft = SCALING_SFT
 
 # Warmup (avoid counting compile time)
-SFC.calculate_structure_function(sft, x_arr, u_arr, bins; backend = SFC.ThreadedBackend(), verbose = false, show_progress = false)
+SFC.calculate_structure_function(sft, x_arr, u_arr, bins; backend = CB.ThreadedBackend(), verbose = false, show_progress = false)
 
 # Timed run
 t_start = time()
-SFC.calculate_structure_function(sft, x_arr, u_arr, bins; backend = SFC.ThreadedBackend(), verbose = false, show_progress = false)
+SFC.calculate_structure_function(sft, x_arr, u_arr, bins; backend = CB.ThreadedBackend(), verbose = false, show_progress = false)
 elapsed = time() - t_start
 
 result = Dict(

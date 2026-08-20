@@ -29,6 +29,20 @@ export digitize,
     r̂,
     n̂,
     δr,
+    unit_position,
+    local_east_north,
+    geodesic_frame,
+    geodesic_increments,
+    FlatGeometry,
+    SphericalGeometry,
+    coordinate_width,
+    pair_frame,
+    pair_direction,
+    pair_delta,
+    pair_invariants,
+    pair_increments,
+    pair_geometry,
+    pair_geometry_for,
     midpoints,
     flatten_data,
     remove_nans
@@ -97,17 +111,13 @@ end
 @inline LA.normalize(x::Tuple{T, Vararg{T}}) where {T} =
     NTuple{length(x), T}(LA.normalize(SA.SVector(x)))
 
+"""Return the vector from `x1` to `x2`."""
 @inline function δr(x1, x2)
-    """
-    Return the vector from x1 to x2
-    """
     return x2 .- x1
 end
 
+"""Return the longitudinal (parallel) unit vector from `x1` to `x2`."""
 @inline function r̂(x1, x2)
-    """
-    Return the longitudinal (parallel) unit vector from x1 to x2
-    """
     return LA.normalize(δr(x1, x2))
 end
 
@@ -116,46 +126,357 @@ end
 # If dynamic Vectors are ever used, LA.normalize would be ~2.5x slower due to scaling checks.
 @inline r̂(x1, x2, ::DI.PreMetric, distance) = LA.normalize(δr(x1, x2))
 
+# -----------------------------------------------------------------------------
+# Spherical geometry: unit positions, geodesic frames, parallel transport
+# -----------------------------------------------------------------------------
 
+@inline _unit_position(sλ, cλ, sφ, cφ) = SA.SVector(cφ * cλ, cφ * sλ, sφ)
+
+@inline _local_east_north(sλ, cλ, sφ, cφ) =
+    (SA.SVector(-sλ, cλ, zero(sλ)), SA.SVector(-sφ * cλ, -sφ * sλ, cφ))
+
+"""
+    unit_position(lon, lat) -> SVector{3}
+
+Unit position vector on the sphere from longitude/latitude **in degrees** (the
+`Distances.Haversine` convention). `x` toward (0°N, 0°E), `z` toward the north pole.
+"""
+@inline unit_position(lon, lat) = _unit_position(sincosd(lon)..., sincosd(lat)...)
+
+"""
+    local_east_north(lon, lat) -> (Ê, N̂)
+
+Local east and north unit vectors at longitude/latitude **in degrees**. Together with
+[`unit_position`](@ref) as the local up they form a right-handed orthonormal triad
+(`Ê × N̂ = p̂`). Only used at ingest: `p̂` itself is well defined at the poles, this basis is not.
+"""
+@inline local_east_north(lon, lat) = _local_east_north(sincosd(lon)..., sincosd(lat)...)
+
+"""
+Smallest `sin²σ` for which the separation direction is still representable.
+
+This guards only against `1/0`, NOT against a physical scale: the normalization is exact in the
+`σ → 0` limit (`t_A ≈ d` has magnitude `O(σ)` and `inv_s ≈ 1/σ`, so the product stays `O(1)`), so
+short pairs are fine and must not be dropped. `eps(T)` would be catastrophically wrong here —
+`sin²σ` for a 1 km separation on Earth is `2.5e-8`, below `eps(Float32)`, which would silently
+discard every pair closer than ~2 km in Float32.
+"""
+@inline _geodesic_degeneracy_tol(::Type{T}) where {T} = floatmin(T)
+
+"""
+    geodesic_frame(p̂, q̂) -> (σ, t̂_A, t̂_B, m̂, ok)
+
+Great-circle frame for the pair `(p̂, q̂)` of unit position vectors: central angle `σ`, the
+longitudinal unit tangent at each endpoint (`t̂_A` at `p̂` toward `q̂`, `t̂_B` at `q̂` continuing along
+the geodesic), and the shared transverse unit vector `m̂`.
+
+`m̂` is the same 3-vector at both endpoints: the great-circle normal is perpendicular to every point
+of that circle, hence tangent to the sphere at each of them, and it is parallel along the geodesic.
+Both tangents also share one normalizer, since `‖q̂ − (p̂·q̂)p̂‖² = ‖(p̂·q̂)q̂ − p̂‖² = 1 − (p̂·q̂)²`.
+So the whole frame costs one `sqrt`.
+
+`σ` uses the tangent-half-angle form `2·atan(‖p̂−q̂‖, ‖p̂+q̂‖)`, which is accurate for every `σ`
+including antipodal, unlike `acos(p̂·q̂)` (which loses half the mantissa near `σ=0` — fatal in Float32).
+
+`ok` is `false` for coincident (`σ=0`) and antipodal (`σ=π`) pairs, where the direction is genuinely
+undefined — antipodal points are joined by infinitely many great circles, so parallel transport
+between them is not unique. Callers must skip such pairs: `1/s` is otherwise `Inf` and a single NaN
+lane poisons an entire atomic accumulator.
+"""
+@inline function geodesic_frame(p̂::SA.SVector{3, T}, q̂::SA.SVector{3, T}) where {T}
+    # Work through d = q̂ - p̂ (magnitude O(σ)): forming `q̂ - (p̂·q̂)p̂` directly cancels
+    # catastrophically as σ → 0 because both terms approach p̂.
+    d = q̂ - p̂
+    sum_pq = p̂ + q̂
+    dp = LA.dot(d, p̂)               # = p̂·q̂ - 1 = -2sin²(σ/2), small and accurate
+    t_A = d - dp * p̂                # ≡ q̂ - (p̂·q̂)p̂
+    t_B = dp * q̂ + d                # ≡ (p̂·q̂)q̂ - p̂
+    w = LA.cross(p̂, d)              # ≡ p̂ × q̂
+    s2 = LA.dot(w, w)               # = sin²σ
+    σ = 2 * atan(sqrt(LA.dot(d, d)), sqrt(LA.dot(sum_pq, sum_pq)))
+    ok = s2 > _geodesic_degeneracy_tol(T)
+    inv_s = ok ? inv(sqrt(s2)) : zero(T)
+    return σ, t_A * inv_s, t_B * inv_s, w * inv_s, ok
+end
+
+"""
+    FlatGeometry{D}()
+
+Flat `D`-dimensional space with the Euclidean ruler: the separation is the straight chord and no
+transport is needed.
+"""
+struct FlatGeometry{D} end
+
+"""
+    SphericalGeometry{D}(metric, radius)
+
+Sphere of the given `radius`. `D` is the velocity dimension: `2` for horizontal `(east, north)`
+velocities, `3` for a thin shell carrying an additional radial component.
+
+`D` cannot be inferred from the coordinates — a point on a shell has two of them either way — and it
+changes the answer, because `transverse_component_norm2` divides the transverse energy by `D - 1`.
+
+`metric` is retained because the coordinates mean whatever it says they mean: it is what fixes their
+angle unit, which `pair_frame` needs in order to take a `sincos`. See [`unit_position`](@ref).
+"""
+struct SphericalGeometry{D, M, T}
+    metric::M
+    radius::T
+end
+SphericalGeometry{D}(metric::M, radius::T) where {D, M, T} = SphericalGeometry{D, M, T}(metric, radius)
+
+"""
+    coordinate_width(geometry) -> Val{W}
+
+How many numbers locate one point in this geometry, as a `Val` so callers can build a
+statically-sized load. This is **not** the velocity dimension: on a shell a point takes two
+coordinates whether or not the velocity carries a third, radial, component.
+"""
+@inline coordinate_width(::FlatGeometry{D}) where {D} = Val(D)
+@inline coordinate_width(::SphericalGeometry) = Val(2)
+
+"""
+    pair_frame(geometry, x1, x2) -> (ok, r, frame)
+
+Separation and the geometry-specific frame data for one pair, touching **no velocities**.
+
+Split from [`pair_increments`](@ref) because callers depend on that order: the scalar kernels reject
+out-of-range pairs before loading `u_j` at all, and the batch kernels build one frame per `(i, j)`
+and reuse it across a whole strip of velocity fields. A single call taking the velocities would
+defeat both.
+"""
+@inline function pair_frame(::FlatGeometry, x1, x2)
+    dx = δr(x1, x2)
+    # Carry the RAW displacement, not `dx / r`: normalizing here would make every out-of-range pair
+    # pay a divide and D multiplies for a direction the bin test is about to discard.
+    return true, sqrt(LA.dot(dx, dx)), dx
+end
+
+"""
+Spherical frame from raw `(lon, lat)` coordinates, expressed in each endpoint's own local
+`(east, north)` basis.
+
+The ambient form of [`geodesic_frame`](@ref) needs 3-vectors, which would force the caller's `(2, N)`
+lon/lat array to be widened to `(3, N)`. Projecting the geodesic tangents onto the local bases
+instead keeps everything the width the caller passed — the longitudinal direction at `A` is just
+`(sin α₁, cos α₁)` for the forward azimuth `α₁`, and the transverse is its right-handed quarter turn.
+Parallel transport is still exact: it preserves the angle to the geodesic, which is what `α` measures.
+"""
+@inline function pair_frame(g::SphericalGeometry, x1, x2)
+    p̂ = unit_position(g.metric, x1[1], x1[2])
+    q̂ = unit_position(g.metric, x2[1], x2[2])
+    σ, t_A, t_B, m̂, ok = geodesic_frame(p̂, q̂)
+    Ê_A, N̂_A = local_east_north(g.metric, x1[1], x1[2])
+    Ê_B, N̂_B = local_east_north(g.metric, x2[1], x2[2])
+    FT = typeof(σ)
+    # Local components of the longitudinal tangent at each end; n̂ = ẑ × t̂ within the tangent plane.
+    tA = SA.SVector{2, FT}(LA.dot(t_A, Ê_A), LA.dot(t_A, N̂_A))
+    tB = SA.SVector{2, FT}(LA.dot(t_B, Ê_B), LA.dot(t_B, N̂_B))
+    return ok, g.radius * σ, (tA, tB, p̂, q̂, m̂, Ê_A, N̂_A, Ê_B, N̂_B)
+end
+
+"""
+    pair_direction(geometry, frame, r) -> r̂
+
+Longitudinal unit vector for one pair. Depends only on the geometry of the pair, never on the
+velocities, so a caller sweeping many velocity fields over one `(i, j)` hoists this out of that loop.
+"""
+@inline pair_direction(::FlatGeometry, frame, r) = frame / r
+
+"""
+On the sphere the frame IS the basis, so the longitudinal direction is `ê₁` by construction.
+"""
+@inline pair_direction(::SphericalGeometry{D}, frame, r) where {D} =
+    SA.SVector{D}(ntuple(i -> i == 1 ? one(eltype(frame[1])) : zero(eltype(frame[1])), Val(D)))
+
+"""
+    pair_invariants(geometry, frame, r, u1, u2) -> (δu_L, ‖δu‖²)
+
+The only two scalars the six isotropic invariants consume: every one of them is built from `δu_L`,
+`δu_L²` and `δu_T² = ‖δu‖² − δu_L²`. Kernels that need no separation direction call this instead of
+[`pair_increments`](@ref) and never form `r̂`.
+"""
+@inline function pair_invariants(::FlatGeometry, frame, r, u1, u2)
+    δu = u2 - u1
+    # `dot(δu, frame) / r`, not `dot(δu, frame / r)`: one rounding, and the same operation order the
+    # flat kernels have always used.
+    return LA.dot(δu, frame) / r, LA.dot(δu, δu)
+end
+
+@inline function pair_invariants(g::SphericalGeometry, frame, r, u1, u2)
+    δu = pair_delta(g, frame, nothing, nothing, u1, u2)
+    return δu[1], LA.dot(δu, δu)
+end
+
+"""
+    pair_delta(geometry, frame, x1, x2, u1, u2) -> δu
+
+Velocity difference expressed in the pair's common frame, given the `frame` from
+[`pair_frame`](@ref). The per-velocity-field half of [`pair_increments`](@ref).
+"""
+@inline pair_delta(::FlatGeometry, frame, x1, x2, u1, u2) = u2 - u1
+
+"""
+Increments for `u = (east, north)` on the sphere. Each endpoint's velocity is projected onto its own
+geodesic frame and only then differenced — that IS the parallel transport, because transport along a
+geodesic preserves the angle to it. `n̂ = ẑ × t̂ = (−t̂₂, t̂₁)` matches the package handedness.
+"""
+@inline function pair_delta(::SphericalGeometry{2}, frame, x1, x2, u_A, u_B)
+    tA, tB = frame[1], frame[2]
+    nA = SA.SVector(-tA[2], tA[1])
+    nB = SA.SVector(-tB[2], tB[1])
+    δu_L = LA.dot(u_B, tB) - LA.dot(u_A, tA)
+    δu_T = LA.dot(u_B, nB) - LA.dot(u_A, nA)
+    return SA.SVector{2, typeof(δu_L)}(δu_L, δu_T)
+end
+
+"""
+Thin shell, `u = (east, north, up)`. Horizontal components transport exactly as in 2D; the radial
+component is a scalar difference needing no transport, since the geodesic frame is tangent to the
+sphere and therefore orthogonal to the radial direction at both endpoints.
+"""
+@inline function pair_delta(::SphericalGeometry{3}, frame, x1, x2, u_A, u_B)
+    tA, tB = frame[1], frame[2]
+    nA = SA.SVector(-tA[2], tA[1])
+    nB = SA.SVector(-tB[2], tB[1])
+    hA = SA.SVector(u_A[1], u_A[2])
+    hB = SA.SVector(u_B[1], u_B[2])
+    δu_L = LA.dot(hB, tB) - LA.dot(hA, tA)
+    δu_T = LA.dot(hB, nB) - LA.dot(hA, nA)
+    δw = u_B[3] - u_A[3]
+    return SA.SVector{3, typeof(δu_L)}(δu_L, δu_T, δw)
+end
+
+"""
+    pair_increments(geometry, frame, r, x1, x2, u1, u2) -> (δu, r̂)
+
+Velocity difference and longitudinal unit vector in one common frame, given the `frame` and
+separation `r` from [`pair_frame`](@ref). See [`pair_geometry`](@ref) for what the result means per
+geometry. Called only for pairs that survive the bin test, so this is where the direction is formed.
+"""
+@inline pair_increments(g, frame, r, x1, x2, u1, u2) =
+    (pair_delta(g, frame, x1, x2, u1, u2), pair_direction(g, frame, r))
+
+"""
+    pair_geometry(geometry, x1, x2, u1, u2) -> (ok, r, δu, r̂)
+
+Resolve one pair into a separation `r`, a velocity difference `δu`, and a longitudinal unit vector
+`r̂`, **all in one common frame**, so that every structure-function operator — which consumes only
+`δu·r̂` and `δu·n̂(r̂)` — works unchanged for any geometry. `ok == false` marks a pair with no defined
+separation direction; callers must skip it.
+
+For [`SphericalGeometry`](@ref), `x1`/`x2` are `(lon, lat)` in the metric's angle unit and `u1`/`u2`
+are `(east, north[, up])`. The result is expressed in the local geodesic frame, so `r̂ = ê₁` and
+`δu = (δu_L, δu_T)` (plus the radial difference for `D = 3`). The radial component needs no transport
+and cannot leak into `δu_L`/`δu_T`, because `t̂ ⟂ p̂` and `m̂ ⟂ p̂, q̂`.
+
+This is the one-shot convenience form; hot loops use [`pair_frame`](@ref) and
+[`pair_increments`](@ref) separately so the frame can gate the bin test and be reused across fields.
+"""
+@inline function pair_geometry(g, x1, x2, u1, u2)
+    ok, r, frame = pair_frame(g, x1, x2)
+    δu, rhat = pair_increments(g, frame, r, x1, x2, u1, u2)
+    return ok, r, δu, rhat
+end
+
+"""
+    pair_geometry_for(metric, ::Val{D}) -> geometry
+
+Geometry implied by `metric` for user-facing dimension `D`. A distance function alone does not define
+a direction or a transport rule, so there is deliberately **no generic method**: an unrecognized
+metric raises rather than silently assuming flat space. Add a method here (and a
+[`pair_geometry`](@ref) method for the geometry it returns) to support another manifold.
+"""
+pair_geometry_for(::DI.Euclidean, ::Val{D}) where {D} = FlatGeometry{D}()
+pair_geometry_for(m::DI.Haversine, ::Val{D}) where {D} = SphericalGeometry{D}(m, m.radius)
+# SphericalAngle reports the central angle itself, i.e. a unit sphere.
+pair_geometry_for(m::DI.SphericalAngle, ::Val{D}) where {D} = SphericalGeometry{D}(m, 1)
+
+"""
+    unit_position(metric, lon, lat) -> SVector{3}
+    local_east_north(metric, lon, lat) -> (Ê, N̂)
+
+Ingest helpers that take the angle unit from the metric's own documented convention:
+`Distances.Haversine` is **degrees**, `Distances.SphericalAngle` is **radians**. Confusing the two
+silently rescales every separation by a factor of ~57, so the convention is pinned next to the metric
+that defines it rather than repeated at each call site.
+"""
+@inline unit_position(::DI.Haversine, lon, lat) = unit_position(lon, lat)
+@inline local_east_north(::DI.Haversine, lon, lat) = local_east_north(lon, lat)
+@inline unit_position(::DI.SphericalAngle, lon, lat) =
+    _unit_position(sincos(lon)..., sincos(lat)...)
+@inline local_east_north(::DI.SphericalAngle, lon, lat) =
+    _local_east_north(sincos(lon)..., sincos(lat)...)
+
+pair_geometry_for(m, ::Val{D}) where {D} = throw(ArgumentError(
+    "no pair geometry is defined for distance_metric=$(typeof(m)). A distance function fixes which " *
+    "histogram bin a pair falls in, but it does not define the separation direction or how to " *
+    "compare velocities at two different points, so this package will not guess one. Define " *
+    "`StructureFunctions.HelperFunctions.pair_geometry_for(::$(typeof(m)), ::Val)` returning a " *
+    "geometry, plus a `pair_geometry` method for it.",
+))
+
+"""
+    geodesic_increments(t̂_A, t̂_B, m̂, u_A, u_B) -> (δu_L, δu_T)
+
+Longitudinal and transverse components of the parallel-transported velocity difference, given the
+frame from [`geodesic_frame`](@ref) and the two ambient tangent velocities.
+
+Projecting each endpoint's velocity onto its own geodesic tangent **is** parallel transport, not an
+approximation: a geodesic parallel-transports its own tangent, and transport on the sphere is an
+orientation-preserving isometry, so the transported basis from `A` arrives at `B` rotated by exactly
+the difference of forward azimuths. The transverse term needs a single dot product because `m̂` is
+shared between the endpoints.
+"""
+@inline function geodesic_increments(t̂_A, t̂_B, m̂, u_A, u_B)
+    δu_L = LA.dot(u_B, t̂_B) - LA.dot(u_A, t̂_A)
+    δu_T = LA.dot(u_B - u_A, m̂)
+    return δu_L, δu_T
+end
+
+
+"""
+    n̂(r_hat)
+
+Oriented transverse unit vector for the longitudinal unit vector `r_hat`.
+
+2D: `n̂ = ẑ × r̂ = (−r̂₂, r̂₁)`, the counterclockwise quarter turn, so `(r̂, n̂, ẑ)` is right-handed.
+3D: `n̂ = normalize(ẑ × r̂)`, the same rule with `ẑ = (0,0,1)` as the reference axis.
+
+Only operators odd in the transverse component see this sign — `ProjectedStructureFunctionType{2,1}`
+and `{0,3}`. Everything else consumes `δu_T²` (see [`transverse_norm2`](@ref)) and is sign-blind.
+The 3D form is singular when `r̂ ∥ ẑ`; [`ReferenceAxisTransverseBasis`](@ref) is the guarded version.
+"""
 @inline function n̂(r_hat::AbstractVector{FT}) where {FT}
-    """
-    Return the transverse (perpendicular) unit vector given the longitudinal unit vector r_hat.
-    In 2D: n̂ = [r_hat[2], -r_hat[1]]
-    In 3D: n̂ = normalize(cross(r_hat, k_hat)) where k_hat = [0,0,1]
-    """
     ND::Int = length(r_hat)
 
     if ND == 2
-        return SA.SVector{2, FT}(r_hat[2], -r_hat[1]) # assume normalized
+        return SA.SVector{2, FT}(-r_hat[2], r_hat[1]) # assume normalized
     elseif ND == 3
         k_hat = SA.SVector{3, FT}(0, 0, 1)
-        # Lindberg and Cho defined this order in NH and opposite in SH but we're just doing the same for both
         return LA.normalize(
-            LA.cross(SA.SVector{3, FT}(r_hat[1], r_hat[2], r_hat[3]), k_hat),
+            LA.cross(k_hat, SA.SVector{3, FT}(r_hat[1], r_hat[2], r_hat[3])),
         )
     else
         error("Only 2D and 3D supported")
     end
 end
 
-@inline n̂(r_hat::SA.SVector{2, T}) where {T} = SA.SVector{2, T}(r_hat[2], -r_hat[1])
+@inline n̂(r_hat::SA.SVector{2, T}) where {T} = SA.SVector{2, T}(-r_hat[2], r_hat[1])
 @inline n̂(r_hat::SA.SVector{3, T}) where {T} = LA.normalize(
-    LA.cross(SA.SVector{3, T}(r_hat[1], r_hat[2], r_hat[3]), SA.SVector{3, T}(0, 0, 1)),
+    LA.cross(SA.SVector{3, T}(0, 0, 1), SA.SVector{3, T}(r_hat[1], r_hat[2], r_hat[3])),
 )
 
 
-@inline n̂(r_hat::NTuple{2, T}) where {T} = (r_hat[2], -r_hat[1])
-# @inline n̂(r_hat::NTuple{3, T}) where {T} = error("see if we can make this stay in tuple land without any burden") LA.normalize(
-    # LA.cross(SA.SVector{3, T}(r_hat[1], r_hat[2], r_hat[3]), SA.SVector{3, T}(0, 0, 1)),
-# )
+@inline n̂(r_hat::NTuple{2, T}) where {T} = (-r_hat[2], r_hat[1])
 
 
+"""
+Return the transverse (perpendicular) unit vector from `x1` to `x2`, defined as the cross product
+of the local vertical with the longitudinal unit vector. This naming is opposite to the Lindborg
+and Cho convention.
+"""
 @inline function n̂(x1, x2)
-    """
-    Return the transverse (perpendicular) unit vector from  x to y
-    Calling this  n̂ is opposite of Lindberg and Cho notation, but idk...
-    This is defined as the cross between the unit vector in the vertical direction and the longitudinal unit vector
-    """
     return n̂(r̂(x1, x2))
 end
 
@@ -296,28 +617,28 @@ end
 end
 
 
+"""
+Return the signed longitudinal magnitude of `δu` along `r_hat`. The caller must ensure `r_hat` is
+a unit vector.
+"""
 @inline function magnitude_δu_longitudinal(δu, r_hat)
-    """
-    Return the longitudinal component of u (along the vector)
-    Left to the user to ensure r_hat has norm 1
-    """
     return LA.dot(δu, r_hat) # r_hat is unit vector so just dot product
 end
 
+"""
+Return the longitudinal component of `δu` along `r_hat`, as a vector. The caller must ensure
+`r_hat` is a unit vector.
+"""
 @inline function δu_longitudinal(δu, r_hat)
-    """
-    Return the longitudinal component of u (along the vector)
-    Left to the user to ensure r_hat has norm 1
-    """
     return magnitude_δu_longitudinal(δu, r_hat) * r_hat
 end
 
+"""
+Return the transverse magnitude of `δu`, signed relative to the normal vector `n̂(r_hat)`. The
+caller must ensure `r_hat` is a unit vector.
+"""
 @inline function magnitude_δu_transverse(δu, r_hat)
-    """
-    Return the magnitude of the transverse component of u (perpendicular to the vector) relative to the normal vector...
-    Left to the user to ensure r_hat has norm 1
-    """
-    # This instead of  LA.norm(δu .- δu_longitudinal(δu, r_hat)) because we want the signed magnitude relative to the normal vector...
+    # Signed relative to n̂, unlike LA.norm(δu .- δu_longitudinal(δu, r_hat)).
     return LA.dot(δu, n̂(r_hat))
 end
 
@@ -330,16 +651,12 @@ end
     return transverse_component(δu, r_hat, basis, basis_index)
 end
 
+"""
+Return the transverse component of `δu` (perpendicular to `r_hat`), as a vector. The caller must
+ensure `r_hat` is a unit vector.
+"""
 @inline function δu_transverse(δu, r_hat)
-    """
-    Return the transverse component of u (perpendicular to the vector)
-    Left to the user to ensure r_hat (and local_unit_vertical) has norm 1
-
-    -- note, it appears these two methods turned out to be identical -- see if we can simplify...
-    """
-
-    return δu .- δu_longitudinal(δu, r_hat) # I think this is faster than magnitude_δu_transverse(δu, r_hat) * n̂(δu, r_hat)
-
+    return δu .- δu_longitudinal(δu, r_hat)
 end
 
 """

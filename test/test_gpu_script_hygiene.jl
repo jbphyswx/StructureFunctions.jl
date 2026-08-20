@@ -19,7 +19,7 @@ end
 Test.@testset "GPU script hygiene" begin
     repo = normpath(joinpath(@__DIR__, ".."))
     paths = [
-        joinpath(repo, "ext", "StructureFunctionsGPUExt.jl"),
+        joinpath(repo, "ext", "StructureFunctionsKernelAbstractionsExt.jl"),
         joinpath(repo, "ext", "gpu"),
         joinpath(repo, "gpu"),
         joinpath(repo, "benchmark"),

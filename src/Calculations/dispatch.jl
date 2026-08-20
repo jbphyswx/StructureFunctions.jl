@@ -65,19 +65,26 @@ function calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
-    distance_bins::AbstractVector;
-    backend::AbstractExecutionBackend = AutoBackend(),
+    distance_bins::AbstractVector,
+    count_eltype::Type{CT} = UInt32
+    ;
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     output_type::Type{OT} = SFO.StructureFunction,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...,
-) where {FT1, FT2, OT}
-    shape = _validate_array_shape(x, u)
+) where {FT1, FT2, OT, CT}
+    shape = _validate_array_shape(x, u, distance_metric)
+    _assert_counts_representable(CT, size(x, 2))
     raw = _dispatch_execution_backend(
         backend,
         shape,
         structure_function_type,
         x,
         u,
-        distance_bins;
+        distance_bins,
+        count_eltype
+        ;
+        distance_metric,
         kwargs...,
     )
     return _finalize(raw, output_type)
@@ -89,7 +96,7 @@ function calculate_structure_function(
     u_vecs::Tuple,
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
-    backend::AbstractExecutionBackend = AutoBackend(),
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     kwargs...,
 )
     _unsupported_tuple_input()
@@ -103,12 +110,16 @@ function calculate_structure_function(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector,
-    value_bins::AbstractVector;
-    backend::AbstractExecutionBackend = AutoBackend(),
+    value_bins::AbstractVector,
+    count_eltype::Type{CT} = UInt32
+    ;
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     output_type::Type{OT} = SFO.StructureFunction2DSumsAndCounts,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...,
-) where {FT1, FT2, OT}
-    shape = _validate_array_shape(x, u)
+) where {FT1, FT2, OT, CT}
+    shape = _validate_array_shape(x, u, distance_metric)
+    _assert_counts_representable(CT, size(x, 2))
     raw = _dispatch_execution_backend(
         backend,
         shape,
@@ -117,6 +128,8 @@ function calculate_structure_function(
         u,
         distance_bins,
         value_bins;
+        distance_metric,
+        count_eltype,
         kwargs...,
     )
     return _finalize(raw, output_type)
@@ -143,13 +156,13 @@ function calculate_structure_function(
     u::AbstractArray{FT2},
     distance_bins::Int,
     args...;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    bin_spacing::Type{<:AbstractBinEdges} = LogBinEdges,
+    verbose::Bool = true,
+    show_progress::Bool = true,
     kwargs...,
 ) where {FT1, FT2}
-    shape = _validate_array_shape(x, u)
-    distance_metric = get(kwargs, :distance_metric, DI.Euclidean())
-    bin_spacing = get(kwargs, :bin_spacing, LogBinEdges)
-    verbose = get(kwargs, :verbose, true)
-    show_progress = get(kwargs, :show_progress, true)
+    shape = _validate_array_shape(x, u, distance_metric)
 
     if verbose
         @info("Calculating min and max distances and generating bins")
@@ -157,12 +170,17 @@ function calculate_structure_function(
     min_distance, max_distance = _minmax_for_autobins(shape, x, distance_metric, show_progress)
     actual_bins = _auto_distance_bins(min_distance, max_distance, distance_bins, bin_spacing)
 
+    # `bin_spacing` selected these edges and means nothing downstream, so it is consumed here
+    # rather than forwarded into a `kwargs...` sink that would silently swallow it.
     return calculate_structure_function(
         structure_function_type,
         x,
         u,
         actual_bins,
         args...;
+        distance_metric,
+        verbose,
+        show_progress,
         kwargs...,
     )
 end
@@ -193,7 +211,9 @@ function _minmax_for_autobins(::SharedPositionField, x::AbstractMatrix, distance
 end
 
 function _minmax_matrix_for_autobins(x::AbstractMatrix, distance_metric, show_progress::Bool)
-    min_distance, max_distance = Inf, 0.0
+    # Accumulate in the input eltype; Float64 literals here would widen the bin edges.
+    FT = float(eltype(x))
+    min_distance, max_distance = FT(Inf), FT(0)
     PM.@showprogress enabled = show_progress for i in axes(x, 2)
         _min_distance, _max_distance = minmax_i(i, x, distance_metric)
         min_distance = min(min_distance, _min_distance)
@@ -206,7 +226,8 @@ function _minmax_for_autobins(::VaryingPositionField, x::AbstractArray, distance
     D, N = size(x, 1), size(x, 2)
     B = prod(size(x)[3:end])
     x_flat = reshape(x, D, N, B)
-    min_distance, max_distance = Inf, 0.0
+    FT = float(eltype(x))
+    min_distance, max_distance = FT(Inf), FT(0)
     PM.@showprogress enabled = show_progress for b in 1:B
         x_slice = @view x_flat[:, :, b]
         for i in axes(x_slice, 2)
@@ -236,8 +257,9 @@ function minmax_i(
 
     min_distance, max_distance = FT(Inf), FT(0.0)
     iter_inds = eachindex(x_vecs[1])
+    # `j > i`: the metric is symmetric, so `j != i` measured every pair twice.
     for j in iter_inds
-        if i != j
+        if j > i
             X2 = SA.SVector{D, FT}(ntuple(k -> x_vecs[k][j], Val(D)))
             distance = distance_metric(X1, X2)
             if distance < min_distance
@@ -316,40 +338,44 @@ end
 
 function calculate_structure_function!(
     sums, counts, sf_type, x::Tuple, u::Tuple, distance_bins;
-    backend=SerialBackend(), kwargs...
+    backend=CB.SerialBackend(), kwargs...
 )
     _unsupported_tuple_input()
 end
 
 function calculate_structure_function!(
     sums, counts, sf_type, x::AbstractArray, u::AbstractArray, distance_bins;
-    backend=SerialBackend(), kwargs...
+    backend=CB.SerialBackend(), distance_metric::DI.PreMetric = DI.Euclidean(), kwargs...
 )
-    shape = _validate_array_shape(x, u)
-    _dispatch_execution_backend!(backend, shape, sums, counts, sf_type, x, u, distance_bins; kwargs...)
+    shape = _validate_array_shape(x, u, distance_metric)
+    _assert_counts_representable(eltype(counts), size(x, 2))
+    _dispatch_execution_backend!(backend, shape, sums, counts, sf_type, x, u, distance_bins;
+        distance_metric, kwargs...)
     return nothing
 end
 
 function calculate_structure_function!(
     sums_2d, counts_2d, sf_type, x::Tuple, u::Tuple, distance_bins, value_bins;
-    backend=SerialBackend(), kwargs...
+    backend=CB.SerialBackend(), kwargs...
 )
     _unsupported_tuple_input()
 end
 
 function calculate_structure_function!(
     sums_2d, counts_2d, sf_type, x::AbstractArray, u::AbstractArray, distance_bins, value_bins;
-    backend=SerialBackend(), kwargs...
+    backend=CB.SerialBackend(), distance_metric::DI.PreMetric = DI.Euclidean(), kwargs...
 )
-    shape = _validate_array_shape(x, u)
-    _dispatch_execution_backend!(backend, shape, sums_2d, counts_2d, sf_type, x, u, distance_bins, value_bins; kwargs...)
+    shape = _validate_array_shape(x, u, distance_metric)
+    _assert_counts_representable(eltype(counts_2d), size(x, 2))
+    _dispatch_execution_backend!(backend, shape, sums_2d, counts_2d, sf_type, x, u, distance_bins, value_bins;
+        distance_metric, kwargs...)
     return nothing
 end
 
 # # --- Backend Dispatch Layers for Mutating API ---
 
 function _dispatch_execution_backend!(
-    ::SerialBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
+    ::CB.AbstractSerialBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
     if has_auxiliary_axes(shape)
         auxiliary_structure_function!(sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
@@ -360,7 +386,7 @@ function _dispatch_execution_backend!(
 end
 
 function _dispatch_execution_backend!(
-    ::ThreadedBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
+    ::CB.AbstractThreadedBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
     if has_auxiliary_axes(shape)
         auxiliary_structure_function_threaded!(sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
@@ -371,27 +397,27 @@ function _dispatch_execution_backend!(
 end
 
 function _dispatch_execution_backend!(
-    backend::GPUBackend, shape::PointField, sums::AbstractVector, counts::AbstractVector, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
+    backend::CB.AbstractGPUBackend, shape::PointField, sums::AbstractVector, counts::AbstractVector, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
     gpu_calculate_structure_function!(sums, counts, structure_function_type, backend.backend, x, u, distance_bins; kwargs...)
     return nothing
 end
 
 function _dispatch_execution_backend!(
-    backend::GPUBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
+    backend::CB.AbstractGPUBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
     throw(ArgumentError("in-place auxiliary-axis calculate_structure_function! is not implemented for GPUBackend"))
 end
 
 # --- Replaced AutoBackend Mutating Dispatch ---
 function _dispatch_execution_backend!(
-    ::AutoBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
+    ::CB.AbstractAutoBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
     if has_auxiliary_axes(shape)
         if Threads.nthreads() > 1
-            return _dispatch_execution_backend!(ThreadedBackend(), shape, sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
+            return _dispatch_execution_backend!(CB.ThreadedBackend(), shape, sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
         end
-        return _dispatch_execution_backend!(SerialBackend(), shape, sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
+        return _dispatch_execution_backend!(CB.SerialBackend(), shape, sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
     end
 
     if Threads.nthreads() > 1 &&
@@ -405,7 +431,7 @@ end
 # --- Mutating 2D Backend Dispatch Layers ---
 
 function _dispatch_execution_backend!(
-    ::SerialBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    ::CB.AbstractSerialBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     if has_auxiliary_axes(shape)
         auxiliary_joint2d!(sums_2d, counts_2d, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
@@ -416,7 +442,7 @@ function _dispatch_execution_backend!(
 end
 
 function _dispatch_execution_backend!(
-    ::ThreadedBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    ::CB.AbstractThreadedBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     if has_auxiliary_axes(shape)
         auxiliary_joint2d_threaded!(sums_2d, counts_2d, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
@@ -427,19 +453,19 @@ function _dispatch_execution_backend!(
 end
 
 function _dispatch_execution_backend!(
-    backend::GPUBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    backend::CB.AbstractGPUBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     throw(ArgumentError("In-place calculate_structure_function! is not supported on GPU backend."))
 end
 
 function _dispatch_execution_backend!(
-    ::AutoBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    ::CB.AbstractAutoBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     if has_auxiliary_axes(shape)
         if Threads.nthreads() > 1
-            return _dispatch_execution_backend!(ThreadedBackend(), shape, sums_2d, counts_2d, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
+            return _dispatch_execution_backend!(CB.ThreadedBackend(), shape, sums_2d, counts_2d, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
         end
-        return _dispatch_execution_backend!(SerialBackend(), shape, sums_2d, counts_2d, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
+        return _dispatch_execution_backend!(CB.SerialBackend(), shape, sums_2d, counts_2d, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
     end
 
     if Threads.nthreads() > 1 &&
@@ -451,25 +477,25 @@ function _dispatch_execution_backend!(
 end
 
 function _dispatch_execution_backend!(
-    ::DistributedBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
+    ::CB.AbstractDistributedBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
     throw(ArgumentError("calculate_structure_function! is not implemented for DistributedBackend."))
 end
 
 function _dispatch_execution_backend!(
-    backend::AbstractExecutionBackend, sums::AbstractArray, counts::AbstractArray, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
+    backend::CB.AbstractExecutionBackend, sums::AbstractArray, counts::AbstractArray, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
     throw(ArgumentError("calculate_structure_function! is not implemented for backend $(typeof(backend))."))
 end
 
 function _dispatch_execution_backend!(
-    ::DistributedBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    ::CB.AbstractDistributedBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     throw(ArgumentError("calculate_structure_function! with distance_bins and value_bins is not implemented for DistributedBackend."))
 end
 
 function _dispatch_execution_backend!(
-    backend::AbstractExecutionBackend, sums_2d::AbstractArray, counts_2d::AbstractArray, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    backend::CB.AbstractExecutionBackend, sums_2d::AbstractArray, counts_2d::AbstractArray, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     throw(ArgumentError("calculate_structure_function! with distance_bins and value_bins is not implemented for backend $(typeof(backend))."))
 end
@@ -482,83 +508,73 @@ end
 
 # 1D
 function _dispatch_execution_backend(
-    ::SerialBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
-)
-    return serial_calculate_structure_function(structure_function_type, x, u, distance_bins; kwargs...)
+    ::CB.AbstractSerialBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, count_eltype::Type{CT} = UInt32; kwargs...
+) where {CT}
+    return serial_calculate_structure_function(structure_function_type, x, u, distance_bins, count_eltype; kwargs...)
 end
 
 function _dispatch_execution_backend(
-    ::SerialBackend, shape::PointField{D}, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
-) where {D}
+    ::CB.AbstractSerialBackend, shape::PointField{D}, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, count_eltype::Type{CT} = UInt32;
+    kwargs...
+) where {D, CT}
     return _serial_calculate_structure_function_point(
-        structure_function_type, x, u, distance_bins, Val(D); kwargs...,
+        structure_function_type, x, u, distance_bins, Val(D), count_eltype; kwargs...,
     )
 end
 
 function _dispatch_execution_backend(
-    ::ThreadedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
-)
-    return threaded_calculate_structure_function(structure_function_type, x, u, distance_bins; kwargs...)
+    ::CB.AbstractThreadedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, count_eltype::Type{CT} = UInt32; kwargs...
+) where {CT}
+    return threaded_calculate_structure_function(structure_function_type, x, u, distance_bins, count_eltype; kwargs...)
 end
 
 function _dispatch_execution_backend(
-    backend::DistributedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
-)
-    return _dispatch_execution_backend(backend, structure_function_type, x, u, distance_bins; kwargs...)
+    backend::CB.AbstractDistributedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, count_eltype::Type{CT} = UInt32; kwargs...
+) where {CT}
+    return _dispatch_execution_backend(backend, structure_function_type, x, u, distance_bins; count_eltype, kwargs...)
 end
 
 function _dispatch_execution_backend(
-    backend::GPUBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
-)
+    backend::CB.AbstractGPUBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, count_eltype::Type{CT} = UInt32; kwargs...
+) where {CT}
     if has_auxiliary_axes(shape)
-        return gpu_calculate_structure_function_batch(structure_function_type, backend.backend, x, u, distance_bins; kwargs...)
+        return gpu_calculate_structure_function_batch(structure_function_type, backend.backend, x, u, distance_bins; count_eltype, kwargs...)
     end
-    return gpu_calculate_structure_function(structure_function_type, backend.backend, x, u, distance_bins; kwargs...)
+    return gpu_calculate_structure_function(structure_function_type, backend.backend, x, u, distance_bins; count_eltype, kwargs...)
 end
 
 function _dispatch_execution_backend(
-    ::AutoBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
-)
-    if distributed_workers_available(Val(:distributed))
-        return _dispatch_execution_backend(DistributedBackend(), shape, structure_function_type, x, u, distance_bins; kwargs...)
-    end
-
-    if has_auxiliary_axes(shape)
-        if Threads.nthreads() > 1
-            return _dispatch_execution_backend(ThreadedBackend(), shape, structure_function_type, x, u, distance_bins; kwargs...)
-        end
-        return _dispatch_execution_backend(SerialBackend(), shape, structure_function_type, x, u, distance_bins; kwargs...)
-    end
-
-    if Threads.nthreads() > 1 &&
-       _threaded_backend_available(structure_function_type, x, u, distance_bins)
-        return _dispatch_execution_backend(ThreadedBackend(), shape, structure_function_type, x, u, distance_bins; kwargs...)
-    end
-
-    return _dispatch_execution_backend(SerialBackend(), shape, structure_function_type, x, u, distance_bins; kwargs...)
+    ::CB.AbstractAutoBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, count_eltype::Type{CT} = UInt32; kwargs...
+) where {CT}
+    backend = resolve_auto_backend(
+        shape,
+        () -> _threaded_backend_available(structure_function_type, x, u, distance_bins),
+        () -> true,
+    )
+    return _dispatch_execution_backend(backend, shape, structure_function_type, x, u, distance_bins, count_eltype; kwargs...)
 end
 
 # 2D (joint distance×value)
 function _dispatch_execution_backend(
-    ::SerialBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    ::CB.AbstractSerialBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     return serial_calculate_structure_function(structure_function_type, x, u, distance_bins, value_bins; kwargs...)
 end
 
 function _dispatch_execution_backend(
-    ::ThreadedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    ::CB.AbstractThreadedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     return threaded_calculate_structure_function(structure_function_type, x, u, distance_bins, value_bins; kwargs...)
 end
 
 function _dispatch_execution_backend(
-    backend::DistributedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    backend::CB.AbstractDistributedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     return _dispatch_execution_backend(backend, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
 end
 
 function _dispatch_execution_backend(
-    backend::GPUBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    backend::CB.AbstractGPUBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     if has_auxiliary_axes(shape)
         return gpu_calculate_structure_function_2d_batch(structure_function_type, backend.backend, x, u, distance_bins, value_bins; kwargs...)
@@ -567,23 +583,12 @@ function _dispatch_execution_backend(
 end
 
 function _dispatch_execution_backend(
-    ::AutoBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    ::CB.AbstractAutoBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
-    if distributed_workers_available(Val(:distributed))
-        return _dispatch_execution_backend(DistributedBackend(), shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
-    end
-
-    if has_auxiliary_axes(shape)
-        if Threads.nthreads() > 1
-            return _dispatch_execution_backend(ThreadedBackend(), shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
-        end
-        return _dispatch_execution_backend(SerialBackend(), shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
-    end
-
-    if Threads.nthreads() > 1 &&
-       _threaded_backend_available(structure_function_type, x, u, distance_bins)
-        return _dispatch_execution_backend(ThreadedBackend(), shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
-    end
-
-    return _dispatch_execution_backend(SerialBackend(), shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
+    backend = resolve_auto_backend(
+        shape,
+        () -> _threaded_backend_available(structure_function_type, x, u, distance_bins),
+        () -> true,
+    )
+    return _dispatch_execution_backend(backend, shape, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
 end

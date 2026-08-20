@@ -6,35 +6,16 @@ module StructureFunctionsDistributedExt
 using Distributed: Distributed
 using ProgressMeter: ProgressMeter as PM
 using Distances: Distances as DI
-using StaticArrays: StaticArrays as SA
-using LinearAlgebra: LinearAlgebra as LA
-using SharedArrays: SharedArrays
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
-    HelperFunctions as SFH, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO,
+    StructureFunctionTypes as SFT, StructureFunctionObjects as SFO,
     AbstractBinEdges, LinearBinEdges, LogBinEdges
 
 SFC.distributed_workers_available(::Val{:distributed}) = Distributed.nworkers() > 1
 
-# Balanced outer-index order for the triangular pair loop (work for index i is ~ N - i).
-# `@distributed` splits its iterable into CONTIGUOUS per-worker blocks, so iterating 1:N
-# directly gives worker 1 all the expensive low-i pairs (~2x imbalance). Interleaving
-# high/low indices ([1, N, 2, N-1, ...]) makes every contiguous block carry ~equal work.
-function _balanced_triangle_perm(N::Integer)
-    perm = Vector{Int}(undef, N)
-    lo, hi, k = 1, N, 1
-    @inbounds while lo <= hi
-        perm[k] = lo; k += 1; lo += 1
-        if lo <= hi
-            perm[k] = hi; k += 1; hi -= 1
-        end
-    end
-    return perm
-end
-
 # --- Non-Mutating 1D Dispatch (returns the raw accumulator; public boundary finalizes) ---
 function SFC._dispatch_execution_backend(
-    db::SFC.DistributedBackend,
+    db::CB.AbstractDistributedBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
@@ -47,22 +28,21 @@ function SFC._dispatch_execution_backend(
         x_vecs,
         u_vecs,
         distance_bins;
-        inner = db.inner,
+        inner = CB.local_backend(db),
         kwargs...,
     )
 end
 
 function SFC._dispatch_execution_backend(
-    db::SFC.DistributedBackend,
+    db::CB.AbstractDistributedBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_arr::AbstractMatrix,
     u_arr::AbstractMatrix,
     distance_bins::AbstractVector;
     kwargs...,
 )
-    N_dims = size(x_arr, 1)
-    x_vecs = ntuple(k -> view(x_arr, k, :), N_dims)
-    u_vecs = ntuple(k -> view(u_arr, k, :), N_dims)
+    x_vecs = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
+    u_vecs = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
     return SFC._dispatch_execution_backend(
         db,
         structure_function_type,
@@ -82,7 +62,7 @@ function _parallel_calculate_structure_function_core(
     verbose = true,
     show_progress = true,
     count_eltype::Type{CT} = UInt32,
-    inner::SFC.AbstractExecutionBackend = SFC.SerialBackend(),
+    inner::CB.AbstractLocalBackend = CB.SerialBackend(),
     kwargs...,
 ) where {CT}
     if verbose
@@ -129,7 +109,7 @@ end
 end
 
 function SFC._dispatch_execution_backend(
-    db::SFC.DistributedBackend,
+    db::CB.AbstractDistributedBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray,
     u::AbstractArray,
@@ -141,7 +121,7 @@ function SFC._dispatch_execution_backend(
     backend = nothing,
     kwargs...,
 ) where {CT}
-    verbose && @info("calculating batched structure function (distributed over batch axis, inner=$(nameof(typeof(db.inner))))")
+    verbose && @info("calculating batched structure function (distributed over batch axis, inner=$(nameof(typeof(CB.local_backend(db)))))")
     D, N = size(u, 1), size(u, 2)
     bdims = size(u)[3:end]
     B = prod(bdims)
@@ -149,19 +129,20 @@ function SFC._dispatch_execution_backend(
     u_flat = reshape(u, D, N, B)
     x_flat = fixed_x ? x : reshape(x, D, N, B)
     nb = SFC.n_histogram_bins(distance_bins)
-    inner = db.inner
+    inner = CB.local_backend(db)
 
     chunks = _dist_batch_chunks(B, Distributed.nworkers())
-    # each worker computes its contiguous b-chunk locally via the inner backend, requesting the
-    # raw accumulator so partials can be concatenated; the public boundary finalizes.
-    parts = Distributed.pmap(chunks) do bc
-        usub = u_flat[:, :, bc]
-        xsub = fixed_x ? x_flat : x_flat[:, :, bc]
+    # Each worker computes its contiguous b-chunk locally via the inner backend, requesting the raw
+    # accumulator so partials can be concatenated; the public boundary finalizes. The b-slice is the
+    # pmap ITEM, not a closure capture: `pmap` re-serializes the closure on every `remotecall`, so
+    # capturing `u_flat` would ship the whole batch to every worker instead of its own 1/nw share.
+    items = [(fixed_x ? x_flat : x_flat[:, :, bc], u_flat[:, :, bc]) for bc in chunks]
+    parts = Distributed.pmap(items) do xu
         r = SFC.calculate_structure_function(
-            structure_function_type, xsub, usub, distance_bins;
+            structure_function_type, xu[1], xu[2], distance_bins, count_eltype;
             backend = inner, output_type = SFO.StructureFunctionSumsAndCounts,
             verbose = false, show_progress = false,
-            distance_metric = distance_metric, count_eltype = count_eltype,
+            distance_metric = distance_metric,
         )
         (r.sums, r.counts)
     end
@@ -182,7 +163,7 @@ end
 
 # --- Auto-Binning 1D Dispatch ---
 function SFC._dispatch_execution_backend(
-    ::SFC.DistributedBackend,
+    ::CB.AbstractDistributedBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
@@ -221,7 +202,7 @@ function SFC._dispatch_execution_backend(
     end
 
     return SFC._dispatch_execution_backend(
-        SFC.DistributedBackend(),
+        CB.DistributedBackend(),
         structure_function_type,
         x_vecs,
         u_vecs,
@@ -235,7 +216,7 @@ end
 
 # --- Non-Mutating 2D Dispatch ---
 function SFC._dispatch_execution_backend(
-    ::SFC.DistributedBackend,
+    db::CB.AbstractDistributedBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
@@ -252,33 +233,23 @@ function SFC._dispatch_execution_backend(
         @info("calculating 2D joint structure function (distributed reduction)")
     end
 
-    # Round-robin the balanced triangle permutation across workers (an interleaved subset of a
-    # balance-ordered list stays load-balanced); each worker accumulates its i's into a local 2D
-    # buffer, then we sum the partials into a preallocated typed buffer. (Same rationale as the 1D
-    # core: avoids `@distributed (+)`'s `Any`-typed reduction / the return-type assertion.)
+    # Each worker accumulates its stride-`nw` share of the outer indices into a local 2D buffer,
+    # then we sum the partials into a preallocated typed buffer. (Same rationale as the 1D core:
+    # avoids `@distributed (+)`'s `Any`-typed reduction / the return-type assertion.)
     N = length(x_vecs[1])
     nw = max(1, Distributed.nworkers())
-    perm = _balanced_triangle_perm(N)
-    chunks = [perm[w:nw:length(perm)] for w in 1:nw]
+    chunks = SFC._balanced_index_chunks(N, nw)
 
-    D = length(x_vecs)
-    vD = Val(D)
     nd = SFC.n_histogram_bins(distance_bins)
     nv = SFC.n_histogram_bins(value_bins)
     OT = promote_type(float(eltype(x_vecs[1])), float(eltype(u_vecs[1])))
-    dist_be = SFC.BinEdges(distance_bins)
-    val_be = SFC.BinEdges(value_bins)
+    inner = CB.local_backend(db)
 
     partials = Distributed.pmap(chunks) do ichunk
-        ls = zeros(OT, nd, nv)
-        lc = zeros(CT, nd, nv)
-        for i in ichunk
-            SFC.calculate_structure_function_2d_i!(
-                ls, lc, vD, structure_function_type, i, x_vecs, u_vecs, dist_be, val_be;
-                distance_metric = distance_metric,
-            )
-        end
-        (ls, lc)
+        SFC._partial_2d_sums_counts(
+            inner, structure_function_type, x_vecs, u_vecs, distance_bins, value_bins, ichunk;
+            distance_metric = distance_metric, count_eltype = CT,
+        )
     end
 
     sums = zeros(OT, nd, nv)
@@ -291,7 +262,7 @@ function SFC._dispatch_execution_backend(
 end
 
 function SFC._dispatch_execution_backend(
-    ::SFC.DistributedBackend,
+    ::CB.AbstractDistributedBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_arr::AbstractMatrix,
     u_arr::AbstractMatrix,
@@ -299,11 +270,10 @@ function SFC._dispatch_execution_backend(
     value_bins::AbstractVector;
     kwargs...,
 )
-    N_dims = size(x_arr, 1)
-    x_vecs = ntuple(k -> view(x_arr, k, :), N_dims)
-    u_vecs = ntuple(k -> view(u_arr, k, :), N_dims)
+    x_vecs = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
+    u_vecs = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
     return SFC._dispatch_execution_backend(
-        SFC.DistributedBackend(),
+        CB.DistributedBackend(),
         structure_function_type,
         x_vecs,
         u_vecs,
@@ -315,7 +285,7 @@ end
 
 # --- Single Pass Dispatch ---
 function SFC._dispatch_single_pass(
-    ::SFC.DistributedBackend,
+    ::CB.AbstractDistributedBackend,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
@@ -324,54 +294,31 @@ function SFC._dispatch_single_pass(
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
-    n_bins = length(distance_bins) - 1
+    n_bins = SFC.n_histogram_bins(distance_bins)
     n_points = size(x, 2)
-    D = size(x, 1)
-    vD = Val(D)
-    
-    combined_reduced = Distributed.@distributed (+) for i in _balanced_triangle_perm(n_points)
-        local_combined = zeros(Float64, 2 * SFC.SINGLE_PASS_N, n_bins)
-        x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
-        u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
-        
-        for j in (i+1):n_points
-            x_j = SA.SVector{D, FT1}(ntuple(d -> x[d, j], vD))
-            
-            r = distance_metric(x_i, x_j)
-            bin_idx = SFH.digitize(r, distance_bins)
-            
-            if 1 <= bin_idx <= n_bins
-                u_j = SA.SVector{D, FT2}(ntuple(d -> u[d, j], vD))
-                du = u_j - u_i
-                
-                rh = SFH.r̂(x_i, x_j, distance_metric, r)
-                du_L = LA.dot(du, rh)
-                du_L2 = du_L * du_L
-                du_T2 = SFH.transverse_norm2(du, rh)
-                
-                local_combined[1, bin_idx] += du_L2 + du_T2
-                local_combined[2, bin_idx] += du_L2
-                local_combined[3, bin_idx] += du_T2
-                local_combined[4, bin_idx] += du_L * (du_L2 + du_T2)
-                local_combined[5, bin_idx] += du_L * du_L2
-                local_combined[6, bin_idx] += du_L * du_T2
-                
-                for t in (SFC.SINGLE_PASS_N + 1):(2 * SFC.SINGLE_PASS_N)
-                    local_combined[t, bin_idx] += 1.0
-                end
-            end
-        end
-        local_combined
-    end
-    
-    sums = OT.(combined_reduced[1:SFC.SINGLE_PASS_N, :])
-    counts = CT.(combined_reduced[(SFC.SINGLE_PASS_N + 1):(2 * SFC.SINGLE_PASS_N), :])
 
+    # One accumulator per worker chunk, not per outer index: the old `@distributed (+)` body
+    # allocated a (12, n_bins) matrix for every `i` and reduced O(N) full matrices. Chunks also let
+    # each worker take the SIMD kernel, and the accumulator is typed from the inputs.
+    chunks = SFC._balanced_index_chunks(n_points, max(1, Distributed.nworkers()))
+    partials = Distributed.pmap(chunks) do ch
+        SFC._partial_single_pass_1d(
+            x, u, distance_bins, ch;
+            distance_metric = distance_metric, count_eltype = CT,
+        )
+    end
+
+    sums = zeros(OT, SFC.SINGLE_PASS_N, n_bins)
+    counts = zeros(CT, SFC.SINGLE_PASS_N, n_bins)
+    for (s, c) in partials
+        sums .+= s
+        counts .+= c
+    end
     return (sums = sums, counts = counts)  # raw 6-row; public wrapper adds Helmholtz once
 end
 
 function SFC._dispatch_single_pass_2d(
-    ::SFC.DistributedBackend,
+    ::CB.AbstractDistributedBackend,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
@@ -381,66 +328,32 @@ function SFC._dispatch_single_pass_2d(
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
-    n_bins = length(distance_bins) - 1
-    vb0 = SFC._sp2d_value_bin_at(value_bins, 1)
-    n_val = length(vb0) - 1
+    n_bins = SFC.n_histogram_bins(distance_bins)
+    n_val = length(SFC._sp2d_value_bin_at(value_bins, 1)) - 1
     n_points = size(x, 2)
-    D = size(x, 1)
-    vD = Val(D)
 
-    combined_reduced = Distributed.@distributed (+) for i in _balanced_triangle_perm(n_points)
-        local_combined = zeros(Float64, 2 * SFC.SINGLE_PASS_N, n_bins, n_val)
-        x_i = SA.SVector{D, FT1}(ntuple(d -> x[d, i], vD))
-        u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
-
-        for j in (i + 1):n_points
-            x_j = SA.SVector{D, FT1}(ntuple(d -> x[d, j], vD))
-
-            r = distance_metric(x_i, x_j)
-            bin_idx = SFH.digitize(r, distance_bins)
-
-            if 1 <= bin_idx <= n_bins
-                u_j = SA.SVector{D, FT2}(ntuple(d -> u[d, j], vD))
-                du = u_j - u_i
-
-                rh = SFH.r̂(x_i, x_j, distance_metric, r)
-                du_L = LA.dot(du, rh)
-                du_T = SFH.mδu_t(du, rh)
-
-                du_L2 = du_L * du_L
-                du_T2 = SFH.transverse_norm2(du, rh)
-
-                vals = (
-                    du_L2 + du_T2,
-                    du_L2,
-                    du_T2,
-                    du_L * (du_L2 + du_T2),
-                    du_L * du_L2,
-                    du_L * du_T2,
-                )
-
-                for t in 1:SFC.SINGLE_PASS_N
-                    vb = SFC._sp2d_value_bin_at(value_bins, t)
-                    vbin = SFH.digitize(vals[t], vb)
-                    n_val_t = length(vb) - 1
-                    if 1 <= vbin <= n_val_t && vbin <= n_val
-                        local_combined[t, bin_idx, vbin] += vals[t]
-                        local_combined[t + SFC.SINGLE_PASS_N, bin_idx, vbin] += 1.0
-                    end
-                end
-            end
-        end
-        local_combined
+    # One accumulator per worker chunk, not per outer index: the old `@distributed (+)` body
+    # allocated a (12, n_bins, n_val) matrix for every `i` and reduced O(N) of them.
+    chunks = SFC._balanced_index_chunks(n_points, max(1, Distributed.nworkers()))
+    partials = Distributed.pmap(chunks) do ch
+        SFC._partial_single_pass_2d(
+            x, u, distance_bins, value_bins, ch;
+            distance_metric = distance_metric, count_eltype = CT,
+        )
     end
 
-    sums = OT.(combined_reduced[1:SFC.SINGLE_PASS_N, :, :])
-    counts = CT.(combined_reduced[(SFC.SINGLE_PASS_N + 1):(2 * SFC.SINGLE_PASS_N), :, :])
+    sums = zeros(OT, SFC.SINGLE_PASS_N, n_bins, n_val)
+    counts = zeros(CT, SFC.SINGLE_PASS_N, n_bins, n_val)
+    for (s, c) in partials
+        sums .+= s
+        counts .+= c
+    end
     return sums, counts
 end
 
 # --- Mutating 1D Dispatch ---
 function SFC._dispatch_execution_backend!(
-    ::SFC.DistributedBackend,
+    ::CB.AbstractDistributedBackend,
     sums::AbstractVector{OT},
     counts::AbstractVector{CT},
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -450,7 +363,7 @@ function SFC._dispatch_execution_backend!(
     kwargs...,
 ) where {OT, CT}
     result = SFC._dispatch_execution_backend(
-        SFC.DistributedBackend(),
+        CB.DistributedBackend(),
         structure_function_type,
         x_vecs,
         u_vecs,
@@ -463,7 +376,7 @@ function SFC._dispatch_execution_backend!(
 end
 
 function SFC._dispatch_execution_backend!(
-    ::SFC.DistributedBackend,
+    ::CB.AbstractDistributedBackend,
     sums::AbstractVector{OT},
     counts::AbstractVector{CT},
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -472,11 +385,10 @@ function SFC._dispatch_execution_backend!(
     distance_bins::AbstractVector;
     kwargs...,
 ) where {OT, CT, FT1 <: Number, FT2 <: Number}
-    N_dims = size(x_arr, 1)
-    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
-    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
+    x_tuple = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
+    u_tuple = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
     return SFC._dispatch_execution_backend!(
-        SFC.DistributedBackend(),
+        CB.DistributedBackend(),
         sums,
         counts,
         structure_function_type,
@@ -489,7 +401,7 @@ end
 
 # --- Mutating 2D Dispatch ---
 function SFC._dispatch_execution_backend!(
-    ::SFC.DistributedBackend,
+    ::CB.AbstractDistributedBackend,
     sums_2d::AbstractMatrix{OT},
     counts_2d::AbstractMatrix{CT},
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -500,7 +412,7 @@ function SFC._dispatch_execution_backend!(
     kwargs...,
 ) where {OT, CT}
     result = SFC._dispatch_execution_backend(
-        SFC.DistributedBackend(),
+        CB.DistributedBackend(),
         structure_function_type,
         x_vecs,
         u_vecs,
@@ -514,7 +426,7 @@ function SFC._dispatch_execution_backend!(
 end
 
 function SFC._dispatch_execution_backend!(
-    ::SFC.DistributedBackend,
+    ::CB.AbstractDistributedBackend,
     sums_2d::AbstractMatrix{OT},
     counts_2d::AbstractMatrix{CT},
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -524,11 +436,10 @@ function SFC._dispatch_execution_backend!(
     value_bins::AbstractVector;
     kwargs...,
 ) where {OT, CT, FT1 <: Number, FT2 <: Number}
-    N_dims = size(x_arr, 1)
-    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
-    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
+    x_tuple = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
+    u_tuple = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
     return SFC._dispatch_execution_backend!(
-        SFC.DistributedBackend(),
+        CB.DistributedBackend(),
         sums_2d,
         counts_2d,
         structure_function_type,

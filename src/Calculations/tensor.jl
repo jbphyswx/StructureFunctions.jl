@@ -5,12 +5,14 @@ function calculate_structure_function_tensor(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3};
-    backend::AbstractExecutionBackend = SerialBackend(),
+    backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
     output_type::Type{OTT} = SFO.StructureFunctionTensor,
     count_eltype::Type{CT} = UInt32,
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...,
 ) where {P, FT1, FT2, FT3, OTT, CT}
-    shape = _validate_array_shape(x, u)
+    shape = _validate_array_shape(x, u, distance_metric)
+    _assert_counts_representable(CT, size(x, 2))
     D = spatial_dimension(shape)
     n_bins = n_histogram_bins(distance_bins)
     auxiliary_dims = has_auxiliary_axes(shape) ? size(u)[3:end] : ()
@@ -19,7 +21,7 @@ function calculate_structure_function_tensor(
     sums = zeros(OT, tensor_dims..., n_bins, auxiliary_dims...)
     counts = zeros(CT, n_bins, auxiliary_dims...)
     calculate_structure_function_tensor!(
-        sums, counts, order, x, u, distance_bins; backend = backend, kwargs...
+        sums, counts, order, x, u, distance_bins; backend = backend, distance_metric, kwargs...
     )
     # The backend produces the raw accumulator; `_finalize` returns it as-is or as the averaged
     # mean tensor (the default), mirroring the 1D output-type dispatch.
@@ -34,17 +36,20 @@ function calculate_structure_function_tensor!(
     x::AbstractArray,
     u::AbstractArray,
     distance_bins::AbstractVector;
-    backend::AbstractExecutionBackend = SerialBackend(),
+    backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...,
 ) where {P}
-    shape = _validate_array_shape(x, u)
+    shape = _validate_array_shape(x, u, distance_metric)
+    # Only forward knobs the kernel accepts; it has no `kwargs...` sink.
     return _dispatch_tensor!(
-        backend, shape, sums, counts, order, x, u, distance_bins; kwargs...
+        backend, shape, sums, counts, order, x, u, distance_bins;
+        distance_metric = distance_metric,
     )
 end
 
 function _dispatch_tensor!(
-    ::SerialBackend,
+    ::CB.AbstractSerialBackend,
     shape::AbstractFieldShape,
     sums::AbstractArray,
     counts::AbstractArray,
@@ -60,7 +65,7 @@ function _dispatch_tensor!(
 end
 
 function _dispatch_tensor!(
-    ::AutoBackend,
+    ::CB.AbstractAutoBackend,
     shape::AbstractFieldShape,
     sums::AbstractArray,
     counts::AbstractArray,
@@ -71,19 +76,19 @@ function _dispatch_tensor!(
     kwargs...,
 )
     return _dispatch_tensor!(
-        SerialBackend(), shape, sums, counts, order, x, u, distance_bins; kwargs...
+        CB.SerialBackend(), shape, sums, counts, order, x, u, distance_bins; kwargs...
     )
 end
 
 function _dispatch_tensor!(
-    backend::Union{ThreadedBackend, DistributedBackend, GPUBackend},
+    backend::Union{CB.AbstractThreadedBackend, CB.AbstractDistributedBackend, CB.AbstractGPUBackend},
     ::AbstractFieldShape,
     args...;
     kwargs...,
 )
     throw(
         ArgumentError(
-            "$(typeof(backend)) tensor backend is not implemented yet; use backend=SerialBackend()",
+            "$(typeof(backend)) tensor backend is not implemented yet; use backend=CB.SerialBackend()",
         ),
     )
 end
@@ -110,10 +115,10 @@ function serial_calculate_structure_function_tensor!(
     size(counts) == expected_counts ||
         throw(DimensionMismatch("counts must have shape $expected_counts; got $(size(counts))"))
 
-    fill!(sums, zero(eltype(sums)))
-    fill!(counts, zero(eltype(counts)))
-
     dist_be = BinEdges(distance_bins)
+    # Euclidean bins on r²; other metrics keep the scalar digitize.
+    plan = squared_digitize_plan(dist_be)
+    euclid = distance_metric isa DI.Euclidean
     N = size(u, 2)
     B = isempty(auxiliary_dims) ? 1 : prod(auxiliary_dims)
     fixed_x = ndims(x) == 2
@@ -130,8 +135,9 @@ function serial_calculate_structure_function_tensor!(
             if fixed_x
                 X1 = SA.SVector{D, eltype(x)}(ntuple(d -> x_fixed[d, i], vD))
                 X2 = SA.SVector{D, eltype(x)}(ntuple(d -> x_fixed[d, j], vD))
-                dist = distance_metric(X1, X2)
-                bin = SFH.digitize(dist, dist_be)
+                dx = X2 - X1
+                bin = euclid ? squared_digitize(plan, LA.dot(dx, dx)) :
+                      SFH.digitize(distance_metric(X1, X2), dist_be)
                 if 1 <= bin <= n_bins
                     for b in 1:B
                         U1 = SA.SVector{D, eltype(u)}(ntuple(d -> u_flat[d, i, b], vD))
@@ -143,8 +149,9 @@ function serial_calculate_structure_function_tensor!(
                 for b in 1:B
                     X1 = SA.SVector{D, eltype(x)}(ntuple(d -> x_flat[d, i, b], vD))
                     X2 = SA.SVector{D, eltype(x)}(ntuple(d -> x_flat[d, j, b], vD))
-                    dist = distance_metric(X1, X2)
-                    bin = SFH.digitize(dist, dist_be)
+                    dx = X2 - X1
+                    bin = euclid ? squared_digitize(plan, LA.dot(dx, dx)) :
+                          SFH.digitize(distance_metric(X1, X2), dist_be)
                     if 1 <= bin <= n_bins
                         U1 = SA.SVector{D, eltype(u)}(ntuple(d -> u_flat[d, i, b], vD))
                         U2 = SA.SVector{D, eltype(u)}(ntuple(d -> u_flat[d, j, b], vD))

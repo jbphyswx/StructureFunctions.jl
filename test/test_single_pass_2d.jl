@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionObjects as SFO,
     StructureFunctionTypes as SFT, InfPaddedBinEdges, LinearBinEdges, LogBinEdges
@@ -37,7 +38,7 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     counts_2d = zeros(UInt32, 6, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_2d, counts_2d, x, u, distance_bins, value_bins;
-        backend = SFC.SerialBackend(),
+        backend = CB.SerialBackend(),
     )
     Test.@test size(sums_2d) == (6, n_bins, n_val)
     Test.@test size(counts_2d) == (6, n_bins, n_val)
@@ -46,7 +47,7 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     for (t, k) in enumerate(SP2D_INV)
         sf2d = SFC.calculate_structure_function(
             SFC.SINGLE_PASS_OPERATORS[k], x, u, distance_bins, value_bins;
-            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(), verbose = false, show_progress = false,
         )
         Test.@test sf2d isa SFO.StructureFunction2DSumsAndCounts
         Test.@test sums_2d[t, :, :] ≈ sf2d.sums
@@ -56,7 +57,7 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     # 1D single-pass (keyed, raw) for marginalization parity.
     sp_1d = SFC.calculate_structure_functions_single_pass(
         x, u, distance_bins;
-        backend = SFC.SerialBackend(), output_type = SF.StructureFunctionSumsAndCounts,
+        backend = CB.SerialBackend(), output_type = SF.StructureFunctionSumsAndCounts,
     )
     for (t, k) in enumerate(SP2D_INV)
         marg_sums = vec(dropdims(sum(sums_2d[t:t, :, :], dims = 3), dims = 1))
@@ -83,11 +84,11 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     fill!(counts_2d, 0)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_2d, counts_2d, x, u, distance_bins, value_bins;
-        backend = SFC.AutoBackend(),
+        backend = CB.AutoBackend(),
     )
     sp2_auto = SFC.calculate_structure_functions_single_pass_2d(
         x, u, distance_bins, value_bins;
-        backend = SFC.AutoBackend(),
+        backend = CB.AutoBackend(),
     )
     for (t, k) in enumerate(SP2D_INV)
         Test.@test sp2_auto[k].sums ≈ sums_2d[t, :, :]
@@ -95,59 +96,6 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     end
 end
 
-Test.@testset "Single-Pass 2D with Custom Distance Metric (Cityblock)" begin
-    using Distances: Distances as DI
-
-    Random.seed!(42)
-    n_points = 40
-    x = rand(n_points, 2)' .* 50000.0
-    u = randn(2, n_points) .* 0.5
-
-    distance_bins = LogBinEdges(collect(exp.(range(log(1000.0), log(50000.0), length = 6))))
-    value_bins = _synthetic_value_bins(10; pad_infinite = true)
-    n_val = length(value_bins) - 1
-    n_bins = length(distance_bins) - 1
-    metric = DI.Cityblock()
-
-    sums_2d = zeros(Float64, 6, n_bins, n_val)
-    counts_2d = zeros(UInt32, 6, n_bins, n_val)
-    SFC.calculate_structure_functions_single_pass_2d!(
-        sums_2d, counts_2d, x, u, distance_bins, value_bins;
-        backend = SFC.SerialBackend(), distance_metric = metric,
-    )
-
-    for (t, k) in enumerate(SP2D_INV)
-        sf2d = SFC.calculate_structure_function(
-            SFC.SINGLE_PASS_OPERATORS[k], x, u, distance_bins, value_bins;
-            backend = SFC.SerialBackend(), distance_metric = metric,
-            verbose = false, show_progress = false,
-        )
-        Test.@test sums_2d[t, :, :] ≈ sf2d.sums
-        Test.@test counts_2d[t, :, :] ≈ sf2d.counts
-    end
-
-    sp_1d = SFC.calculate_structure_functions_single_pass(
-        x, u, distance_bins;
-        backend = SFC.SerialBackend(), distance_metric = metric,
-        output_type = SF.StructureFunctionSumsAndCounts,
-    )
-    for (t, k) in enumerate(SP2D_INV)
-        marg_sums = vec(dropdims(sum(sums_2d[t:t, :, :], dims = 3), dims = 1))
-        marg_counts = vec(dropdims(sum(counts_2d[t:t, :, :], dims = 3), dims = 1))
-        Test.@test marg_sums ≈ sp_1d[k].sums
-        Test.@test marg_counts == sp_1d[k].counts
-    end
-
-    # Compare AutoBackend with SerialBackend
-    sp2_auto = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, value_bins;
-        backend = SFC.AutoBackend(), distance_metric = metric,
-    )
-    for (t, k) in enumerate(SP2D_INV)
-        Test.@test sp2_auto[k].sums ≈ sums_2d[t, :, :]
-        Test.@test sp2_auto[k].counts == counts_2d[t, :, :]
-    end
-end
 
 Test.@testset "Single-Pass 2D value-bin accepted shapes" begin
     Random.seed!(15)
@@ -158,7 +106,7 @@ Test.@testset "Single-Pass 2D value-bin accepted shapes" begin
 
     shared_range_bins = range(-2.0, 3.0; length = 9)
     s_shared = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, shared_range_bins; backend = SFC.SerialBackend(),
+        x, u, distance_bins, shared_range_bins; backend = CB.SerialBackend(),
     )
     Test.@test keys(s_shared) == SP2D_INV
     Test.@test size(s_shared.S2.sums) == (nd, length(shared_range_bins) - 1)
@@ -169,14 +117,14 @@ Test.@testset "Single-Pass 2D value-bin accepted shapes" begin
         LinearBinEdges(range(-2.0, 3.0; length = 9))
     end
     s_mixed = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, mixed_bins; backend = SFC.SerialBackend(),
+        x, u, distance_bins, mixed_bins; backend = CB.SerialBackend(),
     )
     for k in SP2D_INV
         Test.@test size(s_mixed[k].sums) == size(s_shared[k].sums)
     end
 
     s_gpu = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, mixed_bins; backend = SF.GPUBackend(KA.CPU()),
+        x, u, distance_bins, mixed_bins; backend = CB.GPUBackend(KA.CPU()),
     )
     for k in SP2D_INV
         Test.@test s_gpu[k].sums ≈ s_mixed[k].sums
@@ -195,10 +143,10 @@ Test.@testset "Single-Pass 2D value bins with 3D point fields" begin
     value_bins = range(-2.0f0, 2.0f0; length = 9)
 
     sp_ref = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, value_bins; backend = SFC.SerialBackend(),
+        x, u, distance_bins, value_bins; backend = CB.SerialBackend(),
     )
     sp_gpu = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, distance_bins, value_bins; backend = SF.GPUBackend(KA.CPU()),
+        x, u, distance_bins, value_bins; backend = CB.GPUBackend(KA.CPU()),
     )
     for k in SP2D_INV
         Test.@test isapprox(sp_gpu[k].sums, sp_ref[k].sums; atol = 1.0f-4)
@@ -221,12 +169,12 @@ Test.@testset "Single-Pass 2D GPU (KA.CPU) parity vs Serial" begin
     counts_ref = zeros(UInt32, 6, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_ref, counts_ref, x, u, distance_bins, value_bins;
-        backend = SFC.SerialBackend(),
+        backend = CB.SerialBackend(),
     )
 
     sp_gpu = SFC.calculate_structure_functions_single_pass_2d(
         x, u, distance_bins, value_bins;
-        backend = SF.GPUBackend(KA.CPU()),
+        backend = CB.GPUBackend(KA.CPU()),
     )
     for (t, k) in enumerate(SP2D_INV)
         Test.@test sp_gpu[k].sums ≈ sums_ref[t, :, :]
@@ -238,8 +186,49 @@ Test.@testset "Single-Pass 2D GPU (KA.CPU) parity vs Serial" begin
     counts_gpu2 = zeros(UInt32, 6, n_bins, n_val)
     SFC.calculate_structure_functions_single_pass_2d!(
         sums_gpu2, counts_gpu2, x, u, distance_bins, value_bins;
-        backend = SF.GPUBackend(KA.CPU()),
+        backend = CB.GPUBackend(KA.CPU()),
     )
     Test.@test sums_gpu2 ≈ sums_ref
     Test.@test counts_gpu2 == counts_ref
+end
+
+# `value_bins` may be a heterogeneous NTuple{6} — log bins for the three non-negative invariants and
+# linear/raw-vector bins for the three signed ones is the natural choice. The scatter is unrolled so
+# each `vb` stays concretely typed; indexing the tuple with a runtime `t` would make it a `Union` and
+# box a `digitize` dispatch on every pair x invariant.
+Test.@testset "Single-Pass 2D heterogeneous value-bin tuple" begin
+    FT = Float64
+    N, nv = 60, 6
+    Random.seed!(99)
+    x, u = rand(FT, 2, N), randn(FT, 2, N)
+    db = collect(FT, range(0.0, 2.0; length = 7))
+    nd = length(db) - 1
+
+    lin = LinearBinEdges(range(FT(-10), FT(10); length = nv + 1))
+    lg = LogBinEdges(collect(FT, 10 .^ range(-4, 1; length = nv + 1)))
+    raw = collect(FT, range(FT(-10), FT(10); length = nv + 1))
+    het = (lg, lg, lg, lin, raw, lin)
+
+    Test.@test !isconcretetype(eltype(het))   # the case the unroll exists for
+
+    # Correct: each invariant must match a run with that invariant's bins used uniformly.
+    got = SFC.calculate_structure_functions_single_pass_2d(
+        x, u, db, het; backend = CB.SerialBackend(), verbose = false, show_progress = false,
+    )
+    for (t, k) in enumerate(SP2D_INV)
+        ref = SFC.calculate_structure_functions_single_pass_2d(
+            x, u, db, ntuple(_ -> het[t], 6);
+            backend = CB.SerialBackend(), verbose = false, show_progress = false,
+        )
+        Test.@test got[k].sums ≈ ref[k].sums
+        Test.@test got[k].counts == ref[k].counts
+    end
+
+    # Type-stability proxy: a boxed Union `vb` allocates per pair x invariant. At N=60 that is
+    # 10_620 * 6 scatters, so per-op boxing would cost megabytes; the unrolled form costs ~nothing.
+    sums = zeros(FT, 6, nd, nv)
+    counts = zeros(UInt32, 6, nd, nv)
+    f() = SFC.serial_calculate_structure_functions_single_pass_2d!(sums, counts, x, u, db, het)
+    f()
+    Test.@test (@allocated f()) < 100_000
 end

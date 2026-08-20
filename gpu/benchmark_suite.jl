@@ -19,6 +19,7 @@ Useful environment variables:
 - `WARMUP=1`
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using Dates: Dates
 using JSON: JSON
@@ -81,8 +82,7 @@ end
 function _explicit_aux_loop_shared_positions(sft, backend, x, u, distance_bins)
     @views for b in axes(u, 3)
         SFC.gpu_calculate_structure_function(
-            sft, backend, x, u[:, :, b], distance_bins; return_sums_and_counts = true,
-        )
+            sft, backend, x, u[:, :, b], distance_bins)
     end
     return nothing
 end
@@ -90,8 +90,7 @@ end
 function _explicit_aux_loop_varying_positions(sft, backend, x, u, distance_bins)
     @views for b in axes(u, 3)
         SFC.gpu_calculate_structure_function(
-            sft, backend, x[:, :, b], u[:, :, b], distance_bins; return_sums_and_counts = true,
-        )
+            sft, backend, x[:, :, b], u[:, :, b], distance_bins)
     end
     return nothing
 end
@@ -124,16 +123,16 @@ function main()
 
     ws1d = SFC.GPUSFWorkspace(backend, dist_bins)
     push!(rows, _timed("sf1d_fresh", backend, () -> begin
-        SFC.gpu_calculate_structure_function(sft, backend, xd, ud, dist_bins; return_sums_and_counts = true)
+        SFC.gpu_calculate_structure_function(sft, backend, xd, ud, dist_bins)
     end; warmup = warmup, repeat = repeat))
     push!(rows, _timed("sf1d_workspace", backend, () -> begin
         SFC.gpu_calculate_structure_function(
-            sft, backend, xd, ud, dist_bins; return_sums_and_counts = true, workspace = ws1d,
+            sft, backend, xd, ud, dist_bins; workspace = ws1d,
         )
     end; warmup = warmup, repeat = repeat))
     push!(rows, _timed("sf1d_3d_workspace", backend, () -> begin
         SFC.gpu_calculate_structure_function(
-            sft, backend, xd3, ud3, dist_bins; return_sums_and_counts = true, workspace = ws1d,
+            sft, backend, xd3, ud3, dist_bins; workspace = ws1d,
         )
     end; warmup = warmup, repeat = repeat))
 
@@ -153,7 +152,7 @@ function main()
     push!(rows, _timed("aux_shared_positions_sf1d", backend, () -> begin
         SFC.calculate_structure_function(
             sft, xd_shared, ud_shared, dist_bins;
-            backend = SFC.GPUBackend(backend), return_sums_and_counts = true, verbose = false,
+            backend = CB.GPUBackend(backend), verbose = false,
         )
     end; warmup = warmup, repeat = repeat))
     push!(rows, _timed("aux_shared_positions_explicit_loop", backend, () -> begin
@@ -167,7 +166,7 @@ function main()
     push!(rows, _timed("aux_varying_positions_sf1d", backend, () -> begin
         SFC.calculate_structure_function(
             sft, xd_varying, ud_varying, dist_bins;
-            backend = SFC.GPUBackend(backend), return_sums_and_counts = true, verbose = false,
+            backend = CB.GPUBackend(backend), verbose = false,
         )
     end; warmup = warmup, repeat = repeat))
     push!(rows, _timed("aux_varying_positions_explicit_loop", backend, () -> begin

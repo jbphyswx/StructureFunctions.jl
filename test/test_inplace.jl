@@ -1,5 +1,6 @@
 module TestInplace
 
+using ComputationalBackends: ComputationalBackends as CB
 using Test
 using Random
 using OhMyThreads
@@ -28,7 +29,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         # Baselines
         bas = SFC.calculate_structure_function(
             SFT.L2SF, x_mat, u_mat, distance_bins;
-            output_type = SF.StructureFunctionSumsAndCounts, backend = SFC.SerialBackend(), verbose = false, show_progress = false
+            output_type = SF.StructureFunctionSumsAndCounts, backend = CB.SerialBackend(), verbose = false, show_progress = false
         )
 
         sums = zeros(Float64, n_dist)
@@ -49,7 +50,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     @testset "1D Serial Mutating Array Correctness & Accumulation" begin
         bas = SFC.calculate_structure_function(
             SFT.L2SF, x_mat, u_mat, distance_bins;
-            output_type = SF.StructureFunctionSumsAndCounts, backend = SFC.SerialBackend(), verbose = false, show_progress = false
+            output_type = SF.StructureFunctionSumsAndCounts, backend = CB.SerialBackend(), verbose = false, show_progress = false
         )
 
         sums = zeros(Float64, n_dist)
@@ -68,7 +69,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     @testset "2D Serial Mutating Array & Array Correctness & Accumulation" begin
         bas_arr = SFC.calculate_structure_function(
             SFT.L2SF, x_mat, u_mat, distance_bins, value_bins;
-            backend = SFC.SerialBackend(), verbose = false, show_progress = false
+            backend = CB.SerialBackend(), verbose = false, show_progress = false
         )
 
         sums_arr = zeros(Float64, n_dist, n_vals)
@@ -137,7 +138,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         # 1D Public AutoBackend (resolves to threaded or serial)
         sums_pub = zeros(Float64, n_dist)
         counts_pub = zeros(UInt32, n_dist)
-        SF.calculate_structure_function!(sums_pub, counts_pub, SFT.L2SF, x_mat, u_mat, distance_bins; backend=SF.AutoBackend(), verbose=false, show_progress=false)
+        SF.calculate_structure_function!(sums_pub, counts_pub, SFT.L2SF, x_mat, u_mat, distance_bins; backend=CB.AutoBackend(), verbose=false, show_progress=false)
 
         sums_bas = zeros(Float64, n_dist)
         counts_bas = zeros(UInt32, n_dist)
@@ -149,7 +150,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         # 2D Public AutoBackend
         sums_2d_pub = zeros(Float64, n_dist, n_vals)
         counts_2d_pub = zeros(UInt32, n_dist, n_vals)
-        SF.calculate_structure_function!(sums_2d_pub, counts_2d_pub, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; backend=SF.AutoBackend(), verbose=false, show_progress=false)
+        SF.calculate_structure_function!(sums_2d_pub, counts_2d_pub, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; backend=CB.AutoBackend(), verbose=false, show_progress=false)
 
         sums_2d_bas = zeros(Float64, n_dist, n_vals)
         counts_2d_bas = zeros(UInt32, n_dist, n_vals)
@@ -158,6 +159,52 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         @test sums_2d_pub ≈ sums_2d_bas
         @test counts_2d_pub == counts_2d_bas
     end
+end
+
+# Every `!` entry ACCUMULATES into the caller's buffers; zeroing belongs to the non-mutating
+# wrappers. Batch-leading drivers used to overwrite (via `permutedims!`) and the tensor driver used
+# to `fill!` the caller's arrays, so which contract you got depended only on the rank of the input.
+@testset "Mutating API accumulates for every input shape" begin
+    Random.seed!(4242)
+    FT = Float64
+    N, B = 24, 3
+    bins = collect(FT, range(0.0, 2.0; length = 7))
+    nb = length(bins) - 1
+    sft = SFT.L2SFType()
+    x2, u2 = rand(FT, 2, N), rand(FT, 2, N)
+    u3 = rand(FT, 2, N, B)
+
+    # (a) point-field: the family that already accumulated.
+    s1, c1 = zeros(FT, nb), zeros(UInt32, nb)
+    SFC.calculate_structure_function!(s1, c1, sft, x2, u2, bins; verbose = false, show_progress = false)
+    s2, c2 = copy(s1), copy(c1)
+    SFC.calculate_structure_function!(s2, c2, sft, x2, u2, bins; verbose = false, show_progress = false)
+    @test s2 ≈ 2 .* s1
+    @test c2 == 2 .* c1
+
+    # (b) batch / auxiliary axes: previously overwrote.
+    bs1, bc1 = zeros(FT, nb, B), zeros(UInt32, nb, B)
+    SFC.calculate_structure_function!(bs1, bc1, sft, x2, u3, bins; verbose = false, show_progress = false)
+    bs2, bc2 = copy(bs1), copy(bc1)
+    SFC.calculate_structure_function!(bs2, bc2, sft, x2, u3, bins; verbose = false, show_progress = false)
+    @test bs2 ≈ 2 .* bs1
+    @test bc2 == 2 .* bc1
+
+    # (c) tensor: previously `fill!`ed the caller's arrays, so it could never accumulate.
+    ts1, tc1 = zeros(FT, 2, 2, nb), zeros(UInt32, nb)
+    SFC.calculate_structure_function_tensor!(ts1, tc1, Val(2), x2, u2, bins; verbose = false, show_progress = false)
+    ts2, tc2 = copy(ts1), copy(tc1)
+    SFC.calculate_structure_function_tensor!(ts2, tc2, Val(2), x2, u2, bins; verbose = false, show_progress = false)
+    @test ts2 ≈ 2 .* ts1
+    @test tc2 == 2 .* tc1
+
+    # The non-mutating wrappers still own the zeroing, so repeated calls are independent.
+    r1 = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins;
+                                                output_type = SFO.StructureFunctionTensorSumsAndCounts)
+    r2 = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins;
+                                                output_type = SFO.StructureFunctionTensorSumsAndCounts)
+    @test r1.sums ≈ r2.sums
+    @test r1.counts == r2.counts
 end
 
 end # module

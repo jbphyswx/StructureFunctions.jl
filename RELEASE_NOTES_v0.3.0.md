@@ -19,7 +19,7 @@ StructureFunctions.jl v0.3.0 is a major release featuring a complete backend sys
 
 #### 2. **GPU Acceleration**
 - New `GPUBackend` supports NVIDIA (CUDA), AMD (ROCm), Apple Silicon (Metal)
-- Implemented via `StructureFunctionsGPUExt` and KernelAbstractions.jl
+- Implemented via `StructureFunctionsKernelAbstractionsExt` and KernelAbstractions.jl
 - **Performance**: 10–100x faster for 1B+ point calculations
 
 #### 3. **Bug Fixes**

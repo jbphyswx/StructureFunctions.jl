@@ -1,5 +1,5 @@
 # GPUSFWorkspace — device-resident histogram buffers and cached bin edges for GPU SF paths.
-# Included from StructureFunctionsGPUExt.jl (uses _gpu_normalize_bins, etc.).
+# Included from StructureFunctionsKernelAbstractionsExt.jl (uses _gpu_normalize_bins, etc.).
 
 """
     GPUSFWorkspace
@@ -252,7 +252,7 @@ function _gpusf_workspace_sp2d!(
 
     out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, NB, hist_n_val)
     out_cnts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, NB, hist_n_val)
-    strategy = _sp2d_accumulation_strategy(NB, hist_n_val, FT)
+    strategy = _sp2d_accumulation_strategy(NB, hist_n_val, FT, SFC.gpu_device_caps(backend))
 
     ws = GPUSFWorkspace(
         backend, FT, :single_pass_2d, dist_bins, value_bins,

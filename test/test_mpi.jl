@@ -22,7 +22,7 @@ Test.@testset "MPI backend (multi-rank parity)" begin
         ok = try
             buf = IOBuffer()
             MPI.mpiexec() do exe
-                run(pipeline(`$exe -n 2 $(Base.julia_cmd()) --project=$proj $script`;
+                run(pipeline(`$exe -n 2 $(Base.julia_cmd()) --project=$proj --threads=2 $script`;
                              stdout = buf, stderr = buf))
             end
             out = String(take!(buf))

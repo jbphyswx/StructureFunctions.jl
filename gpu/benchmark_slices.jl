@@ -25,7 +25,6 @@ function bench_manual_loop!(
     for t in 1:T
         res = SFC.gpu_calculate_structure_function(
             sft, backend, view(x_batch, :, :, t), view(u_batch, :, :, t), bins;
-            return_sums_and_counts = true,
             workspace = ws,
         )
         sums[:, t] .= res.sums

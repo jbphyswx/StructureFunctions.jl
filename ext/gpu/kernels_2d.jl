@@ -1,5 +1,5 @@
 # Tiled128 joint 2D SF histogram kernels (distance × value, typed digitize routes).
-# Included from StructureFunctionsGPUExt.jl — block-local flat histogram in `@localmem`.
+# Included from StructureFunctionsKernelAbstractionsExt.jl — block-local flat histogram in `@localmem`.
 #
 # Compile-time width `compile_cells` is chosen per [`GPUSFWorkspace`](@ref) (default exact
 # `n_dist × n_val`; optional override via `joint2d_compile_cells`). Max-width kernels
@@ -55,12 +55,12 @@ function _joint2d_kernel_param_exprs(dist_route::Symbol, val_route::Symbol)
     if dist_route == :linear
         append!(params, [
             :(first_edge::FT), :(last_edge::FT), :(inv_step::FT),
-            :(offset::FT), :(step_val::FT),
+            :(step_val::FT),
         ])
     elseif dist_route == :log
         append!(params, [
             :(dist_first::FT), :(dist_last::FT), :(dist_inv_step::FT),
-            :(dist_offset::FT), :(dist_step::FT),
+            :(dist_step::FT),
         ])
     elseif dist_route == :general
         push!(params, :(edge_anchor::FT))
@@ -68,28 +68,28 @@ function _joint2d_kernel_param_exprs(dist_route::Symbol, val_route::Symbol)
     if val_route == :linear || val_route == :log_linear
         append!(params, [
             :(val_first::FT), :(val_last::FT), :(val_inv_step::FT),
-            :(val_offset::FT), :(val_step::FT),
+            :(val_step::FT),
         ])
     elseif val_route == :inflinear
         append!(params, [
             :(val_first::FT), :(val_last::FT), :(val_inv_step::FT),
-            :(val_offset::FT), :(val_step::FT),
+            :(val_step::FT),
             :(n_inner_edges::Int), :(inner_last::FT),
         ])
     end
-    append!(params, [:(n_tiles::Int), :(n_tile_blocks::Int), :(workgroup_size::Int)])
+    append!(params, [:(n_tiles::Int), :(n_tile_blocks::Int), :(workgroup_size::Int), :(geom)])
     return params
 end
 
 function _joint2d_dist_digitize_expr(dist_route::Symbol)
     dist_route == :linear && return :(
         dbin = _gpu_digitize_linear(
-            dist, first_edge, last_edge, inv_step, offset, step_val, N_dist_edges,
+            dist, first_edge, last_edge, inv_step, step_val, N_dist_edges,
         )
     )
     dist_route == :log && return :(
         dbin = _gpu_digitize_log_spaced(
-            dist, dist_first, dist_last, dist_inv_step, dist_offset, dist_step, N_dist_edges,
+            dist, dist_first, dist_last, dist_inv_step, dist_step, N_dist_edges,
         )
     )
     return :(dbin = _gpu_digitize_general(dist, distance_edges, N_dist_edges))
@@ -99,18 +99,18 @@ function _joint2d_val_digitize_expr(val_route::Symbol)
     val_route == :general && return :(vbin = _gpu_digitize_general(val, value_edges, N_val_edges))
     val_route == :linear && return :(
         vbin = _gpu_digitize_linear(
-            val, val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
+            val, val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
     )
     val_route == :inflinear && return :(
         vbin = _gpu_digitize_inf_padded_linear(
-            val, val_first, val_last, val_inv_step, val_offset, val_step,
+            val, val_first, val_last, val_inv_step, val_step,
             n_inner_edges, inner_last,
         )
     )
     return :(
         vbin = _gpu_digitize_log_spaced(
-            val, val_first, val_last, val_inv_step, val_offset, val_step, N_val_edges,
+            val, val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
     )
 end
@@ -195,12 +195,11 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                             U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
                             U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
                         end
-                        dX = X2 - X1
-                        dist = sqrt(dX[1]^2 + dX[2]^2)
+                        ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                         $(dist_digitize)
-                        if 1 <= dbin < N_dist_edges
-                            r̂ = dX / dist
-                            val = sf_type(U2 - U1, r̂)
+                        if ok && 1 <= dbin < N_dist_edges
+                            dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
+                            val = sf_type(dU, r̂)
                             $(val_digitize)
                             if 1 <= vbin < N_val_edges
                                 idx = (dbin - 1) * NV + vbin

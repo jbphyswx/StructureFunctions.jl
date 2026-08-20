@@ -33,28 +33,32 @@ Test.@testset "HelperFunctions.jl Unit Tests" begin
         Test.@test SFH.δr(x1, x2) == [1.0, 0.0]
         Test.@test SFH.r̂(x1, x2) == [1.0, 0.0]
 
-        # n̂ in 2D (90 deg clockwise) -> [r_hat[2], -r_hat[1]]
-        # If r_hat = [1, 0], n̂ = [0, -1]
-        Test.@test SFH.n̂(x1, x2) == [0.0, -1.0]
+        # n̂ is the right-handed quarter turn ẑ × r̂ -> [-r_hat[2], r_hat[1]], so (r̂, n̂, ẑ) is
+        # right-handed. If r_hat = [1, 0], n̂ = [0, 1].
+        Test.@test SFH.n̂(x1, x2) == [-0.0, 1.0]
+        # pin the orientation itself, not just this instance: det[r̂ n̂] == +1
+        let rh = SA.SVector(0.6, 0.8), nh = SFH.n̂(SA.SVector(0.6, 0.8))
+            Test.@test rh[1] * nh[2] - rh[2] * nh[1] ≈ 1.0
+        end
 
         # 3D case
         x1_3d = [0.0, 0.0, 0.0]
         x2_3d = [0.0, 1.0, 0.0] # y-axis
         # r̂ = [0, 1, 0]
         # k̂ = [0, 0, 1]
-        # n̂ = normalize(cross(r̂, k̂)) = normalize([1, 0, 0]) = [1, 0, 0]
+        # n̂ = normalize(cross(k̂, r̂)) = normalize([-1, 0, 0]) = [-1, 0, 0]
         Test.@test SFH.r̂(x1_3d, x2_3d) ≈ [0.0, 1.0, 0.0]
-        Test.@test SFH.n̂(x1_3d, x2_3d) ≈ [1.0, 0.0, 0.0]
+        Test.@test SFH.n̂(x1_3d, x2_3d) ≈ [-1.0, 0.0, 0.0]
 
         # Tuples and StaticArrays
         t1 = (0.0, 0.0)
         t2 = (1.0, 1.0)
         Test.@test SA.SVector(SFH.r̂(t1, t2)) ≈ SA.SVector(1 / sqrt(2), 1 / sqrt(2))
-        Test.@test SA.SVector(SFH.n̂(t1, t2)) ≈ SA.SVector(1 / sqrt(2), -1 / sqrt(2))
+        Test.@test SA.SVector(SFH.n̂(t1, t2)) ≈ SA.SVector(-1 / sqrt(2), 1 / sqrt(2))
     end
 
     Test.@testset "Projections: longitudinal and transverse" begin
-        # r̂ = [1, 0], n̂ = [0, -1]
+        # r̂ = [1, 0], n̂ = [0, 1]
         r_hat = SA.SVector(1.0, 0.0)
         δu = SA.SVector(2.0, 3.0)
 
@@ -62,8 +66,8 @@ Test.@testset "HelperFunctions.jl Unit Tests" begin
         Test.@test SFH.mδu_l(δu, r_hat) == 2.0
         Test.@test SFH.δu_l(δu, r_hat) == [2.0, 0.0]
 
-        # Transverse: dot([2,3], n̂([1,0])) = dot([2,3], [0, -1]) = -3.0
-        Test.@test SFH.mδu_t(δu, r_hat) == -3.0
+        # Transverse: dot([2,3], n̂([1,0])) = dot([2,3], [0, 1]) = 3.0
+        Test.@test SFH.mδu_t(δu, r_hat) == 3.0
         Test.@test SFH.δu_t(δu, r_hat) == [0.0, 3.0] # δu - δu_l = [2,3] - [2,0] = [0,3]
 
         # Consistency check: magnitude squared

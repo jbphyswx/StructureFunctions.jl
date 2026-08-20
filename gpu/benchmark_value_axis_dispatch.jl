@@ -16,6 +16,7 @@ Scenarios (log distance bins, N≈20k–30k):
   - `vector_cols`      — eight raw edge vectors (binary search fallback)
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
@@ -79,7 +80,7 @@ function main()
     repeat_ = parse(Int, get(ENV, "REPEAT", "5"))
     FT = get(ENV, "FT", "Float32") == "Float64" ? Float64 : Float32
     ka_backend = CUDA.CUDABackend()
-    gpu_backend = SF.GPUBackend(ka_backend)
+    gpu_backend = CB.GPUBackend(ka_backend)
 
     println("=" ^ 72)
     println("Single-pass 2D value-axis dispatch benchmark (CUDA)")

@@ -20,7 +20,7 @@ function serial_calculate_structure_function!(
     # Fast path: Euclidean + D ∈ (2,3) uses the SIMD compute/scatter-split kernel (vectorizes
     # the per-pair compute over j; only the histogram scatter is scalar). Other metrics/D fall
     # back to the scalar per-i kernel.
-    D = length(x_vecs)
+    D = length(u_vecs)
     if distance_metric isa DI.Euclidean && D == 2
         return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs, distance_bins, Val(2))
     elseif distance_metric isa DI.Euclidean && D == 3
@@ -50,33 +50,30 @@ function _pf_simd_run!(
     sf::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D},
 ) where {OT, CT, D}
-    xc = ntuple(d -> collect(x_vecs[d]), Val(D))   # contiguous component vectors
-    uc = ntuple(d -> collect(u_vecs[d]), Val(D))
-    N = length(xc[1])
-    distbuf = Vector{eltype(xc[1])}(undef, N)
-    valbuf = Vector{OT}(undef, N)
-    _pf_simd_pairs!(output, counts, sf, xc, uc, dist_be, Val(D), distbuf, valbuf, 1:(N - 1))
-    return nothing
+    N = length(x_vecs[1])
+    return _pf_simd_partial!(output, counts, sf, x_vecs, u_vecs, dist_be, Val(D), 1:(N - 1))
 end
 
 """
-    _pf_simd_pairs!(output, counts, sf, xc, uc, dist_be, ::Val{D}, distbuf, valbuf, irange)
+    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, irange)
 
-Core point-field SIMD compute/scatter kernel over outer indices `irange` (each `i` contributes
-pairs `(i, j>i)`). For each `i`: `@simd` over `j` computes distance + SF value into the buffers
-(contiguous components ⇒ packed loads, no scatter ⇒ vectorizes), then a scalar loop digitizes +
-scatters. The `i`-loop AND the inner `@simd` live in THIS function body and it is called once per
-range — factoring the inner loop into a per-`i` helper stops the `@simd` from vectorizing. Shared
-by the serial driver (full range) and the threaded extension (one chunk per task).
+Accumulate pairs `(i, j>i)` for `i in irange` into `output`/`counts`.
+
+The `@simd` half writes `r²`, the SF value, and the approximate bin index to buffers; the scalar
+half corrects the index and scatters straight into `output`/`counts`, skipping out-of-range bins.
+
+The `i`-loop and the inner `@simd` must stay in this function body; factoring the inner loop into a
+per-`i` helper stops it vectorizing.
 """
 function _pf_simd_pairs!(
     output::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
-    xc::NTuple{D}, uc::NTuple{D}, dist_be, ::Val{D},
-    distbuf::AbstractVector, valbuf::AbstractVector, irange,
+    xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, ::Val{D},
+    r2buf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32},
+    irange,
 ) where {OT, CT, D}
     N = length(xc[1])
-    nb = n_histogram_bins(dist_be)
+    nb = n_histogram_bins(plan)
     FTx = eltype(xc[1])
     @inbounds for i in irange
         Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
@@ -84,20 +81,41 @@ function _pf_simd_pairs!(
         @simd for j in (i + 1):N
             Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
             dx = Xj - Xi
-            dist = sqrt(LA.dot(dx, dx))
+            r2 = LA.dot(dx, dx)
             Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
-            rh = dx / dist
-            distbuf[j] = dist
-            valbuf[j] = sf(Uj - Ui, rh)
+            r2buf[j] = digitize_key(plan, r2)
+            valbuf[j] = SFT._sf_raw(sf, Uj - Ui, dx, r2)
+            if has_vector_index(plan)      # constant-folded: depends only on the plan type
+                idxbuf[j] = squared_approx_index(plan, r2)
+            end
         end
         for j in (i + 1):N
-            bin = SFH.digitize(distbuf[j], dist_be)
-            if 1 <= bin <= nb
-                output[bin] += valbuf[j]
-                counts[bin] += one(CT)
+            b = squared_bin(plan, r2buf[j], idxbuf[j])
+            if 1 <= b <= nb
+                output[b] += valbuf[j]
+                counts[b] += one(CT)
             end
         end
     end
+    return nothing
+end
+
+"""
+    _assert_counts_representable(CT, n_points)
+
+Throw unless the worst-case pair count `n_points*(n_points-1)÷2` fits in `CT`.
+
+Every pair can land in one bin, so that product is the only safe bound. `UInt32` saturates at
+`N = 92682`, past which the counter wraps silently.
+"""
+@inline function _assert_counts_representable(::Type{CT}, n_points::Integer) where {CT <: Integer}
+    n_pairs = (Int128(n_points) * (Int128(n_points) - 1)) ÷ 2
+    n_pairs <= Int128(typemax(CT)) || throw(
+        ArgumentError(
+            "count_eltype=$CT cannot represent the worst-case pair count $n_pairs for N=$n_points " *
+            "(typemax($CT) = $(typemax(CT))); pass count_eltype=UInt64 or Int64.",
+        ),
+    )
     return nothing
 end
 
@@ -159,6 +177,7 @@ function serial_calculate_structure_function(
     count_eltype::Type{CT} = UInt32,
     kwargs...,
 ) where {T1, T2, CT}
+    _assert_counts_representable(CT, length(x_vecs[1]))
     FT1 = eltype(T1)
     FT2 = eltype(T2)
     OT = promote_type(float(FT1), float(FT2))
@@ -193,9 +212,8 @@ function serial_calculate_structure_function!(
     distance_bins::AbstractVector;
     kwargs...,
 ) where {OT, FT1 <: Number, FT2 <: Number}
-    N_dims = size(x_arr, 1)
-    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
-    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
+    x_tuple = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
+    u_tuple = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
     return serial_calculate_structure_function!(
         sums,
         counts,
@@ -222,21 +240,26 @@ function calculate_structure_function_i!(
     FT2 = eltype(T2)
     N3 = length(distance_bins)
 
-    X1 = SA.SVector{N, FT1}(ntuple(k -> @inbounds(x_vecs[k][i]), Val(N)))
+    # `N` is the velocity dimension; the coordinate count is the x tuple's own (static) length,
+    # which differs on a shell.
+    W = length(x_vecs)
+    vW = Val(W)
+    X1 = SA.SVector{W, FT1}(ntuple(k -> @inbounds(x_vecs[k][i]), vW))
     U1 = SA.SVector{N, FT2}(ntuple(k -> @inbounds(u_vecs[k][i]), Val(N)))
 
     iter_inds = eachindex(x_vecs[1])
+    geom = SFH.pair_geometry_for(distance_metric, Val(N))
     # @inbounds: x_vecs[k] are strided views; the bounds checks on every component access
     # were a large per-pair overhead. U2 is built only for in-range pairs.
     @inbounds for j in (i + 1):last(iter_inds)
-        X2 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][j], Val(N)))
+        X2 = SA.SVector{W, FT1}(ntuple(k -> x_vecs[k][j], vW))
 
-        distance = distance_metric(X1, X2)
+        ok, distance, frame = SFH.pair_frame(geom, X1, X2)
         bin = SFH.digitize(distance, distance_bins)
-        if 1 <= bin < N3
+        if ok && 1 <= bin < N3
             U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
-            rh = SFH.r̂(X1, X2, distance_metric, distance)
-            output[bin] += structure_function_type(U2 - U1, rh)
+            δu, rh = SFH.pair_increments(geom, frame, distance, X1, X2, U1, U2)
+            output[bin] += structure_function_type(δu, rh)
             counts[bin] += 1
         end
     end
@@ -252,13 +275,14 @@ function calculate_structure_function_i(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     count_eltype::Type{CT} = UInt32,
 ) where {CT}
+    _assert_counts_representable(CT, length(x_vecs[1]))
     OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
     N3 = n_histogram_bins(distance_bins)
     local_output = zeros(OT, N3)
     local_counts = zeros(CT, N3)
     calculate_structure_function_i!(
         local_output, local_counts,
-        Val(length(x_vecs)),
+        Val(length(u_vecs)),
         structure_function_type, i, x_vecs, u_vecs, BinEdges(distance_bins);
         distance_metric = distance_metric,
     )
@@ -276,11 +300,11 @@ end
 Partial 1D sums/counts over an explicit outer-index list `ilist` (each `i` contributes pairs
 `(i, j>i)`). Used by the distributed driver to give each worker a balanced share; `inner`
 selects how the worker computes its share locally. This generic method runs SERIALLY for any
-backend; the OhMyThreads extension adds a `::ThreadedBackend` method that threads over `ilist`
+backend; the OhMyThreads extension adds a `::CB.AbstractThreadedBackend` method that threads over `ilist`
 (enabling hybrid distributed+threaded). Returns a `StructureFunctionSumsAndCounts`.
 """
 function _partial_sums_counts(
-    ::AbstractExecutionBackend,
+    ::CB.AbstractExecutionBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple,
     u_vecs::Tuple,
@@ -289,12 +313,23 @@ function _partial_sums_counts(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     count_eltype::Type{CT} = UInt32,
 ) where {CT}
+    _assert_counts_representable(CT, length(x_vecs[1]))
     OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
     nb = n_histogram_bins(distance_bins)
     sums = zeros(OT, nb)
     counts = zeros(CT, nb)
     be = BinEdges(distance_bins)
-    vN = Val(length(x_vecs))
+    D = length(u_vecs)
+    # Euclidean D ∈ {2,3} takes the SIMD compute/scatter kernel, the same one the serial and
+    # threaded drivers use; `_pf_simd_pairs!` accepts an arbitrary `irange`. Other metrics or
+    # dimensions fall back to the scalar per-`i` kernel.
+    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
+        vD = D == 2 ? Val(2) : Val(3)
+        _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, be, vD, ilist)
+        return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
+    end
+
+    vN = Val(D)
     for i in ilist
         calculate_structure_function_i!(
             sums, counts, vN, structure_function_type, i, x_vecs, u_vecs, be;
@@ -305,6 +340,30 @@ function _partial_sums_counts(
 end
 
 """
+    _pf_simd_partial!(sums, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}, ilist)
+
+Run [`_pf_simd_pairs!`](@ref) over an explicit outer-index list, materializing the contiguous
+component vectors and scratch buffers this worker needs. Shared by the distributed, MPI and
+hybrid drivers, whose inputs arrive as strided views.
+"""
+function _pf_simd_partial!(
+    sums::AbstractVector{OT}, counts::AbstractVector{CT},
+    sf::SFT.AbstractPairwiseStructureFunctionType,
+    x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D}, ilist,
+) where {OT, CT, D}
+    xc = ntuple(d -> collect(x_vecs[d]), Val(D))   # contiguous component vectors
+    uc = ntuple(d -> collect(u_vecs[d]), Val(D))
+    N = length(xc[1])
+    plan = squared_digitize_plan(dist_be)
+    nb = n_histogram_bins(plan)
+    r2buf = Vector{eltype(xc[1])}(undef, N)
+    valbuf = Vector{OT}(undef, N)
+    idxbuf = Vector{Int32}(undef, N)
+    _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, ilist)
+    return nothing
+end
+
+"""
     _balanced_index_chunks(N, k) -> Vector of k index-lists
 
 Split `1:N` into `k` balanced outer-index lists for the triangular pair loop (work ∝ N-i).
@@ -312,5 +371,7 @@ Round-robin assignment (`i ≡ w (mod k)`) gives each chunk a mix of cheap/expen
 """
 function _balanced_index_chunks(N::Integer, k::Integer)
     k = max(1, k)
-    return [collect(w:k:N) for w in 1:k]
+    # Ranges, not materialized vectors: `_partial_sums_counts` only iterates them, and the
+    # distributed driver serializes one per worker.
+    return [w:k:N for w in 1:k]
 end

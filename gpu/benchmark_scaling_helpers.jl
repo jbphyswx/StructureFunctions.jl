@@ -7,6 +7,7 @@ Included by `benchmark_slices.jl`, `benchmark_workspace.jl`, and `collect_benchm
 Expects `CUDA` to be loaded by the including script when using `CUDA.CUDABackend()`.
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: Calculations as SFC
 using Statistics: Statistics
 
@@ -47,12 +48,12 @@ function bench_cpu_serial_sf(x_arr, u_arr, bins, sft; warmup::Int = 1)
     for _ in 1:warmup
         SFC.calculate_structure_function(
             sft, x_arr, u_arr, bins;
-            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(), verbose = false, show_progress = false,
         )
     end
     return @elapsed SFC.calculate_structure_function(
         sft, x_arr, u_arr, bins;
-        backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+        backend = CB.SerialBackend(), verbose = false, show_progress = false,
     )
 end
 
@@ -68,7 +69,7 @@ function bench_gpu_sf_with_workspace(
     for _ in 1:warmup
         SFC.gpu_calculate_structure_function(
             sft, backend, x_dev, u_dev, bins;
-            return_sums_and_counts = true, workspace = ws,
+            workspace = ws,
         )
     end
     gpu_sync!(backend)
@@ -76,7 +77,7 @@ function bench_gpu_sf_with_workspace(
     for _ in 1:repeat
         t = @elapsed SFC.gpu_calculate_structure_function(
             sft, backend, x_dev, u_dev, bins;
-            return_sums_and_counts = true, workspace = ws,
+            workspace = ws,
         )
         gpu_sync!(backend)
         push!(times, t)
@@ -92,14 +93,12 @@ Time one GPU call without workspace (fresh device histogram alloc each call).
 function bench_gpu_sf_fresh(backend, x_dev, u_dev, bins, sft; warmup::Int = 1)
     for _ in 1:warmup
         SFC.gpu_calculate_structure_function(
-            sft, backend, x_dev, u_dev, bins;
-            return_sums_and_counts = true,
+            sft, backend, x_dev, u_dev, bins
         )
     end
     gpu_sync!(backend)
     t = @elapsed SFC.gpu_calculate_structure_function(
-        sft, backend, x_dev, u_dev, bins;
-        return_sums_and_counts = true,
+        sft, backend, x_dev, u_dev, bins
     )
     gpu_sync!(backend)
     return t
@@ -116,8 +115,7 @@ function bench_naive_slice_loop!(
     function run!()
         for t in 1:T
             res = SFC.gpu_calculate_structure_function(
-                sft, backend, x_host[:, :, t], u_host[:, :, t], bins;
-                return_sums_and_counts = true,
+                sft, backend, x_host[:, :, t], u_host[:, :, t], bins
             )
             sums[:, t] .= res.sums
             counts[:, t] .= res.counts
@@ -152,8 +150,7 @@ function bench_cpu_serial_slice_loop!(x_batch, u_batch, bins, sft, sums, counts;
         for t in 1:T
             res = SFC.calculate_structure_function(
                 sft, @view(x_batch[:, :, t]), @view(u_batch[:, :, t]), bins;
-                backend = SFC.SerialBackend(), verbose = false, show_progress = false,
-                return_sums_and_counts = true,
+                backend = CB.SerialBackend(), verbose = false, show_progress = false,
             )
             sums[:, t] .= res.sums
             counts[:, t] .= res.counts

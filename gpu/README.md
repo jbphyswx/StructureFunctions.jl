@@ -1,7 +1,7 @@
 CUDA validation, benchmark entry points, and profiling helpers for
 StructureFunctions.jl GPU work.
 
-Production GPU code lives in `ext/StructureFunctionsGPUExt.jl` and `ext/gpu/`.
+Production GPU code lives in `ext/StructureFunctionsKernelAbstractionsExt.jl` and `ext/gpu/`.
 General user documentation lives in [`docs/gpu.md`](../docs/gpu.md).
 
 ## File Inventory

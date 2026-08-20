@@ -14,6 +14,7 @@
 #
 # Backends: SerialBackend, ThreadedBackend (OhMyThreads ext).
 
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT
 using OhMyThreads: OhMyThreads          # load threaded extension
@@ -77,9 +78,9 @@ for T in (Float64, Float32)
     # Regime 1: point-field 1D single SF (O(N^2) headline path); threaded = OMT (works)
     let x = rand(T, 3, NPF), u = rand(T, 3, NPF), bins = _bins(T)
         pairs = NPF*(NPF-1)÷2
-        fS() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=SFC.SerialBackend(),
+        fS() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=CB.SerialBackend(),
                   verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
-        fT() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=SFC.ThreadedBackend(),
+        fT() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=CB.ThreadedBackend(),
                   verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
         report("point-field 1D", pairs, fS, fT)
     end
@@ -87,9 +88,9 @@ for T in (Float64, Float32)
     # Regime 2: batched shared-positions 1D ("same surface")
     let x = rand(T, 3, N), u = rand(T, 3, N, B), bins = _bins(T)
         pairs = N*(N-1)÷2 * B
-        fS() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=SFC.SerialBackend(),
+        fS() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=CB.SerialBackend(),
                   verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
-        fT() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=SFC.ThreadedBackend(),
+        fT() = SFC.calculate_structure_function(SFTYPE, x, u, bins; backend=CB.ThreadedBackend(),
                   verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
         report("batch shared-pos 1D", pairs, fS, fT; do_threaded = DO_THREADED_BATCH)
     end
@@ -97,9 +98,9 @@ for T in (Float64, Float32)
     # Regime 3: batched 2D joint
     let x = rand(T, 3, N), u = rand(T, 3, N, B), bins = _bins(T), vb = _vbins(T)
         pairs = N*(N-1)÷2 * B
-        fS() = SFC.calculate_structure_function(SFTYPE, x, u, bins, vb; backend=SFC.SerialBackend(),
+        fS() = SFC.calculate_structure_function(SFTYPE, x, u, bins, vb; backend=CB.SerialBackend(),
                   verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
-        fT() = SFC.calculate_structure_function(SFTYPE, x, u, bins, vb; backend=SFC.ThreadedBackend(),
+        fT() = SFC.calculate_structure_function(SFTYPE, x, u, bins, vb; backend=CB.ThreadedBackend(),
                   verbose=false, show_progress=false, output_type=SF.StructureFunctionSumsAndCounts)
         report("batch 2D joint", pairs, fS, fT; do_threaded = DO_THREADED_BATCH)
     end

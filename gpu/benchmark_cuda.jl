@@ -4,7 +4,7 @@
 GPU vs CPU timing at the **same** N, bins, and SF type.
 
 Compares three backends:
-  - `ThreadedBackend()` — production CPU path (same as `benchmark/benchmark_worker.jl`)
+  - `CB.ThreadedBackend()` — production CPU path (same as `benchmark/benchmark_worker.jl`)
   - `KA.CPU()` — GPU extension kernel on CPU (parity reference only)
   - `CUDA.CUDABackend()` — GPU
 
@@ -13,6 +13,7 @@ Run once per SLURM session. See `gpu/README.md`:
     include(joinpath("/path/to/StructureFunctions.jl", "gpu", "benchmark_cuda.jl"))
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
@@ -42,7 +43,7 @@ function main()
     bin_edges = LinearBinEdges(range(FT(0.1), FT(2.0); length = 21))
     sft = SFT.L2SFType()
 
-    threaded_backend = SFC.ThreadedBackend()
+    threaded_backend = CB.ThreadedBackend()
 
     # Warmup
     SFC.calculate_structure_function(

@@ -12,6 +12,7 @@ Loads GPUExt the same way as ``gpu/benchmark_cuda.jl`` (CUDA + KernelAbstraction
 OhMyThreads + StructureFunctions).
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
@@ -50,7 +51,7 @@ function main()
     repeat_ = parse(Int, get(ENV, "REPEAT", "3"))
     FT = get(ENV, "FT", "Float32") == "Float64" ? Float64 : Float32
     ka_backend = CUDA.CUDABackend()
-    gpu_backend = SF.GPUBackend(ka_backend)
+    gpu_backend = CB.GPUBackend(ka_backend)
 
     println("=" ^ 72)
     println("Six-type single_pass_2d vs GPU reference kernels (T=1 hour each)")

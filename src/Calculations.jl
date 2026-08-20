@@ -9,7 +9,9 @@ using ..HelperFunctions: HelperFunctions as SFH
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 using ..StructureFunctionObjects: StructureFunctionObjects as SFO
 using ..StructureFunctions: AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges,
-    InfPaddedBinEdges, n_histogram_bins
+    InfPaddedBinEdges, n_histogram_bins,
+    AbstractSquaredDigitizePlan, squared_digitize_plan, squared_digitize,
+    squared_approx_index, squared_correct, squared_bin, has_vector_index, digitize_key
 
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
@@ -29,8 +31,6 @@ export calculate_structure_function,
     gpu_calculate_structure_function_2d, gpu_calculate_structure_function_2d_batch,
     gpu_calculate_structure_functions_single_pass_2d,
     gpu_calculate_structure_functions_single_pass_2d!,
-    AbstractExecutionBackend, SerialBackend, ThreadedBackend, DistributedBackend,
-    GPUBackend, AutoBackend, AbstractThreadingBackend, AutoThreadingBackend,
     serial_calculate_structure_function, threaded_calculate_structure_function,
     calculate_structure_functions_single_pass,
     calculate_structure_functions_single_pass!,
@@ -44,7 +44,7 @@ export calculate_structure_function,
     calculate_structure_function_tensor, calculate_structure_function_tensor!,
     serial_calculate_structure_function_tensor!,
     gpu_calculate_structure_function!, calculate_structure_function!,
-    GPUSFWorkspace, reset_histogram!, release!,
+    GPUSFWorkspace, CPUSFWorkspace, reset_histogram!, release!,
     joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256,
     calculate_structure_function_batch!, calculate_structure_function_2d_batch!,
     calculate_structure_functions_single_pass_batch!,
@@ -60,6 +60,7 @@ include("Calculations/shapes.jl")
 include("Calculations/batch_api.jl")
 include("Calculations/gpu_stubs.jl")
 include("Calculations/batch_leading.jl")
+include("Calculations/workspace.jl")
 include("Calculations/batch.jl")
 include("Calculations/serial.jl")
 include("Calculations/serial_2d.jl")

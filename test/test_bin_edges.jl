@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using Test: Test
 using Distances: Distances as DI
@@ -157,12 +158,12 @@ Test.@testset "BinEdges Tests" begin
 
         ref_lin = SFC.calculate_structure_function(
             sft, x, u, SF.LinearBinEdges(lin_range);
-            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(), verbose = false, show_progress = false,
             output_type = SF.StructureFunctionSumsAndCounts,
         )
         via_range = SFC.calculate_structure_function(
             sft, x, u, collect(lin_range);
-            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(), verbose = false, show_progress = false,
             output_type = SF.StructureFunctionSumsAndCounts,
         )
         Test.@test via_range.sums ≈ ref_lin.sums
@@ -170,12 +171,12 @@ Test.@testset "BinEdges Tests" begin
 
         ref_log = SFC.calculate_structure_function(
             sft, x, u, SF.LogBinEdges(log_vec);
-            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(), verbose = false, show_progress = false,
             output_type = SF.StructureFunctionSumsAndCounts,
         )
         via_log_vec = SFC.calculate_structure_function(
             sft, x, u, log_vec;
-            backend = SFC.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(), verbose = false, show_progress = false,
             output_type = SF.StructureFunctionSumsAndCounts,
         )
         Test.@test via_log_vec.sums ≈ ref_log.sums

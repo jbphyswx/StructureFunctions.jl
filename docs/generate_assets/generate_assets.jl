@@ -5,6 +5,7 @@ Run from the repo root:
     julia --project=docs/generate_assets docs/generate_assets/generate_assets.jl
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC
 using OhMyThreads: OhMyThreads   # loads StructureFunctionsOhMyThreadsExt → enables ThreadedBackend
 using KernelAbstractions: KernelAbstractions as KA
@@ -77,7 +78,7 @@ function generate_kolmogorov_figure()
 
     op = SF.SecondOrderStructureFunctionType()
     result = SF.calculate_structure_function(op, x, u, bins;
-        backend=SF.SerialBackend(), show_progress=false, verbose=false)
+        backend=CB.SerialBackend(), show_progress=false, verbose=false)
 
     sf2   = result.values
     rdist = bin_midpoints(result.distance)
@@ -130,9 +131,9 @@ function generate_long_vs_trans_figure()
     op_T = SF.TransverseSecondOrderStructureFunctionType()
 
     res_L = SF.calculate_structure_function(op_L, x, u, bins;
-        backend=SF.SerialBackend(), show_progress=false, verbose=false)
+        backend=CB.SerialBackend(), show_progress=false, verbose=false)
     res_T = SF.calculate_structure_function(op_T, x, u, bins;
-        backend=SF.SerialBackend(), show_progress=false, verbose=false)
+        backend=CB.SerialBackend(), show_progress=false, verbose=false)
 
     sf_L = res_L.values
     sf_T = res_T.values
@@ -173,10 +174,10 @@ function generate_parity_figure()
     op = SF.SecondOrderStructureFunctionType()
 
     res_serial = SF.calculate_structure_function(op, x, u, bins;
-        backend=SF.SerialBackend(), show_progress=false, verbose=false)
+        backend=CB.SerialBackend(), show_progress=false, verbose=false)
 
     res_thread = SF.calculate_structure_function(op, x, u, bins;
-        backend=SF.ThreadedBackend(), show_progress=false, verbose=false)
+        backend=CB.ThreadedBackend(), show_progress=false, verbose=false)
 
     sf_s = res_serial.values
     sf_t = res_thread.values
@@ -273,7 +274,7 @@ function generate_single_pass_figure()
 
     # One O(N²) pass → NamedTuple of the six isotropic invariants; point-field input also
     # yields a `:helmholtz` entry (rotational/divergent decomposition).
-    res = SF.calculate_structure_functions_single_pass(x, u, bins; backend=SF.SerialBackend())
+    res = SF.calculate_structure_functions_single_pass(x, u, bins; backend=CB.SerialBackend())
 
     fig = CM.Figure(size=(900, 560), fontsize=14)
     CM.Label(fig[0, 1],
@@ -338,14 +339,14 @@ function generate_2d_binning_figure()
         x, u = mk(N=2500)
         # Velocity-increment scale σ from L2(r); set per-order value ranges around it.
         l2 = SF.calculate_structure_function(SF.LongitudinalSecondOrderStructureFunctionType(),
-            x, u, dist_bins; backend=SF.SerialBackend(), show_progress=false, verbose=false)
+            x, u, dist_bins; backend=CB.SerialBackend(), show_progress=false, verbose=false)
         σ2 = maximum(filter(isfinite, l2.values)); σ = sqrt(σ2)
         seq(hi) = collect(range(0.0, hi; length=nval + 1))         # ≥0 (2nd order)
         sym(hi) = collect(range(-hi, hi; length=nval + 1))         # ± (3rd order)
         # One pass → all six joint histograms (per-invariant value bins, common bin count).
         value_bins = (seq(24σ2), seq(12σ2), seq(12σ2), sym(15σ^3), sym(15σ^3), sym(15σ^3))
         res = SF.calculate_structure_functions_single_pass_2d(x, u, dist_bins, value_bins;
-            backend=SF.SerialBackend())
+            backend=CB.SerialBackend())
 
         for (col, (key, signed, lab)) in enumerate(invs)
             vmid = bin_midpoints(value_bins[col])

@@ -15,14 +15,83 @@
 shared for large single-pass). Returns `true` if handled, `false` to fall back to
 the portable KA tiled kernel. Overridden by `StructureFunctionsCUDAExt`."""
 gpu_fast_launch_2d_batch!(backend, out, cnt, x, u, sf_type, dist_dig, val_plan,
-                          N, n_dist, n_val, B, D, nmom, fixed_x) = false
+                          N, n_dist, n_val, B, D, nmom, fixed_x, geom) = false
 
 """Try the CUDA fast 1D launch (N-body broadcast + privatized shared histogram).
 Returns `true` if handled, `false` to fall back to the portable KA tiled kernel.
 Overridden by `StructureFunctionsCUDAExt`."""
 gpu_fast_launch_1d_batch!(backend, out, cnt, x, u, sf_type, dist_dig,
-                          N, NB, B, D, nmom, fixed_x) = false
+                          N, NB, B, D, nmom, fixed_x, geom) = false
 
+
+"""
+    GPUDeviceCaps
+
+What a GPU backend can actually offer, queried rather than assumed, so shared-memory strategy is
+chosen per device instead of per hardcoded constant. Shared memory per block differs by an order of
+magnitude across parts a user may run on (V100 96 KiB, L40S 100 KiB, A100 163 KiB, later parts
+more), and the right accumulation strategy differs with it.
+
+`smem_per_block` is the **opt-in** maximum, reachable only by *dynamic* shared memory that a kernel
+explicitly requests; `smem_per_sm` bounds how many blocks stay resident and is what makes "use every
+byte" the wrong default.
+
+Static shared memory is capped far lower and independently — see [`GPU_SMEM_STATIC_MAX`].
+KernelAbstractions' `@localmem` lowers to a *static* allocation (`CuStaticSharedArray` on CUDA) and
+its launch path passes no `shmem`, so a kernel written once for every backend is bound by the static
+cap. Reaching `smem_per_block` therefore takes a backend-specialized kernel that declares dynamic
+shared memory and opts in at launch — which is what the vendor fast paths do, with the portable
+kernel remaining as the correctness fallback for backends that have none.
+"""
+struct GPUDeviceCaps
+    smem_per_block::Int
+    smem_per_sm::Int
+    n_sms::Int
+    warp::Int
+end
+
+"""
+Largest *static* shared allocation a block may declare. Measured, not assumed: on an A100 a static
+`@localmem` of 48 KiB compiles and 64 KiB fails `ptxas`, while dynamic shared reaches the full
+163 KiB opt-in. This is an architectural limit rather than a per-device one, so exceeding a device's
+opt-in maximum is a separate check.
+"""
+const GPU_SMEM_STATIC_MAX = 48 * 1024
+
+"""Shared memory every CUDA-class device provides without opting in."""
+const GPU_SMEM_UNIVERSAL_FLOOR = 48 * 1024
+
+"""
+    gpu_static_smem_budget(caps) -> Int
+
+Bytes a portable (static `@localmem`) kernel may use on this device: the static cap, further limited
+if the device offers less than it.
+"""
+@inline gpu_static_smem_budget(caps::GPUDeviceCaps) =
+    min(GPU_SMEM_STATIC_MAX, caps.smem_per_block)
+
+"""
+    gpu_dynamic_smem_budget(caps; target_blocks_per_sm = 2) -> Int
+
+Bytes a dynamic-shared kernel should use per block. Expressed in device-relative terms — the opt-in
+ceiling, and the per-SM pool divided by an occupancy target — so the same rule sizes correctly on any
+part rather than encoding one device's byte count. `target_blocks_per_sm` is the only free parameter
+and is dimensionless.
+"""
+@inline function gpu_dynamic_smem_budget(caps::GPUDeviceCaps; target_blocks_per_sm::Int = 2)
+    per_sm_share = caps.smem_per_sm ÷ max(1, target_blocks_per_sm)
+    return max(GPU_SMEM_UNIVERSAL_FLOOR, min(caps.smem_per_block, per_sm_share))
+end
+
+"""
+    gpu_device_caps(backend) -> GPUDeviceCaps
+
+Capabilities of `backend`. The default is deliberately the universal floor: a backend with no
+override behaves exactly as the package did before device querying existed, so an unknown or future
+backend degrades to "correct and portable" rather than to "assumes an A100". `StructureFunctionsCUDAExt`
+overrides this with the real device attributes.
+"""
+gpu_device_caps(::Any) = GPUDeviceCaps(GPU_SMEM_UNIVERSAL_FLOOR, GPU_SMEM_UNIVERSAL_FLOOR, 1, 32)
 
 """
     GPUSFWorkspace(backend, distance_bins; kind=:sf1d)

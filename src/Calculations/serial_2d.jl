@@ -21,7 +21,7 @@ function serial_calculate_structure_function!(
 
     # Fast path: Euclidean + D ∈ (2,3) via the SIMD compute/scatter split (distance + SF value
     # vectorize over j; the 2D (dist,value) scatter stays scalar).
-    D = length(x_vecs)
+    D = length(u_vecs)
     if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
         _pf_2d_simd_run!(sums_2d, counts_2d, structure_function_type, x_vecs, u_vecs,
                          distance_bins, value_bins, D == 2 ? Val(2) : Val(3))
@@ -49,11 +49,11 @@ range) so the `@simd` vectorizes; shared by serial + threaded.
 function _pf_2d_simd_pairs!(
     sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
-    xc::NTuple{D}, uc::NTuple{D}, dist_be, val_be, ::Val{D},
-    distbuf::AbstractVector, valbuf::AbstractVector, irange,
+    xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, val_be, ::Val{D},
+    keybuf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32}, irange,
 ) where {OT, CT, D}
     N = length(xc[1])
-    n_dist = n_histogram_bins(dist_be)
+    n_dist = n_histogram_bins(plan)
     n_val = n_histogram_bins(val_be)
     FTx = eltype(xc[1])
     @inbounds for i in irange
@@ -62,14 +62,16 @@ function _pf_2d_simd_pairs!(
         @simd for j in (i + 1):N
             Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
             dx = Xj - Xi
-            dist = sqrt(LA.dot(dx, dx))
-            rh = dx / dist
+            r2 = LA.dot(dx, dx)
             Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
-            distbuf[j] = dist
-            valbuf[j] = sf(Uj - Ui, rh)
+            keybuf[j] = digitize_key(plan, r2)
+            valbuf[j] = SFT._sf_raw(sf, Uj - Ui, dx, r2)
+            if has_vector_index(plan)
+                idxbuf[j] = squared_approx_index(plan, r2)
+            end
         end
         for j in (i + 1):N
-            dbin = SFH.digitize(distbuf[j], dist_be)
+            dbin = squared_bin(plan, keybuf[j], idxbuf[j])
             if 1 <= dbin <= n_dist
                 vbin = SFH.digitize(valbuf[j], val_be)
                 if 1 <= vbin <= n_val
@@ -87,13 +89,75 @@ function _pf_2d_simd_run!(
     sf::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple, u_vecs::Tuple, dist_be, val_be, ::Val{D},
 ) where {OT, CT, D}
+    N = length(x_vecs[1])
+    return _pf_2d_simd_partial!(sums2d, counts2d, sf, x_vecs, u_vecs, dist_be, val_be, Val(D), 1:(N - 1))
+end
+
+"""
+    _pf_2d_simd_partial!(sums2d, counts2d, sf, x_vecs, u_vecs, dist_be, val_be, ::Val{D}, ilist)
+
+Run [`_pf_2d_simd_pairs!`](@ref) over an explicit outer-index list, materializing the contiguous
+component vectors and scratch buffers this worker needs. Shared by the serial, distributed and MPI
+drivers, whose inputs arrive as strided views.
+"""
+function _pf_2d_simd_partial!(
+    sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
+    sf::SFT.AbstractPairwiseStructureFunctionType,
+    x_vecs::Tuple, u_vecs::Tuple, dist_be, val_be, ::Val{D}, ilist,
+) where {OT, CT, D}
     xc = ntuple(d -> collect(x_vecs[d]), Val(D))
     uc = ntuple(d -> collect(u_vecs[d]), Val(D))
     N = length(xc[1])
-    distbuf = Vector{eltype(xc[1])}(undef, N)
+    keybuf = Vector{eltype(xc[1])}(undef, N)
     valbuf = Vector{OT}(undef, N)
-    _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, dist_be, val_be, Val(D), distbuf, valbuf, 1:(N - 1))
+    idxbuf = Vector{Int32}(undef, N)
+    plan = squared_digitize_plan(dist_be)
+    _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D), keybuf, valbuf, idxbuf, ilist)
     return nothing
+end
+
+"""
+    _partial_2d_sums_counts(inner, sf_type, x_vecs, u_vecs, distance_bins, value_bins, ilist; kwargs...)
+
+Partial 2D-joint sums/counts over an explicit outer-index list `ilist`, the 2D analogue of
+[`_partial_sums_counts`](@ref). Euclidean `D ∈ {2,3}` takes the SIMD compute/scatter kernel; other
+metrics fall back to the scalar per-`i` kernel. Returns `(sums, counts)`.
+"""
+function _partial_2d_sums_counts(
+    ::CB.AbstractExecutionBackend,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x_vecs::Tuple,
+    u_vecs::Tuple,
+    distance_bins::AbstractVector,
+    value_bins::AbstractVector,
+    ilist;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
+) where {CT}
+    _assert_counts_representable(CT, length(x_vecs[1]))
+    OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
+    nd = n_histogram_bins(distance_bins)
+    nv = n_histogram_bins(value_bins)
+    sums = zeros(OT, nd, nv)
+    counts = zeros(CT, nd, nv)
+    dist_be = BinEdges(distance_bins)
+    val_be = BinEdges(value_bins)
+    D = length(u_vecs)
+
+    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
+        vD = D == 2 ? Val(2) : Val(3)
+        _pf_2d_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, dist_be, val_be, vD, ilist)
+        return sums, counts
+    end
+
+    vN = Val(D)
+    for i in ilist
+        calculate_structure_function_2d_i!(
+            sums, counts, vN, structure_function_type, i, x_vecs, u_vecs, dist_be, val_be;
+            distance_metric = distance_metric,
+        )
+    end
+    return sums, counts
 end
 
 function serial_calculate_structure_function(
@@ -105,6 +169,7 @@ function serial_calculate_structure_function(
     count_eltype::Type{CT} = UInt32,
     kwargs...,
 ) where {T1, T2, CT}
+    _assert_counts_representable(CT, length(x_vecs[1]))
     FT1 = eltype(T1)
     FT2 = eltype(T2)
     OT = promote_type(float(FT1), float(FT2))
@@ -144,9 +209,8 @@ function serial_calculate_structure_function!(
     value_bins::AbstractVector;
     kwargs...,
 ) where {OT, FT1 <: Number, FT2 <: Number}
-    N_dims = size(x_arr, 1)
-    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
-    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
+    x_tuple = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
+    u_tuple = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
     return serial_calculate_structure_function!(
         sums_2d,
         counts_2d,
@@ -165,27 +229,30 @@ function serial_calculate_structure_function(
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
+    count_eltype::Type{CT} = UInt32,
     kwargs...,
-) where {FT1 <: Number, FT2 <: Number}
+) where {FT1 <: Number, FT2 <: Number, CT}
     if ndims(u_arr) >= 3
         FT = promote_type(float(FT1), float(FT2))
         n_dist = length(distance_bins) - 1
         n_val = length(value_bins) - 1
         bdims = batch_dims(u_arr)
         sums = zeros(FT, n_dist, n_val, bdims...)
-        counts = zeros(UInt32, n_dist, n_val, bdims...)
+        # Consumed here, where `counts` is allocated. `auxiliary_joint2d!` takes already-allocated
+        # buffers, so forwarding `count_eltype` into it is a MethodError.
+        counts = zeros(CT, n_dist, n_val, bdims...)
         auxiliary_joint2d!(sums, counts, structure_function_type, x_arr, u_arr, distance_bins, value_bins; kwargs...)
         return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts)
     end
-    N_dims = size(x_arr, 1)
-    x_tuple = ntuple(k -> view(x_arr, k, :), N_dims)
-    u_tuple = ntuple(k -> view(u_arr, k, :), N_dims)
+    x_tuple = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
+    u_tuple = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
     return serial_calculate_structure_function(
         structure_function_type,
         x_tuple,
         u_tuple,
         distance_bins,
         value_bins;
+        count_eltype = count_eltype,
         kwargs...,
     )
 end
@@ -207,19 +274,23 @@ function calculate_structure_function_2d_i!(
     N3 = length(distance_bins)
     N4 = length(value_bins)
 
-    X1 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][i], Val(N)))
+    # `N` is the velocity dimension; the coordinate count is the x tuple's own (static) length.
+    W = length(x_vecs)
+    vW = Val(W)
+    X1 = SA.SVector{W, FT1}(ntuple(k -> x_vecs[k][i], vW))
     U1 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][i], Val(N)))
 
     iter_inds = eachindex(x_vecs[1])
+    geom = SFH.pair_geometry_for(distance_metric, Val(N))
     for j in (i + 1):last(iter_inds)
-        X2 = SA.SVector{N, FT1}(ntuple(k -> x_vecs[k][j], Val(N)))
+        X2 = SA.SVector{W, FT1}(ntuple(k -> x_vecs[k][j], vW))
         U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
 
-        distance = distance_metric(X1, X2)
+        ok, distance, frame = SFH.pair_frame(geom, X1, X2)
         dist_bin = SFH.digitize(distance, distance_bins)
-        if 1 <= dist_bin < N3
-            rh = SFH.r̂(X1, X2, distance_metric, distance)
-            val = structure_function_type(U2 - U1, rh)
+        if ok && 1 <= dist_bin < N3
+            δu, rh = SFH.pair_increments(geom, frame, distance, X1, X2, U1, U2)
+            val = structure_function_type(δu, rh)
             val_bin = SFH.digitize(val, value_bins)
             
             if 1 <= val_bin < N4
@@ -241,7 +312,7 @@ function calculate_structure_function_2d_i(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     count_eltype::Type{CT} = UInt32,
 ) where {CT}
-    N = length(x_vecs)
+    N = length(u_vecs)
     FT1 = eltype(x_vecs[1])
     FT2 = eltype(u_vecs[1])
     N3 = n_histogram_bins(distance_bins)
