@@ -93,7 +93,7 @@ function _cuda_sf_1d_kernel!(
             if ok && 1 <= bin <= NB
                 dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                 moments = GE._sf_moments(Val(NMOM), sf_type, dU, rhat)
-                @inbounds for m in 1:NMOM
+                @inbounds for m in GE._sf_accum_moments(Val(NMOM))
                     CUDA.@atomic ssum[(m - 1) * NB + bin] += moments[m]
                 end
                 @inbounds CUDA.@atomic scnt[bin] += UInt32(1)
@@ -105,10 +105,10 @@ function _cuda_sf_1d_kernel!(
 
     cell = lid
     while cell <= NMOM * NB
-        @inbounds s = ssum[cell]
+        m = (cell - 1) ÷ NB + 1
+        bin = (cell - 1) % NB + 1
+        s = GE._sf_flush_moment(Val(NMOM), ssum, NB, m, bin)
         if s != zero(FT)
-            m = (cell - 1) ÷ NB + 1
-            bin = (cell - 1) % NB + 1
             CUDA.@atomic output[m, bin, b] += s
         end
         cell += wg

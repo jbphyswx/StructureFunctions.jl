@@ -55,13 +55,12 @@ function _pf_simd_run!(
 end
 
 """
-    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, hloc, cloc, irange)
+    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, irange)
 
 Accumulate pairs `(i, j>i)` for `i in irange` into `output`/`counts`.
 
 The `@simd` half writes `r²`, the SF value, and the approximate bin index to buffers; the scalar
-half corrects the index and scatters into the row-local `hloc`/`cloc`, which are merged per `i`.
-`hloc`/`cloc` must be `n_histogram_bins(plan) + 2` long (two guard cells).
+half corrects the index and scatters straight into `output`/`counts`, skipping out-of-range bins.
 
 The `i`-loop and the inner `@simd` must stay in this function body; factoring the inner loop into a
 per-`i` helper stops it vectorizing.
@@ -71,7 +70,7 @@ function _pf_simd_pairs!(
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, ::Val{D},
     r2buf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32},
-    hloc::AbstractVector{OT}, cloc::AbstractVector{CT}, irange,
+    irange,
 ) where {OT, CT, D}
     N = length(xc[1])
     nb = n_histogram_bins(plan)
@@ -90,16 +89,12 @@ function _pf_simd_pairs!(
                 idxbuf[j] = squared_approx_index(plan, r2)
             end
         end
-        fill!(hloc, zero(OT))
-        fill!(cloc, zero(CT))
         for j in (i + 1):N
-            k = clamp(squared_bin(plan, r2buf[j], idxbuf[j]), 0, nb + 1) + 1
-            hloc[k] += valbuf[j]
-            cloc[k] += one(CT)
-        end
-        for b in 1:nb                      # guard cells 1 and nb+2 dropped
-            output[b] += hloc[b + 1]
-            counts[b] += cloc[b + 1]
+            b = squared_bin(plan, r2buf[j], idxbuf[j])
+            if 1 <= b <= nb
+                output[b] += valbuf[j]
+                counts[b] += one(CT)
+            end
         end
     end
     return nothing
@@ -364,8 +359,7 @@ function _pf_simd_partial!(
     r2buf = Vector{eltype(xc[1])}(undef, N)
     valbuf = Vector{OT}(undef, N)
     idxbuf = Vector{Int32}(undef, N)
-    hloc = Vector{OT}(undef, nb + 2); cloc = Vector{CT}(undef, nb + 2)   # 2 guard cells
-    _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, hloc, cloc, ilist)
+    _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, ilist)
     return nothing
 end
 

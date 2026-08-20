@@ -1,24 +1,25 @@
 # Tiled128 six-invariant-type single-pass 1D distance histogram kernels (linear/log/general).
 # Included from StructureFunctionsKernelAbstractionsExt.jl — block-local (6, NB) sums + one count row.
 
-"""Accumulate six invariant native 1D SF types into flat `@localmem` sums `(6*NB,)`.
-du_norm2 = du_L2 + du_T2 (= ||dU||²) must be pre-computed by the caller."""
+"""Accumulate the four independent invariants into flat `@localmem` sums `(6*NB,)`.
+`du_norm2 = ||dU||²` must be pre-computed by the caller.
+
+Rows 3 (`T2`) and 6 (`L1T2`) are exact differences of the others (`T2 = S2 - L2`,
+`L1T2 = S3 - L3`) and a bin is a sum, so they are left zero here and reconstructed once at flush by
+[`_sf_flush_moment`](@ref) — 4 shared atomics per pair instead of 6."""
 @inline function _gpu_accumulate_single_pass_1d_shared!(
     shared_sums,
     shared_cnts,
     bin::Int,
     du_L,
     du_L2,
-    du_T2,
     du_norm2,
     NB::Int,
 )
     @atomic shared_sums[bin] += du_norm2
     @atomic shared_sums[NB + bin] += du_L2
-    @atomic shared_sums[2NB + bin] += du_T2
     @atomic shared_sums[3NB + bin] += du_L * du_norm2
     @atomic shared_sums[4NB + bin] += du_L * du_L2
-    @atomic shared_sums[5NB + bin] += du_L * du_T2
     @atomic shared_cnts[bin] += UInt32(1)
     return nothing
 end
@@ -127,9 +128,8 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_linear_
                 if ok && 1 <= bin < N_bins
                     du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                     du_L2 = du_L * du_L
-                    du_T2 = du_norm2 - du_L2
                     _gpu_accumulate_single_pass_1d_shared!(
-                        shared_sums, shared_cnts, bin, du_L, du_L2, du_T2, du_norm2, NB,
+                        shared_sums, shared_cnts, bin, du_L, du_L2, du_norm2, NB,
                     )
                 end
                 p += workgroup_size
@@ -142,10 +142,10 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_linear_
     if bid <= n_tile_blocks
         k = lid
         while k <= SF_GPU_SINGLE_PASS_N * NB
-            s = shared_sums[k]
+            t = (k - 1) ÷ NB + 1
+            b = (k - 1) % NB + 1
+            s = _sf_flush_moment(Val(SF_GPU_SINGLE_PASS_N), shared_sums, NB, t, b)
             if s != zero(FT)
-                t = (k - 1) ÷ NB + 1
-                b = (k - 1) % NB + 1
                 @atomic output_sums[t, b] += s
             end
             k += workgroup_size
@@ -265,9 +265,8 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
                 if ok && 1 <= bin < N_bins
                     du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                     du_L2 = du_L * du_L
-                    du_T2 = du_norm2 - du_L2
                     _gpu_accumulate_single_pass_1d_shared!(
-                        shared_sums, shared_cnts, bin, du_L, du_L2, du_T2, du_norm2, NB,
+                        shared_sums, shared_cnts, bin, du_L, du_L2, du_norm2, NB,
                     )
                 end
                 p += workgroup_size
@@ -280,10 +279,10 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
     if bid <= n_tile_blocks
         k = lid
         while k <= SF_GPU_SINGLE_PASS_N * NB
-            s = shared_sums[k]
+            t = (k - 1) ÷ NB + 1
+            b = (k - 1) % NB + 1
+            s = _sf_flush_moment(Val(SF_GPU_SINGLE_PASS_N), shared_sums, NB, t, b)
             if s != zero(FT)
-                t = (k - 1) ÷ NB + 1
-                b = (k - 1) % NB + 1
                 @atomic output_sums[t, b] += s
             end
             k += workgroup_size
@@ -401,9 +400,8 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_general
                 if ok && 1 <= bin < N_bins
                     du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                     du_L2 = du_L * du_L
-                    du_T2 = du_norm2 - du_L2
                     _gpu_accumulate_single_pass_1d_shared!(
-                        shared_sums, shared_cnts, bin, du_L, du_L2, du_T2, du_norm2, NB,
+                        shared_sums, shared_cnts, bin, du_L, du_L2, du_norm2, NB,
                     )
                 end
                 p += workgroup_size
@@ -416,10 +414,10 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_general
     if bid <= n_tile_blocks
         k = lid
         while k <= SF_GPU_SINGLE_PASS_N * NB
-            s = shared_sums[k]
+            t = (k - 1) ÷ NB + 1
+            b = (k - 1) % NB + 1
+            s = _sf_flush_moment(Val(SF_GPU_SINGLE_PASS_N), shared_sums, NB, t, b)
             if s != zero(FT)
-                t = (k - 1) ÷ NB + 1
-                b = (k - 1) % NB + 1
                 @atomic output_sums[t, b] += s
             end
             k += workgroup_size

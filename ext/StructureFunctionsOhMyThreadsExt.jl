@@ -184,8 +184,7 @@ function _threaded_pf_simd!(
         r2buf = Vector{FTx}(undef, Np)
         valbuf = Vector{OT}(undef, Np)
         idxbuf = Vector{Int32}(undef, Np)
-        hloc = Vector{OT}(undef, nb + 2); cloc = Vector{CT}(undef, nb + 2)   # 2 guard cells
-        SFC._pf_simd_pairs!(local_output, local_counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, hloc, cloc, chunk)
+        SFC._pf_simd_pairs!(local_output, local_counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, chunk)
         SFO.StructureFunctionSumsAndCounts(sf, dist_be, local_output, local_counts)
     end
     output_sums .+= result.sums

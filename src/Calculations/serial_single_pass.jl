@@ -191,6 +191,33 @@ function _accumulate_single_pass_1d!(
 end
 
 """
+    _sp1d_derive_rows!(sums, counts)
+
+Fill the two derived invariant rows and replicate the shared count of a `(SINGLE_PASS_N, n_bins)`
+accumulator.
+
+`T2 = S2 - L2` and `L1T2 = S3 - L3` hold for every pair, and a bin is a sum, so the pair loops store
+only rows 1, 2, 4, 5 — four stores per pair instead of six — and these two are differenced once per
+call. The count is identical across all six rows, so it is accumulated into row 1 and broadcast here.
+
+Uses `=`, never `+=`, so it is **idempotent**: correct whether a kernel runs once or many times over
+the same buffer, and correct under threaded/partial reduction because the derivation is linear
+(`Σ(S2-L2) = ΣS2 - ΣL2`). That is why it belongs at the end of each pair kernel rather than at the
+callers' assembly points, of which there are more than twenty.
+"""
+@inline function _sp1d_derive_rows!(sums::AbstractMatrix, counts::AbstractMatrix)
+    @inbounds for b in axes(sums, 2)
+        sums[3, b] = sums[1, b] - sums[2, b]
+        sums[6, b] = sums[4, b] - sums[5, b]
+        c = counts[1, b]
+        for t in 2:SINGLE_PASS_N
+            counts[t, b] = c
+        end
+    end
+    return nothing
+end
+
+"""
     _pf_sp_simd_pairs!(sums, counts, xc, uc, dist_be, ::Val{D}, distbuf, duLbuf, dn2buf, irange)
 
 Single-pass (6 invariants) point-field SIMD compute/scatter kernel over outer indices `irange`.
@@ -231,20 +258,15 @@ function _pf_sp_simd_pairs!(
                 duL = duLbuf[j]
                 dn2 = dn2buf[j]
                 duL2 = duL * duL
-                duT2 = dn2 - duL2
                 sums[1, bin] += dn2
                 sums[2, bin] += duL2
-                sums[3, bin] += duT2
                 sums[4, bin] += duL * dn2
                 sums[5, bin] += duL * duL2
-                sums[6, bin] += duL * duT2
-                # All six rows are equal by construction and contiguous in memory.
-                for t in 1:SINGLE_PASS_N
-                    counts[t, bin] += one(CT)
-                end
+                counts[1, bin] += one(CT)
             end
         end
     end
+    _sp1d_derive_rows!(sums, counts)
     return nothing
 end
 
@@ -318,19 +340,15 @@ function _sp1d_pairs!(
                 duL = LA.dot(du, rh)
                 duL2 = duL * duL
                 dn2 = LA.dot(du, du)
-                duT2 = dn2 - duL2
                 sums[1, bin] += dn2
                 sums[2, bin] += duL2
-                sums[3, bin] += duT2
                 sums[4, bin] += duL * dn2
                 sums[5, bin] += duL * duL2
-                sums[6, bin] += duL * duT2
-                for t in 1:SINGLE_PASS_N
-                    counts[t, bin] += one(CT)
-                end
+                counts[1, bin] += one(CT)
             end
         end
     end
+    _sp1d_derive_rows!(sums, counts)
     return nothing
 end
 
