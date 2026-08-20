@@ -13,4 +13,4 @@ StructureFunctions = "e93fee26-4d5e-49c1-899d-490508cfd19b"
 
 [sources]
 ComputationalBackends = {url = "https://github.com/jbphyswx/ComputationalBackends.jl"}
-StructureFunctions = {path = "/net/sampo/data1/jbenjami/Code/jbphyswx/StructureFunctions.jl"}
+StructureFunctions = { path = ".." }
