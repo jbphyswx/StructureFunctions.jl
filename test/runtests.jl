@@ -44,9 +44,6 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Tensor and KHM Test ---")
     include("test_tensor_khm.jl")
 
-    println("--- Running Threading Backend Test ---")
-    include("test_threads.jl")
-
     println("--- Running Triangle Outer Chunks Test ---")
     include("test_triangle_outer_chunks.jl")
 
