@@ -1,77 +1,15 @@
 # GPUSFWorkspace — device-resident histogram buffers and cached bin edges for GPU SF paths.
 # Included from StructureFunctionsKernelAbstractionsExt.jl (uses _gpu_normalize_bins, etc.).
 
-"""
-    GPUSFWorkspace
 
-Reusable device histogram buffers and cached distance-bin edge arrays for GPU
-structure-function launches. Construct once per `(backend, distance_bins[, value_bins])`
-configuration; pass to `gpu_calculate_structure_function(!)` or slice drivers to avoid
-per-call `KA.zeros` allocation and repeated edge uploads.
+"""Log-spaced and linear distance bins carry host-side FMA params only; no device edge upload."""
+_workspace_dist_edges(::KA.Backend, ::LogBinEdges, ::Int) = nothing
+_workspace_dist_edges(::KA.Backend, ::LinearBinEdges, ::Int) = nothing
 
-# Kinds (`kind` field)
-- `:sf1d` — 1D distance histogram (`out_dev`, `cnt_dev` vectors)
-- `:joint2d` — distance × value joint histogram; caches compiled tiled kernel in
-  `joint2d_kernel` (default exact `n_dist × n_val` smem; override via `joint2d_compile_cells`).
-- `:single_pass` — six invariant 1D distance histograms `(6, NB)`
-- `:single_pass_2d` — six invariant distance × value joint histograms `(6, NB, n_val)`;
-  on-chip modes (`:shared`, `:typeplane`) flush shared histograms directly to `out_*`;
-  `:direct` uses `partition_sums_dev` / `partition_counts_dev` plus merge.
-  Caches compiled pair kernel in `sp2d_pair_kernel` (typed `LinearBinEdges` / `LogBinEdges` dist).
-
-Use the matching constructor overload; `reset_histogram!(ws)` zeroes device outputs
-before each launch. See [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md).
-"""
-mutable struct GPUSFWorkspace
-    backend::KA.Backend
-    FT::Type
-    kind::Symbol
-    dist_bins
-    val_bins::Union{Nothing, Any}
-    out_dev
-    cnt_dev
-    out_sums_dev
-    out_cnts_dev
-    value_edges_dev
-    value_edges_sp2d_dev
-    dist_general_edges_dev
-    NB::Int
-    n_bins::Int
-    n_dist::Int
-    n_val::Int
-    n_val_edges::Int
-    host_sums_scratch
-    host_counts_scratch
-    x_dev_cache
-    u_dev_cache
-    val_plan::Union{Nothing, GPUValueDigitizePlan}
-    sp2d_accumulation_strategy::Union{Nothing, SP2DAccumulationStrategy}
-    sp2d_pair_kernel
-    partition_sums_dev
-    partition_counts_dev
-    partition_n_tile_blocks::Int
-    joint2d_nb2::Int
-    joint2d_compile_cells::Int
-    joint2d_kernel
-end
-
-"""Log-spaced distance bins use host-side FMA params only; no device edge upload."""
-function _workspace_upload_dist_edges!(ws::GPUSFWorkspace, ::LogBinEdges, ::Int)
-    ws.dist_general_edges_dev = nothing
-    return ws
-end
-
-function _workspace_upload_dist_edges!(ws::GPUSFWorkspace, ::LinearBinEdges, ::Int)
-    ws.dist_general_edges_dev = nothing
-    return ws
-end
-
-function _workspace_upload_dist_edges!(ws::GPUSFWorkspace, bins::Vector{FT}, n_edges::Int) where {FT}
-    ws.dist_general_edges_dev = nothing
-    bins_dev = KA.allocate(ws.backend, FT, n_edges)
+function _workspace_dist_edges(backend::KA.Backend, bins::Vector{FT}, n_edges::Int) where {FT}
+    bins_dev = KA.allocate(backend, FT, n_edges)
     copyto!(bins_dev, bins)
-    ws.dist_general_edges_dev = bins_dev
-    return ws
+    return bins_dev
 end
 
 function _workspace_check_nb!(n_bins::Int)
@@ -99,29 +37,25 @@ function SFC.GPUSFWorkspace(
     NB, n_bins = _workspace_check_nb!(n_bins)
 
     if kind == :sf1d
-        out_dev = KA.zeros(backend, FT, NB)
-        cnt_dev = KA.zeros(backend, UInt32, NB)
-        out_sums_dev = nothing
-        out_cnts_dev = nothing
+        out_sums_dev = KA.zeros(backend, FT, NB)
+        out_cnts_dev = KA.zeros(backend, UInt32, NB)
     else
-        out_dev = nothing
-        cnt_dev = nothing
         out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, NB)
         out_cnts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, NB)
     end
+    dist_edges_dev = _workspace_dist_edges(backend, dist_bins, n_bins)
 
-    ws = GPUSFWorkspace(
-        backend, FT, kind, dist_bins, nothing,
-        out_dev, cnt_dev, out_sums_dev, out_cnts_dev,
-        nothing, nothing, nothing,
+    return GPUSFWorkspace{kind, FT, typeof(backend), typeof(dist_bins), Nothing,
+        typeof(out_sums_dev), typeof(out_cnts_dev), Nothing, typeof(dist_edges_dev),
+        Nothing, Nothing, Nothing, GPUSFLazyBuffers}(
+        backend, dist_bins, nothing,
+        out_sums_dev, out_cnts_dev,
+        nothing, dist_edges_dev,
         NB, n_bins, NB, 0, 0,
         Vector{FT}(undef, NB), Vector{UInt32}(undef, NB),
-        nothing, nothing,
-        nothing,
-        nothing, nothing, nothing, nothing, 0,
-        0, 0, nothing,
+        nothing, nothing, nothing,
+        0, 0, GPUSFLazyBuffers(),
     )
-    return _workspace_upload_dist_edges!(ws, dist_bins, n_bins)
 end
 
 """
@@ -193,24 +127,19 @@ function _gpusf_workspace_joint2d!(
     out_sums_dev = KA.zeros(backend, FT, n_dist, n_val)
     out_cnts_dev = KA.zeros(backend, UInt32, n_dist, n_val)
 
-    ws = GPUSFWorkspace(
-        backend, FT, :joint2d, dist_bins, val_bins,
-        nothing, nothing, out_sums_dev, out_cnts_dev,
-        value_edges_dev, nothing, nothing,
+    dist_edges_dev = _workspace_dist_edges(backend, dist_bins, n_dist_edges)
+
+    return GPUSFWorkspace{:joint2d, FT, typeof(backend), typeof(dist_bins), typeof(val_bins),
+        typeof(out_sums_dev), typeof(out_cnts_dev), typeof(value_edges_dev),
+        typeof(dist_edges_dev), typeof(val_plan), Nothing, Nothing, GPUSFLazyBuffers}(
+        backend, dist_bins, val_bins,
+        out_sums_dev, out_cnts_dev,
+        value_edges_dev, dist_edges_dev,
         NB, n_bins, n_dist, n_val, n_val_edges,
         Vector{FT}(undef, n_dist * n_val), Vector{UInt32}(undef, n_dist * n_val),
-        nothing, nothing,
-        val_plan,
-        nothing, nothing, nothing, nothing, 0,
-        nb2, compile_cells, nothing,
+        val_plan, nothing, nothing,
+        nb2, compile_cells, GPUSFLazyBuffers(),
     )
-    ws = _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
-    if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
-        ws.joint2d_kernel = _joint2d_resolve_tiled_kernel!(
-            ws, backend, dist_bins, val_plan, compile_cells,
-        )
-    end
-    return ws
 end
 
 """
@@ -248,29 +177,33 @@ function _gpusf_workspace_sp2d!(
     n_val_edges = _sp2d_n_val_edges(value_bins)
     FT = _sp2d_value_eltype(value_bins, FT3)
     val_plan = _gpu_build_value_digitize_plan(backend, value_bins)
-    value_edges_sp2d_dev = _gpu_build_value_vector_cols_plan(backend, value_bins).edges_dev
+    value_edges_dev = _gpu_build_value_vector_cols_plan(backend, value_bins).edges_dev
 
     out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, NB, hist_n_val)
     out_cnts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, NB, hist_n_val)
     strategy = _sp2d_accumulation_strategy(NB, hist_n_val, FT, SFC.gpu_device_caps(backend))
 
-    ws = GPUSFWorkspace(
-        backend, FT, :single_pass_2d, dist_bins, value_bins,
-        nothing, nothing, out_sums_dev, out_cnts_dev,
-        nothing, value_edges_sp2d_dev, nothing,
+    dist_edges_dev = _workspace_dist_edges(backend, dist_bins, n_dist_edges)
+    # The pair kernel is keyed only on (dist variant, value variant, accum mode), all fixed here,
+    # so it is resolved once and held immutably.
+    pair_kernel = _sp2d_partition_kernel_fn(
+        _sp2d_dist_variant(dist_bins), _sp2d_val_variant(val_plan),
+        strategy.accum_mode, backend, SF_GPU_TILED_WS,
+    )
+
+    return GPUSFWorkspace{:single_pass_2d, FT, typeof(backend), typeof(dist_bins),
+        typeof(value_bins), typeof(out_sums_dev), typeof(out_cnts_dev),
+        typeof(value_edges_dev), typeof(dist_edges_dev), typeof(val_plan),
+        typeof(strategy), typeof(pair_kernel), GPUSFLazyBuffers}(
+        backend, dist_bins, value_bins,
+        out_sums_dev, out_cnts_dev,
+        value_edges_dev, dist_edges_dev,
         NB, n_bins, NB, hist_n_val, n_val_edges,
         Vector{FT}(undef, SF_GPU_SINGLE_PASS_N * NB * hist_n_val),
         Vector{UInt32}(undef, SF_GPU_SINGLE_PASS_N * NB * hist_n_val),
-        nothing, nothing,
-        val_plan,
-        strategy, nothing, nothing, nothing, 0,
-        0, 0, nothing,
+        val_plan, strategy, pair_kernel,
+        0, 0, GPUSFLazyBuffers(),
     )
-    ws = _workspace_upload_dist_edges!(ws, dist_bins, n_dist_edges)
-    if dist_bins isa LinearBinEdges || dist_bins isa LogBinEdges
-        ws.sp2d_pair_kernel = _sp2d_resolve_pair_kernel(ws, backend, dist_bins, val_plan, strategy)
-    end
-    return ws
 end
 
 """
@@ -278,24 +211,18 @@ Ensure block-private HTP-EJ partitions are allocated for `n_tile_blocks` CUDA ti
 Reallocates when `N_points` (hence tile-block count) grows.
 """
 function _ensure_sp2d_partition_bufs!(
-    ws::GPUSFWorkspace,
+    ws::GPUSFWorkspace{:single_pass_2d, FT},
     n_tile_blocks::Int,
-)
-    ws.kind == :single_pass_2d ||
-        throw(ArgumentError("_ensure_sp2d_partition_bufs! requires kind=:single_pass_2d"))
+) where {FT}
     cfg = ws.sp2d_accumulation_strategy
-    cfg === nothing && throw(ArgumentError("single_pass_2d workspace missing sp2d_accumulation_strategy"))
     cfg.needs_partition_merge ||
         throw(ArgumentError("_ensure_sp2d_partition_bufs! requires needs_partition_merge (direct mode)"))
-    if ws.partition_sums_dev === nothing ||
-       ws.partition_counts_dev === nothing ||
-       ws.partition_n_tile_blocks < n_tile_blocks
-        FT = ws.FT
-        ws.partition_sums_dev = KA.zeros(ws.backend, FT, SF_GPU_SINGLE_PASS_N, ws.n_dist, ws.n_val, n_tile_blocks)
-        ws.partition_counts_dev = KA.zeros(ws.backend, UInt32, SF_GPU_SINGLE_PASS_N, ws.n_dist, ws.n_val, n_tile_blocks)
-        ws.partition_n_tile_blocks = n_tile_blocks
+    lazy = ws.lazy
+    if _partition_n_tile_blocks(lazy) < n_tile_blocks
+        lazy.partition_sums_dev = KA.zeros(ws.backend, FT, SF_GPU_SINGLE_PASS_N, ws.n_dist, ws.n_val, n_tile_blocks)
+        lazy.partition_counts_dev = KA.zeros(ws.backend, UInt32, SF_GPU_SINGLE_PASS_N, ws.n_dist, ws.n_val, n_tile_blocks)
     end
-    return ws.partition_sums_dev, ws.partition_counts_dev
+    return lazy.partition_sums_dev, lazy.partition_counts_dev
 end
 
 """Allocate ephemeral privatization partitions when no workspace is provided."""
@@ -312,50 +239,45 @@ function _alloc_sp2d_partition_bufs(
 end
 
 """Zero device histogram buffers in `ws` (call before each kernel launch)."""
-function SFC.reset_histogram!(ws::GPUSFWorkspace)
-    FT = ws.FT
-    if ws.kind == :sf1d
-        fill!(ws.out_dev, zero(FT))
-        fill!(ws.cnt_dev, zero(UInt32))
-    else
-        fill!(ws.out_sums_dev, zero(FT))
-        fill!(ws.out_cnts_dev, zero(UInt32))
-        if ws.kind == :single_pass_2d &&
-           ws.sp2d_accumulation_strategy !== nothing &&
-           ws.sp2d_accumulation_strategy.needs_partition_merge &&
-           ws.partition_sums_dev !== nothing
-            fill!(ws.partition_sums_dev, zero(FT))
-            fill!(ws.partition_counts_dev, zero(UInt32))
-        end
+function SFC.reset_histogram!(ws::GPUSFWorkspace{<:Any, FT}) where {FT}
+    fill!(ws.out_sums_dev, zero(FT))
+    fill!(ws.out_cnts_dev, zero(UInt32))
+    return ws
+end
+
+function SFC.reset_histogram!(ws::GPUSFWorkspace{:single_pass_2d, FT}) where {FT}
+    fill!(ws.out_sums_dev, zero(FT))
+    fill!(ws.out_cnts_dev, zero(UInt32))
+    if ws.sp2d_accumulation_strategy.needs_partition_merge && ws.lazy.partition_sums_dev !== nothing
+        fill!(ws.lazy.partition_sums_dev, zero(FT))
+        fill!(ws.lazy.partition_counts_dev, zero(UInt32))
     end
     return ws
 end
 
-"""Optional explicit release of device buffers (fields are cleared; GC reclaims memory)."""
+"""Drop the lazily allocated device buffers; the immutable histogram buffers outlive this."""
 function SFC.release!(ws::GPUSFWorkspace)
-    for f in fieldnames(typeof(ws))
-        if f ∉ (
-            :backend, :FT, :kind, :dist_bins, :val_bins, :NB, :n_bins, :n_dist, :n_val,
-            :n_val_edges, :sp2d_accumulation_strategy, :partition_n_tile_blocks,
-            :joint2d_nb2, :joint2d_compile_cells,
-        )
-            setfield!(ws, f, nothing)
-        end
-    end
+    lazy = ws.lazy
+    lazy.partition_sums_dev = nothing
+    lazy.partition_counts_dev = nothing
+    lazy.x_dev_cache = nothing
+    lazy.u_dev_cache = nothing
+    lazy.active = nothing
+    lazy.cull = nothing
     return nothing
 end
 
 function _validate_gpu_workspace!(
-    ws::GPUSFWorkspace,
+    ws::GPUSFWorkspace{kind},
     backend::KA.Backend,
-    kind::Symbol,
+    requested_kind::Symbol,
     NB::Int;
     n_val::Union{Nothing, Int} = nothing,
-)
+) where {kind}
     ws.backend == backend ||
         throw(ArgumentError("GPUSFWorkspace belongs to a different backend"))
-    ws.kind == kind ||
-        throw(ArgumentError("GPUSFWorkspace kind $(ws.kind) incompatible with requested $kind"))
+    kind == requested_kind ||
+        throw(ArgumentError("GPUSFWorkspace kind $kind incompatible with requested $requested_kind"))
     ws.NB == NB ||
         throw(ArgumentError("GPUSFWorkspace NB=$(ws.NB) incompatible with requested NB=$NB"))
     if n_val !== nothing && ws.n_val != n_val

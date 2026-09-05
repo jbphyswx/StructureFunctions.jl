@@ -39,13 +39,34 @@ const BatchInput = Union{AbstractArray, BatchLeading}
 # Prepare batch-leading (B,D,N) buffers. Handles the default plain `(D,N,B...)` (transposed
 # once) and `BatchLeading` `(B,D,N)` (zero-copy). `x` may be fixed (D,N) or varying. Called
 # once per top-level call (not in the hot loop), so the type-instability of the branch is a
-# harmless function barrier. Returns (xb, ub, B, D, N, fixed_x).
-function _bl_prepare(x, u, workspace = nothing)
+# harmless function barrier. Returns (xb, ub, B, D, W, N, fixed_x, geom): `D` and `W` are the
+# field and coordinate widths the kernels load, and `geom` carries the velocity dimension.
+"""
+Component-first view of an input, so `prepare_pair_inputs` — which reads components from axis 1 —
+can convert it. Only a batch-leading `(B, W, N)` array needs permuting; the default `(W, N, B…)`
+layout is already component-first. `permutedims` costs one `O(N·B)` pass per call.
+"""
+@inline _bl_component_first(a, is_batch_leading::Bool) =
+    is_batch_leading ? permutedims(a, (2, 3, 1)) : a
+
+function _bl_prepare(x, u, distance_metric = DI.Euclidean(), workspace = nothing)
     u_raw, u_bl = _bl_unwrap(u)
     x_raw, x_bl = _bl_unwrap(x)
     fixed_x = ndims(x_raw) == 2
-    # `W` is the coordinate width and `D` the velocity width; they differ on a shell, where a point
-    # takes two coordinates but the velocity may carry a third, radial, component.
+    # The velocity dimension, read before any conversion — this is what fixes the geometry, and it
+    # is not recoverable from the converted arrays.
+    D_in = u_bl ? size(u_raw, 2) : size(u_raw, 1)
+    geom = SFH.pair_geometry_for(distance_metric, Val(D_in))
+    if !(geom isa SFH.FlatGeometry)
+        # Convert once per call, component-first, then let the layout code below run unchanged.
+        x_raw, u_raw = SFH.prepare_pair_inputs(
+            geom, _bl_component_first(x_raw, x_bl), _bl_component_first(u_raw, u_bl),
+        )
+        x_bl = false
+        u_bl = false
+    end
+    # `W` is the coordinate width and `D` the field width the kernels load; they differ from each
+    # other and from the velocity dimension on a sphere.
     W = x_bl ? size(x_raw, 2) : size(x_raw, 1)
     if u_bl
         B, D, N = size(u_raw)
@@ -59,7 +80,7 @@ function _bl_prepare(x, u, workspace = nothing)
     end
     xb = fixed_x ? x_raw :
          (x_bl ? x_raw : _to_batch_leading(reshape(x_raw, W, N, B), _ws_xb(workspace)))
-    return xb, ub, B, D, W, N, fixed_x
+    return xb, ub, B, D, W, N, fixed_x, geom
 end
 
 # Statically-sized loads for the two layouts the batch drivers hold: `(W, N)` shared positions and
@@ -504,9 +525,8 @@ end
 function _bl_run_1d!(sums, counts, sf_type, x, u, dist_be, distance_metric, executor, workspace = nothing)
     n_bins = n_histogram_bins(dist_be)
     OT = eltype(sums); CT = eltype(counts)
-    xb, ub, B, D, W, N, fixed_x = _bl_prepare(x, u, workspace)
+    xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
-    geom = SFH.pair_geometry_for(distance_metric, vD)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :sf1d, (n_bins,))
     make_accum(bw) = (zeros(OT, bw, n_bins), zeros(CT, bw, n_bins))
@@ -522,9 +542,8 @@ end
 function _bl_run_joint2d!(sums, counts, sf_type, x, u, dist_be, val_be, distance_metric, executor, workspace = nothing)
     n_dist = n_histogram_bins(dist_be); n_val = n_histogram_bins(val_be)
     OT = eltype(sums); CT = eltype(counts)
-    xb, ub, B, D, W, N, fixed_x = _bl_prepare(x, u, workspace)
+    xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
-    geom = SFH.pair_geometry_for(distance_metric, vD)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :joint2d, (n_dist, n_val))
     make_accum(bw) = (zeros(OT, bw, n_dist, n_val), zeros(CT, bw, n_dist, n_val))
@@ -540,9 +559,8 @@ end
 function _bl_run_sp1d!(sums, counts, x, u, dist_be, distance_metric, executor, workspace = nothing)
     n_bins = n_histogram_bins(dist_be)
     OT = eltype(sums); CT = eltype(counts)
-    xb, ub, B, D, W, N, fixed_x = _bl_prepare(x, u, workspace)
+    xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
-    geom = SFH.pair_geometry_for(distance_metric, vD)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :single_pass, (SINGLE_PASS_N, n_bins))
     make_accum(bw) = (zeros(OT, bw, SINGLE_PASS_N, n_bins), zeros(CT, bw, SINGLE_PASS_N, n_bins))
@@ -560,9 +578,8 @@ function _bl_run_sp2d!(sums, counts, x, u, dist_be, value_bins, distance_metric,
     n_val = size(sums, 3)
     _validate_value_bins!(value_bins, n_val)
     OT = eltype(sums); CT = eltype(counts)
-    xb, ub, B, D, W, N, fixed_x = _bl_prepare(x, u, workspace)
+    xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
-    geom = SFH.pair_geometry_for(distance_metric, vD)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :single_pass_2d, (SINGLE_PASS_N, n_bins, n_val))
     make_accum(bw) = (zeros(OT, bw, SINGLE_PASS_N, n_bins, n_val), zeros(CT, bw, SINGLE_PASS_N, n_bins, n_val))

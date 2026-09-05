@@ -18,16 +18,17 @@ const N = parse(Int, get(ENV, "SF_T_N", "3000"))
 const B = parse(Int, get(ENV, "SF_T_B", "8"))
 const D = 2
 const sf2 = SFT.L2SFType()
+const GEOM = SF.HelperFunctions.FlatGeometry{D}()
 
 function ref_1d(x, u, dig, N, NB, B, NMOM, fixed_x)
     out = zeros(FT, NMOM, NB, B); cnt = zeros(UInt32, NMOM, NB, B)
-    GE._sf_launch_1d_batch!(KA.CPU(), out, cnt, x, u, sf2, dig, N, NB, B, D, Val(NMOM), fixed_x)
+    GE._sf_launch_1d_batch!(KA.CPU(), out, cnt, x, u, sf2, dig, N, NB, B, D, Val(NMOM), fixed_x, GEOM)
     KA.synchronize(KA.CPU())
     return out, cnt
 end
 function cuda_1d(xd, ud, dig, N, NB, B, NMOM, fixed_x)
     out = CUDA.zeros(FT, NMOM, NB, B); cnt = CUDA.zeros(UInt32, NMOM, NB, B)
-    h = SFC.gpu_fast_launch_1d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, dig, N, NB, B, D, NMOM, fixed_x)
+    h = SFC.gpu_fast_launch_1d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, dig, N, NB, B, D, NMOM, fixed_x, GEOM, nothing)
     CUDA.synchronize()
     return Array(out), Array(cnt), h
 end
@@ -57,7 +58,7 @@ let Nt = 20000, Bt = 64, NB = 50
     for NMOM in (1, 6)
         out = CUDA.zeros(FT, NMOM, NB, Bt); cnt = CUDA.zeros(UInt32, NMOM, NB, Bt)
         f() = (CUDA.fill!(out, 0f0); CUDA.fill!(cnt, UInt32(0));
-               SFC.gpu_fast_launch_1d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, dig, Nt, NB, Bt, D, NMOM, true);
+               SFC.gpu_fast_launch_1d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, dig, Nt, NB, Bt, D, NMOM, true, GEOM, nothing);
                CUDA.synchronize())
         f(); f(); ts = Float64[]; for _ in 1:5; t = time_ns(); f(); push!(ts, (time_ns()-t)/1e9); end
         t = median(ts); bapps = (Nt*(Nt-1)/2)*Bt/t/1e9
@@ -75,10 +76,10 @@ let Nj = 3000, Bj = 6, nd = 20, nv = 20
         ddig_c = GE._sf_batch_dist_digitizer(KA.CPU(), db); vpc = GE._gpu_build_value_digitize_plan(KA.CPU(), vb)
         ddig_g = GE._sf_batch_dist_digitizer(CUDA.CUDABackend(), db); vpg = GE._gpu_build_value_digitize_plan(CUDA.CUDABackend(), vb)
         oc = zeros(FT, 1, nd, nv, Bj); cc = zeros(UInt32, 1, nd, nv, Bj)
-        GE._sf_launch_2d_batch!(KA.CPU(), oc, cc, x_h, u_h, sf2, ddig_c, vpc, Nj, nd, nv, Bj, D, Val(1), false)
+        GE._sf_launch_2d_batch!(KA.CPU(), oc, cc, x_h, u_h, sf2, ddig_c, vpc, Nj, nd, nv, Bj, D, Val(1), false, GEOM)
         KA.synchronize(KA.CPU())
         og = CUDA.zeros(FT, 1, nd, nv, Bj); cg = CUDA.zeros(UInt32, 1, nd, nv, Bj)
-        GE._sf_launch_2d_batch!(CUDA.CUDABackend(), og, cg, CuArray(x_h), CuArray(u_h), sf2, ddig_g, vpg, Nj, nd, nv, Bj, D, Val(1), false)
+        GE._sf_launch_2d_batch!(CUDA.CUDABackend(), og, cg, CuArray(x_h), CuArray(u_h), sf2, ddig_g, vpg, Nj, nd, nv, Bj, D, Val(1), false, GEOM)
         CUDA.synchronize()
         dcnt = maximum(abs.(Int.(Array(cg)) .- Int.(cc)))
         tot = sum(cc)

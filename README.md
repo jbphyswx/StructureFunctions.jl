@@ -437,6 +437,38 @@ where $\langle \cdot \rangle$ is ensemble/spatial average over all displacement 
 
 *Serial vs Threaded backend results on identical data — differences are at floating-point rounding level.*
 
+### Canonical Spectra — from a structure function to E(k)
+
+![Spectra from structure functions](docs/src/assets/sf_spectra.png)
+
+*Left: a field built with a prescribed `E(k) ~ k^(-5/3)` spectrum, binned into `S₂` and transformed back with `gridded_spectrum` + `shell_average` — the recovered spectrum carries the slope it was built with across 1.5 decades. Right: the isotropic transform against a closed form. A Gaussian correlation has an analytic spectral density in every dimension, and the transform reproduces it to `6.6e-05`, `2.3e-09` and `9.9e-14` in 1-D, 2-D and 3-D — one comparison that pins the kernel, the solid angle, the `(2π)^D` normalisation and the sign together. The rise at large `k` is the quadrature noise floor, ten or more orders below the peak.*
+
+### Spectra Survive Missing Data — the reason to go through a structure function
+
+![Spectrum with missing data](docs/src/assets/sf_missing_data.png)
+
+*With cells absent, a field's own transform is meaningless while the structure function is still an unbiased average over surviving pairs. At **half the grid missing**, the spectrum recovered through `S₂` is within a few percent of the complete-field answer; zero-filling the gaps and transforming directly is off by ~80%.*
+
+### Directional Output — S(r, θ)
+
+![Directional structure functions](docs/src/assets/sf_directional.png)
+
+*The second histogram axis can bin the angle between the separation and a reference direction instead of the operator's value, turning `S(r)` into `S(r, θ)` through the same kernel family. Here a field varying along `x` only: separations perpendicular to the variation carry an identically zero increment, and the angular profile touches zero at exactly `θ = π/2`.*
+
+### Helmholtz Split, in Separation and in Wavenumber
+
+![Helmholtz spectra](docs/src/assets/sf_helmholtz_spectra.png)
+
+*Left: the rotational/divergent decomposition of a solenoidal field, whose divergent part is zero by construction. Right: the same components transformed to `E_rot(k)` and `E_div(k)` via `helmholtz_spectra`, for a solenoidal and an irrotational field. Because `D_rot + D_div = D_LL + D_TT` exactly and the transform is linear, the two spectra sum to the spectrum of the trace whatever the field is.*
+
+### Scalars and Multi-Channel Fields
+
+![Scalar and mixed structure functions](docs/src/assets/sf_channels.png)
+
+*A `Fields(vectors = (u,), scalars = (θ,))` bundle computes velocity, tracer and mixed moments in one pair pass. Right: `⟨δu_L (δθ)²⟩`, the mixed moment Yaglom's law inverts for the scalar-variance dissipation.*
+
+*Regenerate the five figures above: `julia --project=docs/generate_assets docs/generate_assets/generate_feature_figures.jl`.*
+
 ---
 
 ## Performance

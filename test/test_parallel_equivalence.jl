@@ -7,10 +7,9 @@ using StaticArrays: StaticArrays as SA
 using Distributed: Distributed
 using SharedArrays: SharedArrays
 
-# Setup distributed environment if needed
-if Distributed.nprocs() == 1
-    Distributed.addprocs(2)
-end
+# Workers added here are removed at the end of this file
+const _WORKERS_ADDED_HERE =
+    Distributed.nprocs() == 1 ? Distributed.addprocs(2) : Int[]
 
 Distributed.@everywhere using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
@@ -33,6 +32,7 @@ Test.@testset "Parallel Equivalence Verification" begin
         x,
         u,
         bins;
+        backend = CB.SerialBackend(),
         verbose = false,
         show_progress = false,
         output_type = SF.StructureFunctionSumsAndCounts,
@@ -45,6 +45,7 @@ Test.@testset "Parallel Equivalence Verification" begin
         x,
         u,
         bins;
+        backend = CB.ThreadedBackend(),
         verbose = false,
         show_progress = false,
         output_type = SF.StructureFunctionSumsAndCounts,
@@ -55,6 +56,20 @@ Test.@testset "Parallel Equivalence Verification" begin
         Test.@test out_serial[1] ≈ out_thread[1]
         Test.@test out_serial[2] ≈ out_thread[2]
         Test.@test counts_serial == counts_thread
+    end
+
+    # Both branches: `resolve_auto_backend` takes the thread count as an argument.
+    Test.@testset "AutoBackend selection" begin
+        no_dist = () -> false
+        for shape in (SFC.PointField{2}(), SFC.SharedPositionField{2}())
+            Test.@test SFC.resolve_auto_backend(shape, () -> true, no_dist; nthreads = 4) isa
+                       CB.AbstractThreadedBackend
+            Test.@test SFC.resolve_auto_backend(shape, () -> true, no_dist; nthreads = 1) isa
+                       CB.AbstractSerialBackend
+        end
+        # A point field also requires an available threaded entry.
+        Test.@test SFC.resolve_auto_backend(SFC.PointField{2}(), () -> false, no_dist; nthreads = 4) isa
+                   CB.AbstractSerialBackend
     end
 
     # 3. Distributed
@@ -147,3 +162,5 @@ Test.@testset "Parallel Equivalence Verification" begin
         Test.@test res_serial_int.counts == res_dist_int.counts
     end
 end
+
+isempty(_WORKERS_ADDED_HERE) || Distributed.rmprocs(_WORKERS_ADDED_HERE; waitfor = 30)

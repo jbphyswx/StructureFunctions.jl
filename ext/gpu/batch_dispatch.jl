@@ -112,8 +112,11 @@ function _gpu_calculate_structure_function_batch(
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
     bdims = SFC.batch_dims(u)
+    # The velocity dimension is `size(u, 1)`, and only before the conversion.
+    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
+    x, u = SFH.prepare_pair_inputs(geom, x, u)
     out_host, cnt_host = _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins, NB, B, fixed_x, FT,
-        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
+        geom)
     sums = reshape(out_host, NB, bdims...)
     counts = reshape(cnt_host, NB, bdims...)
     return SF.StructureFunctionSumsAndCounts(
@@ -136,9 +139,12 @@ function _gpu_calculate_structure_function_batch!(
     fixed_x = ndims(x) == 2
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
+    # The velocity dimension is `size(u, 1)`, and only before the conversion.
+    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
+    x, u = SFH.prepare_pair_inputs(geom, x, u)
     out_host, cnt_host = _gpu_1d_individual_device(
         backend, sf_type, x, u, distance_bins, NB, B, fixed_x, eltype(output_sums),
-        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
+        geom)
     output_sums .+= reshape(out_host, size(output_sums)...)
     cflat = reshape(cnt_host, size(output_counts)...)
     if eltype(output_counts) === UInt32
@@ -178,9 +184,12 @@ function _gpu_dispatch_single_pass_batch(
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
     bdims = SFC.batch_dims(u)
+    # The velocity dimension is `size(u, 1)`, and only before the conversion.
+    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
+    x, u = SFH.prepare_pair_inputs(geom, x, u)
     out_host, cnt_host = _gpu_1d_unified_device(
         backend, x, u, nothing, distance_bins, Val(SFC.SINGLE_PASS_N), NB, B, fixed_x, FT,
-        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
+        geom)
     sums = reshape(out_host, SFC.SINGLE_PASS_N, NB, bdims...)
     counts_u32 = reshape(cnt_host, SFC.SINGLE_PASS_N, NB, bdims...)
     return (sums = sums, counts = CT === UInt32 ? counts_u32 : CT.(counts_u32))
@@ -200,9 +209,12 @@ function _gpu_dispatch_single_pass_batch!(
     fixed_x = ndims(x) == 2
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
+    # The velocity dimension is `size(u, 1)`, and only before the conversion.
+    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
+    x, u = SFH.prepare_pair_inputs(geom, x, u)
     out_host, cnt_host = _gpu_1d_unified_device(
         backend, x, u, nothing, distance_bins, Val(SFC.SINGLE_PASS_N), NB, B, fixed_x, OT,
-        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
+        geom)
     sums .+= reshape(out_host, size(sums)...)
     cflat = reshape(cnt_host, size(counts)...)
     if CT === UInt32
@@ -268,9 +280,12 @@ function _gpu_dispatch_single_pass_2d_batch(
     SFC._validate_value_bins!(value_bins, n_val)
     B = SFC.batch_size(u)
     bdims = SFC.batch_dims(u)
+    # The velocity dimension is `size(u, 1)`, and only before the conversion.
+    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
+    x, u = SFH.prepare_pair_inputs(geom, x, u)
     out_host, cnt_host = _gpu_sp2d_unified_device(
         backend, x, u, distance_bins, value_bins, n_dist, n_val, B, fixed_x, FT,
-        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
+        geom)
     sums = reshape(out_host, SFC.SINGLE_PASS_N, n_dist, n_val, bdims...)
     counts_u32 = reshape(cnt_host, SFC.SINGLE_PASS_N, n_dist, n_val, bdims...)
     return (sums = sums, counts = CT === UInt32 ? counts_u32 : CT.(counts_u32))
@@ -292,9 +307,12 @@ function _gpu_dispatch_single_pass_2d_batch!(
     n_dist = length(distance_bins) - 1
     n_val = size(sums, 3)
     B = SFC.batch_size(u)
+    # The velocity dimension is `size(u, 1)`, and only before the conversion.
+    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
+    x, u = SFH.prepare_pair_inputs(geom, x, u)
     out_host, cnt_host = _gpu_sp2d_unified_device(
         backend, x, u, distance_bins, value_bins, n_dist, n_val, B, fixed_x, OT,
-        SFH.pair_geometry_for(distance_metric, size(x, 1) == 3 ? Val(3) : Val(2)))
+        geom)
     sums .+= reshape(out_host, size(sums)...)
     if CT === UInt32
         counts .+= reshape(cnt_host, size(counts)...)
@@ -330,7 +348,12 @@ function _gpu_calculate_structure_function_2d_batch(
     fixed_x = ndims(x) == 2
     n_dist = length(distance_bins) - 1
     n_val = length(value_bins) - 1
-    D = size(x, 1)
+    # The velocity dimension is `size(u, 1)`, and only before the conversion. `W` and `F` are the
+    # widths the kernels index; they differ from each other and from `D` on a sphere.
+    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
+    x, u = SFH.prepare_pair_inputs(geom, x, u)
+    W = SFC._val_int(SFH.coordinate_width(geom))
+    F = SFC._val_int(SFH.field_width(geom))
     N = size(x, 2)
     B = SFC.batch_size(u)
     bdims = SFC.batch_dims(u)
@@ -342,15 +365,14 @@ function _gpu_calculate_structure_function_2d_batch(
     cnt_dev = KA.adapt(backend, zeros(UInt32, 1, n_dist, n_val, B))
 
     if fixed_x
-        x_dev = KA.adapt(backend, x)                       # (D, N)
-        u_dev = KA.adapt(backend, reshape(u, D, N, B))     # (D, N, B) — no permute
+        x_dev = KA.adapt(backend, x)                       # (W, N)
+        u_dev = KA.adapt(backend, reshape(u, F, N, B))     # (F, N, B) — no permute
     else
-        x_dev = KA.adapt(backend, reshape(x, D, N, B))
-        u_dev = KA.adapt(backend, reshape(u, D, N, B))
+        x_dev = KA.adapt(backend, reshape(x, W, N, B))
+        u_dev = KA.adapt(backend, reshape(u, F, N, B))
     end
     _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
-                         N, n_dist, n_val, B, D, Val(1), fixed_x,
-                         SFH.pair_geometry_for(distance_metric, D == 3 ? Val(3) : Val(2)))
+                         N, n_dist, n_val, B, F, Val(1), fixed_x, geom)
     KA.synchronize(backend)
 
     sums = reshape(Array(out_dev)[1, :, :, :], n_dist, n_val, bdims...)

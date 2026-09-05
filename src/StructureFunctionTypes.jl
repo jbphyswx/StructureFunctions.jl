@@ -2,6 +2,7 @@ module StructureFunctionTypes
 
 using LinearAlgebra: LinearAlgebra as LA
 using ..HelperFunctions: HelperFunctions as SFH
+using ..Channels: Channels as CH
 
 abstract type AbstractStructureFunctionType end
 abstract type AbstractPairwiseStructureFunctionType <: AbstractStructureFunctionType end
@@ -55,7 +56,7 @@ Compute the structure function kernel for longitudinal/transverse components.
 - `NL` : power of longitudinal component δu_l
 - `NT` : power of transverse component ||δu_t||
 """
-@generated function (sf::ProjectedStructureFunctionType{NL, NT})(δu, r̂) where {NL, NT}
+@generated function (sf::ProjectedStructureFunctionType{NL, NT})(δu_in, r̂) where {NL, NT}
     ex = :(one(eltype(δu)))
 
     # Longitudinal contribution (always scalar, integer power)
@@ -85,7 +86,10 @@ Compute the structure function kernel for longitudinal/transverse components.
         end
     end
 
-    return ex
+    return quote
+        δu = SFC_channel_vector(δu_in, 1)
+        $ex
+    end
 end
 
 # ---------------------------------------------------------------------------
@@ -117,14 +121,16 @@ const FullVectorStructureFunction = FullVectorStructureFunctionType
 
 FullVectorStructureFunctionType(NF::Integer) = FullVectorStructureFunctionType{NF}()
 
-@inline (::SecondOrderStructureFunctionType)(δu, r̂) = norm2(δu)
+@inline (::SecondOrderStructureFunctionType)(δu, r̂) = norm2(SFC_channel_vector(δu, 1))
 
-@inline (::ThirdOrderStructureFunctionType)(δu, r̂) =
-    SFH.mδu_l(δu, r̂) * norm2(δu)
+@inline function (::ThirdOrderStructureFunctionType)(δu, r̂)
+    v = SFC_channel_vector(δu, 1)
+    return SFH.mδu_l(v, r̂) * norm2(v)
+end
 
 @generated function (::FullVectorStructureFunctionType{NF})(δu, r̂) where {NF}
-    NF == 2 && return :(norm2(δu))
-    return :(LA.norm(δu)^$NF)
+    NF == 2 && return :(norm2(SFC_channel_vector(δu, 1)))
+    return :(LA.norm(SFC_channel_vector(δu, 1))^$NF)
 end
 
 """
@@ -145,10 +151,12 @@ Per-component variant of `L1T2SF`,
 struct LongitudinalTransverseComponentThirdOrderStructureFunctionType <: AbstractPairwiseStructureFunctionType end
 
 @inline (::TransverseComponentSecondOrderStructureFunctionType)(δu, r̂) =
-    SFH.transverse_component_norm2(δu, r̂)
+    SFH.transverse_component_norm2(SFC_channel_vector(δu, 1), r̂)
 
-@inline (::LongitudinalTransverseComponentThirdOrderStructureFunctionType)(δu, r̂) =
-    SFH.mδu_l(δu, r̂) * SFH.transverse_component_norm2(δu, r̂)
+@inline function (::LongitudinalTransverseComponentThirdOrderStructureFunctionType)(δu, r̂)
+    v = SFC_channel_vector(δu, 1)
+    return SFH.mδu_l(v, r̂) * SFH.transverse_component_norm2(v, r̂)
+end
 
 # ---------------------------------------------------------------------------
 # Named Constants: Type Aliases (longhand and shorthands)
@@ -239,9 +247,116 @@ end
 end
 
 @inline function _sf_raw(::TransverseComponentSecondOrderStructureFunctionType, δu, dx, r2)
+    D = length(dx)
+    D > 1 || throw(ArgumentError(
+        "T2ComponentSF averages over the transverse directions, of which there are none at D = 1",
+    ))
     p = LA.dot(δu, dx)
-    return (norm2(δu) - p * p / r2) / (length(dx) - 1)
+    return (norm2(δu) - p * p / r2) / (D - 1)
 end
+
+"""
+    ScalarStructureFunctionType{P}(channel = 1)
+
+``⟨(δθ)^P⟩`` on scalar `channel` — the scalar structure function. `P = 2` is the Obukhov–Corrsin
+quantity; odd `P` measures the skewness of the tracer increment.
+"""
+struct ScalarStructureFunctionType{P} <: AbstractPairwiseStructureFunctionType
+    channel::Int
+end
+
+ScalarStructureFunctionType{P}() where {P} = ScalarStructureFunctionType{P}(1)
+const ScalarSFType = ScalarStructureFunctionType
+
+@inline (sf::ScalarStructureFunctionType{P})(δu, r̂) where {P} =
+    SFC_channel_scalar(δu, sf.channel)^P
+
+"""
+    MixedStructureFunctionType{NL, NT, P}(vector_channel = 1, scalar_channel = 1)
+
+``⟨δu_L^{NL} ‖δu_T‖^{NT} (δθ)^P⟩`` — a velocity–scalar mixed moment.
+
+`{1, 0, 2}` is Yaglom's law, ``⟨δu_L (δθ)²⟩ = −(4/3) ε_θ r``; `{1, 0, 1}` is the flux of the tracer
+itself. The velocity part is read from a transported vector channel and the scalar part from a
+differenced scalar channel, so the two never mix frames.
+"""
+struct MixedStructureFunctionType{NL, NT, P} <: AbstractPairwiseStructureFunctionType
+    vector_channel::Int
+    scalar_channel::Int
+end
+
+MixedStructureFunctionType{NL, NT, P}() where {NL, NT, P} =
+    MixedStructureFunctionType{NL, NT, P}(1, 1)
+const MixedSFType = MixedStructureFunctionType
+
+@inline function (sf::MixedStructureFunctionType{NL, NT, P})(δu, r̂) where {NL, NT, P}
+    v = SFC_channel_vector(δu, sf.vector_channel)
+    θ = SFC_channel_scalar(δu, sf.scalar_channel)
+    l = SFH.mδu_l(v, r̂)
+    t2 = SFH.transverse_norm2(v, r̂)
+    return l^NL * sqrt(t2)^NT * θ^P
+end
+
+"""
+    ScalarDotStructureFunctionType(a, b)
+
+``⟨δθ^{(a)} δθ^{(b)}⟩`` — a second-order **cross-channel** scalar moment.
+
+`(1, 1)` is the scalar structure function. `(a, b)` with `a ≠ b` is what an advective structure
+function is: `⟨δω δ𝓐_ω⟩` is this with `ω` and its advection as the two channels.
+"""
+struct ScalarDotStructureFunctionType <: AbstractPairwiseStructureFunctionType
+    a::Int
+    b::Int
+end
+
+const ScalarDotSFType = ScalarDotStructureFunctionType
+
+@inline (sf::ScalarDotStructureFunctionType)(δu, r̂) =
+    SFC_channel_scalar(δu, sf.a) * SFC_channel_scalar(δu, sf.b)
+
+"""
+    VectorDotStructureFunctionType(a, b)
+
+``⟨δu^{(a)} · δu^{(b)}⟩`` — a second-order **cross-channel** vector moment.
+
+`(1, 1)` **is** `S2SF`: the existing second-order operator is this one's diagonal, not a separate
+thing. `(a, b)` with `a ≠ b` is `⟨δu · δ𝓐_u⟩`, the advective structure function, which holds without
+isotropy — the reason it is worth having beside the third-order laws.
+"""
+struct VectorDotStructureFunctionType <: AbstractPairwiseStructureFunctionType
+    a::Int
+    b::Int
+end
+
+const VectorDotSFType = VectorDotStructureFunctionType
+
+@inline (sf::VectorDotStructureFunctionType)(δu, r̂) =
+    LA.dot(SFC_channel_vector(δu, sf.a), SFC_channel_vector(δu, sf.b))
+
+# How an operator reaches a channel of an increment. A single-channel field's increment is the plain
+# vector every existing operator takes, so naming channel 1 of it is the vector itself — that is what
+# keeps `Fields(vectors = (u,))` identical to a bare `u`.
+@inline SFC_channel_vector(δu::CH.ChannelIncrement{D, 0, K}, i::Integer) where {D, K} =
+    throw(ArgumentError(
+        "this field carries no vector channels, so a velocity operator has nothing to read. Build " *
+        "it with Fields(vectors = (...), ...), or use a scalar operator.",
+    ))
+
+@inline SFC_channel_vector(δu::CH.ChannelIncrement, i::Integer) = CH.vector_channel(δu, i)
+@inline function SFC_channel_vector(δu, i::Integer)
+    i == 1 || throw(ArgumentError(
+        "this field has one vector channel; asked for channel $i. Build the field with " *
+        "Fields(vectors = (...), ...) to carry more.",
+    ))
+    return δu
+end
+
+@inline SFC_channel_scalar(δu::CH.ChannelIncrement, i::Integer) = CH.scalar_channel(δu, i)
+@inline SFC_channel_scalar(δu, i::Integer) = throw(ArgumentError(
+    "this field carries no scalar channels; asked for scalar channel $i. Build the field with " *
+    "Fields(scalars = (...), ...) to carry one.",
+))
 
 """
     RotationalSecondOrderStructureFunctionType()

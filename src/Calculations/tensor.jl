@@ -116,46 +116,51 @@ function serial_calculate_structure_function_tensor!(
         throw(DimensionMismatch("counts must have shape $expected_counts; got $(size(counts))"))
 
     dist_be = BinEdges(distance_bins)
-    # Euclidean bins on r²; other metrics keep the scalar digitize.
-    plan = squared_digitize_plan(dist_be)
-    euclid = distance_metric isa DI.Euclidean
     N = size(u, 2)
     B = isempty(auxiliary_dims) ? 1 : prod(auxiliary_dims)
     fixed_x = ndims(x) == 2
-    vD = Val(D)
 
-    x_fixed = fixed_x ? reshape(x, D, N) : nothing
-    x_flat = fixed_x ? nothing : reshape(x, D, N, B)
-    u_flat = reshape(u, D, N, B)
+    geom = SFH.pair_geometry_for(distance_metric, Val(D))
+    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
+    vW = SFH.coordinate_width(geom)
+    vF = SFH.field_width(geom)
+    W = _val_int(vW)
+    F = _val_int(vF)
+
+    x_fixed = fixed_x ? reshape(xk, W, N) : nothing
+    x_flat = fixed_x ? nothing : reshape(xk, W, N, B)
+    u_flat = reshape(uk, F, N, B)
     sums_flat = reshape(sums, ntuple(_ -> D, P)..., n_bins, B)
     counts_flat = reshape(counts, n_bins, B)
 
+    # The increment comes from `pair_delta`, so on a curved manifold the tensor components are in
+    # the pair's own transported frame rather than raw coordinate differences.
     @inbounds for i in 1:N
         for j in (i + 1):N
             if fixed_x
-                X1 = SA.SVector{D, eltype(x)}(ntuple(d -> x_fixed[d, i], vD))
-                X2 = SA.SVector{D, eltype(x)}(ntuple(d -> x_fixed[d, j], vD))
-                dx = X2 - X1
-                bin = euclid ? squared_digitize(plan, LA.dot(dx, dx)) :
-                      SFH.digitize(distance_metric(X1, X2), dist_be)
-                if 1 <= bin <= n_bins
+                X1 = SA.SVector{W, eltype(xk)}(ntuple(d -> x_fixed[d, i], vW))
+                X2 = SA.SVector{W, eltype(xk)}(ntuple(d -> x_fixed[d, j], vW))
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
+                bin = SFH.digitize(dist, dist_be)
+                if ok && 1 <= bin <= n_bins
                     for b in 1:B
-                        U1 = SA.SVector{D, eltype(u)}(ntuple(d -> u_flat[d, i, b], vD))
-                        U2 = SA.SVector{D, eltype(u)}(ntuple(d -> u_flat[d, j, b], vD))
-                        _accumulate_tensor_pair!(sums_flat, counts_flat, U2 - U1, bin, b, order)
+                        U1 = SA.SVector{F, eltype(uk)}(ntuple(d -> u_flat[d, i, b], vF))
+                        U2 = SA.SVector{F, eltype(uk)}(ntuple(d -> u_flat[d, j, b], vF))
+                        du = SFH.pair_delta(geom, frame, X1, X2, U1, U2)
+                        _accumulate_tensor_pair!(sums_flat, counts_flat, du, bin, b, order)
                     end
                 end
             else
                 for b in 1:B
-                    X1 = SA.SVector{D, eltype(x)}(ntuple(d -> x_flat[d, i, b], vD))
-                    X2 = SA.SVector{D, eltype(x)}(ntuple(d -> x_flat[d, j, b], vD))
-                    dx = X2 - X1
-                    bin = euclid ? squared_digitize(plan, LA.dot(dx, dx)) :
-                          SFH.digitize(distance_metric(X1, X2), dist_be)
-                    if 1 <= bin <= n_bins
-                        U1 = SA.SVector{D, eltype(u)}(ntuple(d -> u_flat[d, i, b], vD))
-                        U2 = SA.SVector{D, eltype(u)}(ntuple(d -> u_flat[d, j, b], vD))
-                        _accumulate_tensor_pair!(sums_flat, counts_flat, U2 - U1, bin, b, order)
+                    X1 = SA.SVector{W, eltype(xk)}(ntuple(d -> x_flat[d, i, b], vW))
+                    X2 = SA.SVector{W, eltype(xk)}(ntuple(d -> x_flat[d, j, b], vW))
+                    ok, dist, frame = SFH.pair_frame(geom, X1, X2)
+                    bin = SFH.digitize(dist, dist_be)
+                    if ok && 1 <= bin <= n_bins
+                        U1 = SA.SVector{F, eltype(uk)}(ntuple(d -> u_flat[d, i, b], vF))
+                        U2 = SA.SVector{F, eltype(uk)}(ntuple(d -> u_flat[d, j, b], vF))
+                        du = SFH.pair_delta(geom, frame, X1, X2, U1, U2)
+                        _accumulate_tensor_pair!(sums_flat, counts_flat, du, bin, b, order)
                     end
                 end
             end

@@ -7,20 +7,14 @@ inhomogeneous transport terms, and temporal tendencies.
 """
 module KHM
 
-using ..HelperFunctions: HelperFunctions as SFH
-
-export bin_midpoints,
-    finite_difference,
+export finite_difference,
     transverse_incompressibility_residual,
     epsilon_from_four_fifths,
+    epsilon_from_four_thirds,
+    four_thirds_residual,
+    epsilon_theta_from_yaglom,
+    yaglom_residual,
     four_fifths_residual
-
-"""
-    bin_midpoints(edges)
-
-Midpoints of flat bin edges.
-"""
-bin_midpoints(edges) = SFH.midpoints(edges)
 
 """
     finite_difference(r, y)
@@ -64,18 +58,57 @@ function transverse_incompressibility_residual(
 end
 
 """
-    epsilon_from_four_fifths(r, S3)
+    epsilon_from_four_fifths(r, L3)
 
-Pointwise dissipation estimate from the isotropic 3D four-fifths law
-``S3(r) = -(4/5) ε r``.
+Dissipation from Kolmogorov's four-fifths law, ``⟨δu_L³⟩ = -(4/5) ε r``.
+
+`L3` is **`L3SF`**, the third-order *longitudinal* structure function ``⟨δu_L³⟩`` — not `S3SF`, which
+is ``⟨δu_L‖δu‖²⟩`` and obeys the **four-thirds** law instead (see
+[`epsilon_from_four_thirds`](@ref)). The two differ by a factor of 5/3, so passing the wrong one
+returns a wrong `ε` that looks entirely reasonable.
 """
-epsilon_from_four_fifths(r, S3) = .-(5 / 4) .* S3 ./ r
+epsilon_from_four_fifths(r, L3) = .-(5 / 4) .* L3 ./ r
 
 """
-    four_fifths_residual(r, S3, epsilon)
+    four_fifths_residual(r, L3, epsilon)
 
-Residual of ``S3(r) = -(4/5) ε r``.
+Residual of ``⟨δu_L³⟩ = -(4/5) ε r``. `L3` is `L3SF`, as in [`epsilon_from_four_fifths`](@ref).
 """
-four_fifths_residual(r, S3, epsilon) = S3 .+ (4 / 5) .* epsilon .* r
+four_fifths_residual(r, L3, epsilon) = L3 .+ (4 / 5) .* epsilon .* r
+
+"""
+    epsilon_from_four_thirds(r, S3)
+
+Dissipation from the four-thirds law, ``⟨δu_L‖δu‖²⟩ = -(4/3) ε r``.
+
+`S3` is **`S3SF`**, the package's third-order *mixed* structure function. This is the law that
+quantity obeys; `L3SF` obeys the four-fifths law (see [`epsilon_from_four_fifths`](@ref)).
+"""
+epsilon_from_four_thirds(r, S3) = .-(3 / 4) .* S3 ./ r
+
+"""
+    four_thirds_residual(r, S3, epsilon)
+
+Residual of ``⟨δu_L‖δu‖²⟩ = -(4/3) ε r``.
+"""
+four_thirds_residual(r, S3, epsilon) = S3 .+ (4 / 3) .* epsilon .* r
+
+"""
+    epsilon_theta_from_yaglom(r, LS2)
+
+Scalar dissipation from Yaglom's law, ``⟨δu_L (δθ)²⟩ = -(4/3) ε_θ r``.
+
+`LS2` is the mixed velocity–scalar moment `MixedSFType{1,0,2}` computes. The quantity returned is
+`ε_θ`, the dissipation of scalar variance — a different quantity from the `ε` of the velocity laws,
+and not interchangeable with it.
+"""
+epsilon_theta_from_yaglom(r, LS2) = .-(3 / 4) .* LS2 ./ r
+
+"""
+    yaglom_residual(r, LS2, epsilon_theta)
+
+Residual of ``⟨δu_L (δθ)²⟩ = -(4/3) ε_θ r``.
+"""
+yaglom_residual(r, LS2, epsilon_theta) = LS2 .+ (4 / 3) .* epsilon_theta .* r
 
 end

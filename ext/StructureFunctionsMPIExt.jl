@@ -91,13 +91,12 @@ function _mpi_point_1d(
 ) where {CT}
     comm = _comm(b)
     N = size(x, 2)
-    x_vecs = ntuple(k -> view(x, k, :), size(x, 1))
-    u_vecs = ntuple(k -> view(u, k, :), size(u, 1))
+    geom, x_vecs, u_vecs = SFC._prepared_tuples(distance_metric, x, u)
 
     part = SFC._partial_sums_counts(
         CB.local_backend(b), structure_function_type, x_vecs, u_vecs, distance_bins,
         _rank_share(comm, 1:(N - 1));
-        distance_metric = distance_metric, count_eltype = count_eltype,
+        geometry = geom, count_eltype = count_eltype,
     )
     sums, counts = _allreduce_pair!(comm, _dense(part.sums), _dense(part.counts))
     return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
@@ -135,12 +134,11 @@ function SFC._dispatch_execution_backend(
     end
 
     N = size(x, 2)
-    x_vecs = ntuple(k -> view(x, k, :), size(x, 1))
-    u_vecs = ntuple(k -> view(u, k, :), size(u, 1))
+    geom, x_vecs, u_vecs = SFC._prepared_tuples(distance_metric, x, u)
     s, c = SFC._partial_2d_sums_counts(
         CB.local_backend(b), structure_function_type, x_vecs, u_vecs, distance_bins, value_bins,
         _rank_share(comm, 1:(N - 1));
-        distance_metric = distance_metric, count_eltype = CT,
+        geometry = geom, count_eltype = CT,
     )
     sums, counts = _allreduce_pair!(comm, s, c)
     return SFO.StructureFunction2DSumsAndCounts(

@@ -22,7 +22,7 @@ function _cuda_sf_1d_kernel!(
     sf_type,
     ddig,                   # distance digitizer functor
     N::Int, NB::Int,
-    nt::Int, ntb::Int,
+    sched, ntb::Int,
     ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE},
     geom,
 ) where {D, NMOM, FIXED_X, TILE}
@@ -51,7 +51,7 @@ function _cuda_sf_1d_kernel!(
         c += wg
     end
 
-    ti, tj = _cuda_tile_pair(bid, nt)
+    ti, tj = SFC.tile_for(sched, bid)
     i0 = (ti - 1) * TILE + 1
     j0 = (tj - 1) * TILE + 1
     ni = min(TILE, N - i0 + 1)
@@ -131,29 +131,33 @@ end
 exceeds the static-shared cap (caller uses the KA fallback). `out`/`cnt` are
 `(NMOM, NB, B)`; `x` is `(D,N,B)` varying or `(D,N)`/`(D,N,1)` fixed; `u` is `(D,N,B)`."""
 function _cuda_launch_1d!(out, cnt, x, u, sf_type, ddig,
-                          N::Int, NB::Int, B::Int, D::Int, NMOM::Int, fixed_x::Bool, geom)
+                          N::Int, NB::Int, B::Int, D::Int, NMOM::Int, fixed_x::Bool, geom, cull)
     NB > CU_MAX_BINS && return false
     xv = fixed_x ? reshape(x, D, N, 1) : reshape(x, D, N, B)
     uv = reshape(u, D, N, B)
-    _cuda_launch_1d_specialized!(out, cnt, xv, uv, sf_type, ddig, N, NB, B, D, NMOM, fixed_x, geom)
+    _cuda_launch_1d_specialized!(out, cnt, xv, uv, sf_type, ddig, N, NB, B, D, NMOM, fixed_x, geom,
+                                 cull)
     return true
 end
 
 
-function _cuda_launch_1d_specialized!(out, cnt, x, u, sf_type, ddig, N, NB, B, D, NMOM, fixed_x, geom)
+function _cuda_launch_1d_specialized!(out, cnt, x, u, sf_type, ddig, N, NB, B, D, NMOM, fixed_x, geom,
+                                      cull)
     Dv = D == 3 ? Val(3) : Val(2)
     Mv = NMOM == 6 ? Val(6) : Val(1)
     Fv = fixed_x ? Val(true) : Val(false)
-    _cuda_launch_1d_valed!(out, cnt, x, u, sf_type, ddig, N, NB, B, Dv, Mv, Fv, Val(CU_TILE_1D), geom)
+    _cuda_launch_1d_valed!(out, cnt, x, u, sf_type, ddig, N, NB, B, Dv, Mv, Fv, Val(CU_TILE_1D), geom,
+                           cull)
     return nothing
 end
 
 function _cuda_launch_1d_valed!(out, cnt, x, u, sf_type, ddig, N, NB, B,
-                                ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, geom) where {D, NMOM, FIXED_X, TILE}
-    nt = cld(N, TILE)
-    ntb = nt * (nt + 1) ÷ 2
+                                ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, geom,
+                                cull) where {D, NMOM, FIXED_X, TILE}
+    sched = SFC.schedule_for(cull, N, TILE)
+    ntb = SFC.n_pair_blocks(sched)
     @cuda threads=TILE blocks=ntb*B _cuda_sf_1d_kernel!(
-        out, cnt, x, u, sf_type, ddig, N, NB, nt, ntb,
+        out, cnt, x, u, sf_type, ddig, N, NB, sched, ntb,
         Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), geom)
     return nothing
 end

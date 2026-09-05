@@ -7,7 +7,8 @@ function serial_calculate_structure_function!(
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry = SFH.FlatGeometry{length(u_vecs)}(),
+    culling::CullingPolicy = AutoCulling(),
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {OT, CT, T1, T2}
@@ -17,21 +18,22 @@ function serial_calculate_structure_function!(
         @info("calculating structure function (serial reduction)")
     end
 
-    # Fast path: Euclidean + D ∈ (2,3) uses the SIMD compute/scatter-split kernel (vectorizes
-    # the per-pair compute over j; only the histogram scatter is scalar). Other metrics/D fall
-    # back to the scalar per-i kernel.
+    # Fast path: flat D ∈ (2,3) uses the SIMD compute/scatter-split kernel (vectorizes the per-pair
+    # compute over j; only the histogram scatter is scalar). Curved geometries take the scalar
+    # per-i kernel, which forms the frame through `pair_frame`.
     D = length(u_vecs)
-    if distance_metric isa DI.Euclidean && D == 2
-        return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs, distance_bins, Val(2))
-    elseif distance_metric isa DI.Euclidean && D == 3
-        return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs, distance_bins, Val(3))
+    if geometry isa SFH.FlatGeometry && D == 2
+        return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs,
+            distance_bins, Val(2); culling = culling)
+    elseif geometry isa SFH.FlatGeometry && D == 3
+        return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs,
+            distance_bins, Val(3); culling = culling)
     end
+    _cull_reject_unsupported(culling, "the scalar per-point kernel that this geometry uses")
 
-    vN = Val(D)
     PM.@showprogress enabled = show_progress for i in eachindex(x_vecs[1])
         calculate_structure_function_i!(
-            output, counts, vN, structure_function_type, i, x_vecs, u_vecs, distance_bins;
-            distance_metric = distance_metric,
+            output, counts, geometry, structure_function_type, i, x_vecs, u_vecs, distance_bins,
         )
     end
     return nothing
@@ -48,16 +50,31 @@ short scalar loop digitizes + scatters into the histogram. `Val{D}` keeps it typ
 function _pf_simd_run!(
     output::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
-    x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D},
+    x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D};
+    culling::CullingPolicy = AutoCulling(),
 ) where {OT, CT, D}
     N = length(x_vecs[1])
-    return _pf_simd_partial!(output, counts, sf, x_vecs, u_vecs, dist_be, Val(D), 1:(N - 1))
+    return _pf_simd_partial!(output, counts, sf, x_vecs, u_vecs, dist_be, Val(D), 1:(N - 1), culling)
 end
 
 """
-    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, irange)
+Points per `j` block in the CPU pair loop. Sized so one block's coordinates, fields and the three
+per-`j` buffers stay resident in a core's private cache while every `i` sweeps it.
+"""
+const SF_CPU_PAIR_TILE = 65536
 
-Accumulate pairs `(i, j>i)` for `i in irange` into `output`/`counts`.
+"""
+    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, blocks)
+
+Accumulate the pairs `(i, j>i)` covered by `blocks` into `output`/`counts`.
+
+`blocks` yields `(i-block, j-block)` index ranges (see [`block_pairs`](@ref)); each is worked to
+completion, so the `j` block stays cache-resident across its whole `i` sweep. Under multi-core load
+that is what keeps the loop off the memory bus: with one block spanning the array, per-core
+throughput falls 83% once the arrays exceed L2.
+
+Uniqueness is `j > i`, so a block pair never needs to know whether it lies on the diagonal, and a
+culled schedule enumerating only nearby cells is exact for the same reason.
 
 The `@simd` half writes `r²`, the SF value, and the approximate bin index to buffers; the scalar
 half corrects the index and scatters straight into `output`/`counts`, skipping out-of-range bins.
@@ -70,30 +87,34 @@ function _pf_simd_pairs!(
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, ::Val{D},
     r2buf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32},
-    irange,
+    blocks,
 ) where {OT, CT, D}
-    N = length(xc[1])
     nb = n_histogram_bins(plan)
     FTx = eltype(xc[1])
-    @inbounds for i in irange
-        Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
-        Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
-        @simd for j in (i + 1):N
-            Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
-            dx = Xj - Xi
-            r2 = LA.dot(dx, dx)
-            Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
-            r2buf[j] = digitize_key(plan, r2)
-            valbuf[j] = SFT._sf_raw(sf, Uj - Ui, dx, r2)
-            if has_vector_index(plan)      # constant-folded: depends only on the plan type
-                idxbuf[j] = squared_approx_index(plan, r2)
+    @inbounds for (ir, jr) in blocks
+        j_first, j_last = first(jr), last(jr)
+        for i in ir
+            jlo = max(i + 1, j_first)
+            jlo > j_last && continue
+            Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
+            Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
+            @simd for j in jlo:j_last
+                Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
+                dx = Xj - Xi
+                r2 = LA.dot(dx, dx)
+                Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
+                r2buf[j] = digitize_key(plan, r2)
+                valbuf[j] = SFT._sf_raw(sf, Uj - Ui, dx, r2)
+                if has_vector_index(plan)      # constant-folded: depends only on the plan type
+                    idxbuf[j] = squared_approx_index(plan, r2)
+                end
             end
-        end
-        for j in (i + 1):N
-            b = squared_bin(plan, r2buf[j], idxbuf[j])
-            if 1 <= b <= nb
-                output[b] += valbuf[j]
-                counts[b] += one(CT)
+            for j in jlo:j_last
+                b = squared_bin(plan, r2buf[j], idxbuf[j])
+                if 1 <= b <= nb
+                    output[b] += valbuf[j]
+                    counts[b] += one(CT)
+                end
             end
         end
     end
@@ -210,10 +231,15 @@ function serial_calculate_structure_function!(
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...,
 ) where {OT, FT1 <: Number, FT2 <: Number}
-    x_tuple = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
-    u_tuple = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
+    # `size(u_arr, 1)` is the velocity dimension here, before any conversion, so this is the one
+    # place the geometry can be built. Everything downstream receives it.
+    geom = SFH.pair_geometry_for(distance_metric, Val(size(u_arr, 1)))
+    xk, uk = SFH.prepare_pair_inputs(geom, x_arr, u_arr)
+    x_tuple = _component_vector_views(xk, SFH.coordinate_width(geom))
+    u_tuple = _component_vector_views(uk, SFH.field_width(geom))
     return serial_calculate_structure_function!(
         sums,
         counts,
@@ -221,6 +247,7 @@ function serial_calculate_structure_function!(
         x_tuple,
         u_tuple,
         distance_bins;
+        geometry = geom,
         kwargs...,
     )
 end
@@ -228,27 +255,25 @@ end
 function calculate_structure_function_i!(
     output::AbstractVector{OT},
     counts::AbstractVector,
-    ::Val{N},
+    geom,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     i::Int,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {OT, N, T1, T2}
+    distance_bins::AbstractVector,
+) where {OT, T1, T2}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
     N3 = length(distance_bins)
 
-    # `N` is the velocity dimension; the coordinate count is the x tuple's own (static) length,
-    # which differs on a shell.
-    W = length(x_vecs)
-    vW = Val(W)
+    vW = SFH.coordinate_width(geom)
+    vF = SFH.field_width(geom)
+    W = _val_int(vW)
+    F = _val_int(vF)
     X1 = SA.SVector{W, FT1}(ntuple(k -> @inbounds(x_vecs[k][i]), vW))
-    U1 = SA.SVector{N, FT2}(ntuple(k -> @inbounds(u_vecs[k][i]), Val(N)))
+    U1 = SA.SVector{F, FT2}(ntuple(k -> @inbounds(u_vecs[k][i]), vF))
 
     iter_inds = eachindex(x_vecs[1])
-    geom = SFH.pair_geometry_for(distance_metric, Val(N))
     # @inbounds: x_vecs[k] are strided views; the bounds checks on every component access
     # were a large per-pair overhead. U2 is built only for in-range pairs.
     @inbounds for j in (i + 1):last(iter_inds)
@@ -257,7 +282,7 @@ function calculate_structure_function_i!(
         ok, distance, frame = SFH.pair_frame(geom, X1, X2)
         bin = SFH.digitize(distance, distance_bins)
         if ok && 1 <= bin < N3
-            U2 = SA.SVector{N, FT2}(ntuple(k -> u_vecs[k][j], Val(N)))
+            U2 = SA.SVector{F, FT2}(ntuple(k -> u_vecs[k][j], vF))
             δu, rh = SFH.pair_increments(geom, frame, distance, X1, X2, U1, U2)
             output[bin] += structure_function_type(δu, rh)
             counts[bin] += 1
@@ -272,7 +297,7 @@ function calculate_structure_function_i(
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry = SFH.FlatGeometry{length(u_vecs)}(),
     count_eltype::Type{CT} = UInt32,
 ) where {CT}
     _assert_counts_representable(CT, length(x_vecs[1]))
@@ -281,10 +306,8 @@ function calculate_structure_function_i(
     local_output = zeros(OT, N3)
     local_counts = zeros(CT, N3)
     calculate_structure_function_i!(
-        local_output, local_counts,
-        Val(length(u_vecs)),
-        structure_function_type, i, x_vecs, u_vecs, BinEdges(distance_bins);
-        distance_metric = distance_metric,
+        local_output, local_counts, geometry,
+        structure_function_type, i, x_vecs, u_vecs, BinEdges(distance_bins),
     )
     return SFO.StructureFunctionSumsAndCounts(
         structure_function_type,
@@ -310,7 +333,8 @@ function _partial_sums_counts(
     u_vecs::Tuple,
     distance_bins::AbstractVector,
     ilist;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry = SFH.FlatGeometry{length(u_vecs)}(),
+    culling::CullingPolicy = AutoCulling(),
     count_eltype::Type{CT} = UInt32,
 ) where {CT}
     _assert_counts_representable(CT, length(x_vecs[1]))
@@ -320,46 +344,71 @@ function _partial_sums_counts(
     counts = zeros(CT, nb)
     be = BinEdges(distance_bins)
     D = length(u_vecs)
-    # Euclidean D ∈ {2,3} takes the SIMD compute/scatter kernel, the same one the serial and
-    # threaded drivers use; `_pf_simd_pairs!` accepts an arbitrary `irange`. Other metrics or
-    # dimensions fall back to the scalar per-`i` kernel.
-    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
+    # Flat D ∈ {2,3} takes the SIMD compute/scatter kernel, the same one the serial and threaded
+    # drivers use; `_pf_simd_pairs!` accepts an arbitrary `irange`. Curved geometries take the
+    # scalar per-`i` kernel.
+    if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         vD = D == 2 ? Val(2) : Val(3)
-        _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, be, vD, ilist)
+        _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, be, vD, ilist, culling)
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
+    _cull_reject_unsupported(culling, "the scalar per-point kernel that this geometry uses")
 
-    vN = Val(D)
     for i in ilist
         calculate_structure_function_i!(
-            sums, counts, vN, structure_function_type, i, x_vecs, u_vecs, be;
-            distance_metric = distance_metric,
+            sums, counts, geometry, structure_function_type, i, x_vecs, u_vecs, be,
         )
     end
     return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
 end
 
 """
-    _pf_simd_partial!(sums, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}, ilist)
+    _pf_run_blocks!(sums, counts, sf, xc, uc, plan, ::Val{D}, bufs..., ilist, N, grid)
+
+Run the pair kernel with the schedule `grid` selects. Whether a grid exists is decided from the
+data, so it arrives here as a `Union`; dispatching on it resolves that into one concretely typed
+schedule per method, which is what keeps the kernel statically specialized.
+"""
+@inline _pf_run_blocks!(
+    sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, ilist, N, ::Nothing,
+) where {D} = _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf,
+    pair_blocks(N, ilist))
+
+@inline _pf_run_blocks!(
+    sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, ilist, N, grid::CellGrid,
+) where {D} = _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf,
+    pair_blocks(N, ilist; grid = grid))
+
+"""
+    _pf_simd_partial!(sums, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}, ilist; kwargs...)
 
 Run [`_pf_simd_pairs!`](@ref) over an explicit outer-index list, materializing the contiguous
 component vectors and scratch buffers this worker needs. Shared by the distributed, MPI and
 hybrid drivers, whose inputs arrive as strided views.
+
+When `culling` yields a cull grid the points are sorted into it first; `ilist` then selects
+positions in the sorted order, which leaves the union over workers unchanged.
 """
 function _pf_simd_partial!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
-    x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D}, ilist,
+    x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D}, ilist, culling::CullingPolicy = AutoCulling();
+    geometry = SFH.FlatGeometry{D}(),
 ) where {OT, CT, D}
     xc = ntuple(d -> collect(x_vecs[d]), Val(D))   # contiguous component vectors
     uc = ntuple(d -> collect(u_vecs[d]), Val(D))
     N = length(xc[1])
     plan = squared_digitize_plan(dist_be)
-    nb = n_histogram_bins(plan)
     r2buf = Vector{eltype(xc[1])}(undef, N)
     valbuf = Vector{OT}(undef, N)
     idxbuf = Vector{Int32}(undef, N)
-    _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, ilist)
+    grid = (culling isa NoCulling) ? nothing : cull_grid_for(xc, geometry, dist_be, culling) # this is type unstable
+    if !isnothing(grid)
+        xc = apply_perm(xc, grid.perm)
+        uc = apply_perm(uc, grid.perm)
+    end
+    _pf_run_blocks!(sums, counts, sf, xc, uc, plan, Val(D),
+        r2buf, valbuf, idxbuf, ilist, N, grid)
     return nothing
 end
 

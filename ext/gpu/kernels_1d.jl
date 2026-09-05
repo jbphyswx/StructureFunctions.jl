@@ -23,7 +23,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_linear_u32!(
     last_edge::FT,
     inv_step::FT,
     step_val::FT,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
@@ -45,7 +45,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_linear_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -81,7 +81,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_linear_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -147,7 +147,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_linear_u32!(
     last_edge::FT,
     inv_step::FT,
     step_val::FT,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
@@ -169,7 +169,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_linear_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -209,7 +209,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_linear_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -275,7 +275,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_log_u32!(
     last_edge::FT,
     inv_step::FT,
     step_val::FT,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
@@ -297,7 +297,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_log_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -333,7 +333,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_log_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -397,7 +397,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_log_u32!(
     last_edge::FT,
     inv_step::FT,
     step_val::FT,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
@@ -419,7 +419,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_log_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -459,7 +459,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_log_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -521,7 +521,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_general_u32!(
     NB::Int,
     edge_anchor::FT,
     @Const(distance_bins),
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
@@ -543,7 +543,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_general_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -579,7 +579,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_2d_general_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -641,7 +641,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_general_u32!(
     NB::Int,
     edge_anchor::FT,
     @Const(distance_bins),
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
@@ -663,7 +663,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_general_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -703,7 +703,7 @@ KA.@kernel unsafe_indices=true function _sf_kernel_tiled128_3d_general_u32!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)

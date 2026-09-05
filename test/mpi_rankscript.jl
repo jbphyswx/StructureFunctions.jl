@@ -58,6 +58,7 @@ end
 inners = (("serial", CB.SerialBackend()), ("threaded", CB.ThreadedBackend()))
 results = Dict(name => cases(CB.MPIBackend(inner)) for (name, inner) in inners)
 
+status = 0
 if rank == 0
     ref = cases(CB.SerialBackend())
     failures = String[]
@@ -65,9 +66,11 @@ if rank == 0
         all(p -> same(p[1], p[2]), zip(ref[k], got[k])) || push!(failures, "$iname/$k")
     end
     if isempty(failures)
-        println("MPI_PARITY_OK np=$(MPI.Comm_size(comm)) nthreads=$(Threads.nthreads()) cases=$(length(ref) * length(inners))")
+        println("MPI parity OK: np=$(MPI.Comm_size(comm)) nthreads=$(Threads.nthreads()) cases=$(length(ref) * length(inners))")
     else
-        println("MPI_PARITY_FAIL: ", join(failures, ", "))
+        println(stderr, "MPI parity FAILED for: ", join(failures, ", "))
+        status = 1
     end
 end
 MPI.Finalize()
+exit(status)

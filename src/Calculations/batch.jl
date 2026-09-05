@@ -158,6 +158,28 @@ threaded_calculate_structure_functions_single_pass_2d!(sums, counts, x, u, dista
 @inline _component_vector_views(a, ::Val{D}) where {D} =
     ntuple(k -> view(a, k, :), Val(D))
 
+"""
+    _prepared_tuples(distance_metric, x, u) -> (geom, x_tuple, u_tuple)
+
+Fix the geometry from the pre-conversion velocity dimension, convert both arrays into the form the
+kernels index, and view them as component tuples. `size(u, 1)` is the velocity dimension only before
+the conversion, so this is the one place it can be read.
+"""
+@inline function _prepared_tuples(distance_metric, x, u)
+    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
+    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
+    return geom,
+           _component_vector_views(xk, SFH.coordinate_width(geom)),
+           _component_vector_views(uk, SFH.field_width(geom))
+end
+
+"""Flat geometry of the width a component tuple carries — the default when no metric is in play."""
+@inline default_geometry(u_vecs) = SFH.FlatGeometry{length(u_vecs)}()
+
+"""`kwargs` with `distance_metric` removed, for forwarding to a callee that takes `geometry`."""
+@inline _without_metric(kwargs) =
+    Base.structdiff(NamedTuple(kwargs), NamedTuple{(:distance_metric,)})
+
 function _serial_calculate_structure_function_point(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray{FT1},
@@ -166,14 +188,15 @@ function _serial_calculate_structure_function_point(
     vD::Val{D},
     ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    culling::CullingPolicy = AutoCulling(),
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {FT1, FT2, D, CT}
     _assert_counts_representable(CT, size(x, 2))
-    # `D` is static here, so the geometry — and with it the coordinate width, which differs from `D`
-    # on a shell — is a concrete type.
-    x_tuple = _component_vector_views(x, SFH.coordinate_width(SFH.pair_geometry_for(distance_metric, vD)))
-    u_tuple = _component_vector_views(u, vD)
+    geom = SFH.pair_geometry_for(distance_metric, vD)
+    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
+    x_tuple = _component_vector_views(xk, SFH.coordinate_width(geom))
+    u_tuple = _component_vector_views(uk, SFH.field_width(geom))
     OT = promote_type(float(FT1), float(FT2))
     output = zeros(OT, n_histogram_bins(distance_bins))
     counts = zeros(CT, n_histogram_bins(distance_bins))
@@ -185,7 +208,8 @@ function _serial_calculate_structure_function_point(
         x_tuple,
         u_tuple,
         distance_bins;
-        distance_metric = distance_metric,
+        geometry = geom,
+        culling = culling,
         verbose = verbose,
         show_progress = show_progress,
     )

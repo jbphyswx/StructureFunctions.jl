@@ -69,8 +69,32 @@ Test.@testset "KHM Diagnostics" begin
     S3 = .-(4 / 5) .* ε .* r
     Test.@test SF.KHM.epsilon_from_four_fifths(r, S3) ≈ fill(ε, length(r))
     Test.@test SF.KHM.four_fifths_residual(r, S3, ε) ≈ zeros(length(r))
-    Test.@test SF.KHM.bin_midpoints([0.0, 2.0, 6.0]) == [1.0, 4.0]
-    Test.@test collect(SF.KHM.bin_midpoints(SF.LinearBinEdges(range(0.0, 6.0; length = 4)))) ==
-        [1.0, 3.0, 5.0]
-    Test.@test SF.KHM.bin_midpoints(SF.BinEdges([0.0, 2.0, 6.0])) == [1.0, 4.0]
+end
+
+Test.@testset "each inertial-range law takes the quantity it is stated for" begin
+    # §9.4: the four-fifths law is for ⟨δu_L³⟩ (L3SF) and the four-thirds law for ⟨δu_L‖δu‖²⟩
+    # (S3SF). They differ by 5/3, so handing one function the other's quantity returns a wrong ε
+    # that looks entirely plausible. These pin that the two are distinct and each inverts its own law.
+    r = collect(range(0.1, 2.0; length = 9))
+    eps = 0.37
+
+    # a field obeying the four-fifths law exactly
+    L3 = -(4 / 5) .* eps .* r
+    Test.@test SF.KHM.epsilon_from_four_fifths(r, L3) ≈ fill(eps, length(r))
+    Test.@test all(abs.(SF.KHM.four_fifths_residual(r, L3, eps)) .< 1e-12)
+
+    # a field obeying the four-thirds law exactly
+    S3 = -(4 / 3) .* eps .* r
+    Test.@test SF.KHM.epsilon_from_four_thirds(r, S3) ≈ fill(eps, length(r))
+    Test.@test all(abs.(SF.KHM.four_thirds_residual(r, S3, eps)) .< 1e-12)
+
+    # the two are NOT interchangeable: feeding one quantity to the other's inverse is off by 5/3
+    wrong = SF.KHM.epsilon_from_four_fifths(r, S3)
+    Test.@test all(wrong ./ eps .≈ 5 / 3)
+
+    # Yaglom returns the scalar dissipation, on its own law
+    eps_th = 0.21
+    LS2 = -(4 / 3) .* eps_th .* r
+    Test.@test SF.KHM.epsilon_theta_from_yaglom(r, LS2) ≈ fill(eps_th, length(r))
+    Test.@test all(abs.(SF.KHM.yaglom_residual(r, LS2, eps_th)) .< 1e-12)
 end

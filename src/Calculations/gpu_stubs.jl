@@ -13,15 +13,17 @@
 
 """Try the CUDA fast 2D launch (N-body broadcast + privatized histogram, dynamic
 shared for large single-pass). Returns `true` if handled, `false` to fall back to
-the portable KA tiled kernel. Overridden by `StructureFunctionsCUDAExt`."""
+the portable KA tiled kernel. `cull` is the active [`GPUCullMemo`](@ref) or `nothing`; the
+launcher takes its tile-pair schedule from it through [`schedule_for`](@ref) at its own tile
+size. Overridden by `StructureFunctionsCUDAExt`."""
 gpu_fast_launch_2d_batch!(backend, out, cnt, x, u, sf_type, dist_dig, val_plan,
-                          N, n_dist, n_val, B, D, nmom, fixed_x, geom) = false
+                          N, n_dist, n_val, B, D, nmom, fixed_x, geom, cull) = false
 
 """Try the CUDA fast 1D launch (N-body broadcast + privatized shared histogram).
-Returns `true` if handled, `false` to fall back to the portable KA tiled kernel.
-Overridden by `StructureFunctionsCUDAExt`."""
+Returns `true` if handled, `false` to fall back to the portable KA tiled kernel. `cull` as for
+[`gpu_fast_launch_2d_batch!`](@ref). Overridden by `StructureFunctionsCUDAExt`."""
 gpu_fast_launch_1d_batch!(backend, out, cnt, x, u, sf_type, dist_dig,
-                          N, NB, B, D, nmom, fixed_x, geom) = false
+                          N, NB, B, D, nmom, fixed_x, geom, cull) = false
 
 
 """
@@ -92,17 +94,6 @@ backend degrades to "correct and portable" rather than to "assumes an A100". `St
 overrides this with the real device attributes.
 """
 gpu_device_caps(::Any) = GPUDeviceCaps(GPU_SMEM_UNIVERSAL_FLOOR, GPU_SMEM_UNIVERSAL_FLOOR, 1, 32)
-
-"""
-    GPUSFWorkspace(backend, distance_bins; kind=:sf1d)
-
-Reusable GPU device histogram workspace. Requires the `GPUExt` extension
-(`using KernelAbstractions`). Pass to `gpu_calculate_structure_function(!)` or
-slice drivers to avoid per-call device allocation.
-
-See also [`reset_histogram!`](@ref), [`release!`](@ref).
-"""
-function GPUSFWorkspace end
 
 """Zero device histogram buffers in a [`GPUSFWorkspace`](@ref) before the next launch."""
 function reset_histogram! end

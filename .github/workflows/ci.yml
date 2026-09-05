@@ -14,8 +14,10 @@ concurrency:
 
 jobs:
   test:
-    name: ci ${{ matrix.version }} - ${{ matrix.os }}
+    name: ci ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.threads }}t
     runs-on: ${{ matrix.os }}
+    env:
+      JULIA_NUM_THREADS: ${{ matrix.threads }}
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +27,12 @@ jobs:
           - ubuntu-latest
           - macos-latest
           - windows-latest
+        threads:
+          - '1'
+        include:
+          - version: '1.12'
+            os: ubuntu-latest
+            threads: '4'
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v3

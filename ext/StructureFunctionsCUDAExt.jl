@@ -48,19 +48,19 @@ include(joinpath(@__DIR__, "cuda", "kernels_1d.jl"))
 
 function SFC.gpu_fast_launch_2d_batch!(
     ::CUDA.CUDABackend, out, cnt, x, u, sf_type, dist_dig, val_plan,
-    N, n_dist, n_val, B, D, nmom, fixed_x, geom,
+    N, n_dist, n_val, B, D, nmom, fixed_x, geom, cull,
 )
     return _cuda_launch_2d!(out, cnt, x, u, sf_type, dist_dig, val_plan,
                             Int(N), Int(n_dist), Int(n_val), Int(B),
-                            Int(D), Int(nmom), fixed_x, geom)
+                            Int(D), Int(nmom), fixed_x, geom, cull)
 end
 
 function SFC.gpu_fast_launch_1d_batch!(
     ::CUDA.CUDABackend, out, cnt, x, u, sf_type, dist_dig,
-    N, NB, B, D, nmom, fixed_x, geom,
+    N, NB, B, D, nmom, fixed_x, geom, cull,
 )
     return _cuda_launch_1d!(out, cnt, x, u, sf_type, dist_dig,
-                            Int(N), Int(NB), Int(B), Int(D), Int(nmom), fixed_x, geom)
+                            Int(N), Int(NB), Int(B), Int(D), Int(nmom), fixed_x, geom, cull)
 end
 
 # Real device numbers instead of the universal floor. Reached only through the CUDABackend hook, so

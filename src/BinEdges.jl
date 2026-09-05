@@ -345,6 +345,70 @@ end
 @inline Base.searchsorted(v::InfPaddedBinEdges, x, o::Base.Order.Ordering) = searchsortedfirst(v, x, o):searchsortedlast(v, x, o)
 
 """
+    midpoints(edges) -> per-bin representative separations
+    midpoints!(out, edges) -> out
+
+The abscissa each bin's average is taken to apply at, from flat edges `[e₀, e₁, …, eₙ]`
+(length `n+1` → `n` values). Quadratures and finite differences over binned structure functions
+need one.
+
+Uniform and arbitrary edges give the arithmetic mean `(eᵢ + eᵢ₊₁)/2`; [`LogBinEdges`](@ref) give the
+geometric mean, which is the arithmetic mean on the grid those edges are uniform on.
+"""
+function midpoints!(out::AbstractVector, edges::AbstractVector)
+    length(out) == length(edges) - 1 ||
+        throw(DimensionMismatch("out must have length $(length(edges) - 1); got $(length(out))"))
+    @inbounds for i in eachindex(out)
+        out[i] = (edges[i] + edges[i + 1]) / 2
+    end
+    return out
+end
+
+midpoints(edges::AbstractVector{T}) where {T} =
+    midpoints!(similar(edges, T, length(edges) - 1), edges)
+
+@inline midpoints(edges::AbstractRange) =
+    range(first(edges) + step(edges) / 2; length = length(edges) - 1, step = step(edges))
+
+@inline midpoints(edges::SA.SVector{N, T}) where {N, T} =
+    SA.SVector{N - 1, T}(ntuple(i -> (edges[i] + edges[i + 1]) / 2, N - 1))
+
+"""
+    midpoints(edges::LinearBinEdges) -> LinearBinEdges
+    midpoints(edges::LogBinEdges) -> LogBinEdges
+
+Midpoints of [`LinearBinEdges`](@ref) / [`LogBinEdges`](@ref).
+"""
+@inline midpoints(edges::LinearBinEdges) =
+    LinearBinEdges(range(first(edges) + edges.step_val / 2;
+        length = length(edges) - 1, step = edges.step_val))
+
+@inline midpoints(edges::LogBinEdges) = LogBinEdges_from_log_edges(midpoints(edges.log_edges))
+
+"""
+Fill an AbstractVector with midpoints using [`midpoints`](@ref).
+"""
+function midpoints!(out::AbstractVector, edges::Union{LinearBinEdges, LogBinEdges})
+    length(out) == length(edges) - 1 ||
+        throw(DimensionMismatch("out must have length $(length(edges) - 1); got $(length(out))"))
+    return copyto!(out, midpoints(edges))
+end
+
+"""
+The outer bins of [`InfPaddedBinEdges`](@ref) are unbounded, so they have no representative
+separation. Take midpoints of the bounded interior, `edges.edges`.
+"""
+midpoints(::InfPaddedBinEdges) = throw(
+    ArgumentError(
+        "InfPaddedBinEdges has unbounded first and last bins with no representative separation; " *
+        "call midpoints on the bounded interior, `edges.edges`",
+    ),
+)
+
+
+
+
+"""
     n_histogram_bins(edges::AbstractVector) -> Int
 
 Number of histogram bins for flat edges (`length == N + 1` → `N` bins).

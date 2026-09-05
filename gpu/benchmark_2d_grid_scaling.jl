@@ -164,19 +164,20 @@ function main()
     val_plan = ws_sp.val_plan
     n_dist_edges = _GPUExt._gpu_n_edges(dist)
     n_val_edges = _GPUExt._sp2d_n_val_edges(value_bins)
+    geom = SF.HelperFunctions.FlatGeometry{2}()
 
     pair_run = if cfg.needs_partition_merge
         () -> begin
             _GPUExt._sp2d_partition_pair_bufs_and_launch!(
                 backend, sums, x_dev, u_dev, ws_sp.dist_bins, val_plan,
-                N, n_dist_edges, n_val_edges, n_dist, cfg; workspace = ws_sp,
+                N, n_dist_edges, n_val_edges, n_dist, cfg, geom; workspace = ws_sp,
             )
         end
     else
         () -> begin
             _GPUExt._launch_sp2d_onchip!(
                 backend, ws_sp.out_sums_dev, ws_sp.out_cnts_dev, x_dev, u_dev,
-                ws_sp.dist_bins, val_plan, N, n_dist_edges, n_val_edges, n_dist, cfg;
+                ws_sp.dist_bins, val_plan, N, n_dist_edges, n_val_edges, n_dist, cfg, geom;
                 workspace = ws_sp,
             )
         end

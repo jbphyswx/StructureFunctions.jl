@@ -146,40 +146,24 @@ Test.@testset "Single-Pass 3D auxiliary axes" begin
 end
 
 
-# `helmholtz_decompose_2d` used to reconstruct bin midpoints from only the first and last edge via
-# exp(min_log + (k-0.5)*log_step), i.e. it assumed log-uniform spacing unconditionally. On linear
-# edges that placed midpoints outside their own bins (up to ~59% off) and silently returned a wrong
-# decomposition. Midpoints now come from the actual edges as sqrt(e[k]*e[k+1]).
-Test.@testset "Helmholtz decomposition — bin midpoints from actual edges" begin
+Test.@testset "Helmholtz decomposition — quadrature inputs" begin
     FT = Float64
     n_bins = 8
     lin_edges = collect(FT, range(0.5, 8.5; length = n_bins + 1))
-    log_edges = collect(FT, 10 .^ range(log10(0.1), log10(10.0); length = n_bins + 1))
+    log_edges = SF.LogBinEdges(collect(FT, 10 .^ range(log10(0.1), log10(10.0); length = n_bins + 1)))
 
-    # Non-constant D_TT - D_LL so the cumulative integral (and hence the midpoints) actually matter.
+    # Non-constant D_TT - D_LL so the cumulative integral, and hence the abscissae, matter.
     counts = ones(UInt32, n_bins)
     L2 = FT[0.5k for k in 1:n_bins]
     T2 = FT[0.5k + 0.25k^2 for k in 1:n_bins]
 
-    function expected(edges)
-        mids = FT[sqrt(edges[k] * edges[k + 1]) for k in 1:n_bins]
-        I = zeros(FT, n_bins)
-        for k in 2:n_bins
-            f_prev = (T2[k - 1] - L2[k - 1]) / mids[k - 1]
-            f_curr = (T2[k] - L2[k]) / mids[k]
-            I[k] = I[k - 1] + 0.5 * (f_prev + f_curr) * (mids[k] - mids[k - 1])
-        end
-        return mids, I
-    end
-
     for edges in (lin_edges, log_edges)
         h = SFC.helmholtz_decompose_2d(edges, L2, counts, T2, counts)
-        mids, I = expected(edges)
-        Test.@test h.rotational_sums ≈ T2 .+ mids .* I
-        Test.@test h.divergent_sums ≈ L2 .- mids .* I
-        # The invariant the old closed form violated: each midpoint lies inside its own bin.
-        for k in 1:n_bins
-            Test.@test edges[k] <= mids[k] <= edges[k + 1]
+        # The two components carry the total energy between them, whatever the abscissae.
+        Test.@test h.rotational_sums .+ h.divergent_sums ≈ L2 .+ T2
+        # Each abscissa lies inside its own bin.
+        for (k, m) in enumerate(SF.midpoints(edges))
+            Test.@test edges[k] <= m <= edges[k + 1]
         end
     end
 
@@ -190,11 +174,43 @@ Test.@testset "Helmholtz decomposition — bin midpoints from actual edges" begi
     Test.@test isnan(h_sparse.longitudinal_values[3])
     Test.@test isnan(h_sparse.transverse_values[3])
 
-    # A bin touching r <= 0 has no geometric midpoint and no r^-1 integrand: NaN, never a number.
-    # The six invariants stay valid, so this must not error — bins starting at 0.0 are legitimate.
+    # Uniform edges starting at 0 have abscissae at 0.5, 1.5, …, so the r^-1 integrand is finite and
+    # the decomposition is defined throughout.
     h_zero = SFC.helmholtz_decompose_2d(
         collect(FT, range(0.0, 8.0; length = n_bins + 1)), L2, counts, T2, counts,
     )
-    Test.@test all(isnan, h_zero.rotational_sums)
-    Test.@test all(isnan, h_zero.divergent_sums)
+    Test.@test all(isfinite, h_zero.rotational_sums)
+    Test.@test all(isfinite, h_zero.divergent_sums)
+    Test.@test h_zero.rotational_sums .+ h_zero.divergent_sums ≈ L2 .+ T2
+end
+
+# Physical gates on the decomposition, independent of how it is implemented.
+#
+# In 2D a solenoidal field satisfies D_TT = D_LL + r dD_LL/dr and an irrotational one satisfies
+# D_LL = D_TT + r dD_TT/dr. Feeding either exactly must put all the energy in one component and
+# none in the other. For D ∝ r^(2/3) the surviving error is the quadrature's, ~1% of D_LL.
+Test.@testset "Helmholtz decomposition — one-component fields" begin
+    FT = Float64
+    n_bins = 40
+    edges = collect(FT, 10 .^ range(-3, 0; length = n_bins + 1))
+    mids = FT[sqrt(edges[k] * edges[k + 1]) for k in 1:n_bins]
+    counts = ones(UInt32, n_bins)
+    base = mids .^ (2 / 3)
+
+    # Solenoidal: D_div == 0.
+    h_rot = SFC.helmholtz_decompose_2d(edges, base, counts, (5 / 3) .* base, counts)
+    Test.@test maximum(abs, h_rot.divergent_sums) < 0.05 * maximum(base)
+    # Irrotational: D_rot == 0.
+    h_div = SFC.helmholtz_decompose_2d(edges, (5 / 3) .* base, counts, base, counts)
+    Test.@test maximum(abs, h_div.rotational_sums) < 0.05 * maximum(base)
+
+    # Both components sum back to the total energy.
+    Test.@test h_rot.rotational_sums .+ h_rot.divergent_sums ≈ base .+ (5 / 3) .* base
+
+    # I(r) = ∫(D_TT - D_LL)/s ds is invariant under r -> λr at fixed velocities, so every output is
+    # too: a change of length unit cannot move a velocity-squared quantity.
+    λ = 1000.0
+    h_scaled = SFC.helmholtz_decompose_2d(λ .* edges, base, counts, (5 / 3) .* base, counts)
+    Test.@test h_scaled.divergent_sums ≈ h_rot.divergent_sums
+    Test.@test h_scaled.rotational_sums ≈ h_rot.rotational_sums
 end

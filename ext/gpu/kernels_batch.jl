@@ -33,10 +33,10 @@ _batch_fixed_x_sf_kernel(backend::KA.Backend, ws::Int) =
     _batch_fixed_x_usmem_priv!(backend, ws)
 
 function _batch_tiled_launch_params(N_points::Int)
-    n_tiles = cld(N_points, SF_GPU_TILE)
-    n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
+    sched = FullUpperTriangle(cld(N_points, SF_GPU_TILE))
+    n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
-    return n_tiles, n_tile_blocks, ws, n_tile_blocks * ws
+    return sched, n_tile_blocks, ws, n_tile_blocks * ws
 end
 
 @inline function _batch_usmem_idx(c::Int, k::Int, col::Int)
@@ -326,7 +326,7 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
     last_edge::FT,
     inv_step::FT,
     step_val::FT,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
@@ -361,7 +361,7 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
     end
 
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -400,7 +400,7 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
     bid = (g - 1) ÷ workgroup_size + 1
     block_id = bid
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)

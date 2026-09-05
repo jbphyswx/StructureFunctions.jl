@@ -39,16 +39,17 @@ function SFC._dispatch_execution_backend(
     x_arr::AbstractMatrix,
     u_arr::AbstractMatrix,
     distance_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...,
 )
-    x_vecs = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
-    u_vecs = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
+    geom, x_vecs, u_vecs = SFC._prepared_tuples(distance_metric, x_arr, u_arr)
     return SFC._dispatch_execution_backend(
         db,
         structure_function_type,
         x_vecs,
         u_vecs,
         distance_bins;
+        geometry = geom,
         kwargs...,
     )
 end
@@ -58,7 +59,7 @@ function _parallel_calculate_structure_function_core(
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry = SFC.default_geometry(u_vecs),
     verbose = true,
     show_progress = true,
     count_eltype::Type{CT} = UInt32,
@@ -81,7 +82,7 @@ function _parallel_calculate_structure_function_core(
     partials = Distributed.pmap(chunks) do ch
         SFC._partial_sums_counts(
             inner, structure_function_type, x_vecs, u_vecs, distance_bins, ch;
-            distance_metric = distance_metric, count_eltype = count_eltype,
+            geometry = geometry, count_eltype = count_eltype,
         )
     end
 
@@ -270,8 +271,9 @@ function SFC._dispatch_execution_backend(
     value_bins::AbstractVector;
     kwargs...,
 )
-    x_vecs = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
-    u_vecs = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
+    geom, x_vecs, u_vecs = SFC._prepared_tuples(
+        get(kwargs, :distance_metric, DI.Euclidean()), x_arr, u_arr,
+    )
     return SFC._dispatch_execution_backend(
         CB.DistributedBackend(),
         structure_function_type,
@@ -279,7 +281,8 @@ function SFC._dispatch_execution_backend(
         u_vecs,
         distance_bins,
         value_bins;
-        kwargs...,
+        geometry = geom,
+        SFC._without_metric(kwargs)...,
     )
 end
 
@@ -385,8 +388,9 @@ function SFC._dispatch_execution_backend!(
     distance_bins::AbstractVector;
     kwargs...,
 ) where {OT, CT, FT1 <: Number, FT2 <: Number}
-    x_tuple = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
-    u_tuple = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
+    geom, x_tuple, u_tuple = SFC._prepared_tuples(
+        get(kwargs, :distance_metric, DI.Euclidean()), x_arr, u_arr,
+    )
     return SFC._dispatch_execution_backend!(
         CB.DistributedBackend(),
         sums,
@@ -395,7 +399,8 @@ function SFC._dispatch_execution_backend!(
         x_tuple,
         u_tuple,
         distance_bins;
-        kwargs...,
+        geometry = geom,
+        SFC._without_metric(kwargs)...,
     )
 end
 
@@ -436,8 +441,9 @@ function SFC._dispatch_execution_backend!(
     value_bins::AbstractVector;
     kwargs...,
 ) where {OT, CT, FT1 <: Number, FT2 <: Number}
-    x_tuple = ntuple(k -> view(x_arr, k, :), size(x_arr, 1))
-    u_tuple = ntuple(k -> view(u_arr, k, :), size(u_arr, 1))
+    geom, x_tuple, u_tuple = SFC._prepared_tuples(
+        get(kwargs, :distance_metric, DI.Euclidean()), x_arr, u_arr,
+    )
     return SFC._dispatch_execution_backend!(
         CB.DistributedBackend(),
         sums_2d,

@@ -6,18 +6,26 @@
 # (`compile_cells == SF_GPU_MAX_2D_HIST`) are generated at load for each
 # `(dist_route, val_route)` pair; other widths are `@eval`'d on first use.
 
-const _JOINT2D_KERNEL_REGISTRY = Dict{Tuple{Symbol, Symbol, Int}, Any}()
+const _JOINT2D_KERNEL_REGISTRY = Dict{Tuple{Symbol, Symbol, Int, Int}, Any}()
 const _JOINT2D_DIST_ROUTES = (:linear, :log, :general)
 const _JOINT2D_VAL_ROUTES = (:general, :linear, :inflinear, :log_linear)
 
-"""Symbol name for a tiled joint kernel at `(dist_route, val_route, compile_cells)`."""
-function _joint2d_kernel_fname(dist_route::Symbol, val_route::Symbol, compile_cells::Int)
-    base = Symbol(:_sf2d_kernel_tiled128_, dist_route, :_, val_route, :_u32)
+"""Symbol name for a tiled joint kernel at `(dist_route, val_route, compile_cells, W)`."""
+function _joint2d_kernel_fname(dist_route::Symbol, val_route::Symbol, compile_cells::Int, W::Int)
+    base = Symbol(:_sf2d_kernel_tiled128_, dist_route, :_, val_route, :_w, W, :_u32)
     if compile_cells == SF_GPU_MAX_2D_HIST
         return Symbol(base, :!)
     end
     return Symbol(base, :_c, compile_cells, :_!)
 end
+
+"""Stage `W` components of one point into a tile buffer, unrolled at codegen."""
+_joint2d_stage(dest::Symbol, src::Symbol, gidx::Symbol, W::Int) =
+    Expr(:block, (:($(dest)[$((c - 1) * SF_GPU_TILE) + k] = $(src)[$c, $(gidx)]) for c in 1:W)...)
+
+"""Load one `W`-component point out of a tile buffer."""
+_joint2d_load(buf::Symbol, idx, W::Int) =
+    :(SA.SVector{$W, FT}($((:($(buf)[$((c - 1) * SF_GPU_TILE) + $(idx)]) for c in 1:W)...)))
 
 """Cooperative grid-stride zero of block-local joint histogram (uses runtime `NB2`)."""
 function _joint2d_cooperative_zero_body()
@@ -77,7 +85,7 @@ function _joint2d_kernel_param_exprs(dist_route::Symbol, val_route::Symbol)
             :(n_inner_edges::Int), :(inner_last::FT),
         ])
     end
-    append!(params, [:(n_tiles::Int), :(n_tile_blocks::Int), :(workgroup_size::Int), :(geom)])
+    append!(params, [:(sched), :(n_tile_blocks::Int), :(workgroup_size::Int), :(geom)])
     return params
 end
 
@@ -116,8 +124,8 @@ function _joint2d_val_digitize_expr(val_route::Symbol)
 end
 
 """Codegen tiled joint kernel for `(dist_route, val_route, compile_cells)`."""
-function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cells::Int)
-    fname = _joint2d_kernel_fname(dist_route, val_route, compile_cells)
+function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cells::Int, W::Int)
+    fname = _joint2d_kernel_fname(dist_route, val_route, compile_cells, W)
     zero_body = _joint2d_cooperative_zero_body()
     hist = compile_cells
     dist_digitize = _joint2d_dist_digitize_expr(dist_route)
@@ -125,10 +133,10 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
     params = _joint2d_kernel_param_exprs(dist_route, val_route)
     return quote
         KA.@kernel unsafe_indices=true function $(fname)($(params...),) where {FT}
-            shared_xi = @localmem FT (256,)
-            shared_ui = @localmem FT (256,)
-            shared_xj = @localmem FT (256,)
-            shared_uj = @localmem FT (256,)
+            shared_xi = @localmem FT ($(W * SF_GPU_TILE),)
+            shared_ui = @localmem FT ($(W * SF_GPU_TILE),)
+            shared_xj = @localmem FT ($(W * SF_GPU_TILE),)
+            shared_uj = @localmem FT ($(W * SF_GPU_TILE),)
             shared_sums = @localmem FT ($(hist),)
             shared_cnts = @localmem UInt32 ($(hist),)
 
@@ -136,7 +144,7 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
             if bid <= n_tile_blocks
-                ti, tj = _tile_from_linear(bid, n_tiles)
+                ti, tj = tile_for(sched, bid)
                 i0 = (ti - 1) * SF_GPU_TILE + 1
                 j0 = (tj - 1) * SF_GPU_TILE + 1
                 ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -146,10 +154,8 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                     while k <= ni
                         gi = i0 + k - 1
                         @inbounds begin
-                            shared_xi[k] = x_mat[1, gi]
-                            shared_xi[SF_GPU_TILE + k] = x_mat[2, gi]
-                            shared_ui[k] = u_mat[1, gi]
-                            shared_ui[SF_GPU_TILE + k] = u_mat[2, gi]
+                            $(_joint2d_stage(:shared_xi, :x_mat, :gi, W))
+                            $(_joint2d_stage(:shared_ui, :u_mat, :gi, W))
                         end
                         k += workgroup_size
                     end
@@ -158,10 +164,8 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                         while k <= nj
                             gj = j0 + k - 1
                             @inbounds begin
-                                shared_xj[k] = x_mat[1, gj]
-                                shared_xj[SF_GPU_TILE + k] = x_mat[2, gj]
-                                shared_uj[k] = u_mat[1, gj]
-                                shared_uj[SF_GPU_TILE + k] = u_mat[2, gj]
+                                $(_joint2d_stage(:shared_xj, :x_mat, :gj, W))
+                                $(_joint2d_stage(:shared_uj, :u_mat, :gj, W))
                             end
                             k += workgroup_size
                         end
@@ -172,7 +176,7 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
             if bid <= n_tile_blocks
-                ti, tj = _tile_from_linear(bid, n_tiles)
+                ti, tj = tile_for(sched, bid)
                 i0 = (ti - 1) * SF_GPU_TILE + 1
                 j0 = (tj - 1) * SF_GPU_TILE + 1
                 ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -184,16 +188,16 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                         if ti < tj
                             ia = (p - 1) ÷ nj + 1
                             jb = (p - 1) - (ia - 1) * nj + 1
-                            X1 = SA.SVector{2, FT}(shared_xi[ia], shared_xi[SF_GPU_TILE + ia])
-                            X2 = SA.SVector{2, FT}(shared_xj[jb], shared_xj[SF_GPU_TILE + jb])
-                            U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
-                            U2 = SA.SVector{2, FT}(shared_uj[jb], shared_uj[SF_GPU_TILE + jb])
+                            X1 = $(_joint2d_load(:shared_xi, :ia, W))
+                            X2 = $(_joint2d_load(:shared_xj, :jb, W))
+                            U1 = $(_joint2d_load(:shared_ui, :ia, W))
+                            U2 = $(_joint2d_load(:shared_uj, :jb, W))
                         else
                             ia, jb = _pair_from_linear(p, ni)
-                            X1 = SA.SVector{2, FT}(shared_xi[ia], shared_xi[SF_GPU_TILE + ia])
-                            X2 = SA.SVector{2, FT}(shared_xi[jb], shared_xi[SF_GPU_TILE + jb])
-                            U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
-                            U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
+                            X1 = $(_joint2d_load(:shared_xi, :ia, W))
+                            X2 = $(_joint2d_load(:shared_xi, :jb, W))
+                            U1 = $(_joint2d_load(:shared_ui, :ia, W))
+                            U2 = $(_joint2d_load(:shared_ui, :jb, W))
                         end
                         ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                         $(dist_digitize)
@@ -231,8 +235,8 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
 end
 
 """Ensure a compiled tiled joint kernel exists; return callable."""
-function _ensure_joint2d_kernel!(dist_route::Symbol, val_route::Symbol, compile_cells::Int)
-    key = (dist_route, val_route, compile_cells)
+function _ensure_joint2d_kernel!(dist_route::Symbol, val_route::Symbol, compile_cells::Int, W::Int)
+    key = (dist_route, val_route, compile_cells, W)
     if haskey(_JOINT2D_KERNEL_REGISTRY, key)
         return _JOINT2D_KERNEL_REGISTRY[key]
     end
@@ -242,9 +246,9 @@ function _ensure_joint2d_kernel!(dist_route::Symbol, val_route::Symbol, compile_
         throw(ArgumentError("unknown joint2d val route=$val_route"))
     compile_cells > 0 ||
         throw(ArgumentError("joint2d compile_cells must be positive (got $compile_cells)"))
-    ex = _joint2d_kernel_def(dist_route, val_route, compile_cells)
+    ex = _joint2d_kernel_def(dist_route, val_route, compile_cells, W)
     @eval $(ex)
-    fname = _joint2d_kernel_fname(dist_route, val_route, compile_cells)
+    fname = _joint2d_kernel_fname(dist_route, val_route, compile_cells, W)
     _JOINT2D_KERNEL_REGISTRY[key] = Base.invokelatest(getfield, @__MODULE__, fname)
     return _JOINT2D_KERNEL_REGISTRY[key]
 end
@@ -254,10 +258,11 @@ function _joint2d_tiled_kernel_fn(
     dist_route::Symbol,
     val_route::Symbol,
     compile_cells::Int,
+    W::Int,
     backend::KA.Backend,
     ws::Int,
 )
-    kf = _ensure_joint2d_kernel!(dist_route, val_route, compile_cells)
+    kf = _ensure_joint2d_kernel!(dist_route, val_route, compile_cells, W)
     return Base.invokelatest(kf, backend, ws)
 end
 
@@ -266,8 +271,10 @@ function _joint2d_invoke_kernel!(kernel!, args...; ndrange)
     return Base.invokelatest(kernel!, args...; ndrange=ndrange)
 end
 
-for dist_route in _JOINT2D_DIST_ROUTES, val_route in _JOINT2D_VAL_ROUTES
-    @eval $( _joint2d_kernel_def(dist_route, val_route, SF_GPU_MAX_2D_HIST) )
-    _JOINT2D_KERNEL_REGISTRY[(dist_route, val_route, SF_GPU_MAX_2D_HIST)] =
-        getfield(@__MODULE__, _joint2d_kernel_fname(dist_route, val_route, SF_GPU_MAX_2D_HIST))
+# Both coordinate widths: 2 for flat 2-D and for the ambient sphere before conversion existed,
+# 3 for the ambient sphere and for flat 3-D.
+for dist_route in _JOINT2D_DIST_ROUTES, val_route in _JOINT2D_VAL_ROUTES, W in (2, 3)
+    @eval $( _joint2d_kernel_def(dist_route, val_route, SF_GPU_MAX_2D_HIST, W) )
+    _JOINT2D_KERNEL_REGISTRY[(dist_route, val_route, SF_GPU_MAX_2D_HIST, W)] =
+        getfield(@__MODULE__, _joint2d_kernel_fname(dist_route, val_route, SF_GPU_MAX_2D_HIST, W))
 end

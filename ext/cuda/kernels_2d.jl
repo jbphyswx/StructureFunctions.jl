@@ -30,17 +30,6 @@ single-pass 2D kernel, which had identical indexing.
 """
 @inline _cuda_val_stride(n_val::Int) = isodd(n_val) ? n_val : n_val + 1
 
-"""Map linear tile id `k` (1-based) to upper-triangle `(ti,tj)`, `ti ≤ tj`."""
-@inline function _cuda_tile_pair(k::Int, nt::Int)
-    ti = 1
-    rem = k
-    while rem > nt - ti + 1
-        rem -= (nt - ti + 1)
-        ti += 1
-    end
-    return ti, ti + rem - 1
-end
-
 """Load local point `k`'s D-vector from a tile buffer staged as `(d-1)*TILE + k`."""
 @inline _cuda_ld(buf, ::Val{2}, ::Val{TILE}, k::Integer) where {TILE} =
     @inbounds SA.SVector{2}(buf[k], buf[TILE + k])
@@ -56,7 +45,7 @@ function _cuda_sf_2d_kernel!(
     ddig,                   # distance digitizer functor (isbits, callable on device)
     vplan,                  # value digitize plan (per-moment)
     N::Int, n_dist::Int, n_val::Int,
-    nt::Int, ntb::Int,
+    sched, ntb::Int,
     ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, ::Val{HCELLS},
     geom,
 ) where {D, NMOM, FIXED_X, TILE, HCELLS}
@@ -83,7 +72,7 @@ function _cuda_sf_2d_kernel!(
         c += wg
     end
 
-    ti, tj = _cuda_tile_pair(bid, nt)
+    ti, tj = SFC.tile_for(sched, bid)
     i0 = (ti - 1) * TILE + 1
     j0 = (tj - 1) * TILE + 1
     ni = min(TILE, N - i0 + 1)
@@ -192,7 +181,7 @@ histogram doesn't fit any supported TILE (caller uses the KA fallback).
 `(D,N,1)` fixed; `u` is `(D,N,B)`."""
 function _cuda_launch_2d!(out, cnt, x, u, sf_type, ddig, vplan,
                           N::Int, n_dist::Int, n_val::Int, B::Int,
-                          D::Int, NMOM::Int, fixed_x::Bool, geom)
+                          D::Int, NMOM::Int, fixed_x::Bool, geom, cull)
     FT = eltype(out)
     TILE, dynb = _cuda_2d_pick_tile(FT, D, NMOM, n_dist, n_val)
     TILE == 0 && return false
@@ -200,30 +189,32 @@ function _cuda_launch_2d!(out, cnt, x, u, sf_type, ddig, vplan,
     uv = reshape(u, D, N, B)
     hcells = n_dist * _cuda_val_stride(n_val)
     _cuda_launch_2d_specialized!(out, cnt, xv, uv, sf_type, ddig, vplan,
-                                 N, n_dist, n_val, B, D, NMOM, fixed_x, TILE, hcells, dynb, geom)
+                                 N, n_dist, n_val, B, D, NMOM, fixed_x, TILE, hcells, dynb, geom,
+                                 cull)
     return true
 end
 
 # Resolve the runtime (D, NMOM, FIXED_X, TILE) into Val type params, then launch.
 function _cuda_launch_2d_specialized!(out, cnt, x, u, sf_type, ddig, vplan,
-                                      N, n_dist, n_val, B, D, NMOM, fixed_x, TILE, hcells, dynb, geom)
+                                      N, n_dist, n_val, B, D, NMOM, fixed_x, TILE, hcells, dynb, geom,
+                                      cull)
     Dv = D == 3 ? Val(3) : Val(2)
     Mv = NMOM == 6 ? Val(6) : Val(1)
     Fv = fixed_x ? Val(true) : Val(false)
     Tv = TILE == 1024 ? Val(1024) : TILE == 512 ? Val(512) : Val(256)
     _cuda_launch_2d_valed!(out, cnt, x, u, sf_type, ddig, vplan,
-                           N, n_dist, n_val, B, Dv, Mv, Fv, Tv, Val(hcells), dynb, geom)
+                           N, n_dist, n_val, B, Dv, Mv, Fv, Tv, Val(hcells), dynb, geom, cull)
     return nothing
 end
 
 function _cuda_launch_2d_valed!(out, cnt, x, u, sf_type, ddig, vplan,
                                 N, n_dist, n_val, B,
                                 ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, ::Val{HCELLS},
-                                dynb, geom) where {D, NMOM, FIXED_X, TILE, HCELLS}
-    nt = cld(N, TILE)
-    ntb = nt * (nt + 1) ÷ 2
+                                dynb, geom, cull) where {D, NMOM, FIXED_X, TILE, HCELLS}
+    sched = SFC.schedule_for(cull, N, TILE)
+    ntb = SFC.n_pair_blocks(sched)
     kern = @cuda launch=false _cuda_sf_2d_kernel!(
-        out, cnt, x, u, sf_type, ddig, vplan, N, n_dist, n_val, nt, ntb,
+        out, cnt, x, u, sf_type, ddig, vplan, N, n_dist, n_val, sched, ntb,
         Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), Val(HCELLS), geom)
     # Opt into the larger shared budget. This must be set whenever the TOTAL
     # (static staging + dynamic histogram) exceeds the 48 KB default cap — not
@@ -231,7 +222,7 @@ function _cuda_launch_2d_valed!(out, cnt, x, u, sf_type, ddig, vplan,
     # value is the dynamic size; `_cuda_2d_pick_tile` guarantees staging + dynb
     # ≤ the device opt-in max.
     CUDA.attributes(kern.fun)[CUDA.FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES] = dynb
-    kern(out, cnt, x, u, sf_type, ddig, vplan, N, n_dist, n_val, nt, ntb,
+    kern(out, cnt, x, u, sf_type, ddig, vplan, N, n_dist, n_val, sched, ntb,
          Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), Val(HCELLS), geom;
          threads = TILE, blocks = ntb * B, shmem = dynb)
     return nothing

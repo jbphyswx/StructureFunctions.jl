@@ -28,7 +28,14 @@ end
 Run the 2D isotropic Helmholtz decomposition using the trapezoidal rule over
 binned longitudinal/transverse second-order structure functions. This implements
 the cumulative integral equations described by Lindborg (JFM 2015) and
-Bühler, Callies, and Ferrari (JFM 2014).
+Bühler, Callies, and Ferrari (JFM 2014):
+
+``D_rot(r) = D_TT(r) + I(r)``, ``D_div(r) = D_LL(r) - I(r)``, where
+``I(r) = ∫_0^r [D_TT(s) - D_LL(s)]/s ds``.
+
+The quadrature starts at the first bin midpoint, so ``I`` omits ``∫_0^{r_1}``. That segment is
+`D_LL(r_1)` for an ``r^{2/3}`` inertial range, so the decomposition is quantitative only for
+``r ≫ r_1``; choose a first bin well below the scales of interest.
 """
 function helmholtz_decompose_2d(
     distance_bins::AbstractVector{FT3},
@@ -47,12 +54,9 @@ function helmholtz_decompose_2d(
     length(distance_bins) == n_bins + 1 ||
         throw(DimensionMismatch("distance_bins must have length n_bins + 1"))
 
-    # Geometric midpoint of each bin's actual edges; NaN where r <= 0 has no midpoint.
-    bin_mids = zeros(FT3, n_bins)
-    for k in 1:n_bins
-        lo, hi = distance_bins[k], distance_bins[k + 1]
-        bin_mids[k] = lo > zero(FT3) ? sqrt(lo * hi) : FT3(NaN)
-    end
+    # The quadrature abscissae. `midpoints` matches the abscissa to the edge spacing, so log edges
+    # get the geometric mean and uniform edges the arithmetic one.
+    bin_mids = midpoints(distance_bins)
 
     # Empty bins are NaN, never 0: the integral below is cumulative.
     D_LL = _bin_average(L2_sums, L2_counts)
@@ -73,9 +77,9 @@ function helmholtz_decompose_2d(
     divergent_counts = copy(L2_counts)
 
     for k in 1:n_bins
-        D_rot = D_TT[k] + bin_mids[k] * I[k]
-        D_div = D_LL[k] - bin_mids[k] * I[k]
-        
+        D_rot = D_TT[k] + I[k]
+        D_div = D_LL[k] - I[k]
+
         rotational_sums[k] = D_rot * rotational_counts[k]
         divergent_sums[k] = D_div * divergent_counts[k]
     end
@@ -169,6 +173,7 @@ function _accumulate_single_pass_1d!(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    culling::CullingPolicy = AutoCulling(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     D = size(u, 1)
     n_points = size(x, 2)
@@ -179,14 +184,17 @@ function _accumulate_single_pass_1d!(
         throw(DimensionMismatch("counts must have shape ($SINGLE_PASS_N, n_bins); got $(size(counts))"))
     # Fast path: Euclidean + D ∈ (2,3) via the SIMD compute/scatter split (vectorizes the
     # per-pair du_L / |du|² compute over j; the 6-way histogram scatter stays scalar).
-    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
-        _sp_simd_run!(sums, counts, x, u, BinEdges(distance_bins), D == 2 ? Val(2) : Val(3))
+    geom = SFH.pair_geometry_for(distance_metric, Val(D))
+    if geom isa SFH.FlatGeometry && (D == 2 || D == 3)
+        _sp_simd_run!(sums, counts, x, u, BinEdges(distance_bins), D == 2 ? Val(2) : Val(3),
+            culling)
         return sums, counts
     end
 
-    vW, vD = _pair_dims(distance_metric, D)
-    _sp1d_pairs!(sums, counts, x, u, BinEdges(distance_bins), vW, vD,
-        distance_metric, n_bins, 1:n_points)
+    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
+    be = BinEdges(distance_bins)
+    grid, xk, uk = cull_sorted_matrices(xk, uk, geom, be, culling)
+    _sp1d_run_blocks!(sums, counts, xk, uk, be, geom, n_bins, 1:n_points, n_points, grid)
     return sums, counts
 end
 
@@ -218,51 +226,57 @@ callers' assembly points, of which there are more than twenty.
 end
 
 """
-    _pf_sp_simd_pairs!(sums, counts, xc, uc, dist_be, ::Val{D}, distbuf, duLbuf, dn2buf, irange)
+    _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, blocks)
 
-Single-pass (6 invariants) point-field SIMD compute/scatter kernel over outer indices `irange`.
-For each `i`: `@simd` over `j>i` computes distance, `du_L = du·r̂`, and `|du|²` into buffers
+Single-pass (6 invariants) point-field SIMD compute/scatter kernel over the pairs `blocks` covers.
+For each `i`: `@simd` over its `j` block computes distance, `du_L = du·r̂`, and `|du|²` into buffers
 (contiguous components ⇒ packed loads, no scatter ⇒ vectorizes), then a scalar loop digitizes
-and scatters the 6 invariants. Like `_pf_simd_pairs!`, the loop must live in this one kernel
-(not a per-`i` helper) for the `@simd` to vectorize. Shared by serial + threaded.
+and scatters the 6 invariants. Like [`_pf_simd_pairs!`](@ref) it consumes `(i-block, j-block)`
+pairs (see [`block_pairs`](@ref)), so it gets both cache blocking and culling, and the loop must
+live in this one kernel (not a per-`i` helper) for the `@simd` to vectorize.
+Shared by serial + threaded.
 """
 function _pf_sp_simd_pairs!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, ::Val{D},
     keybuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector,
-    idxbuf::AbstractVector{Int32}, irange,
+    idxbuf::AbstractVector{Int32}, blocks,
 ) where {OT, CT, D}
-    N = length(xc[1])
     nb = n_histogram_bins(plan)
     FTx = eltype(xc[1])
-    @inbounds for i in irange
-        Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
-        Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
-        @simd for j in (i + 1):N
-            Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
-            dx = Xj - Xi
-            r2 = LA.dot(dx, dx)
-            du = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D))) - Ui
-            # δu_L needs r, so one reciprocal-sqrt stays; it vectorizes.
-            inv_r = inv(sqrt(r2))
-            keybuf[j] = digitize_key(plan, r2)
-            duLbuf[j] = LA.dot(du, dx) * inv_r
-            dn2buf[j] = LA.dot(du, du)
-            if has_vector_index(plan)
-                idxbuf[j] = squared_approx_index(plan, r2)
+    @inbounds for (ir, jr) in blocks
+        j_first, j_last = first(jr), last(jr)
+        for i in ir
+            jlo = max(i + 1, j_first)
+            jlo > j_last && continue
+            Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
+            Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
+            @simd for j in jlo:j_last
+                Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
+                dx = Xj - Xi
+                r2 = LA.dot(dx, dx)
+                du = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D))) - Ui
+                # δu_L needs r, so one reciprocal-sqrt stays; it vectorizes.
+                inv_r = inv(sqrt(r2))
+                keybuf[j] = digitize_key(plan, r2)
+                duLbuf[j] = LA.dot(du, dx) * inv_r
+                dn2buf[j] = LA.dot(du, du)
+                if has_vector_index(plan)
+                    idxbuf[j] = squared_approx_index(plan, r2)
+                end
             end
-        end
-        for j in (i + 1):N
-            bin = squared_bin(plan, keybuf[j], idxbuf[j])
-            if 1 <= bin <= nb
-                duL = duLbuf[j]
-                dn2 = dn2buf[j]
-                duL2 = duL * duL
-                sums[1, bin] += dn2
-                sums[2, bin] += duL2
-                sums[4, bin] += duL * dn2
-                sums[5, bin] += duL * duL2
-                counts[1, bin] += one(CT)
+            for j in jlo:j_last
+                bin = squared_bin(plan, keybuf[j], idxbuf[j])
+                if 1 <= bin <= nb
+                    duL = duLbuf[j]
+                    dn2 = dn2buf[j]
+                    duL2 = duL * duL
+                    sums[1, bin] += dn2
+                    sums[2, bin] += duL2
+                    sums[4, bin] += duL * dn2
+                    sums[5, bin] += duL * duL2
+                    counts[1, bin] += one(CT)
+                end
             end
         end
     end
@@ -270,13 +284,31 @@ function _pf_sp_simd_pairs!(
     return nothing
 end
 
+"""
+    _sp_run_blocks!(sums, counts, xc, uc, plan, ::Val{D}, bufs..., ilist, N, grid)
+
+Single-pass analogue of [`_pf_run_blocks!`](@ref): dispatch on `grid` so the kernel receives one
+concretely typed schedule.
+"""
+@inline _sp_run_blocks!(
+    sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, ilist, N, ::Nothing,
+) where {D} = _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf,
+    idxbuf, pair_blocks(N, ilist))
+
+@inline _sp_run_blocks!(
+    sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, ilist, N,
+    grid::CellGrid,
+) where {D} = _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf,
+    idxbuf, pair_blocks(N, ilist; grid = grid))
+
 # Serial driver: the full outer range through the same per-worker kernel.
 function _sp_simd_run!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
     x::AbstractMatrix, u::AbstractMatrix, dist_be, ::Val{D},
+    culling::CullingPolicy = AutoCulling(),
 ) where {OT, CT, D}
     N = size(x, 2)
-    return _sp_simd_partial!(sums, counts, x, u, dist_be, Val(D), 1:(N - 1))
+    return _sp_simd_partial!(sums, counts, x, u, dist_be, Val(D), 1:(N - 1), culling)
 end
 
 """
@@ -292,6 +324,7 @@ function _partial_single_pass_1d(
     distance_bins::AbstractVector,
     ilist;
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    culling::CullingPolicy = AutoCulling(),
     count_eltype::Type{CT} = UInt32,
 ) where {FT1 <: Number, FT2 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
@@ -301,36 +334,42 @@ function _partial_single_pass_1d(
     counts = zeros(CT, SINGLE_PASS_N, nb)
     dist_be = BinEdges(distance_bins)
 
-    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
-        _sp_simd_partial!(sums, counts, x, u, dist_be, D == 2 ? Val(2) : Val(3), ilist)
+    geom = SFH.pair_geometry_for(distance_metric, Val(D))
+    if geom isa SFH.FlatGeometry && (D == 2 || D == 3)
+        _sp_simd_partial!(sums, counts, x, u, dist_be, D == 2 ? Val(2) : Val(3), ilist, culling)
         return sums, counts
     end
 
-    vW, vD = _pair_dims(distance_metric, D)
-    _sp1d_pairs!(sums, counts, x, u, dist_be, vW, vD, distance_metric, nb, ilist)
+    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
+    grid, xk, uk = cull_sorted_matrices(xk, uk, geom, dist_be, culling)
+    _sp1d_run_blocks!(sums, counts, xk, uk, dist_be, geom, nb, ilist, size(xk, 2), grid)
     return sums, counts
 end
 
 """
-    _sp1d_pairs!(sums, counts, x, u, dist_be, ::Val{W}, ::Val{D}, metric, n_bins, ilist)
+    _sp1d_pairs!(sums, counts, x, u, dist_be, geom, n_bins, ilist)
 
 Six-invariant scalar pair loop over the outer indices `ilist`, for geometries with no SIMD fast
-path. `W` is the coordinate width and `D` the velocity width; both are type parameters so the
-`SVector`s stay concrete inside the loop.
+path. The coordinate and field widths come from `geom` as `Val`s, so the `SVector`s stay concrete
+inside the loop.
 """
 function _sp1d_pairs!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
     x::AbstractMatrix{FT1}, u::AbstractMatrix{FT2},
-    dist_be, ::Val{W}, ::Val{D}, distance_metric, n_bins::Int, ilist,
-) where {OT, CT, FT1, FT2, W, D}
-    n_points = size(x, 2)
-    vW = Val(W)
-    vD = Val(D)
-    geom = SFH.pair_geometry_for(distance_metric, vD)
-    @inbounds for i in ilist
+    dist_be, geom, n_bins::Int, blocks,
+) where {OT, CT, FT1, FT2}
+    vW = SFH.coordinate_width(geom)
+    vD = SFH.field_width(geom)
+    W = _val_int(vW)
+    D = _val_int(vD)
+    @inbounds for (ir, jr) in blocks
+      j_first, j_last = first(jr), last(jr)
+      for i in ir
+        jlo = max(i + 1, j_first)
+        jlo > j_last && continue
         x_i = SA.SVector{W, FT1}(ntuple(d -> x[d, i], vW))
         u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
-        for j in (i + 1):n_points
+        for j in jlo:j_last
             x_j = SA.SVector{W, FT1}(ntuple(d -> x[d, j], vW))
             ok, r, frame = SFH.pair_frame(geom, x_i, x_j)
             bin = SFH.digitize(r, dist_be)
@@ -347,26 +386,45 @@ function _sp1d_pairs!(
                 counts[1, bin] += one(CT)
             end
         end
+      end
     end
     _sp1d_derive_rows!(sums, counts)
     return nothing
 end
 
+"""
+    _sp1d_run_blocks!(sums, counts, x, u, dist_be, geom, n_bins, ilist, N, grid)
+
+Curved-geometry single-pass analogue of [`_pf_run_blocks!`](@ref): dispatch on `grid` so the kernel
+receives one concretely typed schedule.
+"""
+@inline _sp1d_run_blocks!(sums, counts, x, u, dist_be, geom, n_bins, ilist, N, ::Nothing) =
+    _sp1d_pairs!(sums, counts, x, u, dist_be, geom, n_bins, pair_blocks(N, ilist))
+
+@inline _sp1d_run_blocks!(sums, counts, x, u, dist_be, geom, n_bins, ilist, N, grid::CellGrid) =
+    _sp1d_pairs!(sums, counts, x, u, dist_be, geom, n_bins, pair_blocks(N, ilist; grid = grid))
+
 """Run [`_pf_sp_simd_pairs!`](@ref) over an explicit outer-index list, with this worker's buffers."""
 function _sp_simd_partial!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
     x::AbstractMatrix, u::AbstractMatrix, dist_be, ::Val{D}, ilist,
+    culling::CullingPolicy = AutoCulling(),
 ) where {OT, CT, D}
-    xc = ntuple(d -> collect(view(x, d, :)), Val(D))
-    uc = ntuple(d -> collect(view(u, d, :)), Val(D))
-    N = length(xc[1])
-    FTx = eltype(xc[1])
+    x_raw = ntuple(d -> collect(view(x, d, :)), Val(D))
+    u_raw = ntuple(d -> collect(view(u, d, :)), Val(D))
+    N = length(x_raw[1])
+    FTx = eltype(x_raw[1])
     keybuf = Vector{FTx}(undef, N)
     duLbuf = Vector{OT}(undef, N)
     dn2buf = Vector{OT}(undef, N)
     idxbuf = Vector{Int32}(undef, N)
     plan = squared_digitize_plan(dist_be)
-    _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf, idxbuf, ilist)
+    grid = culling isa NoCulling ? nothing :
+           cull_grid_for(x_raw, SFH.FlatGeometry{D}(), dist_be, culling)
+    xc, uc = isnothing(grid) ? (x_raw, u_raw) :
+             (apply_perm(x_raw, grid.perm), apply_perm(u_raw, grid.perm))
+    _sp_run_blocks!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf, idxbuf,
+        ilist, N, grid)
     return nothing
 end
 
@@ -383,6 +441,7 @@ function _partial_single_pass_2d(
     value_bins::SinglePass2DValueBins,
     ilist;
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    culling::CullingPolicy = AutoCulling(),
     count_eltype::Type{CT} = UInt32,
 ) where {FT1 <: Number, FT2 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
@@ -393,7 +452,7 @@ function _partial_single_pass_2d(
     sums = zeros(OT, SINGLE_PASS_N, n_bins, n_val)
     counts = zeros(CT, SINGLE_PASS_N, n_bins, n_val)
     _sp2d_accumulate_range!(sums, counts, x, u, BinEdges(distance_bins), value_bins,
-        distance_metric, n_bins, n_val, ilist)
+        distance_metric, n_bins, n_val, ilist, culling)
     return sums, counts
 end
 
@@ -736,6 +795,7 @@ function _accumulate_single_pass_2d!(
     distance_bins::AbstractVector{FT3},
     value_bins::SinglePass2DValueBins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    culling::CullingPolicy = AutoCulling(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     n_points = size(x, 2)
     n_bins = length(distance_bins) - 1
@@ -748,7 +808,7 @@ function _accumulate_single_pass_2d!(
 
     dist_be = BinEdges(distance_bins)
     _sp2d_accumulate_range!(sums_3d, counts_3d, x, u, dist_be, value_bins, distance_metric,
-        n_bins, n_val, 1:n_points)
+        n_bins, n_val, 1:n_points, culling)
     return sums_3d, counts_3d
 end
 
@@ -756,10 +816,12 @@ end
 function _sp2d_accumulate_range!(
     sums_3d::AbstractArray{OT, 3}, counts_3d::AbstractArray{CT, 3},
     x::AbstractMatrix, u::AbstractMatrix, dist_be, value_bins, distance_metric,
-    n_bins::Int, n_val::Int, ilist,
+    n_bins::Int, n_val::Int, ilist, culling::CullingPolicy = AutoCulling(),
 ) where {OT, CT}
     h = _sp2d_histogram(OT, n_bins, n_val)
-    _sp2d_fill!(h, x, u, dist_be, value_bins, distance_metric, n_bins, n_val, ilist)
+    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
+    grid, x, u = cull_sorted_inputs(x, u, geom, dist_be, culling)
+    _sp2d_fill!(h, x, u, dist_be, value_bins, distance_metric, n_bins, n_val, ilist, grid)
     return _sp2d_unpack!(sums_3d, counts_3d, h, n_bins, n_val)
 end
 
@@ -772,17 +834,24 @@ its type per point.
 function _sp2d_fill!(
     h::AbstractArray{OT, 4},
     x::AbstractMatrix, u::AbstractMatrix, dist_be, value_bins, distance_metric,
-    n_bins::Int, n_val::Int, ilist,
+    n_bins::Int, n_val::Int, ilist, grid = nothing,
 ) where {OT}
     D = size(u, 1)
-    if distance_metric isa DI.Euclidean && (D == 2 || D == 3)
-        _sp2d_simd_partial!(h, x, u, dist_be, value_bins, D == 2 ? Val(2) : Val(3), n_val, ilist)
+    geom = SFH.pair_geometry_for(distance_metric, Val(D))
+    N = size(x, 2)
+    plan = squared_digitize_plan(dist_be)
+    if geom isa SFH.FlatGeometry && (D == 2 || D == 3)
+        vD = D == 2 ? Val(2) : Val(3)
+        xc = ntuple(d -> collect(view(x, d, :)), vD)
+        uc = ntuple(d -> collect(view(u, d, :)), vD)
+        _sp2d_run_blocks!(h, xc, uc, plan, value_bins, vD,
+            Vector{eltype(xc[1])}(undef, N), Vector{OT}(undef, N), Vector{OT}(undef, N),
+            Vector{Int32}(undef, N), n_val, ilist, N, grid)
         return nothing
     end
-    plan = squared_digitize_plan(dist_be)
-    vW, vD = _pair_dims(distance_metric, D)
-    _sp2d_pairs!(h, x, u, dist_be, plan, value_bins, vW, vD,
-        distance_metric, n_bins, n_val, ilist)
+    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
+    _sp2d_curved_run_blocks!(h, xk, uk, dist_be, plan, value_bins, geom, n_bins, n_val,
+        ilist, N, grid)
     return nothing
 end
 
@@ -812,24 +881,28 @@ function _sp2d_unpack!(
 end
 
 """
-    _sp2d_pairs!(h, x, u, dist_be, plan, value_bins, ::Val{D}, metric, n_bins, n_val, ilist)
+    _sp2d_pairs!(h, x, u, dist_be, plan, value_bins, geom, n_bins, n_val, blocks)
 
-Single-pass 2D scalar pair loop over the outer indices `ilist`, for non-Euclidean metrics.
+Single-pass 2D scalar pair loop over the pairs `blocks` covers, for non-Euclidean metrics.
 Specialized on the spatial dimension `D` so the `SVector`s are concrete.
 """
 function _sp2d_pairs!(
     h::AbstractArray{OT, 4},
     x::AbstractMatrix{FT1}, u::AbstractMatrix{FT2},
-    dist_be, plan, value_bins, ::Val{W}, ::Val{D}, distance_metric, n_bins::Int, n_val::Int, ilist,
-) where {OT, FT1, FT2, W, D}
-    n_points = size(x, 2)
-    vW = Val(W)
-    vD = Val(D)
-    geom = SFH.pair_geometry_for(distance_metric, vD)
-    @inbounds for i in ilist
+    dist_be, plan, value_bins, geom, n_bins::Int, n_val::Int, blocks,
+) where {OT, FT1, FT2}
+    vW = SFH.coordinate_width(geom)
+    vD = SFH.field_width(geom)
+    W = _val_int(vW)
+    D = _val_int(vD)
+    @inbounds for (ir, jr) in blocks
+      j_first, j_last = first(jr), last(jr)
+      for i in ir
+        jlo = max(i + 1, j_first)
+        jlo > j_last && continue
         x_i = SA.SVector{W, FT1}(ntuple(d -> x[d, i], vW))
         u_i = SA.SVector{D, FT2}(ntuple(d -> u[d, i], vD))
-        for j in (i + 1):n_points
+        for j in jlo:j_last
             x_j = SA.SVector{W, FT1}(ntuple(d -> x[d, j], vW))
             ok, r, frame = SFH.pair_frame(geom, x_i, x_j)
             bin_idx = SFH.digitize(r, dist_be)
@@ -844,9 +917,26 @@ function _sp2d_pairs!(
                 _sp2d_scatter!(h, bin_idx, vals, value_bins, n_val)
             end
         end
+      end
     end
     return nothing
 end
+
+"""
+    _sp2d_curved_run_blocks!(h, x, u, dist_be, plan, value_bins, geom, n_bins, n_val, ilist, N, grid)
+
+Curved-geometry single-pass 2D analogue of [`_pf_run_blocks!`](@ref): dispatch on `grid` so the
+kernel receives one concretely typed schedule.
+"""
+@inline _sp2d_curved_run_blocks!(
+    h, x, u, dist_be, plan, value_bins, geom, n_bins, n_val, ilist, N, ::Nothing,
+) = _sp2d_pairs!(h, x, u, dist_be, plan, value_bins, geom, n_bins, n_val,
+    pair_blocks(N, ilist))
+
+@inline _sp2d_curved_run_blocks!(
+    h, x, u, dist_be, plan, value_bins, geom, n_bins, n_val, ilist, N, grid::CellGrid,
+) = _sp2d_pairs!(h, x, u, dist_be, plan, value_bins, geom, n_bins, n_val,
+    pair_blocks(N, ilist; grid = grid))
 
 """Scatter the six invariants of one pair into their cells of the interleaved accumulator."""
 @inline function _sp2d_scatter!(
@@ -874,41 +964,63 @@ function _sp2d_simd_pairs!(
     h::AbstractArray{OT, 4},
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, value_bins, ::Val{D},
     keybuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector,
-    idxbuf::AbstractVector{Int32}, n_val::Int, irange,
+    idxbuf::AbstractVector{Int32}, n_val::Int, blocks,
 ) where {OT, D}
-    N = length(xc[1])
     nb = n_histogram_bins(plan)
     FTx = eltype(xc[1])
-    @inbounds for i in irange
-        Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
-        Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
-        @simd for j in (i + 1):N
-            Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
-            dx = Xj - Xi
-            r2 = LA.dot(dx, dx)
-            du = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D))) - Ui
-            inv_r = inv(sqrt(r2))
-            keybuf[j] = digitize_key(plan, r2)
-            duLbuf[j] = LA.dot(du, dx) * inv_r
-            dn2buf[j] = LA.dot(du, du)
-            if has_vector_index(plan)
-                idxbuf[j] = squared_approx_index(plan, r2)
+    @inbounds for (ir, jr) in blocks
+        j_first, j_last = first(jr), last(jr)
+        for i in ir
+            jlo = max(i + 1, j_first)
+            jlo > j_last && continue
+            Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
+            Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
+            @simd for j in jlo:j_last
+                Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
+                dx = Xj - Xi
+                r2 = LA.dot(dx, dx)
+                du = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D))) - Ui
+                inv_r = inv(sqrt(r2))
+                keybuf[j] = digitize_key(plan, r2)
+                duLbuf[j] = LA.dot(du, dx) * inv_r
+                dn2buf[j] = LA.dot(du, du)
+                if has_vector_index(plan)
+                    idxbuf[j] = squared_approx_index(plan, r2)
+                end
             end
-        end
-        for j in (i + 1):N
-            dbin = squared_bin(plan, keybuf[j], idxbuf[j])
-            if 1 <= dbin <= nb
-                duL = duLbuf[j]
-                dn2 = dn2buf[j]
-                duL2 = duL * duL
-                duT2 = dn2 - duL2
-                vals = (dn2, duL2, duT2, duL * dn2, duL * duL2, duL * duT2)
-                _sp2d_scatter!(h, dbin, vals, value_bins, n_val)
+            for j in jlo:j_last
+                dbin = squared_bin(plan, keybuf[j], idxbuf[j])
+                if 1 <= dbin <= nb
+                    duL = duLbuf[j]
+                    dn2 = dn2buf[j]
+                    duL2 = duL * duL
+                    duT2 = dn2 - duL2
+                    vals = (dn2, duL2, duT2, duL * dn2, duL * duL2, duL * duT2)
+                    _sp2d_scatter!(h, dbin, vals, value_bins, n_val)
+                end
             end
         end
     end
     return nothing
 end
+
+"""
+    _sp2d_run_blocks!(h, xc, uc, plan, value_bins, ::Val{D}, bufs..., n_val, ilist, N, grid)
+
+Single-pass 2D analogue of [`_pf_run_blocks!`](@ref): dispatch on `grid` so the kernel receives one
+concretely typed schedule.
+"""
+@inline _sp2d_run_blocks!(
+    h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, n_val,
+    ilist, N, ::Nothing,
+) where {D} = _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, Val(D), keybuf, duLbuf, dn2buf,
+    idxbuf, n_val, pair_blocks(N, ilist))
+
+@inline _sp2d_run_blocks!(
+    h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, n_val,
+    ilist, N, grid::CellGrid,
+) where {D} = _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, Val(D), keybuf, duLbuf, dn2buf,
+    idxbuf, n_val, pair_blocks(N, ilist; grid = grid))
 
 """
     _sp2d_simd_partial!(h, x, u, dist_be, value_bins, ::Val{D}, n_val, ilist)
@@ -918,17 +1030,22 @@ Run [`_sp2d_simd_pairs!`](@ref) over an explicit outer-index list, with this wor
 function _sp2d_simd_partial!(
     h::AbstractArray{OT, 4},
     x::AbstractMatrix, u::AbstractMatrix, dist_be, value_bins, ::Val{D}, n_val::Int, ilist,
+    culling::CullingPolicy = AutoCulling(),
 ) where {OT, D}
-    xc = ntuple(d -> collect(view(x, d, :)), Val(D))
-    uc = ntuple(d -> collect(view(u, d, :)), Val(D))
-    N = length(xc[1])
-    keybuf = Vector{eltype(xc[1])}(undef, N)
+    x_raw = ntuple(d -> collect(view(x, d, :)), Val(D))
+    u_raw = ntuple(d -> collect(view(u, d, :)), Val(D))
+    N = length(x_raw[1])
+    keybuf = Vector{eltype(x_raw[1])}(undef, N)
     duLbuf = Vector{OT}(undef, N)
     dn2buf = Vector{OT}(undef, N)
     idxbuf = Vector{Int32}(undef, N)
     plan = squared_digitize_plan(dist_be)
-    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, Val(D),
-        keybuf, duLbuf, dn2buf, idxbuf, n_val, ilist)
+    grid = culling isa NoCulling ? nothing :
+           cull_grid_for(x_raw, SFH.FlatGeometry{D}(), dist_be, culling)
+    xc, uc = isnothing(grid) ? (x_raw, u_raw) :
+             (apply_perm(x_raw, grid.perm), apply_perm(u_raw, grid.perm))
+    _sp2d_run_blocks!(h, xc, uc, plan, value_bins, Val(D),
+        keybuf, duLbuf, dn2buf, idxbuf, n_val, ilist, N, grid)
     return nothing
 end
 

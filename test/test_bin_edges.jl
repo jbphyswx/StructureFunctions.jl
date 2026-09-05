@@ -182,4 +182,35 @@ Test.@testset "BinEdges Tests" begin
         Test.@test via_log_vec.sums ≈ ref_log.sums
         Test.@test via_log_vec.counts == ref_log.counts
     end
+
+    Test.@testset "midpoints" begin
+        # Every abscissa lies inside its own bin, for each way of expressing the same edges.
+        for edges in (
+            [0.0, 2.0, 6.0],
+            SF.BinEdges([0.0, 2.0, 6.0]),
+            SF.LinearBinEdges(range(0.0, 6.0; length = 4)),
+            range(0.0, 6.0; length = 4),
+            SF.LogBinEdges([1.0, 10.0, 100.0]),
+        )
+            m = collect(SF.midpoints(edges))
+            Test.@test length(m) == length(edges) - 1
+            for k in eachindex(m)
+                Test.@test edges[k] <= m[k] <= edges[k + 1]
+            end
+        end
+
+        Test.@test SF.midpoints([0.0, 2.0, 6.0]) == [1.0, 4.0]
+        Test.@test SF.midpoints(SF.BinEdges([0.0, 2.0, 6.0])) == [1.0, 4.0]
+        Test.@test collect(SF.midpoints(SF.LinearBinEdges(range(0.0, 6.0; length = 4)))) ==
+                   [1.0, 3.0, 5.0]
+        Test.@test collect(SF.midpoints(range(0.0, 6.0; length = 4))) == [1.0, 3.0, 5.0]
+        # Log edges are uniform on the log grid, so their abscissa is the geometric mean.
+        Test.@test SF.midpoints(SF.LogBinEdges([1.0, 10.0, 100.0])) ≈ [sqrt(10.0), sqrt(1000.0)]
+
+        out = zeros(2)
+        Test.@test SF.midpoints!(out, [0.0, 2.0, 6.0]) == [1.0, 4.0]
+        Test.@test SF.midpoints!(out, SF.LogBinEdges([1.0, 10.0, 100.0])) ≈
+                   SF.midpoints(SF.LogBinEdges([1.0, 10.0, 100.0]))
+        Test.@test_throws DimensionMismatch SF.midpoints!(zeros(5), [0.0, 2.0, 6.0])
+    end
 end

@@ -5,6 +5,7 @@ using PrecompileTools: PrecompileTools
 
 # using Distributed
 # @everywhere include("ParallelCalculations.jl") # this works w/ include("src/StructureFunctions.jl") but not w/ using StructureFunctions, and the former dumps directly into Main...
+include("Channels.jl")
 include("BinEdges.jl")
 include("HelperFunctions.jl")
 include("AuxiliaryAxes.jl")
@@ -22,6 +23,7 @@ import .StructureFunctionObjects:
     StructureFunctionTensorSumsAndCounts,
     HelmholtzDecomposition2D
 
+using .Channels
 using .HelperFunctions
 using .StructureFunctionTypes
 using .StructureFunctionObjects
@@ -29,6 +31,7 @@ using .Calculations
 using .KHM
 
 # Re-export key APIs
+export Fields
 export AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges, LogBinEdges_from_log_edges,
     InfPaddedBinEdges, physical_edges_vector, n_histogram_bins
 export calculate_structure_function, calculate_structure_function!, calculate_structure_functions_single_pass,
@@ -41,6 +44,8 @@ export calculate_structure_function, calculate_structure_function!, calculate_st
     calculate_structure_functions_single_pass_batch!, calculate_structure_functions_single_pass_2d_batch!,
     GPUSFWorkspace, CPUSFWorkspace, reset_histogram!, release!,
     joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256
+export isotropic_spectrum, shell_spectrum, gridded_spectrum, shell_average,
+    helmholtz_spectra, spectral_flux, covariance, covariance_matrix
 export marginalize
 export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2DSumsAndCounts
 export StructureFunctionTensor, StructureFunctionTensorSumsAndCounts, HelmholtzDecomposition2D

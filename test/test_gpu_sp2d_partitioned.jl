@@ -143,7 +143,7 @@ Test.@testset "GPU sp2d HTP-EJ partitioned (KA.CPU)" begin
     )
     Test.@test sums_ws ≈ sums_lin_ref atol = 1e-11
     Test.@test cnts_ws == cnts_lin_ref
-    Test.@test ws2.partition_sums_dev === nothing
+    Test.@test ws2.lazy.partition_sums_dev === nothing
     Test.@test ws2.sp2d_pair_kernel !== nothing
     Test.@test !ws2.sp2d_accumulation_strategy.needs_partition_merge
 end
@@ -200,7 +200,7 @@ Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
     ws = SFC.GPUSFWorkspace(backend, linear_dist, value_bins_ntuple)
     Test.@test ws.sp2d_accumulation_strategy.accum_mode == :typeplane
     Test.@test !ws.sp2d_accumulation_strategy.needs_partition_merge
-    Test.@test ws.partition_sums_dev === nothing
+    Test.@test ws.lazy.partition_sums_dev === nothing
     sums_gpu = zeros(FT, 6, NB, n_val)
     cnts_gpu = zeros(UInt32, 6, NB, n_val)
     SFC.gpu_calculate_structure_functions_single_pass_2d!(
@@ -287,7 +287,7 @@ Test.@testset "GPU sp2d direct mode (KA.CPU)" begin
     )
     Test.@test sums_gpu ≈ sums_ref atol = 1e-11
     Test.@test cnts_gpu == cnts_ref
-    Test.@test ws.partition_sums_dev !== nothing
+    Test.@test ws.lazy.partition_sums_dev !== nothing
 end
 
 Test.@testset "GPU sp2d general distance edges take the tiled path (KA.CPU)" begin

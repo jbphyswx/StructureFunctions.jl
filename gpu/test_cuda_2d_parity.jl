@@ -19,13 +19,14 @@ const N = parse(Int, get(ENV, "SF_T_N", "3000"))
 const B = parse(Int, get(ENV, "SF_T_B", "8"))
 const D = 2
 const sf2 = SFT.SecondOrderStructureFunctionType()
+const GEOM = SF.HelperFunctions.FlatGeometry{D}()
 
 # Reference: force the KA path on CPU (default hook returns false → KA unified).
 function ka_cpu_2d(x, u, ddig_cpu, vplan_cpu, N, n_dist, n_val, B, NMOM, fixed_x)
     out = zeros(FT, NMOM, n_dist, n_val, B)
     cnt = zeros(UInt32, NMOM, n_dist, n_val, B)
     GE._sf_launch_2d_batch!(KA.CPU(), out, cnt, x, u, sf2, ddig_cpu, vplan_cpu,
-                            N, n_dist, n_val, B, D, Val(NMOM), fixed_x)
+                            N, n_dist, n_val, B, D, Val(NMOM), fixed_x, GEOM)
     KA.synchronize(KA.CPU())
     return out, cnt
 end
@@ -34,7 +35,7 @@ function cuda_2d(xd, ud, ddig, vplan, N, n_dist, n_val, B, NMOM, fixed_x)
     out = CUDA.zeros(FT, NMOM, n_dist, n_val, B)
     cnt = CUDA.zeros(UInt32, NMOM, n_dist, n_val, B)
     handled = SFC.gpu_fast_launch_2d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, ddig, vplan,
-                                            N, n_dist, n_val, B, D, NMOM, fixed_x)
+                                            N, n_dist, n_val, B, D, NMOM, fixed_x, GEOM, nothing)
     CUDA.synchronize()
     return out, cnt, handled
 end
@@ -78,7 +79,7 @@ let n_dist = 50, n_val = 50, NMOM = 6, fixed_x = true
     out = CUDA.zeros(FT, NMOM, n_dist, n_val, B); cnt = CUDA.zeros(UInt32, NMOM, n_dist, n_val, B)
     f() = (CUDA.fill!(out, 0f0); CUDA.fill!(cnt, UInt32(0));
            GE._sf_launch_2d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, ddig, vplan,
-                                   N, n_dist, n_val, B, D, Val(6), true); CUDA.synchronize())
+                                   N, n_dist, n_val, B, D, Val(6), true, GEOM); CUDA.synchronize())
     f(); f(); ts = Float64[]; for _ in 1:5; t = time_ns(); f(); push!(ts, (time_ns()-t)/1e9); end
     t = median(ts); bapps = (N*(N-1)/2)*B/t/1e9
     @printf("  N=%d B=%d: %.3f s  (%.2f bapps)  → B=8064 ≈ %.1f s\n", N, B, t, bapps, t*8064/B)

@@ -90,12 +90,12 @@ function main()
         launch!()
     end
 
-    _GPUExt._joint2d_resolve_tiled_kernel!(
-        ws, backend, ws.dist_bins, ws.val_plan, ws.joint2d_compile_cells,
+    kernel! = _GPUExt._joint2d_tiled_kernel_for(
+        backend, ws.dist_bins, ws.val_plan, ws.joint2d_compile_cells, 2,
     )
     dist_r = _GPUExt._joint2d_dist_route(ws.dist_bins)
     val_r = _GPUExt._joint2d_val_route(ws.val_plan)
-    gpu_fn = ws.joint2d_kernel === nothing ? :unknown : nameof(ws.joint2d_kernel.f)
+    gpu_fn = nameof(kernel!.f)
     msg = Printf.@sprintf(
         "ncu workload: N=%d n_dist=%d n_val=%d NB2=%d route=%s/%s compile_cells=%d prewarm=%d gpu_fn=%s",
         N, n_dist, length(value_bins) - 1, nb2, dist_r, val_r, ws.joint2d_compile_cells, prewarm, gpu_fn,

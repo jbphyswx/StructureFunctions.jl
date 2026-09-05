@@ -1151,7 +1151,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
         shared_type_pass = @localmem Int (1,)
     end : quote end
     kernel_tail_params = [
-        :(n_tiles::Int), :(n_tile_blocks::Int), :(workgroup_size::Int),
+        :(sched), :(n_tile_blocks::Int), :(workgroup_size::Int),
         :(C::Int), :(plane::Int), :(types_per_pass::Int), :(n_type_passes::Int),
         :(::Val{HC}), :(::Val{D}), :(geom),
     ]
@@ -1320,7 +1320,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
             @synchronize
     lid = @index(Local, Linear)
             if @inbounds(shared_block_id[1]) <= n_tile_blocks
-                ti, tj = _tile_from_linear(@inbounds(shared_block_id[1]), n_tiles)
+                ti, tj = tile_for(sched, @inbounds(shared_block_id[1]))
                 i0 = (ti - 1) * SF_GPU_TILE + 1
                 j0 = (tj - 1) * SF_GPU_TILE + 1
                 ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -1333,7 +1333,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
             @synchronize
     lid = @index(Local, Linear)
             if @inbounds(shared_block_id[1]) <= n_tile_blocks
-                ti, tj = _tile_from_linear(@inbounds(shared_block_id[1]), n_tiles)
+                ti, tj = tile_for(sched, @inbounds(shared_block_id[1]))
                 i0 = (ti - 1) * SF_GPU_TILE + 1
                 j0 = (tj - 1) * SF_GPU_TILE + 1
                 ni = min(SF_GPU_TILE, N_points - i0 + 1)

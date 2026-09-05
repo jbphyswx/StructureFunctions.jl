@@ -4,17 +4,22 @@
 using ComputationalBackends: ComputationalBackends as CB
 
 """
-    resolve_auto_backend(shape, threaded_available, distributed_available) -> AbstractExecutionBackend
+    resolve_auto_backend(shape, threaded_available, distributed_available; nthreads=Threads.nthreads())
 
 What `AutoBackend` resolves to. `threaded_available`/`distributed_available` are zero-argument
 predicates because each entry family probes a different dispatch.
+
+`nthreads` defaults to `Threads.nthreads()`, which is fixed at process start.
 """
-function resolve_auto_backend(shape, threaded_available::F, distributed_available::G) where {F, G}
+function resolve_auto_backend(
+    shape, threaded_available::F, distributed_available::G;
+    nthreads::Int = Threads.nthreads(),
+) where {F, G}
     (distributed_workers_available(Val(:distributed)) && distributed_available()) &&
         return CB.DistributedBackend()
     has_auxiliary_axes(shape) &&
-        return Threads.nthreads() > 1 ? CB.ThreadedBackend() : CB.SerialBackend()
-    (Threads.nthreads() > 1 && threaded_available()) && return CB.ThreadedBackend()
+        return nthreads > 1 ? CB.ThreadedBackend() : CB.SerialBackend()
+    (nthreads > 1 && threaded_available()) && return CB.ThreadedBackend()
     return CB.SerialBackend()
 end
 

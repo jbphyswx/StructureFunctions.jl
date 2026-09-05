@@ -26,6 +26,7 @@ const B = parse(Int, get(ENV, "SF_B", "64"))
 const NB = 50
 const D = 2
 const BE = CUDA.CUDABackend()
+const GEOM = SF.HelperFunctions.FlatGeometry{D}()
 tput(t) = (N * (N - 1) / 2) * B / t / 1e9
 bench(f) = (f(); f(); ts = Float64[]; for _ in 1:5
     t = time_ns(); f(); push!(ts, (time_ns() - t) / 1e9)
@@ -42,12 +43,12 @@ let
     xo, uo = GE._stage_batch_device(BE, x_fix, u; fixed_x = true)
     so = CUDA.zeros(FT, NB, B); co = CUDA.zeros(UInt32, NB, B)
     fo() = (CUDA.fill!(so, 0f0); CUDA.fill!(co, UInt32(0));
-        GE._launch_batch_fixed_x_sf!(BE, so, co, xo, uo, sf2, N, B, lbe); CUDA.synchronize())
+        GE._launch_batch_fixed_x_sf!(BE, so, co, xo, uo, sf2, N, B, lbe, GEOM); CUDA.synchronize())
     to = bench(fo)
     xn = CuArray(x_fix); un = CuArray(u)
     sn = CUDA.zeros(FT, 1, NB, B); cn = CUDA.zeros(UInt32, 1, NB, B)
     fn() = (CUDA.fill!(sn, 0f0); CUDA.fill!(cn, UInt32(0));
-        SFC.gpu_fast_launch_1d_batch!(BE, sn, cn, xn, un, sf2, dig, N, NB, B, D, 1, true);
+        SFC.gpu_fast_launch_1d_batch!(BE, sn, cn, xn, un, sf2, dig, N, NB, B, D, 1, true, GEOM, nothing);
         CUDA.synchronize())
     tn = bench(fn)
     eq = Array(co) == reshape(Array(cn), NB, B)

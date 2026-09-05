@@ -16,9 +16,6 @@ using Random: Random
 const ASSETS_DIR = joinpath(@__DIR__, "..", "src", "assets")
 mkpath(ASSETS_DIR)
 
-"""Bin midpoints from flat edge vector `[e₀, e₁, …, eₙ]` (N edges → N−1 midpoints)."""
-bin_midpoints(edges) = [(edges[i] + edges[i + 1]) / 2 for i in 1:(length(edges) - 1)]
-
 # ─── Shared synthetic field ────────────────────────────────────────────────
 
 function make_synthetic_field(; N=2000, seed=42)
@@ -81,7 +78,7 @@ function generate_kolmogorov_figure()
         backend=CB.SerialBackend(), show_progress=false, verbose=false)
 
     sf2   = result.values
-    rdist = bin_midpoints(result.distance)
+    rdist = SF.midpoints(result.distance)
     valid = sf2 .> 0
 
     fig = CM.Figure(size=(820, 520), fontsize=14)
@@ -137,7 +134,7 @@ function generate_long_vs_trans_figure()
 
     sf_L = res_L.values
     sf_T = res_T.values
-    rd   = bin_midpoints(res_L.distance)
+    rd   = SF.midpoints(res_L.distance)
     vL   = sf_L .> 0
     vT   = sf_T .> 0
 
@@ -181,7 +178,7 @@ function generate_parity_figure()
 
     sf_s = res_serial.values
     sf_t = res_thread.values
-    rd   = bin_midpoints(res_serial.distance)
+    rd   = SF.midpoints(res_serial.distance)
     diff = abs.(sf_s .- sf_t)
     rel  = diff ./ (abs.(sf_s) .+ 1e-300)
 
@@ -270,7 +267,7 @@ function generate_single_pass_figure()
 
     r_min, r_max = 5.0, 400.0
     bins = exp.(range(log(r_min), log(r_max); length=29))
-    rdist = bin_midpoints(bins)
+    rdist = SF.midpoints(bins)
 
     # One O(N²) pass → NamedTuple of the six isotropic invariants; point-field input also
     # yields a `:helmholtz` entry (rotational/divergent decomposition).
@@ -317,7 +314,7 @@ end
 function generate_2d_binning_figure()
     r_min, r_max = 5.0, 400.0
     dist_bins = exp.(range(log(r_min), log(r_max); length=25))
-    rmid = bin_midpoints(dist_bins)
+    rmid = SF.midpoints(dist_bins)
     nval = 40
     CMAP = CM.cgrad(:cubehelix; rev=true)
     NANC = CM.RGBAf(0.86, 0.86, 0.88, 0.55)
@@ -349,7 +346,7 @@ function generate_2d_binning_figure()
             backend=CB.SerialBackend())
 
         for (col, (key, signed, lab)) in enumerate(invs)
-            vmid = bin_midpoints(value_bins[col])
+            vmid = SF.midpoints(value_bins[col])
             pdf = _conditional_pdf(getproperty(res, key).counts)
             ax = CM.Axis(fig[row, col]; xscale=CM.log10,
                 title = row == 1 ? lab : "",

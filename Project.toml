@@ -15,35 +15,53 @@ ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [weakdeps]
+AbstractFFTs = "621f4979-c628-5d54-868e-fcf4e3e8185c"
+Bessels = "0e736298-9ec6-45e8-9647-e4fc86a2fe38"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+FlowGeometries = "0ccd6995-f618-4175-b01e-f437d0cb4974"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
 OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
+SpectralBackends = "289ded02-b044-41b2-8b2d-71f2a47755d1"
 
 [extensions]
 StructureFunctionsCUDAExt = ["KernelAbstractions", "CUDA"]
+StructureFunctionsBesselsExt = ["Bessels"]
+StructureFunctionsFFTExt = ["AbstractFFTs", "SpectralBackends"]
+StructureFunctionsSpectralBackendsExt = ["SpectralBackends"]
+StructureFunctionsFlowGeometriesExt = ["FlowGeometries"]
 StructureFunctionsCairoMakieExt = ["CairoMakie"]
 StructureFunctionsKernelAbstractionsExt = ["KernelAbstractions"]
 StructureFunctionsOhMyThreadsExt = ["OhMyThreads"]
 StructureFunctionsDistributedExt = ["Distributed"]
 StructureFunctionsMPIExt = ["MPI"]
 
+[extras]
+FlowGeometries = "0ccd6995-f618-4175-b01e-f437d0cb4974"
+SpectralBackends = "289ded02-b044-41b2-8b2d-71f2a47755d1"
+
 [sources]
 ComputationalBackends = { url = "https://github.com/jbphyswx/ComputationalBackends.jl" }
+FlowGeometries = { url = "https://github.com/jbphyswx/FlowGeometries.jl" }
+SpectralBackends = { url = "https://github.com/jbphyswx/SpectralBackends.jl" }
 
 [compat]
+AbstractFFTs = "1"
+Bessels = "0.2"
 CUDA = "5, 6"
 CairoMakie = "0.15"
 ComputationalBackends = "0.1"
 Distances = "0.10"
 Distributed = "1.11"
+FlowGeometries = "0.1"
 KernelAbstractions = "0.9"
 LinearAlgebra = "1.11"
 MPI = "0.20"
 OhMyThreads = "0.8"
 PrecompileTools = "1.3.3"
 ProgressMeter = "1.9"
+SpectralBackends = "0.1"
 StaticArrays = "1.9"
 julia = "1.12"

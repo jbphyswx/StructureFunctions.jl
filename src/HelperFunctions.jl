@@ -36,6 +36,10 @@ export digitize,
     FlatGeometry,
     SphericalGeometry,
     coordinate_width,
+    input_coordinate_width,
+    field_width,
+    prepare_pair_inputs,
+    prepare_coordinates,
     pair_frame,
     pair_direction,
     pair_delta,
@@ -43,7 +47,6 @@ export digitize,
     pair_increments,
     pair_geometry,
     pair_geometry_for,
-    midpoints,
     flatten_data,
     remove_nans
 
@@ -82,19 +85,6 @@ end
     """
     searchsortedfirst(bins, x) - 1
 end
-
-"""
-    midpoints(edges::AbstractVector{<:Number})
-
-Bin midpoints from flat edges `[e₀, e₁, …, eₙ]` (length `n+1` → `n` midpoints).
-"""
-function midpoints(edges::AbstractVector{T}) where {T}
-    n = length(edges) - 1
-    return T[(edges[i] + edges[i + 1]) / 2 for i in 1:n]
-end
-
-@inline midpoints(edges::SA.SVector{N,T}) where {N,T} = SA.SVector{N-1,T}(ntuple(i -> (edges[i] + edges[i+1]) / 2, N-1))
-@inline midpoints(edges::AbstractRange{T}) where {T} = range((first(edges) + last(edges)) / 2, length = length(edges) - 1, step = step(edges))
 
 @inline function digitize(x::AbstractVector, bins::AbstractVector)
     """
@@ -164,6 +154,22 @@ discard every pair closer than ~2 km in Float32.
 @inline _geodesic_degeneracy_tol(::Type{T}) where {T} = floatmin(T)
 
 """
+Smallest `‖p̂+q̂‖²` for which the separation direction still carries information.
+
+`sin σ` vanishes at **two** separations, and the frame behaves differently at each.
+[`_geodesic_degeneracy_tol`](@ref) guards `σ → 0`, where the cancellation in `t_A = d − (d·p̂)p̂` is
+exact in structure and short pairs are computed perfectly. At `σ → π` it is not: `d ≈ −2p̂` and
+`d·p̂ ≈ −2`, so `t_A` is the difference of two `O(2)` quantities and the direction's error grows as
+`ε/(π−σ)` — measured against `BigFloat` at 3.7e-11 for `π−σ = 1e-5`, 3.5e-3 for `1e-13`, and **0.385**
+for `1e-15`, i.e. a unit vector wrong by 38%.
+
+`‖p̂+q̂‖ = 2cos(σ/2) ≈ π−σ` near that root, so requiring `eps(T)` here bounds the direction error at
+about `sqrt(eps(T))`. Antipodal points are joined by infinitely many great circles, so no tie-break
+recovers the direction — the pair carries a separation but no orientation, and is refused.
+"""
+@inline _antipodal_degeneracy_tol(::Type{T}) where {T} = eps(T)
+
+"""
     geodesic_frame(p̂, q̂) -> (σ, t̂_A, t̂_B, m̂, ok)
 
 Great-circle frame for the pair `(p̂, q̂)` of unit position vectors: central angle `σ`, the
@@ -193,8 +199,10 @@ lane poisons an entire atomic accumulator.
     t_B = dp * q̂ + d                # ≡ (p̂·q̂)q̂ - p̂
     w = LA.cross(p̂, d)              # ≡ p̂ × q̂
     s2 = LA.dot(w, w)               # = sin²σ
-    σ = 2 * atan(sqrt(LA.dot(d, d)), sqrt(LA.dot(sum_pq, sum_pq)))
-    ok = s2 > _geodesic_degeneracy_tol(T)
+    c2 = LA.dot(sum_pq, sum_pq)     # = 4cos²(σ/2), the scale that vanishes at antipodal
+    σ = 2 * atan(sqrt(LA.dot(d, d)), sqrt(c2))
+    # Both roots of `sin σ = 0`, which need different thresholds — see the two tolerances.
+    ok = s2 > _geodesic_degeneracy_tol(T) && c2 > _antipodal_degeneracy_tol(T)
     inv_s = ok ? inv(sqrt(s2)) : zero(T)
     return σ, t_A * inv_s, t_B * inv_s, w * inv_s, ok
 end
@@ -228,12 +236,41 @@ SphericalGeometry{D}(metric::M, radius::T) where {D, M, T} = SphericalGeometry{D
 """
     coordinate_width(geometry) -> Val{W}
 
-How many numbers locate one point in this geometry, as a `Val` so callers can build a
-statically-sized load. This is **not** the velocity dimension: on a shell a point takes two
-coordinates whether or not the velocity carries a third, radial, component.
+How many numbers locate one point in the form the kernels consume, as a `Val` so callers can build a
+statically-sized load. This is not the velocity dimension: a point on a shell takes three ambient
+components whether or not the velocity carries a radial one.
+
+See [`input_coordinate_width`](@ref) for the width a caller supplies and
+[`prepare_pair_inputs`](@ref) for the conversion between the two.
 """
 @inline coordinate_width(::FlatGeometry{D}) where {D} = Val(D)
-@inline coordinate_width(::SphericalGeometry) = Val(2)
+@inline coordinate_width(::SphericalGeometry) = Val(3)
+
+"""
+    input_coordinate_width(geometry) -> Val{W}
+
+How many numbers a caller supplies per point: a longitude and a latitude on a sphere, which
+[`prepare_pair_inputs`](@ref) turns into the three-component unit position the kernels index.
+
+Defaults to [`coordinate_width`](@ref), so a geometry whose input needs no conversion implements
+nothing.
+"""
+@inline input_coordinate_width(g) = coordinate_width(g)
+@inline input_coordinate_width(::SphericalGeometry) = Val(2)
+
+"""
+    field_width(geometry) -> Val{W}
+
+How many components of a field the kernels index per point.
+
+Defaults to [`coordinate_width`](@ref): in the kernel representation a position and a field are
+ambient vectors of the same dimension — `D` apiece in flat space, three apiece on a sphere, where
+[`prepare_pair_inputs`](@ref) has expressed both in ambient coordinates.
+
+The geometry's `D` stays the velocity dimension and is what selects the transverse normalization and
+whether a radial component is carried, so it cannot be read off a prepared array's leading axis.
+"""
+@inline field_width(g) = coordinate_width(g)
 
 """
     pair_frame(geometry, x1, x2) -> (ok, r, frame)
@@ -253,26 +290,13 @@ defeat both.
 end
 
 """
-Spherical frame from raw `(lon, lat)` coordinates, expressed in each endpoint's own local
-`(east, north)` basis.
-
-The ambient form of [`geodesic_frame`](@ref) needs 3-vectors, which would force the caller's `(2, N)`
-lon/lat array to be widened to `(3, N)`. Projecting the geodesic tangents onto the local bases
-instead keeps everything the width the caller passed — the longitudinal direction at `A` is just
-`(sin α₁, cos α₁)` for the forward azimuth `α₁`, and the transverse is its right-handed quarter turn.
-Parallel transport is still exact: it preserves the angle to the geodesic, which is what `α` measures.
+Spherical frame from the ambient unit positions
 """
 @inline function pair_frame(g::SphericalGeometry, x1, x2)
-    p̂ = unit_position(g.metric, x1[1], x1[2])
-    q̂ = unit_position(g.metric, x2[1], x2[2])
+    p̂ = SA.SVector{3}(x1[1], x1[2], x1[3])
+    q̂ = SA.SVector{3}(x2[1], x2[2], x2[3])
     σ, t_A, t_B, m̂, ok = geodesic_frame(p̂, q̂)
-    Ê_A, N̂_A = local_east_north(g.metric, x1[1], x1[2])
-    Ê_B, N̂_B = local_east_north(g.metric, x2[1], x2[2])
-    FT = typeof(σ)
-    # Local components of the longitudinal tangent at each end; n̂ = ẑ × t̂ within the tangent plane.
-    tA = SA.SVector{2, FT}(LA.dot(t_A, Ê_A), LA.dot(t_A, N̂_A))
-    tB = SA.SVector{2, FT}(LA.dot(t_B, Ê_B), LA.dot(t_B, N̂_B))
-    return ok, g.radius * σ, (tA, tB, p̂, q̂, m̂, Ê_A, N̂_A, Ê_B, N̂_B)
+    return ok, g.radius * σ, (t_A, t_B, m̂, p̂, q̂)
 end
 
 """
@@ -317,35 +341,94 @@ Velocity difference expressed in the pair's common frame, given the `frame` from
 @inline pair_delta(::FlatGeometry, frame, x1, x2, u1, u2) = u2 - u1
 
 """
-Increments for `u = (east, north)` on the sphere. Each endpoint's velocity is projected onto its own
-geodesic frame and only then differenced — that IS the parallel transport, because transport along a
-geodesic preserves the angle to it. `n̂ = ẑ × t̂ = (−t̂₂, t̂₁)` matches the package handedness.
+Increments on the sphere from the ambient velocities [`prepare_pair_inputs`](@ref) produces. Each
+endpoint's velocity is projected onto its own geodesic tangent and only then differenced — that IS
+the parallel transport, because transport along a geodesic preserves the angle to it. `m̂` is shared
+between the endpoints, so the transverse term is a single dot product.
 """
 @inline function pair_delta(::SphericalGeometry{2}, frame, x1, x2, u_A, u_B)
-    tA, tB = frame[1], frame[2]
-    nA = SA.SVector(-tA[2], tA[1])
-    nB = SA.SVector(-tB[2], tB[1])
-    δu_L = LA.dot(u_B, tB) - LA.dot(u_A, tA)
-    δu_T = LA.dot(u_B, nB) - LA.dot(u_A, nA)
+    δu_L, δu_T = geodesic_increments(frame[1], frame[2], frame[3], u_A, u_B)
     return SA.SVector{2, typeof(δu_L)}(δu_L, δu_T)
 end
 
 """
-Thin shell, `u = (east, north, up)`. Horizontal components transport exactly as in 2D; the radial
-component is a scalar difference needing no transport, since the geodesic frame is tangent to the
-sphere and therefore orthogonal to the radial direction at both endpoints.
+Thin shell. The radial component is recovered as `u·p̂` at each endpoint and differenced as a scalar:
+`t̂ ⟂ p̂, q̂` and `m̂ ⟂ p̂, q̂`, so it cannot leak into the tangential increments and needs no transport.
 """
 @inline function pair_delta(::SphericalGeometry{3}, frame, x1, x2, u_A, u_B)
-    tA, tB = frame[1], frame[2]
-    nA = SA.SVector(-tA[2], tA[1])
-    nB = SA.SVector(-tB[2], tB[1])
-    hA = SA.SVector(u_A[1], u_A[2])
-    hB = SA.SVector(u_B[1], u_B[2])
-    δu_L = LA.dot(hB, tB) - LA.dot(hA, tA)
-    δu_T = LA.dot(hB, nB) - LA.dot(hA, nA)
-    δw = u_B[3] - u_A[3]
+    t_A, t_B, m̂, p̂, q̂ = frame
+    δu_L, δu_T = geodesic_increments(t_A, t_B, m̂, u_A, u_B)
+    δw = LA.dot(u_B, q̂) - LA.dot(u_A, p̂)
     return SA.SVector{3, typeof(δu_L)}(δu_L, δu_T, δw)
 end
+
+"""
+    prepare_pair_inputs(geometry, x, u) -> (x_kernel, u_kernel)
+
+Convert caller coordinates and fields into the form the kernels index, once per point.
+
+Flat geometry passes both through. Spherical geometry maps `(lon, lat)` to the ambient unit position
+`p̂`, and `(east, north[, up])` to the ambient velocity `u₃ = u_E Ê + u_N N̂ [+ u_r p̂]`, both `(3, N)`.
+
+Trailing auxiliary axes are preserved. `x` may carry one slice against many field slices (the
+fixed-position batch), in which case its single slice supplies the basis for all of them.
+"""
+@inline prepare_pair_inputs(::Any, x, u) = (x, u)
+
+"""
+    prepare_coordinates(geometry, x) -> x_kernel
+
+The coordinate half of [`prepare_pair_inputs`](@ref), for a caller that has no field to convert
+alongside — a field of scalar channels only has nothing to transport, but its points still have to
+reach the form the kernels index.
+"""
+@inline prepare_coordinates(::Any, x) = x
+
+function prepare_coordinates(g::SphericalGeometry, x::AbstractArray)
+    size(x, 1) == 2 || throw(DimensionMismatch(
+        "spherical geometry locates a point with (lon, lat) on axis 1 of x; got size(x, 1)=$(size(x, 1))",
+    ))
+    N = size(x, 2)
+    xb = reshape(x, 2, N, :)
+    FT = float(eltype(x))
+    pos = similar(x, FT, 3, N, size(xb, 3))
+    @inbounds for b in axes(xb, 3), i in 1:N
+        p = unit_position(g.metric, xb[1, i, b], xb[2, i, b])
+        pos[1, i, b], pos[2, i, b], pos[3, i, b] = p[1], p[2], p[3]
+    end
+    return _reshape_like(pos, x)
+end
+
+function prepare_pair_inputs(g::SphericalGeometry{D}, x::AbstractArray, u::AbstractArray) where {D}
+    size(x, 1) == 2 || throw(DimensionMismatch(
+        "spherical geometry locates a point with (lon, lat) on axis 1 of x; got size(x, 1)=$(size(x, 1))",
+    ))
+    N = size(x, 2)
+    xb = reshape(x, 2, N, :)
+    ub = reshape(u, size(u, 1), N, :)
+    Bx, Bu = size(xb, 3), size(ub, 3)
+    Bx == 1 || Bx == Bu || throw(DimensionMismatch(
+        "x carries $Bx auxiliary slice(s) against $Bu in u; expected 1 or $Bu",
+    ))
+    FT = float(promote_type(eltype(x), eltype(u)))
+    pos = reshape(prepare_coordinates(g, x), 3, N, Bx)
+    vel = similar(u, FT, 3, N, Bu)
+    @inbounds for b in 1:Bu, i in 1:N
+        bx = Bx == 1 ? 1 : b
+        Ê, N̂ = local_east_north(g.metric, xb[1, i, bx], xb[2, i, bx])
+        v = ub[1, i, b] * Ê + ub[2, i, b] * N̂
+        if D == 3
+            v = v + ub[3, i, b] * SA.SVector{3, FT}(pos[1, i, bx], pos[2, i, bx], pos[3, i, bx])
+        end
+        vel[1, i, b], vel[2, i, b], vel[3, i, b] = v[1], v[2], v[3]
+    end
+    return _reshape_like(pos, x), _reshape_like(vel, u)
+end
+
+"""Give a `(3, N, B)` buffer the rank its caller's array had."""
+@inline _reshape_like(a, like) =
+    ndims(like) == 2 ? reshape(a, 3, size(a, 2)) :
+    reshape(a, 3, size(a, 2), size(like)[3:end]...)
 
 """
     pair_increments(geometry, frame, r, x1, x2, u1, u2) -> (δu, r̂)
@@ -458,7 +541,12 @@ The 3D form is singular when `r̂ ∥ ẑ`; [`ReferenceAxisTransverseBasis`](@re
             LA.cross(k_hat, SA.SVector{3, FT}(r_hat[1], r_hat[2], r_hat[3])),
         )
     else
-        error("Only 2D and 3D supported")
+        throw(ArgumentError(
+            "an oriented transverse direction is defined here only for D = 2 (the quarter turn) " *
+            "and D = 3 (the turn about ẑ); got D = $ND. Only operators odd in the transverse " *
+            "component need one — everything else consumes δu_T², which needs no orientation and " *
+            "works at any D.",
+        ))
     end
 end
 

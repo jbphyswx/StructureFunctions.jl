@@ -26,14 +26,28 @@ struct VaryingPositionField{D} <: AbstractFieldShape{D} end
     _pair_dims(metric, D) -> (Val{W}, Val{D})
 
 Coordinate and velocity widths as type parameters, for the kernels that take `x`/`u` as `Array`s
-(whose axis-1 lengths are values, not type parameters). `D` is already restricted to 2 or 3 by
-[`_validate_spatial_dimension`](@ref), so dispatching on those two makes both results concrete;
-`W` comes from the metric's geometry, which is what defines it.
+(whose axis-1 lengths are values, not type parameters). `W` comes from the metric's geometry, which
+is what defines it. `D = 2` and `D = 3` are spelled out so the widths stay concrete on the two
+common cases; any other width resolves through the same expression.
 """
 @inline function _pair_dims(distance_metric, D::Int)
+    _validate_spatial_dimension(D)
     D == 2 && return (SFH.coordinate_width(SFH.pair_geometry_for(distance_metric, Val(2))), Val(2))
     D == 3 && return (SFH.coordinate_width(SFH.pair_geometry_for(distance_metric, Val(3))), Val(3))
-    return _validate_spatial_dimension(D)
+    return (SFH.coordinate_width(SFH.pair_geometry_for(distance_metric, Val(D))), Val(D))
+end
+
+"""
+    _input_pair_dims(metric, D) -> (Val{W}, Val{D})
+
+As [`_pair_dims`](@ref), but `W` is the width a **caller** supplies, which is what
+[`_validate_array_shape`](@ref) checks. `SFH.prepare_pair_inputs` widens it to the kernel width.
+"""
+@inline function _input_pair_dims(distance_metric, D::Int)
+    _validate_spatial_dimension(D)
+    D == 2 && return (SFH.input_coordinate_width(SFH.pair_geometry_for(distance_metric, Val(2))), Val(2))
+    D == 3 && return (SFH.input_coordinate_width(SFH.pair_geometry_for(distance_metric, Val(3))), Val(3))
+    return (SFH.input_coordinate_width(SFH.pair_geometry_for(distance_metric, Val(D))), Val(D))
 end
 @inline has_auxiliary_axes(::PointField) = false
 @inline has_auxiliary_axes(::SharedPositionField) = true
@@ -48,11 +62,25 @@ function _unsupported_tuple_input()
     )
 end
 
+"""
+    _validate_spatial_dimension(D)
+
+Check the velocity dimension on axis 1 of `u`.
+
+The isotropic invariants are built from `δu_L` and `‖δu‖²`, both defined for any `D ≥ 1`, so the
+width is not restricted here. An operator needing an oriented transverse basis states that
+requirement where the basis is formed, and `T2ComponentSF` states its own where it averages.
+"""
 function _validate_spatial_dimension(D::Integer)
-    D == 2 || D == 3 ||
-        throw(DimensionMismatch("expected spatial/velocity dimension D=2 or D=3 on axis 1; got D=$D"))
+    D >= 1 ||
+        throw(DimensionMismatch("expected a velocity dimension D >= 1 on axis 1; got D=$D"))
     return nothing
 end
+
+# `D` is a value here, so the two common widths are spelled out to keep the shape type concrete for
+# the backend methods that dispatch on it.
+@inline _field_shape(::Type{S}, D::Int) where {S} =
+    D == 2 ? S{2}() : D == 3 ? S{3}() : S{D}()
 
 @inline _val_int(::Val{W}) where {W} = W
 
@@ -72,7 +100,7 @@ function _validate_array_shape(x::AbstractArray, u::AbstractArray, distance_metr
 
     D = size(u, 1)
     _validate_spatial_dimension(D)
-    W = _val_int(first(_pair_dims(distance_metric, D)))
+    W = _val_int(first(_input_pair_dims(distance_metric, D)))
     size(x, 1) == W || throw(
         DimensionMismatch(
             "this geometry locates a point with $W coordinate(s) on axis 1 of x, but got " *
@@ -82,18 +110,18 @@ function _validate_array_shape(x::AbstractArray, u::AbstractArray, distance_metr
     size(u, 2) == size(x, 2) ||
         throw(DimensionMismatch("x and u must share axis-2 point count N; got size(x,2)=$(size(x, 2)) and size(u,2)=$(size(u, 2))"))
 
-    # Classify by array rank. The ternaries make `D` a literal type parameter, so the backend
-    # methods that dispatch on `PointField{D}` etc. specialize on it.
+    # Classify by array rank; `_field_shape` makes `D` a type parameter, so the backend methods that
+    # dispatch on `PointField{D}` etc. specialize on it.
     if ndims(x) == 2 && ndims(u) == 2
-        return D == 2 ? PointField{2}() : PointField{3}()
+        return _field_shape(PointField, D)
     elseif ndims(x) == 2 && ndims(u) >= 3
-        return D == 2 ? SharedPositionField{2}() : SharedPositionField{3}()
+        return _field_shape(SharedPositionField, D)
     elseif ndims(x) >= 3 && ndims(u) >= 3
         ndims(x) == ndims(u) ||
             throw(DimensionMismatch("varying-position inputs must have the same rank; got ndims(x)=$(ndims(x)) and ndims(u)=$(ndims(u))"))
         size(x)[3:end] == size(u)[3:end] ||
             throw(DimensionMismatch("varying-position inputs must share auxiliary axes; got $(size(x)[3:end]) and $(size(u)[3:end])"))
-        return D == 2 ? VaryingPositionField{2}() : VaryingPositionField{3}()
+        return _field_shape(VaryingPositionField, D)
     else
         throw(
             DimensionMismatch(

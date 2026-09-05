@@ -249,7 +249,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
     val_last::FT,
     val_inv_step::FT,
     val_step::FT,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
@@ -261,7 +261,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -297,7 +297,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -354,7 +354,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
     dist_last::FT,
     dist_inv_step::FT,
     dist_step::FT,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
@@ -366,7 +366,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -402,7 +402,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -459,7 +459,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
     val_last::FT,
     val_inv_step::FT,
     val_step::FT,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
@@ -471,7 +471,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)
@@ -507,7 +507,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N_points - i0 + 1)

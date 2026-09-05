@@ -17,6 +17,30 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Core Correctness Test ---")
     include("test_core_correctness.jl")
 
+    println("--- Running CPU Pair Blocking Test ---")
+    include("test_cpu_pair_blocking.jl")
+
+    println("--- Running Gridded Lag Sweep Test ---")
+    include("test_gridded.jl")
+
+    println("--- Running Gridded FlowGeometries Adapter Test ---")
+    include("test_gridded_flowgeometries.jl")
+
+    println("--- Running Gridded FFT Test ---")
+    include("test_gridded_fft.jl")
+
+    println("--- Running Gridded Masked Test ---")
+    include("test_gridded_masked.jl")
+
+    println("--- Running Gridded Lat-Lon Test ---")
+    include("test_gridded_zonal.jl")
+
+    println("--- Running Directional Test ---")
+    include("test_directional.jl")
+
+    println("--- Running Multi-Channel Fields Test ---")
+    include("test_channels.jl")
+
     println("--- Running Single-Pass & Helmholtz Test ---")
     include("test_single_pass.jl")
 
@@ -41,8 +65,17 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running GPU Shape Contract Test ---")
     include("test_gpu_shape_contract.jl")
 
+    println("--- Running GPU Culling Test ---")
+    include("test_gpu_culling.jl")
+
     println("--- Running Tensor and KHM Test ---")
     include("test_tensor_khm.jl")
+
+    println("--- Running Known Truth Test ---")
+    include("test_known_truth.jl")
+
+    println("--- Running Transforms Test ---")
+    include("test_transforms.jl")
 
     println("--- Running Triangle Outer Chunks Test ---")
     include("test_triangle_outer_chunks.jl")

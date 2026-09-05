@@ -157,3 +157,115 @@ function _bl_result_accum(ws::CPUSFWorkspace, ::F, ::Int) where {F}
     _bl_zero_accum!(ws.result)
     return ws.result
 end
+
+# GPU device-resident workspace. The type carries no device dependency — every buffer is a
+# type parameter — so it lives here beside CPUSFWorkspace; the constructors are added by
+# StructureFunctionsKernelAbstractionsExt.
+
+"""
+    GPUSFWorkspace
+
+Reusable device histogram buffers and cached distance-bin edge arrays for GPU
+structure-function launches. Construct once per `(backend, distance_bins[, value_bins])`
+configuration; pass to `gpu_calculate_structure_function(!)` or slice drivers to avoid
+per-call `KA.zeros` allocation and repeated edge uploads.
+
+# Kinds (`kind` type parameter)
+- `:sf1d` — 1D distance histogram, `out_sums_dev`/`out_cnts_dev` of rank 1
+- `:joint2d` — distance × value joint histogram, rank 2 (exact `n_dist × n_val` smem by default;
+  override via `joint2d_compile_cells`)
+- `:single_pass` — six invariant 1D distance histograms `(6, NB)`
+- `:single_pass_2d` — six invariant distance × value joint histograms `(6, NB, n_val)`;
+  on-chip modes (`:shared`, `:typeplane`) flush shared histograms directly to `out_*`;
+  `:direct` uses `lazy.partition_sums_dev` / `lazy.partition_counts_dev` plus merge.
+
+`kind` is a type parameter, so the histogram rank is fixed at construction and every field is
+concretely typed — matching [`CPUSFWorkspace`](@ref). Use the matching constructor overload;
+`reset_histogram!(ws)` zeroes device outputs before each launch. The constructors live in
+`StructureFunctionsKernelAbstractionsExt` and need `using KernelAbstractions`.
+See [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md).
+"""
+struct GPUSFWorkspace{kind, FT, BE, DB, VB, S, C, VE, DE, VP, ST, K, L}
+    backend::BE
+    dist_bins::DB
+    val_bins::VB
+    out_sums_dev::S
+    out_cnts_dev::C
+    value_edges_dev::VE
+    dist_general_edges_dev::DE
+    NB::Int
+    n_bins::Int
+    n_dist::Int
+    n_val::Int
+    n_val_edges::Int
+    host_sums_scratch::Vector{FT}
+    host_counts_scratch::Vector{UInt32}
+    val_plan::VP
+    sp2d_accumulation_strategy::ST
+    sp2d_pair_kernel::K
+    joint2d_nb2::Int
+    joint2d_compile_cells::Int
+    lazy::L
+end
+
+"""
+    GPUCullMemo
+
+What one cull prologue produced for a set of kernel coordinates, kept on the workspace so a call on
+the same coordinates, cutoff and policy reuses it: the cell grid (which owns the permutation), the
+coordinates already permuted, and one device work list per tile size, built on first use by
+[`schedule_for`](@ref). `x` is the workspace's own copy, so a caller's in-place mutation is a miss,
+never a stale hit. `to_device` uploads a host vector to the workspace's device.
+"""
+struct GPUCullMemo{X <: AbstractMatrix, FT, PO <: CullingPolicy, G <: CellGrid, XS, TD}
+    x::X
+    cutoff::FT
+    policy::PO
+    grid::G
+    x_sorted::XS
+    to_device::TD
+    schedules::Dict{Int, TilePairWorkList}
+end
+
+"""Whether `memo` was built from these coordinates under this cutoff and policy."""
+@inline _cull_memo_hit(::Nothing, xk, cutoff, policy) = false
+@inline _cull_memo_hit(m::GPUCullMemo, xk, cutoff, policy) =
+    m.policy === policy && m.cutoff == cutoff && eltype(m.x) === eltype(xk) && m.x == xk
+
+"""
+    schedule_for(cull, n_points, tile) -> PairBlockSchedule
+
+The tile-pair schedule a kernel with `tile`-point tiles enumerates: the full upper triangle when
+`cull` is `nothing`, otherwise the memo's device work list for that tile size, built and uploaded on
+first use and kept for later calls. Each kernel family picks its own tile, so the list is derived
+from the grid at the size asked for rather than fixed when the memo is built.
+"""
+schedule_for(::Nothing, n_points::Int, tile::Int) = FullUpperTriangle(cld(n_points, tile))
+
+function schedule_for(memo::GPUCullMemo, n_points::Int, tile::Int)
+    n_points == length(memo.grid.perm) || throw(ArgumentError(
+        "cull memo holds $(length(memo.grid.perm)) points, asked to schedule $n_points"))
+    return get!(memo.schedules, tile) do
+        wl = tile_pair_worklist(memo.grid, n_points, tile)
+        TilePairWorkList(memo.to_device(wl.pairs), wl.n_tiles)
+    end
+end
+
+"""State a workspace carries between launches: device buffers sized by `N_points`, the staged inputs,
+the cull memo, and `active`, the memo this call culls with (set by the prologue on every call)."""
+mutable struct GPUSFLazyBuffers
+    partition_sums_dev
+    partition_counts_dev
+    x_dev_cache
+    u_dev_cache
+    active::Union{Nothing, GPUCullMemo}
+    cull::Union{Nothing, GPUCullMemo}
+end
+
+GPUSFLazyBuffers() = GPUSFLazyBuffers(nothing, nothing, nothing, nothing, nothing, nothing)
+
+"""Tile blocks the partition buffers are currently sized for; 0 when unallocated."""
+@inline _partition_n_tile_blocks(lazy::GPUSFLazyBuffers) =
+    lazy.partition_sums_dev === nothing ? 0 : size(lazy.partition_sums_dev, 4)
+
+@inline _ws_float_type(::GPUSFWorkspace{<:Any, FT}) where {FT} = FT

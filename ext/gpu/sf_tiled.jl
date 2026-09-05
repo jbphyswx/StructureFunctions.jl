@@ -17,7 +17,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
     digitizer,              # SFLinearDigitizer / SFLogDigitizer / SFGeneralDigitizer
     N::Int,
     NB::Int,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     wgsize::Int,
     B::Int,
@@ -60,7 +60,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
     bid = (launch_block - 1) % n_tile_blocks + 1
     b = (launch_block - 1) ÷ n_tile_blocks + 1
     if bid <= n_tile_blocks && b <= B
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N - i0 + 1)
@@ -96,7 +96,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
     bid = (launch_block - 1) % n_tile_blocks + 1
     b = (launch_block - 1) ÷ n_tile_blocks + 1
     if bid <= n_tile_blocks && b <= B
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N - i0 + 1)
@@ -211,26 +211,26 @@ function _launch_sf_tiled_1d_varying!(
     R::Int = _sf_tiled_1d_replication(eltype(out_dev), D, NMOM),
 ) where {D, NMOM}
     _sf_tiled_1d_check_nb(NB)
-    n_tiles = cld(N, SF_GPU_TILE)
-    n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
+    sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
+    n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
     ndrange = n_tile_blocks * ws * B
     kernel! = sf_tiled_1d_varying!(backend, ws)
     if R == 16
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(16), geom; ndrange = ndrange)
+                sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(16), geom; ndrange = ndrange)
     elseif R == 8
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(8), geom; ndrange = ndrange)
+                sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(8), geom; ndrange = ndrange)
     elseif R == 4
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(4), geom; ndrange = ndrange)
+                sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(4), geom; ndrange = ndrange)
     elseif R == 2
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(2), geom; ndrange = ndrange)
+                sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(2), geom; ndrange = ndrange)
     else
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(1), geom; ndrange = ndrange)
+                sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(1), geom; ndrange = ndrange)
     end
     return nothing
 end
@@ -259,7 +259,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
     NB::Int,
     b_base::Int,            # first batch element of this strip
     bw::Int,                # this strip's width (≤ W)
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     wgsize::Int,
     ::Val{D},
@@ -296,7 +296,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N - i0 + 1)
@@ -340,7 +340,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N - i0 + 1)
@@ -446,8 +446,8 @@ function _launch_sf_tiled_1d_fixed!(
     W::Int = _sf_tiled_1d_fixed_strip(eltype(out_dev), D, NMOM),
 ) where {D, NMOM}
     _sf_tiled_1d_check_nb(NB)
-    n_tiles = cld(N, SF_GPU_TILE)
-    n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
+    sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
+    n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
     ndrange = n_tile_blocks * ws
     launch = (Wv) -> begin
@@ -456,7 +456,7 @@ function _launch_sf_tiled_1d_fixed!(
         while b_base <= B
             bw = min(Wv, B - b_base + 1)
             kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                    b_base, bw, n_tiles, n_tile_blocks, ws, Val(D), Val(NMOM), Val(Wv), geom;
+                    b_base, bw, sched, n_tile_blocks, ws, Val(D), Val(NMOM), Val(Wv), geom;
                     ndrange = ndrange)
             b_base += bw
         end
@@ -486,7 +486,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_varying!(
     N::Int,
     n_dist::Int,
     n_val::Int,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     wgsize::Int,
     B::Int,
@@ -506,7 +506,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_varying!(
 
     # phase 1: stage tile coordinates
     if bid <= n_tile_blocks && b <= B
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N - i0 + 1)
@@ -542,7 +542,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_varying!(
     bid = (launch_block - 1) % n_tile_blocks + 1
     b = (launch_block - 1) ÷ n_tile_blocks + 1
     if bid <= n_tile_blocks && b <= B
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N - i0 + 1)
@@ -591,12 +591,12 @@ function _launch_sf_tiled_2d_varying!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
     N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom,
 ) where {D, NMOM}
-    n_tiles = cld(N, SF_GPU_TILE)
-    n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
+    sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
+    n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
     kernel! = sf_tiled_2d_varying!(backend, ws)
     kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-            N, n_dist, n_val, n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), geom;
+            N, n_dist, n_val, sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), geom;
             ndrange = n_tile_blocks * ws * B)
     return nothing
 end
@@ -620,7 +620,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
     N::Int,
     n_dist::Int,
     n_val::Int,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     wgsize::Int,
     B::Int,
@@ -658,7 +658,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
     bid = (launch_block - 1) % n_tile_blocks + 1
     b = (launch_block - 1) ÷ n_tile_blocks + 1
     if bid <= n_tile_blocks && b <= B
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N - i0 + 1)
@@ -695,7 +695,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
     bid = (launch_block - 1) % n_tile_blocks + 1
     b = (launch_block - 1) ÷ n_tile_blocks + 1
     if bid <= n_tile_blocks && b <= B
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N - i0 + 1)
@@ -777,18 +777,18 @@ function _launch_sf_tiled_2d_shared!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
     N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, fixed_x::Bool, geom,
 ) where {D, NMOM}
-    n_tiles = cld(N, SF_GPU_TILE)
-    n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
+    sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
+    n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
     ndrange = n_tile_blocks * ws * B
     kernel! = sf_tiled_2d_shared!(backend, ws)
     if fixed_x
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-                N, n_dist, n_val, n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(n_dist * n_val), Val(true), geom;
+                N, n_dist, n_val, sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(n_dist * n_val), Val(true), geom;
                 ndrange = ndrange)
     else
         kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-                N, n_dist, n_val, n_tiles, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(n_dist * n_val), Val(false), geom;
+                N, n_dist, n_val, sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(n_dist * n_val), Val(false), geom;
                 ndrange = ndrange)
     end
     return nothing
@@ -809,7 +809,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
     n_val::Int,
     b_base::Int,
     bw::Int,
-    n_tiles::Int,
+    sched,
     n_tile_blocks::Int,
     wgsize::Int,
     ::Val{D},
@@ -827,7 +827,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
 
     # phase 1: stage x once, u for bw fields
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N - i0 + 1)
@@ -871,7 +871,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
-        ti, tj = _tile_from_linear(bid, n_tiles)
+        ti, tj = tile_for(sched, bid)
         i0 = (ti - 1) * SF_GPU_TILE + 1
         j0 = (tj - 1) * SF_GPU_TILE + 1
         ni = min(SF_GPU_TILE, N - i0 + 1)
@@ -934,8 +934,8 @@ function _launch_sf_tiled_2d_fixed!(
     N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
     W::Int = _sf_tiled_2d_fixed_strip(eltype(out_dev), D),
 ) where {D, NMOM}
-    n_tiles = cld(N, SF_GPU_TILE)
-    n_tile_blocks = n_tiles * (n_tiles + 1) ÷ 2
+    sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
+    n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
     ndrange = n_tile_blocks * ws
     launch = (Wv) -> begin
@@ -944,7 +944,7 @@ function _launch_sf_tiled_2d_fixed!(
         while b_base <= B
             bw = min(Wv, B - b_base + 1)
             kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-                    N, n_dist, n_val, b_base, bw, n_tiles, n_tile_blocks, ws,
+                    N, n_dist, n_val, b_base, bw, sched, n_tile_blocks, ws,
                     Val(D), Val(NMOM), Val(Wv), geom; ndrange = ndrange)
             b_base += bw
         end
@@ -981,7 +981,7 @@ function _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, 
     # CUDA fast path (N-body broadcast + dynamic-shared privatized histogram,
     # TILE=1024) when StructureFunctionsCUDAExt is active and it fits the device.
     SFC.gpu_fast_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
-                                  N, n_dist, n_val, B, D, NMOM, fixed_x, geom) && return nothing
+                                  N, n_dist, n_val, B, D, NMOM, fixed_x, geom, nothing) && return nothing
     # Prefer the shared-histogram kernel (fixed or varying) when the histogram
     # fits (~7× faster than direct global atomics); fall back to global for large
     # bin counts that don't fit in shared memory.
@@ -1005,7 +1005,7 @@ function _sf_launch_1d_batch!(backend, out, cnt, x_dev, u_dev, sf_type, dig,
     # CUDA fast path (N-body broadcast + static-shared privatized histogram,
     # TILE=256) when StructureFunctionsCUDAExt is active and NB fits.
     SFC.gpu_fast_launch_1d_batch!(backend, out, cnt, x_dev, u_dev, sf_type, dig,
-                                  N, NB, B, D, NMOM, fixed_x, geom) && return nothing
+                                  N, NB, B, D, NMOM, fixed_x, geom, nothing) && return nothing
     go(Dv) = fixed_x ?
         _launch_sf_tiled_1d_fixed!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM), geom) :
         _launch_sf_tiled_1d_varying!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM), geom)

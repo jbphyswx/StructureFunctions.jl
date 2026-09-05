@@ -47,7 +47,9 @@ Test.@testset "GPU joint2d exact smem parity — NB2=100" begin
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist, val)
     Test.@test ws.joint2d_nb2 == 100
     Test.@test ws.joint2d_compile_cells == 100
-    Test.@test ws.joint2d_kernel !== nothing
+    Test.@test GPUExt._joint2d_tiled_kernel_for(
+        KA.CPU(), ws.dist_bins, ws.val_plan, ws.joint2d_compile_cells, 2,
+    ) !== nothing
     gpu = _gpu_joint(sft, x, u, dist, val; workspace = ws)
     Test.@test gpu.counts == ref.counts
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -97,7 +99,7 @@ Test.@testset "GPU joint2d typed workspace dispatch — LogBinEdges + InfPadded"
     sft = SFT.L2SFType()
     ref = _ref_joint(sft, x, u, dist, val)
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist, val; kind = :joint2d)
-    Test.@test ws.kind == :joint2d
+    Test.@test typeof(ws).parameters[1] === :joint2d
     Test.@test ws.val_plan isa GPUExt.GPUValueInfLinearShared
     Test.@test GPUExt._joint2d_val_route(ws.val_plan) == :inflinear
     gpu = _gpu_joint(sft, x, u, dist, val; workspace = ws)
@@ -124,4 +126,39 @@ Test.@testset "GPU joint2d align256 smem parity — NB2=440" begin
     gpu = _gpu_joint(sft, x, u, dist, val; workspace = ws)
     Test.@test gpu.counts == ref.counts
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
+end
+
+# A workspace is built from bins alone, so it must serve both coordinate widths: flat D=2 gives
+# W=2 and flat D=3 gives W=3, and the kernel is selected per launch, not fixed at construction.
+Test.@testset "joint2d workspace is width-agnostic" begin
+    FT = Float64
+    N = 200
+    dist = collect(FT, range(0.05, 2.0; length = 11))
+    val = collect(FT, range(-5.0, 5.0; length = 9))
+    sft = SFT.L2SFType()
+    for D in (2, 3)
+        x = rand(FT, D, N) .* FT(1.5)
+        u = randn(FT, D, N)
+        ref = _ref_joint(sft, x, u, dist, val)
+        ws = SFC.GPUSFWorkspace(KA.CPU(), dist, val)
+        gpu = _gpu_joint(sft, x, u, dist, val; workspace = ws)
+        Test.@test gpu.counts == ref.counts
+        Test.@test gpu.sums ≈ ref.sums atol = 1e-10
+    end
+end
+
+Test.@testset "GPUSFWorkspace is immutable with kind as a type parameter" begin
+    dist = collect(range(0.05, 2.0; length = 11))
+    val = collect(range(-1.0, 1.0; length = 9))
+    for (args, kind) in (
+        ((KA.CPU(), dist), :sf1d),
+        ((KA.CPU(), dist), :single_pass),
+        ((KA.CPU(), dist, val), :joint2d),
+    )
+        ws = SFC.GPUSFWorkspace(args...; kind = kind)
+        Test.@test !ismutabletype(typeof(ws))
+        Test.@test typeof(ws).parameters[1] === kind
+        Test.@test !hasfield(typeof(ws), :kind)
+        Test.@test isconcretetype(fieldtype(typeof(ws), :out_sums_dev))
+    end
 end

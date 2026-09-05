@@ -68,6 +68,11 @@ end
 KA.Adapt.adapt_structure(to, d::SFGeneralDigitizer) =
     SFGeneralDigitizer(KA.Adapt.adapt(to, d.edges), d.n_edges)
 
+# A work list carries its packed tile pairs in a device array; the struct must be rebuilt around the
+# device-side view at launch, exactly as the general digitizer is around its edges.
+KA.Adapt.adapt_structure(to, s::TilePairWorkList) =
+    TilePairWorkList(KA.Adapt.adapt(to, s.pairs), s.n_tiles)
+
 @inline (d::SFGeneralDigitizer)(r) = _gpu_digitize_general(r, d.edges, d.n_edges)
 
 # Number of bins (edges - 1) for a digitizer.

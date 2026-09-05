@@ -1,4 +1,8 @@
 [deps]
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Bessels = "0e736298-9ec6-45e8-9647-e4fc86a2fe38"
+SpectralBackends = "289ded02-b044-41b2-8b2d-71f2a47755d1"
+FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
 StructureFunctions = "e93fee26-4d5e-49c1-899d-490508cfd19b"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
@@ -8,7 +12,6 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
 [compat]
-StructureFunctions = "0.3"
 CairoMakie = "0.15"
 KernelAbstractions = "0.9"
 JSON = "1"
@@ -16,4 +19,5 @@ OhMyThreads = "0.8"
 julia = "1.12"
 
 [sources]
+SpectralBackends = { url = "https://github.com/jbphyswx/SpectralBackends.jl" }
 StructureFunctions = { path = "../.." }

@@ -24,11 +24,18 @@ Test.@testset "Pair geometry: selection and coordinate width" begin
     Test.@test SFH.pair_geometry_for(DI.Haversine(EARTH_R), Val(2)) isa SFH.SphericalGeometry{2}
     Test.@test SFH.pair_geometry_for(DI.SphericalAngle(), Val(3)) isa SFH.SphericalGeometry{3}
 
-    # A point on a shell takes two coordinates whether or not the velocity carries a radial third.
+    # A caller supplies two coordinates on a shell whether or not the velocity carries a radial
+    # third; the kernels index the ambient position `prepare_pair_inputs` builds from them.
     Test.@test SFH.coordinate_width(SFH.FlatGeometry{2}()) === Val(2)
     Test.@test SFH.coordinate_width(SFH.FlatGeometry{3}()) === Val(3)
-    Test.@test SFH.coordinate_width(SFH.pair_geometry_for(DI.Haversine(EARTH_R), Val(2))) === Val(2)
-    Test.@test SFH.coordinate_width(SFH.pair_geometry_for(DI.Haversine(EARTH_R), Val(3))) === Val(2)
+    Test.@test SFH.input_coordinate_width(SFH.FlatGeometry{2}()) === Val(2)
+    Test.@test SFH.field_width(SFH.FlatGeometry{3}()) === Val(3)
+    for D in (2, 3)
+        g = SFH.pair_geometry_for(DI.Haversine(EARTH_R), Val(D))
+        Test.@test SFH.input_coordinate_width(g) === Val(2)
+        Test.@test SFH.coordinate_width(g) === Val(3)
+        Test.@test SFH.field_width(g) === Val(3)
+    end
 
     # A distance function does not define a direction or a transport rule, so a metric with no
     # geometry is refused rather than assumed flat.
@@ -46,10 +53,13 @@ Test.@testset "Spherical separation matches the metric, in both angle convention
     sph = DI.SphericalAngle()
     for (lo1, la1, lo2, la2) in ((10.0, 45.0, 13.0, 47.0), (-170.0, -33.0, 175.0, 12.0),
                                  (0.0, 0.0, 0.0, 90.0), (100.0, 60.0, 100.0, 60.5))
+        # `pair_frame` reads the ambient position, so the angle unit is resolved once at ingest.
+        gh = SFH.pair_geometry_for(hav, Val(2))
+        gs = SFH.pair_geometry_for(sph, Val(2))
         p1 = SA.SVector(lo1, la1); p2 = SA.SVector(lo2, la2)
-        ok_h, r_h, f_h = SFH.pair_frame(SFH.pair_geometry_for(hav, Val(2)), p1, p2)
+        ok_h, r_h, f_h = SFH.pair_frame(gh, SFH.unit_position(hav, lo1, la1), SFH.unit_position(hav, lo2, la2))
         q1 = SA.SVector(deg2rad(lo1), deg2rad(la1)); q2 = SA.SVector(deg2rad(lo2), deg2rad(la2))
-        ok_s, r_s, f_s = SFH.pair_frame(SFH.pair_geometry_for(sph, Val(2)), q1, q2)
+        ok_s, r_s, f_s = SFH.pair_frame(gs, SFH.unit_position(sph, q1[1], q1[2]), SFH.unit_position(sph, q2[1], q2[2]))
 
         Test.@test ok_h && ok_s
         Test.@test isapprox(r_h, hav(p1, p2); rtol = 1e-12)
@@ -104,9 +114,11 @@ Test.@testset "Thin shell: radial component is carried but never transported" be
     r2 = _sp(x, u2, bins, m)
     r3 = _sp(x, u3, bins, m)
 
-    # The geodesic frame is tangent to the shell, so the radial component is orthogonal to both
-    # t̂ and m̂ and cannot enter δu_L at all.
-    Test.@test r3.L2.sums == r2.L2.sums
+    # The geodesic frame is tangent to the shell, so the radial component is orthogonal to both t̂
+    # and m̂. In ambient coordinates that orthogonality holds to round-off rather than exactly —
+    # `p̂·t̂` is O(eps) once `‖p̂‖` is only 1 to round-off — so the radial part reaches δu_L bounded by
+    # eps times the scale of the field, not at all.
+    Test.@test isapprox(r3.L2.sums, r2.L2.sums; atol = eps() * maximum(r3.S2.sums))
     Test.@test r3.L2.counts == r2.L2.counts
     # It does contribute to the total, and the six invariants stay consistent.
     Test.@test sum(r3.S2.sums) > sum(r2.S2.sums)
@@ -234,4 +246,49 @@ Test.@testset "Shape contract is geometry-aware" begin
     lonlat = permutedims(hcat(20 .* rand(8), 20 .* rand(8)))
     Test.@test _sp(lonlat, randn(2, 8), bins, m) isa NamedTuple
     Test.@test _sp(lonlat, randn(3, 8), bins, m) isa NamedTuple
+end
+
+Test.@testset "the separation direction is refused where it carries no information" begin
+    # `sin σ` vanishes at two separations and the frame behaves differently at each. Short pairs are
+    # computed exactly and must be kept; near-antipodal pairs lose the direction to cancellation, at
+    # a rate of ε/(π−σ), and the guard must refuse them rather than return an arbitrary unit vector.
+    setprecision(BigFloat, 256)
+    Random.seed!(4242)
+    exact_frame(p, q) = SFH.geodesic_frame(SA.SVector{3, BigFloat}(BigFloat.(p)),
+                                           SA.SVector{3, BigFloat}(BigFloat.(q)))
+
+    # short pairs: accepted, and accurate
+    for gap in (1e-1, 1e-4, 1e-8, 1e-12)
+        p = LA.normalize(SA.SVector(randn(3)...))
+        w = LA.normalize(LA.cross(p, LA.normalize(SA.SVector(randn(3)...))))
+        q = LA.normalize(cos(gap) * p + sin(gap) * w)
+        _, tA, _, m, ok = SFH.geodesic_frame(p, q)
+        Test.@test ok
+        _, tAb, _, _, _ = exact_frame(p, q)
+        Test.@test Float64(LA.norm(SA.SVector{3, BigFloat}(BigFloat.(tA)) - tAb)) < 1e-12
+    end
+
+    # near-antipodal: whatever is accepted must still be accurate, and the rest is refused
+    for gap in (1e-1, 1e-5, 1e-9, 1e-13, 1e-15)
+        refused = 0
+        worst_accepted = 0.0
+        for _ in 1:100
+            p = LA.normalize(SA.SVector(randn(3)...))
+            w = LA.normalize(LA.cross(p, LA.normalize(SA.SVector(randn(3)...))))
+            q = LA.normalize(-cos(gap) * p + sin(gap) * w)
+            _, tA, _, _, ok = SFH.geodesic_frame(p, q)
+            if ok
+                _, tAb, _, _, _ = exact_frame(p, q)
+                worst_accepted = max(worst_accepted,
+                                     Float64(LA.norm(SA.SVector{3, BigFloat}(BigFloat.(tA)) - tAb)))
+            else
+                refused += 1
+            end
+        end
+        # nothing is accepted with a direction that has lost more than sqrt(eps) of itself
+        Test.@test worst_accepted < sqrt(eps(Float64))
+        # and the ones where it is hopeless really are refused
+        gap <= 1e-9 && Test.@test refused == 100
+        gap >= 1e-5 && Test.@test refused == 0
+    end
 end

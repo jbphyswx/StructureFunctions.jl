@@ -33,6 +33,8 @@ makedocs(;
         "GPU Acceleration" => "gpu.md",
         "Extensions" => "extensions.md",
         "Examples" => "examples.md",
+        "Walkthrough" => "walkthrough.md",
+        "Validation" => "validation.md",
         "Binning Internals" => "uniform_bin_digitize.md",
         "API Reference" => "api.md",
     ],
