@@ -268,6 +268,8 @@ include(joinpath(@__DIR__, "gpu", "sf_core.jl"))
 include(joinpath(@__DIR__, "gpu", "sf_tiled.jl"))
 include(joinpath(@__DIR__, "gpu", "workspace.jl"))
 include(joinpath(@__DIR__, "gpu", "launch.jl"))
+include(joinpath(@__DIR__, "gpu", "tensor.jl"))
+include(joinpath(@__DIR__, "gpu", "channels.jl"))
 
 # The kernels compute Euclidean geometry inline, so every GPU entry types its `distance_metric`
 # keyword as `DI.Euclidean`: asking for another metric is a TypeError naming the keyword, and the
@@ -924,6 +926,20 @@ function _gpu_calculate_structure_function_core(
             "use the in-place gpu_calculate_structure_function! for synchronize=false.",
         ),
     )
+    # The tiled kernels stage a fixed number of coordinate components per point, so they cover the
+    # widths they were written for. A width outside that set goes through the width-generic pair
+    # kernel instead, which reads its widths from `Val` parameters.
+    if size(x_mat, 1) ∉ (2, 3)
+        nb = SFC.n_histogram_bins(distance_bins)
+        sums = zeros(promote_type(float(FT), Float64), nb)
+        counts = zeros(CT, nb)
+        SFC.gpu_calculate_structure_function_channels!(
+            CB.GPUBackend(backend), sums, counts, sf_type, x_mat,
+            SFC.CH.Fields(vectors = (u_mat,)), distance_bins;
+            distance_metric, culling, verbose, show_progress,
+        )
+        return SF.StructureFunctionSumsAndCounts(sf_type, distance_bins, sums, counts)
+    end
     out_dev, cnt_dev, edges_host = _launch_gpu_structure_function!(
         sf_type, backend, x_mat, u_mat, distance_bins;
         workgroup_size = workgroup_size,

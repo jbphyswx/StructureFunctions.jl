@@ -457,4 +457,54 @@ function SFC._dispatch_execution_backend!(
     )
 end
 
+
+# --- Tensor structure functions ---
+
+# Each worker takes a balanced share of the outer index and returns its own accumulators, which add
+# because a histogram is order-independent. `pmap` over the chunk list rather than a closure capture,
+# so the inputs are serialised once per item rather than per remotecall.
+function SFC.distributed_calculate_structure_function_tensor!(
+    sums::AbstractArray, counts::AbstractArray, order::Val{P},
+    shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
+    distance_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+) where {P, D}
+    N = size(u, 2)
+    chunks = SFC._balanced_index_chunks(N, max(Distributed.nworkers(), 1))
+    CT = eltype(counts)
+    partials = Distributed.pmap(chunks) do chunk
+        SFC.tensor_partial(order, shape, x, u, distance_bins, chunk;
+                           distance_metric, count_eltype = CT)
+    end
+    for (ps, pc) in partials
+        sums .+= ps
+        counts .+= pc
+    end
+    return sums, counts
+end
+
+
+# --- Multi-channel (`Fields`) sweeps ---
+
+function SFC.distributed_calculate_structure_function!(
+    sums::AbstractVector, counts::AbstractVector,
+    sf::SFT.AbstractPairwiseStructureFunctionType,
+    x::AbstractMatrix, f::SFC.CH.Fields, distance_bins;
+    verbose::Bool = true, show_progress::Bool = true, kwargs...,
+)
+    _ = show_progress
+    verbose && @info("calculating multi-channel structure function (distributed)")
+    N = size(SFC.CH.packed(f), 2)
+    chunks = SFC._balanced_index_chunks(N - 1, max(Distributed.nworkers(), 1))
+    CT = eltype(counts)
+    partials = Distributed.pmap(chunks) do chunk
+        SFC.channel_partial(sf, x, f, distance_bins, chunk; count_eltype = CT, kwargs...)
+    end
+    for (ps, pc) in partials
+        sums .+= ps
+        counts .+= pc
+    end
+    return nothing
+end
+
 end

@@ -1,6 +1,10 @@
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT
+using OhMyThreads: OhMyThreads
+using KernelAbstractions: KernelAbstractions as KA
+using Distances: Distances as DI
+using Random: Random
 using Test: Test
 
 Test.@testset "Tensor Structure Functions" begin
@@ -97,4 +101,51 @@ Test.@testset "each inertial-range law takes the quantity it is stated for" begi
     LS2 = -(4 / 3) .* eps_th .* r
     Test.@test SF.KHM.epsilon_theta_from_yaglom(r, LS2) ≈ fill(eps_th, length(r))
     Test.@test all(abs.(SF.KHM.yaglom_residual(r, LS2, eps_th)) .< 1e-12)
+end
+
+Test.@testset "every backend computes the same tensor" begin
+    # The pair set is the same upper triangle on every backend, and a histogram is order-independent,
+    # so counts must be exactly equal and sums must agree to summation order.
+    Random.seed!(4)
+    N = 200
+    x = rand(2, N)
+    u = randn(2, N)
+    bins = collect(range(0.0, 1.2; length = 9))
+
+    ref = SFC.calculate_structure_function_tensor(
+        Val(2), x, u, bins; backend = CB.SerialBackend(),
+        output_type = SF.StructureFunctionTensorSumsAndCounts)
+
+    for be in (CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
+        got = SFC.calculate_structure_function_tensor(
+            Val(2), x, u, bins; backend = be,
+            output_type = SF.StructureFunctionTensorSumsAndCounts)
+        Test.@test got.counts == ref.counts
+        Test.@test isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)
+    end
+
+    # order 3 as well, since the accumulator rank is a type parameter
+    r3 = SFC.calculate_structure_function_tensor(
+        Val(3), x, u, bins; backend = CB.SerialBackend(),
+        output_type = SF.StructureFunctionTensorSumsAndCounts)
+    t3 = SFC.calculate_structure_function_tensor(
+        Val(3), x, u, bins; backend = CB.ThreadedBackend(),
+        output_type = SF.StructureFunctionTensorSumsAndCounts)
+    Test.@test t3.counts == r3.counts
+    Test.@test isapprox(t3.sums, r3.sums; rtol = 1e-10, atol = 1e-12)
+
+    # and on a sphere, where the increments are transported rather than differenced
+    xs = vcat(reshape(2π .* rand(N), 1, N), reshape((rand(N) .- 0.5) .* 1.4, 1, N))
+    sbins = collect(range(0.0, 2.4; length = 6))
+    rs = SFC.calculate_structure_function_tensor(
+        Val(2), xs, u, sbins; backend = CB.SerialBackend(),
+        distance_metric = DI.SphericalAngle(),
+        output_type = SF.StructureFunctionTensorSumsAndCounts)
+    ts = SFC.calculate_structure_function_tensor(
+        Val(2), xs, u, sbins; backend = CB.ThreadedBackend(),
+        distance_metric = DI.SphericalAngle(),
+        output_type = SF.StructureFunctionTensorSumsAndCounts)
+    Test.@test sum(ts.counts) > 0
+    Test.@test ts.counts == rs.counts
+    Test.@test isapprox(ts.sums, rs.sums; rtol = 1e-10, atol = 1e-12)
 end

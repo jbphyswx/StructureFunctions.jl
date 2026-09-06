@@ -75,20 +75,60 @@ function calculate_structure_function(
 ) where {FT1, FT2, OT, CT}
     shape = _validate_array_shape(x, u, distance_metric)
     _assert_counts_representable(CT, size(x, 2))
-    raw = _dispatch_execution_backend(
-        backend,
-        shape,
-        structure_function_type,
-        x,
-        u,
-        distance_bins,
-        count_eltype
-        ;
-        distance_metric,
-        kwargs...,
-    )
+    # The shape carries the velocity dimension as a type parameter, but that dimension is an array
+    # axis length, so the constructed type is not inferrable and every kernel below it would be
+    # typed `Any`. Re-entering through a concrete `Val` hands each branch a shape whose parameter is
+    # known: the branch is chosen at runtime, everything under it is not.
+    D = size(u, 1)
+    S = _shape_kind(x, u)
+    kw = (; distance_metric, kwargs...)
+    a = (backend, structure_function_type, x, u, distance_bins, count_eltype, kw)
+    raw = D == 1 ? _dw(S{1}(), a...) :
+          D == 2 ? _dw(S{2}(), a...) :
+          D == 3 ? _dw(S{3}(), a...) :
+          D == 4 ? _dw(S{4}(), a...) :
+          D == 5 ? _dw(S{5}(), a...) :
+          D == 6 ? _dw(S{6}(), a...) :
+          D == 7 ? _dw(S{7}(), a...) :
+          D == 8 ? _dw(S{8}(), a...) : _width_unsupported(D)
     return _finalize(raw, output_type)
 end
+
+"""Largest velocity width the entry specializes for. Beyond it the kernels would be dispatched
+dynamically per pair, so the boundary is stated rather than crossed silently."""
+const MAX_SPECIALIZED_WIDTH = 8
+
+"""
+    _dw(shape, backend, sf, x, u, distance_bins, count_eltype, kw)
+
+Dispatch with a shape whose width parameter is a **literal**.
+
+An array's axis length is a value, not a type, so a shape built straight from it cannot be inferred
+and every kernel below would be typed `Any` — a dynamic dispatch per pair. The caller therefore
+branches on the width and passes a literal here. The keywords ride as a positional `NamedTuple`
+because a keyword call blocks the constant propagation this depends on.
+"""
+@inline _dw(shape, backend, sf, x, u, distance_bins, count_eltype, kw::NamedTuple) =
+    _dispatch_execution_backend(backend, shape, sf, x, u, distance_bins, count_eltype; kw...)
+
+@noinline _width_unsupported(D) = throw(ArgumentError(
+    "velocity dimension D=$D exceeds the largest width the kernels are specialized for " *
+    "($MAX_SPECIALIZED_WIDTH). Widths are specialized rather than dispatched dynamically because " *
+    "the alternative costs a dynamic dispatch per pair.",
+))
+
+"""
+    _shape_kind(x, u) -> Type
+
+Which shape family the inputs form, from their **ranks** alone.
+
+`ndims` is a property of the array type, so this constant-folds; the velocity width is an axis
+length and is supplied separately. Keeping the two apart is what lets the caller build a shape whose
+width parameter is a literal.
+"""
+@inline _shape_kind(x::AbstractArray, u::AbstractArray) =
+    ndims(x) == 2 && ndims(u) == 2 ? PointField :
+    ndims(x) == 2 ? SharedPositionField : VaryingPositionField
 
 function calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,

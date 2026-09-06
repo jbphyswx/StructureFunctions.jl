@@ -49,6 +49,25 @@ As [`_pair_dims`](@ref), but `W` is the width a **caller** supplies, which is wh
     D == 3 && return (SFH.input_coordinate_width(SFH.pair_geometry_for(distance_metric, Val(3))), Val(3))
     return (SFH.input_coordinate_width(SFH.pair_geometry_for(distance_metric, Val(D))), Val(D))
 end
+"""
+    _input_coordinate_width(metric, D) -> Int
+
+The number of coordinates a caller supplies per point, as an `Int`.
+
+Every branch returns an `Int`, so the shape validation stays inferrable. Returning the `Val` instead
+would leave the width's *type* dependent on a runtime `D`, which infers as `Any` and turns each
+comparison against it into a runtime dispatch.
+"""
+@inline function _input_coordinate_width(distance_metric, D::Int)
+    D == 2 && return _val_int(SFH.input_coordinate_width(
+        SFH.pair_geometry_for(distance_metric, Val(2))))
+    D == 3 && return _val_int(SFH.input_coordinate_width(
+        SFH.pair_geometry_for(distance_metric, Val(3))))
+    # `Val(D)` on a runtime `D` cannot be inferred, so the width is asserted to the `Int` it is.
+    return _val_int(SFH.input_coordinate_width(
+        SFH.pair_geometry_for(distance_metric, Val(D))))::Int
+end
+
 @inline has_auxiliary_axes(::PointField) = false
 @inline has_auxiliary_axes(::SharedPositionField) = true
 @inline has_auxiliary_axes(::VaryingPositionField) = true
@@ -100,7 +119,7 @@ function _validate_array_shape(x::AbstractArray, u::AbstractArray, distance_metr
 
     D = size(u, 1)
     _validate_spatial_dimension(D)
-    W = _val_int(first(_input_pair_dims(distance_metric, D)))
+    W = _input_coordinate_width(distance_metric, D)
     size(x, 1) == W || throw(
         DimensionMismatch(
             "this geometry locates a point with $W coordinate(s) on axis 1 of x, but got " *

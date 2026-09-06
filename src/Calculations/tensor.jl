@@ -81,27 +81,102 @@ function _dispatch_tensor!(
 end
 
 function _dispatch_tensor!(
-    backend::Union{CB.AbstractThreadedBackend, CB.AbstractDistributedBackend, CB.AbstractGPUBackend},
-    ::AbstractFieldShape,
-    args...;
-    kwargs...,
-)
-    throw(
-        ArgumentError(
-            "$(typeof(backend)) tensor backend is not implemented yet; use backend=CB.SerialBackend()",
-        ),
-    )
-end
-
-function serial_calculate_structure_function_tensor!(
+    ::CB.AbstractThreadedBackend,
+    shape::AbstractFieldShape,
     sums::AbstractArray,
     counts::AbstractArray,
-    order::Val{P},
-    shape::AbstractFieldShape{D},
+    order::Val,
     x::AbstractArray,
     u::AbstractArray,
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    kwargs...,
+)
+    return threaded_calculate_structure_function_tensor!(
+        sums, counts, order, shape, x, u, distance_bins; kwargs...
+    )
+end
+
+function _dispatch_tensor!(
+    ::CB.AbstractDistributedBackend,
+    shape::AbstractFieldShape,
+    sums::AbstractArray,
+    counts::AbstractArray,
+    order::Val,
+    x::AbstractArray,
+    u::AbstractArray,
+    distance_bins::AbstractVector;
+    kwargs...,
+)
+    return distributed_calculate_structure_function_tensor!(
+        sums, counts, order, shape, x, u, distance_bins; kwargs...
+    )
+end
+
+function _dispatch_tensor!(
+    backend::CB.AbstractGPUBackend,
+    shape::AbstractFieldShape,
+    sums::AbstractArray,
+    counts::AbstractArray,
+    order::Val,
+    x::AbstractArray,
+    u::AbstractArray,
+    distance_bins::AbstractVector;
+    kwargs...,
+)
+    return gpu_calculate_structure_function_tensor!(
+        backend, sums, counts, order, shape, x, u, distance_bins; kwargs...
+    )
+end
+
+"""
+    threaded_calculate_structure_function_tensor!(sums, counts, order, shape, x, u, bins; kwargs...)
+
+Accumulate a tensor structure function across threads. Supplied by the OhMyThreads extension.
+"""
+function threaded_calculate_structure_function_tensor!(sums, counts, order, shape, x, u, bins;
+                                                       kwargs...)
+    throw(ArgumentError(
+        "the threaded tensor backend needs OhMyThreads: run `using OhMyThreads`.",
+    ))
+end
+
+"""
+    distributed_calculate_structure_function_tensor!(sums, counts, order, shape, x, u, bins; kwargs...)
+
+Accumulate a tensor structure function across worker processes. Supplied by the Distributed
+extension.
+"""
+function distributed_calculate_structure_function_tensor!(sums, counts, order, shape, x, u, bins;
+                                                          kwargs...)
+    throw(ArgumentError(
+        "the distributed tensor backend needs Distributed: run `using Distributed` and add workers.",
+    ))
+end
+
+"""
+    gpu_calculate_structure_function_tensor!(backend, sums, counts, order, shape, x, u, bins; kwargs...)
+
+Accumulate a tensor structure function on a device. Supplied by the KernelAbstractions extension.
+"""
+function gpu_calculate_structure_function_tensor!(backend, sums, counts, order, shape, x, u, bins;
+                                                  kwargs...)
+    throw(ArgumentError(
+        "the GPU tensor backend needs KernelAbstractions: run `using KernelAbstractions` and a " *
+        "device backend such as CUDA.",
+    ))
+end
+
+"""
+    _tensor_setup(order, shape, x, u, distance_bins, distance_metric) -> NamedTuple
+
+Everything a tensor sweep needs before its first pair: the geometry, the widened coordinates and
+field, the bin edges, and the flattened accumulator shapes.
+
+Shared by every backend so the preparation happens **once**, above any task or worker loop, and so
+there is one place where the shapes are validated.
+"""
+function _tensor_setup(
+    order::Val{P}, shape::AbstractFieldShape{D}, sums, counts, x, u, distance_bins, distance_metric,
 ) where {P, D}
     P == 2 || P == 3 ||
         throw(ArgumentError("tensor order $P is not implemented yet; supported orders are 2 and 3"))
@@ -127,38 +202,75 @@ function serial_calculate_structure_function_tensor!(
     W = _val_int(vW)
     F = _val_int(vF)
 
-    x_fixed = fixed_x ? reshape(xk, W, N) : nothing
-    x_flat = fixed_x ? nothing : reshape(xk, W, N, B)
-    u_flat = reshape(uk, F, N, B)
-    sums_flat = reshape(sums, ntuple(_ -> D, P)..., n_bins, B)
-    counts_flat = reshape(counts, n_bins, B)
+    return (; n_bins, auxiliary_dims, dist_be, N, B, fixed_x, geom, xk, uk, vW, vF, W, F,
+            D = D, P = P)
+end
+
+"""Flattened views of the accumulators, so the kernel indexes one auxiliary axis rather than many."""
+@inline _tensor_flat(sums, counts, s) = (
+    reshape(sums, ntuple(_ -> s.D, s.P)..., s.n_bins, s.B),
+    reshape(counts, s.n_bins, s.B),
+)
+
+function serial_calculate_structure_function_tensor!(
+    sums::AbstractArray,
+    counts::AbstractArray,
+    order::Val{P},
+    shape::AbstractFieldShape{D},
+    x::AbstractArray,
+    u::AbstractArray,
+    distance_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+) where {P, D}
+    s = _tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric)
+    sums_flat, counts_flat = _tensor_flat(sums, counts, s)
+    _tensor_pairs!(sums_flat, counts_flat, order, s, 1:s.N)
+    return sums, counts
+end
+
+"""
+    _tensor_pairs!(sums_flat, counts_flat, order, s, outer)
+
+Accumulate every pair `(i, j > i)` for `i` in `outer`.
+
+The outer list is a parameter so that one kernel serves every backend: serial passes the whole
+range, threaded and distributed pass a chunk of it, and the partial results add because a histogram
+is order-independent.
+"""
+function _tensor_pairs!(sums_flat, counts_flat, order::Val{P}, s, outer) where {P}
+    vW, vF, W, F = s.vW, s.vF, s.W, s.F
+    geom, dist_be, n_bins, N, B = s.geom, s.dist_be, s.n_bins, s.N, s.B
+    x_fixed = s.fixed_x ? reshape(s.xk, W, N) : nothing
+    x_flat = s.fixed_x ? nothing : reshape(s.xk, W, N, B)
+    u_flat = reshape(s.uk, F, N, B)
+    XT, UT = eltype(s.xk), eltype(s.uk)
 
     # The increment comes from `pair_delta`, so on a curved manifold the tensor components are in
     # the pair's own transported frame rather than raw coordinate differences.
-    @inbounds for i in 1:N
+    @inbounds for i in outer
         for j in (i + 1):N
-            if fixed_x
-                X1 = SA.SVector{W, eltype(xk)}(ntuple(d -> x_fixed[d, i], vW))
-                X2 = SA.SVector{W, eltype(xk)}(ntuple(d -> x_fixed[d, j], vW))
+            if s.fixed_x
+                X1 = SA.SVector{W, XT}(ntuple(d -> x_fixed[d, i], vW))
+                X2 = SA.SVector{W, XT}(ntuple(d -> x_fixed[d, j], vW))
                 ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 bin = SFH.digitize(dist, dist_be)
                 if ok && 1 <= bin <= n_bins
                     for b in 1:B
-                        U1 = SA.SVector{F, eltype(uk)}(ntuple(d -> u_flat[d, i, b], vF))
-                        U2 = SA.SVector{F, eltype(uk)}(ntuple(d -> u_flat[d, j, b], vF))
+                        U1 = SA.SVector{F, UT}(ntuple(d -> u_flat[d, i, b], vF))
+                        U2 = SA.SVector{F, UT}(ntuple(d -> u_flat[d, j, b], vF))
                         du = SFH.pair_delta(geom, frame, X1, X2, U1, U2)
                         _accumulate_tensor_pair!(sums_flat, counts_flat, du, bin, b, order)
                     end
                 end
             else
                 for b in 1:B
-                    X1 = SA.SVector{W, eltype(xk)}(ntuple(d -> x_flat[d, i, b], vW))
-                    X2 = SA.SVector{W, eltype(xk)}(ntuple(d -> x_flat[d, j, b], vW))
+                    X1 = SA.SVector{W, XT}(ntuple(d -> x_flat[d, i, b], vW))
+                    X2 = SA.SVector{W, XT}(ntuple(d -> x_flat[d, j, b], vW))
                     ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                     bin = SFH.digitize(dist, dist_be)
                     if ok && 1 <= bin <= n_bins
-                        U1 = SA.SVector{F, eltype(uk)}(ntuple(d -> u_flat[d, i, b], vF))
-                        U2 = SA.SVector{F, eltype(uk)}(ntuple(d -> u_flat[d, j, b], vF))
+                        U1 = SA.SVector{F, UT}(ntuple(d -> u_flat[d, i, b], vF))
+                        U2 = SA.SVector{F, UT}(ntuple(d -> u_flat[d, j, b], vF))
                         du = SFH.pair_delta(geom, frame, X1, X2, U1, U2)
                         _accumulate_tensor_pair!(sums_flat, counts_flat, du, bin, b, order)
                     end
@@ -166,7 +278,29 @@ function serial_calculate_structure_function_tensor!(
             end
         end
     end
+    return sums_flat, counts_flat
+end
 
+"""
+    tensor_partial(order, shape, x, u, distance_bins, outer; distance_metric) -> (sums, counts)
+
+A worker's share of a tensor sweep: the pairs whose lower index is in `outer`, in freshly allocated
+accumulators.
+
+The outer lists partition `1:N`, so the partials add to the whole sweep exactly.
+"""
+function tensor_partial(
+    order::Val{P}, shape::AbstractFieldShape{D}, x, u, distance_bins, outer;
+    distance_metric::DI.PreMetric = DI.Euclidean(), count_eltype::Type{CT} = UInt32,
+) where {P, D, CT}
+    n_bins = n_histogram_bins(distance_bins)
+    auxiliary_dims = has_auxiliary_axes(shape) ? size(u)[3:end] : ()
+    OT = promote_type(float(eltype(x)), float(eltype(u)))
+    sums = zeros(OT, ntuple(_ -> D, P)..., n_bins, auxiliary_dims...)
+    counts = zeros(CT, n_bins, auxiliary_dims...)
+    s = _tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric)
+    sf, cf = _tensor_flat(sums, counts, s)
+    _tensor_pairs!(sf, cf, order, s, outer)
     return sums, counts
 end
 

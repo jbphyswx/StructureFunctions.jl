@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT, Channels as CH
@@ -163,11 +164,14 @@ Test.@testset "channels are transported on a sphere, scalars are not" begin
     metric = SFC.DI.SphericalAngle()
 
     # one vector channel: the same kernel as the array path, so identical to the last bit
+    # Both pinned to the same backend: the claim is that the bundle takes the *same kernel*, and a
+    # different backend would differ in summation order alone, which would not test that.
     bare_s = zeros(5); bare_c = zeros(UInt32, 5)
     SF.calculate_structure_function!(bare_s, bare_c, SFT.L2SFType(), x, u, bins;
-                                     distance_metric = metric)
+                                     distance_metric = metric, backend = CB.SerialBackend())
     bundled = SFC.calculate_structure_function(
         SFT.L2SFType(), x, SF.Fields(vectors = (u,)), bins, UInt32; distance_metric = metric,
+        backend = CB.SerialBackend(),
         output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
     Test.@test bundled.counts == bare_c
     Test.@test bundled.sums == bare_s

@@ -845,4 +845,29 @@ function SFC._partial_sums_counts(
     return result
 end
 
+
+# --- Tensor structure functions ---
+
+# Each task takes a round-robin share of the outer index and accumulates into its own buffers; the
+# partials add because a histogram is order-independent. The setup (widening, bin edges) happens
+# once per task rather than once per pair, matching the 1-D threaded path.
+function SFC.threaded_calculate_structure_function_tensor!(
+    sums::AbstractArray, counts::AbstractArray, order::Val{P},
+    shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
+    distance_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+) where {P, D}
+    N = size(u, 2)
+    chunks = _triangle_outer_chunks(1:N, Threads.nthreads())
+    part = OMT.tmapreduce(_tensor_add, chunks) do chunk
+        SFC.tensor_partial(order, shape, x, u, distance_bins, chunk;
+                           distance_metric, count_eltype = eltype(counts))
+    end
+    sums .+= part[1]
+    counts .+= part[2]
+    return sums, counts
+end
+
+@inline _tensor_add(a, b) = (a[1] .+ b[1], a[2] .+ b[2])
+
 end # module

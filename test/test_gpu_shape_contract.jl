@@ -129,11 +129,25 @@ end
         end
     end
 
+    @testset "a one-dimensional field runs on the device" begin
+        # The tiled kernels stage a fixed number of coordinate components, so a width outside the
+        # set they were written for goes through the width-generic pair kernel. That is a routing
+        # decision, not a refusal, so the answer must equal the CPU's.
+        Random.seed!(3)
+        x1 = rand(Float32, 1, 200)
+        u1 = randn(Float32, 1, 200)
+        b1 = collect(Float32, range(0.0f0, 0.9f0; length = 9))
+        cpu1 = SFC.calculate_structure_function(
+            sf, x1, u1, b1; backend = CB.SerialBackend(),
+            output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+        gpu1 = SFC.calculate_structure_function(
+            sf, x1, u1, b1; backend = GPU_SHAPE_BE,
+            output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+        @test gpu1.counts == cpu1.counts
+        @test isapprox(gpu1.sums, cpu1.sums; rtol = 1f-5)
+    end
+
     @testset "invalid shapes fail before GPU launch" begin
-        @test_throws DimensionMismatch SFC.calculate_structure_function(
-            sf, rand(Float32, 1, 5), rand(Float32, 1, 5), bins;
-            backend = GPU_SHAPE_BE, verbose = false, show_progress = false,
-        )
         @test_throws DimensionMismatch SFC.calculate_structure_function(
             sf, rand(Float32, 2, 5), rand(Float32, 3, 5), bins;
             backend = GPU_SHAPE_BE, verbose = false, show_progress = false,

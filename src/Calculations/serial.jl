@@ -236,7 +236,29 @@ function serial_calculate_structure_function!(
 ) where {OT, FT1 <: Number, FT2 <: Number}
     # `size(u_arr, 1)` is the velocity dimension here, before any conversion, so this is the one
     # place the geometry can be built. Everything downstream receives it.
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u_arr, 1)))
+    #
+    # An array's axis length is a value, not a type parameter, so `Val` of it cannot be inferred and
+    # a geometry built straight from it would type the whole sweep as `Any`. Branching on the two
+    # common widths hands each branch a concretely typed geometry; the branch is chosen at runtime,
+    # everything inside it is not.
+    D = size(u_arr, 1)
+    if D == 2
+        return _serial_sf_with_geometry!(sums, counts, structure_function_type, x_arr, u_arr,
+                                         distance_bins,
+                                         SFH.pair_geometry_for(distance_metric, Val(2)); kwargs...)
+    elseif D == 3
+        return _serial_sf_with_geometry!(sums, counts, structure_function_type, x_arr, u_arr,
+                                         distance_bins,
+                                         SFH.pair_geometry_for(distance_metric, Val(3)); kwargs...)
+    end
+    return _serial_sf_with_geometry!(sums, counts, structure_function_type, x_arr, u_arr,
+                                     distance_bins,
+                                     SFH.pair_geometry_for(distance_metric, Val(D)); kwargs...)
+end
+
+function _serial_sf_with_geometry!(
+    sums, counts, structure_function_type, x_arr, u_arr, distance_bins, geom; kwargs...,
+)
     xk, uk = SFH.prepare_pair_inputs(geom, x_arr, u_arr)
     x_tuple = _component_vector_views(xk, SFH.coordinate_width(geom))
     u_tuple = _component_vector_views(uk, SFH.field_width(geom))

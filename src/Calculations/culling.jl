@@ -91,9 +91,12 @@ end
 end
 
 """1-based cell multi-index of point `i` of `xc`, clamped into the grid."""
+# Only the length is a method parameter: an empty tuple determines no element type, so naming one
+# would leave it unbound at `D = 0`.
 @inline function cull_cell_multi_index(
-    origin::NTuple{D, FT}, inv_h, dims::NTuple{D, Int}, xc::NTuple{D}, i::Integer,
-) where {D, FT}
+    origin::Tuple{Vararg{Any, D}}, inv_h, dims::NTuple{D, Int}, xc::Tuple{Vararg{Any, D}},
+    i::Integer,
+) where {D}
     return ntuple(Val(D)) do d
         c = 1 + floor(Int, (@inbounds(xc[d][i]) - origin[d]) * inv_h)
         min(max(c, 1), dims[d])

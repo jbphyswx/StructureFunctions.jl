@@ -257,8 +257,8 @@ itself — unless the lag half-turns a periodic direction.
 @inline function _lag_reduce(
     sf::SFT.AbstractPairwiseStructureFunctionType, u_flat::AbstractMatrix{UT}, valid,
     ::Val{D}, ::Val{Dg}, s::UniformLagSchedule, strides::NTuple{Dg, Int},
-    h::NTuple{Dg, Int}, images::NTuple{M, SA.SVector{D, T}}, r2, half_dim::Int,
-) where {UT, D, Dg, M, T}
+    h::NTuple{Dg, Int}, images::Tuple{Vararg{SA.SVector{D}, M}}, r2, half_dim::Int,
+) where {UT, D, Dg, M}
     total = zero(SFT._sf_raw(sf, SA.SVector{D, UT}(ntuple(_ -> zero(UT), Val(D))), images[1], r2))
     n_pairs = 0
     inv_m = inv(M)

@@ -221,6 +221,120 @@ end
 @inline SFC_val_int(::Val{W}) where {W} = W
 
 """
+    required_channels(operator) -> (n_vector, n_scalar)
+
+The highest vector and scalar channel index an operator reads.
+
+Every operator that predates the channel bundle reads the field itself, which is channel 1 of the
+vector side — that is what keeps `Fields(vectors = (u,))` identical to a bare `u`.
+"""
+@inline required_channels(::SFT.AbstractPairwiseStructureFunctionType) = (1, 0)
+@inline required_channels(sf::SFT.ScalarStructureFunctionType) = (0, sf.channel)
+@inline required_channels(sf::SFT.MixedStructureFunctionType) =
+    (sf.vector_channel, sf.scalar_channel)
+@inline required_channels(sf::SFT.VectorDotStructureFunctionType) = (max(sf.a, sf.b), 0)
+@inline required_channels(sf::SFT.ScalarDotStructureFunctionType) = (0, max(sf.a, sf.b))
+
+"""
+    validate_channels(operator, fields)
+
+Refuse an operator that reads a channel the bundle does not carry.
+
+Checked once at the entry rather than per pair: the per-pair check would be inside a task on a
+threaded backend, where the error surfaces wrapped in a `TaskFailedException` instead of as itself.
+"""
+function validate_channels(sf::SFT.AbstractPairwiseStructureFunctionType,
+                           f::CH.Fields{D, V, K}) where {D, V, K}
+    nv, ns = required_channels(sf)
+    nv <= V || throw(ArgumentError(
+        "$(nameof(typeof(sf))) reads vector channel $nv, but this field carries $V. Build the " *
+        "bundle with that channel, e.g. `Fields(vectors = (u, 𝓐u))`.",
+    ))
+    ns <= K || throw(ArgumentError(
+        "$(nameof(typeof(sf))) reads scalar channel $ns, but this field carries $K. Build the " *
+        "bundle with that channel, e.g. `Fields(vectors = (u,), scalars = (θ,))`.",
+    ))
+    return nothing
+end
+
+"""
+    channel_partial(sf, x, fields, distance_bins, outer; kwargs...) -> (sums, counts)
+
+A worker's share of a multi-channel sweep: the pairs whose lower index is in `outer`, in freshly
+allocated accumulators.
+
+The outer lists partition `1:(N-1)`, so the partials add to the whole sweep exactly. Note the
+indices are into the **culled ordering** when culling is on, which is a permutation of the input and
+therefore still a partition.
+"""
+function channel_partial(
+    sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::CH.Fields{D, V, K},
+    distance_bins, outer;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    culling::CullingPolicy = AutoCulling(),
+    count_eltype::Type{CT} = UInt32,
+) where {D, V, K, CT}
+    N = size(CH.packed(f), 2)
+    nb = n_histogram_bins(squared_digitize_plan(distance_bins))
+    sums = zeros(float(eltype(CH.packed(f))), nb)
+    counts = zeros(CT, nb)
+    geom, xk, data, vF, plan, grid = channel_setup(f, x, distance_bins, distance_metric, culling)
+    _channel_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan,
+                         n_histogram_bins(plan), Val(SFC_val_int(SFH.coordinate_width(geom))),
+                         outer, N, grid)
+    return sums, counts
+end
+
+"""
+    distributed_calculate_structure_function!(sums, counts, sf, x, fields, bins; kwargs...)
+
+Accumulate a multi-channel sweep across worker processes. Supplied by the Distributed extension.
+"""
+function distributed_calculate_structure_function!(sums, counts, sf, x, f::CH.Fields, bins;
+                                                   kwargs...)
+    throw(ArgumentError(
+        "the distributed multi-channel sweep needs Distributed: run `using Distributed` and add " *
+        "workers.",
+    ))
+end
+
+"""
+    gpu_calculate_structure_function!(backend, sums, counts, sf, x, fields, bins; kwargs...)
+
+Accumulate a multi-channel sweep on a device. Supplied by the KernelAbstractions extension.
+"""
+function gpu_calculate_structure_function_channels!(backend, sums, counts, sf, x, f::CH.Fields,
+                                                    bins; kwargs...)
+    throw(ArgumentError(
+        "the GPU multi-channel sweep needs KernelAbstractions: run `using KernelAbstractions` and " *
+        "a device backend such as CUDA.",
+    ))
+end
+
+# Backend selection for a channel bundle, mirroring the array path's: the concrete backends dispatch,
+# and `Auto` takes the threaded one when there are threads to use and the extension supplying it is
+# loaded.
+@inline _channel_dispatch!(::CB.AbstractSerialBackend, sums, counts, sf, x, f, bins; kwargs...) =
+    serial_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
+
+@inline _channel_dispatch!(::CB.AbstractThreadedBackend, sums, counts, sf, x, f, bins; kwargs...) =
+    threaded_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
+
+@inline _channel_dispatch!(::CB.AbstractDistributedBackend, sums, counts, sf, x, f, bins;
+                           kwargs...) =
+    distributed_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
+
+@inline _channel_dispatch!(be::CB.AbstractGPUBackend, sums, counts, sf, x, f, bins; kwargs...) =
+    gpu_calculate_structure_function_channels!(be, sums, counts, sf, x, f, bins; kwargs...)
+
+function _channel_dispatch!(::CB.AbstractAutoBackend, sums, counts, sf, x, f, bins; kwargs...)
+    if Threads.nthreads() > 1 && _ohmythreads_loaded()
+        return threaded_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
+    end
+    return serial_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
+end
+
+"""
     calculate_structure_function(sf, x, fields, distance_bins[, count_eltype]; kwargs...)
 
 Structure function of a multi-channel field: several quantities sampled at the same points, swept
@@ -232,15 +346,17 @@ function calculate_structure_function(
     f::CH.Fields,
     distance_bins::AbstractVector,
     count_eltype::Type{CT} = UInt32;
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     output_type::Type{OT} = SFO.StructureFunction,
     kwargs...,
 ) where {OT, CT}
     N = size(CH.packed(f), 2)
     _assert_counts_representable(CT, N)
     nb = n_histogram_bins(squared_digitize_plan(distance_bins))
+    validate_channels(sf, f)
     sums = zeros(float(eltype(CH.packed(f))), nb)
     counts = zeros(CT, nb)
-    serial_calculate_structure_function!(sums, counts, sf, x, f, distance_bins; kwargs...)
+    _channel_dispatch!(backend, sums, counts, sf, x, f, distance_bins; kwargs...)
     raw = SFO.StructureFunctionSumsAndCounts(sf, distance_bins, sums, counts)
     return _finalize(raw, output_type)
 end
