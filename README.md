@@ -467,7 +467,43 @@ where $\langle \cdot \rangle$ is ensemble/spatial average over all displacement 
 
 *A `Fields(vectors = (u,), scalars = (θ,))` bundle computes velocity, tracer and mixed moments in one pair pass. Right: `⟨δu_L (δθ)²⟩`, the mixed moment Yaglom's law inverts for the scalar-variance dissipation.*
 
-*Regenerate the five figures above: `julia --project=docs/generate_assets docs/generate_assets/generate_feature_figures.jl`.*
+### Gridded Fast Paths — the transform against the lag sweep
+
+![Transform vs lag sweep](docs/src/assets/sf_gridded_algorithms.png)
+
+*Two exact algorithms for one definition. Left: they agree to double-precision round-off on the same data — the lag sweep visits each lag and reduces over cells, while the transform never forms a lag until after the inverse transform, so a defect in either shows up immediately. Right: what each costs. The sweep is `O(n_lags · cells)` and the transform `O(cells log cells)` however many lags are wanted, so the gap widens with grid size; `AutoSpectralBackend()` costs both and picks the cheaper, which at small cutoffs is the sweep.*
+
+### Advective Structure Functions and Spectral Flux (Bessel methods)
+
+![Advective structure function and flux](docs/src/assets/sf_advective_flux.png)
+
+*Left: `⟨δu · δ𝓐ᵤ⟩` for a 2-D field, with the spectral flux `Π(K) = −(K/2)∫ SF_A J₁(Kr) dr` overlaid — the relation holds **without assuming isotropy**, which is what these estimators are for. Right: the flux kernel against a closed form. Since `∫₀^R J₁(Kr)dr = (1 − J₀(KR))/K`, a constant advective structure function must give exactly `−(c/2)(1 − J₀(KR))`, settling on `−c/2`. That pins the kernel and the prefactor with nothing fitted — which matters, because a flux wrong by a constant or a sign still looks like a cascade.*
+
+### The Third-Order Exact Laws
+
+![Exact laws](docs/src/assets/sf_exact_laws.png)
+
+*Left: each law inverts the moment it is stated for — 4/5 from `⟨δu_L³⟩`, 4/3 from `⟨δu_L‖δu‖²⟩`, Yaglom from `⟨δu_L(δθ)²⟩` — each recovering its prescribed constant flat in `r`. The red line is the trap the API guards against: applying the four-fifths law to the scalar moment is wrong by exactly 5/3. Right: third-order moments carry the cascade's sign. A random-phase field has vanishing odd moments; a ramp-cliff (shock) field is strongly negatively skewed at small separations — the forward-cascade sign the 4/5 law encodes.*
+
+### Spherical Geometry — parallel transport, and the lat-lon fast path
+
+![Spherical geometry](docs/src/assets/sf_spherical.png)
+
+*Left: solid-body rotation on a sphere has an identically zero longitudinal increment at every separation and latitude. Computed in the geodesic frame the ratio sits at machine zero (floored at 1e-30 for the log axis); treating lon/lat as a plane instead puts ~90 % of the energy into a quantity whose true value is zero — a **30-order** separation, and the reason the package transports increments rather than differencing raw coordinates. Right: on a lat-lon grid the geodesic frame is zonally invariant, so the geometry is computed once per (latitude pair, longitude offset) instead of once per pair — **147× faster** than the unstructured pair loop here, with **pair counts exactly equal**.*
+
+### Culling — cost falls with the cutoff, the answer never moves
+
+![Culling](docs/src/assets/sf_culling.png)
+
+*When the largest bin edge bounds the separations of interest, pairs beyond it need never be enumerated. Speedups from 1.4× to **55×** as `r_max` tightens, at N = 20 000 — and the pair counts are **identical to the uncalled sweep at every cutoff**, because culling changes which pairs are visited, not which pairs count. `AutoCulling()` is the default and declines where it cannot be exact.*
+
+### Covariance from a Structure Function
+
+![Covariance](docs/src/assets/sf_covariance.png)
+
+*Left: a structure function is twice a variogram, so `C(r) = C(0) − D(r)/2` recovers the covariance exactly — given the variance, which `D(r)` is blind to and which must be supplied. Right: a covariance matrix must be positive semi-definite, and **interpolating a positive-definite kernel does not preserve that**. The error falls as the square of the sampling spacing, so an under-resolved covariance cannot support a valid matrix; `covariance_matrix` checks rather than assumes, and its message distinguishes "sampled too coarsely" from "not a kernel at all".*
+
+*Regenerate the eleven figures above: `julia --project=docs/generate_assets docs/generate_assets/generate_feature_figures.jl`.*
 
 ---
 

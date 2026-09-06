@@ -1,4 +1,6 @@
 [deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Distances = "b4f34e82-e78d-54a5-968a-f98e89d6e8f7"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 Bessels = "0e736298-9ec6-45e8-9647-e4fc86a2fe38"
 SpectralBackends = "289ded02-b044-41b2-8b2d-71f2a47755d1"

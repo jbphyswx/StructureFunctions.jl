@@ -12,6 +12,8 @@ using Bessels: Bessels
 using FFTW: FFTW
 using CairoMakie: CairoMakie as CM
 using StaticArrays: StaticArrays as SA
+using Distances: Distances as DI
+using LinearAlgebra: LinearAlgebra
 using Random: Random
 
 const ASSETS_DIR = joinpath(@__DIR__, "..", "src", "assets")
@@ -428,39 +430,230 @@ function generate_exact_laws_figure()
     CM.axislegend(ax1; position = :rc)
 
     # (b) the cascade sign, on fields with and without one
+    # Many modes with random directions, so the random-phase field is close to Gaussian and its odd
+    # moments vanish; the ramp-cliff field differs only in the waveform, not the spectrum.
     Random.seed!(5)
-    N = 5000
+    N = 6000
     xs = 2π .* rand(2, N)
-    sym = zeros(2, N)          # random phases → odd moments vanish
-    casc = zeros(2, N)         # ramp-cliff → negatively skewed increments
+    sym = zeros(2, N)
+    casc = zeros(2, N)
     saw(θ) = mod(θ, 2π) / π - 1
-    for k in 1:12
-        amp = k^(-5 / 6)
-        φ1, φ2 = 2π * rand(), 2π * rand()
+    for _ in 1:60
+        k = rand(1:12)
+        ang = 2π * rand()
+        kx, ky = k * cos(ang), k * sin(ang)
+        amp = k^(-5 / 6) * randn()
+        φ = 2π * rand()
+        ex, ey = -sin(ang), cos(ang)          # transverse, so both fields are solenoidal
         for p in 1:N
-            arg = k * xs[1, p] + (k ÷ 2 + 1) * xs[2, p]
-            sym[1, p] += amp * cos(arg + φ1)
-            sym[2, p] += amp * sin(arg + φ2)
-            casc[1, p] += amp * saw(arg + φ1)
-            casc[2, p] += amp * saw(arg + φ2)
+            arg = kx * xs[1, p] + ky * xs[2, p] + φ
+            sym[1, p] += amp * cos(arg) * ex
+            sym[2, p] += amp * cos(arg) * ey
+            casc[1, p] += amp * saw(arg) * ex
+            casc[2, p] += amp * saw(arg) * ey
         end
     end
-    bins = collect(10 .^ range(log10(0.05), log10(2.5); length = 24))
+    bins = collect(10 .^ range(log10(0.08), log10(2.5); length = 22))
     mids = SF.midpoints(bins)
-    l3s = SFC.calculate_structure_function(SFT.L3SFType(), xs, sym, bins;
-                                           output_type = SF.StructureFunction,
-                                           verbose = false, show_progress = false)
-    l3c = SFC.calculate_structure_function(SFT.L3SFType(), xs, casc, bins;
-                                           output_type = SF.StructureFunction,
-                                           verbose = false, show_progress = false)
-    ax2 = CM.Axis(fig[1, 2]; xscale = log10, xlabel = "separation r", ylabel = "⟨δu_L³⟩",
+    skew(u) = begin
+        l3 = SFC.calculate_structure_function(SFT.L3SFType(), xs, u, bins;
+                                              output_type = SF.StructureFunction,
+                                              verbose = false, show_progress = false)
+        l2 = SFC.calculate_structure_function(SFT.L2SFType(), xs, u, bins;
+                                              output_type = SF.StructureFunction,
+                                              verbose = false, show_progress = false)
+        l3.values ./ (l2.values .^ 1.5)
+    end
+    ax2 = CM.Axis(fig[1, 2]; xscale = log10, xlabel = "separation r",
+                  ylabel = "⟨δu_L³⟩ / ⟨δu_L²⟩^(3/2)",
                   title = "Third order carries the cascade's sign")
-    CM.lines!(ax2, mids, l3s.values; linewidth = 3, label = "random phases (no cascade)")
-    CM.lines!(ax2, mids, l3c.values; linewidth = 3, label = "ramp-cliff (forward cascade)")
+    CM.lines!(ax2, mids, skew(sym); linewidth = 3, label = "random phases (no cascade)")
+    CM.lines!(ax2, mids, skew(casc); linewidth = 3, label = "ramp-cliff (forward cascade)")
     CM.hlines!(ax2, [0.0]; color = :black, linestyle = :dash)
     CM.axislegend(ax2; position = :lb)
 
     out = joinpath(ASSETS_DIR, "sf_exact_laws.png")
+    CM.save(out, fig)
+    println("  wrote $out")
+end
+
+# ─── Figure: spherical geometry — parallel transport, and the zonal fast path ──
+
+function generate_spherical_figure()
+    Random.seed!(64)
+    N = 3000
+    Rearth = 6.371e6
+    lon = 360 .* rand(N) .- 180
+    lat = 120 .* rand(N) .- 60
+    x = permutedims(hcat(lon, lat))
+    Ω = 7.292e-5
+    u = permutedims(hcat(Ω * Rearth .* cosd.(lat), zeros(N)))   # solid-body rotation
+
+    bins = collect(range(0.0, 8.0e6; length = 21))
+    mids = SF.midpoints(bins)
+    sphere = SFC.calculate_structure_functions_single_pass(
+        x, u, bins; distance_metric = DI.Haversine(Rearth))
+    # the same data with no transport: treat lon/lat as if they were a plane
+    flatb = collect(range(0.0, 80.0; length = 21))
+    flat = SFC.calculate_structure_functions_single_pass(
+        x, u, flatb; distance_metric = DI.Euclidean())
+
+    ratio(res) = begin
+        occ = isfinite.(res.L2.values) .& isfinite.(res.S2.values) .& (res.S2.values .> 0)
+        occ, abs.(res.L2.values[occ]) ./ res.S2.values[occ]
+    end
+    o1, r1 = ratio(sphere)
+    o2, r2 = ratio(flat)
+
+    fig = CM.Figure(size = (1100, 430))
+    ax1 = CM.Axis(fig[1, 1]; yscale = log10, xlabel = "separation (fraction of the range)",
+                  ylabel = "⟨δu_L²⟩ / ⟨‖δu‖²⟩",
+                  title = "Solid-body rotation has no longitudinal increment")
+    CM.lines!(ax1, range(0, 1; length = count(o1)), max.(r1, 1e-30); linewidth = 3,
+              label = "transported (geodesic frame)")
+    CM.lines!(ax1, range(0, 1; length = count(o2)), max.(r2, 1e-30); linewidth = 3,
+              color = :crimson, label = "untransported (lon/lat as a plane)")
+    CM.axislegend(ax1; position = :rc)
+
+    # zonal lat-lon fast path vs the unstructured pair loop, on the same grid
+    nlon, nlat = 48, 24
+    lons = collect(range(0, 2π * (1 - 1 / nlon); length = nlon))
+    lats = collect(range(-1.2, 1.2; length = nlat))
+    ug = zeros(2, nlon, nlat)
+    for i in 1:nlon, j in 1:nlat
+        ug[1, i, j] = cos(3 * lons[i]) * cos(lats[j])
+        ug[2, i, j] = sin(2 * lats[j])
+    end
+    sbins = collect(range(0.0, 2.4; length = 25))
+    sched = SFC.ZonalLagSchedule(lats, nlon, lons[2] - lons[1], 1.0, true)
+    nb = SFC.n_histogram_bins(SFC.squared_digitize_plan(sbins))
+    zs = zeros(Float64, nb); zc = zeros(Int, nb)
+    t1 = time()
+    SFC.gridded_lag_sweep!(zs, zc, SFT.L2SFType(), ug, sched, sbins, Val(2))
+    t_zonal = time() - t1
+
+    xs = zeros(2, nlon * nlat)
+    us = zeros(2, nlon * nlat)
+    for i in 1:nlon, j in 1:nlat
+        q = (j - 1) * nlon + i
+        xs[1, q] = lons[i]; xs[2, q] = lats[j]
+        us[1, q] = ug[1, i, j]; us[2, q] = ug[2, i, j]
+    end
+    t2 = time()
+    un = SFC.calculate_structure_function(SFT.L2SFType(), xs, us, sbins;
+                                          distance_metric = DI.SphericalAngle(),
+                                          output_type = SF.StructureFunctionSumsAndCounts,
+                                          verbose = false, show_progress = false)
+    t_unstr = time() - t2
+
+    smids = SF.midpoints(sbins)
+    okz = (zc .> 0) .& (un.counts .> 0)
+    ax2 = CM.Axis(fig[1, 2]; xlabel = "separation (radians on the sphere)",
+                  ylabel = "⟨δu_L²⟩",
+                  title = "Lat-lon fast path vs the pair loop ($(round(t_unstr/t_zonal; digits=1))× faster)")
+    CM.lines!(ax2, collect(smids)[okz], (zs ./ max.(zc, 1))[okz]; linewidth = 4,
+              label = "zonal lag schedule")
+    CM.lines!(ax2, collect(smids)[okz], (un.sums ./ max.(un.counts, 1))[okz]; linewidth = 2,
+              color = :black, linestyle = :dash, label = "unstructured pair loop")
+    CM.axislegend(ax2; position = :lt)
+
+    out = joinpath(ASSETS_DIR, "sf_spherical.png")
+    CM.save(out, fig)
+    println("  wrote $out  (zonal $(round(t_unstr/t_zonal; digits=1))x, counts equal: $(zc == un.counts))")
+end
+
+# ─── Figure: culling changes the cost, never the answer ────────────────────
+
+function generate_culling_figure()
+    Random.seed!(88)
+    N = 20_000
+    x = rand(2, N)
+    u = randn(2, N)
+    fracs = [0.5, 0.2, 0.1, 0.05, 0.03]
+    speed = Float64[]
+    exact = Bool[]
+    for f in fracs
+        bins = collect(range(0.0, f; length = 16))
+        a = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
+                culling = SFC.NoCulling(), output_type = SF.StructureFunctionSumsAndCounts,
+                verbose = false, show_progress = false)
+        t1 = time()
+        a = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
+                culling = SFC.NoCulling(), output_type = SF.StructureFunctionSumsAndCounts,
+                verbose = false, show_progress = false)
+        tn = time() - t1
+        b = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
+                culling = SFC.AlwaysCulling(), output_type = SF.StructureFunctionSumsAndCounts,
+                verbose = false, show_progress = false)
+        t2 = time()
+        b = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
+                culling = SFC.AlwaysCulling(), output_type = SF.StructureFunctionSumsAndCounts,
+                verbose = false, show_progress = false)
+        tc = time() - t2
+        push!(speed, tn / tc)
+        push!(exact, a.counts == b.counts)
+    end
+
+    fig = CM.Figure(size = (1100, 430))
+    ax1 = CM.Axis(fig[1, 1]; xscale = log10, yscale = log10,
+                  xlabel = "r_max / domain size", ylabel = "speedup from culling",
+                  title = "Culling: cost falls with the cutoff")
+    CM.scatterlines!(ax1, fracs, speed; linewidth = 3, markersize = 14)
+    CM.hlines!(ax1, [1.0]; color = :black, linestyle = :dash)
+
+    ax2 = CM.Axis(fig[1, 2]; xlabel = "r_max / domain size", ylabel = "pair counts identical?",
+                  title = "and never changes the answer")
+    CM.barplot!(ax2, 1:length(fracs), Float64.(exact); color = :seagreen)
+    ax2.xticks = (1:length(fracs), string.(fracs))
+    CM.ylims!(ax2, 0, 1.3)
+    CM.text!(ax2, 1.0, 1.1; text = "exact pair-for-pair at every cutoff")
+
+    out = joinpath(ASSETS_DIR, "sf_culling.png")
+    CM.save(out, fig)
+    println("  wrote $out  (speedups: $(round.(speed; digits=1)), all exact: $(all(exact)))")
+end
+
+# ─── Figure: covariance from a structure function ──────────────────────────
+
+function generate_covariance_figure()
+    σ2, ℓ = 1.7, 0.8
+    edges = collect(range(0.0, 6.0; length = 61))
+    mids = SF.midpoints(edges)
+    d = [2σ2 * (1 - exp(-r^2 / (2ℓ^2))) for r in mids]
+    res = SF.StructureFunction(SFT.S2SFType(), edges, d)
+    r, C = SFC.covariance(res, σ2)
+
+    fig = CM.Figure(size = (1100, 430))
+    ax1 = CM.Axis(fig[1, 1]; xlabel = "separation r", ylabel = "value",
+                  title = "C(r) = C(0) − D(r)/2")
+    CM.lines!(ax1, mids, d; linewidth = 3, label = "structure function D(r)")
+    CM.lines!(ax1, r, C; linewidth = 3, label = "recovered covariance C(r)")
+    CM.lines!(ax1, r, [σ2 * exp(-q^2 / (2ℓ^2)) for q in r]; linewidth = 2, color = :black,
+              linestyle = :dash, label = "true covariance")
+    CM.hlines!(ax1, [σ2]; color = :gray, linestyle = :dot)
+    CM.text!(ax1, 3.5, σ2 * 1.02; text = "variance, which D(r) cannot supply", color = :gray)
+    CM.axislegend(ax1; position = :rc)
+
+    # interpolating a positive-definite kernel does not preserve positive-definiteness
+    Random.seed!(31)
+    pts = 3.0 .* rand(2, 60)
+    gauss(s) = 1.4 * exp(-s^2 / (2 * 0.9^2))
+    nss = [60, 120, 250, 500, 1000, 2500, 5000]
+    λmin = Float64[]
+    for ns in nss
+        seps = collect(range(0.0, 6.0; length = ns))
+        Σ = SFC.covariance_matrix(pts, seps, gauss.(seps); check_posdef = false)
+        push!(λmin, minimum(LinearAlgebra.eigvals(LinearAlgebra.Symmetric(Σ))))
+    end
+    ax2 = CM.Axis(fig[1, 2]; xscale = log10, yscale = log10,
+                  xlabel = "samples of C(r) used to build the matrix",
+                  ylabel = "|most negative eigenvalue|",
+                  title = "Positive-definiteness is checked, not assumed")
+    CM.scatterlines!(ax2, Float64.(nss), abs.(λmin); linewidth = 3, markersize = 12)
+    CM.text!(ax2, 100.0, 3e-4; text = "under-resolved:\nnot a valid covariance matrix")
+    CM.text!(ax2, 1200.0, 2e-8; text = "resolved")
+
+    out = joinpath(ASSETS_DIR, "sf_covariance.png")
     CM.save(out, fig)
     println("  wrote $out")
 end
@@ -474,4 +667,7 @@ generate_channels_figure()
 generate_gridded_algorithms_figure()
 generate_advective_figure()
 generate_exact_laws_figure()
+generate_spherical_figure()
+generate_culling_figure()
+generate_covariance_figure()
 println("Done.")
