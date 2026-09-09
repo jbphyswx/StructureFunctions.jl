@@ -167,6 +167,87 @@ function helmholtz_spectra(
     return (rotational = rot, divergent = div)
 end
 
+"""
+    helmholtz_spectra(L2, T2, wavenumbers; asymptote)
+
+Rotational and divergent spectral densities of a two-dimensional field from its longitudinal and
+transverse second-order structure functions, binned on the same edges.
+
+The sum and the difference of the two projections transform separately,
+
+```math
+P_E + P_B = -\\frac{1}{4π} ∫_0^∞ (D_{LL} + D_{TT} - a)\\, J_0(kr)\\, r\\, dr, \\qquad
+P_E - P_B = \\frac{1}{4π} ∫_0^∞ (D_{LL} - D_{TT})\\, J_2(kr)\\, r\\, dr,
+```
+
+with `E` the divergent (gradient) part and `B` the rotational (curl) part, on the convention that a
+density integrates over `d²k` to the variance. The first line is [`isotropic_spectrum`](@ref) of the
+trace and needs the trace's large-separation limit `a`, which defaults to its largest value; the
+second needs none, since `D_LL − D_TT` decays on its own. Both kernels need `Bessels`.
+
+Its error is the truncation of the Hankel integrals at the last separation, which is a different
+error from the one the real-space route through [`helmholtz_decompose_2d`](@ref) carries.
+"""
+function helmholtz_spectra(
+    L2::SFO.AbstractStructureFunction, T2::SFO.AbstractStructureFunction, wavenumbers::AbstractVector;
+    asymptote = nothing,
+)
+    _assert_projection(L2.operator, 2, 0, "longitudinal")
+    _assert_projection(T2.operator, 0, 2, "transverse")
+    r, dll, dtt = _paired_bins(L2, T2)
+    asym = asymptote === nothing ? maximum(dll .+ dtt) : asymptote
+    total = isotropic_spectrum(SFT.S2SFType(), r, dll .+ dtt, wavenumbers, Val(2); asymptote = asym)
+    diff = _hankel(Val(2), r, dll .- dtt, wavenumbers) ./ (4π)
+    return (rotational = (total .- diff) ./ 2, divergent = (total .+ diff) ./ 2)
+end
+
+function _assert_projection(op, NL::Int, NT::Int, name::String)
+    op isa SFT.ProjectedStructureFunctionType{NL, NT} && return nothing
+    throw(ArgumentError(
+        "the $name argument must be the second-order $name projection, " *
+        "ProjectedStructureFunctionType{$NL, $NT}; got $(nameof(typeof(op))).",
+    ))
+end
+
+"""Abscissa and values of a result, restricted to bins that hold a value."""
+function _binned(sf::SFO.StructureFunction)
+    keep = findall(isfinite, sf.values)
+    return collect(midpoints(sf.distance)), collect(sf.values), keep
+end
+
+function _binned(sf::SFO.StructureFunctionSumsAndCounts)
+    keep = findall(>(0), sf.counts)
+    vals = [c > 0 ? s / c : oftype(float(s), NaN) for (s, c) in zip(sf.sums, sf.counts)]
+    return collect(midpoints(sf.distance)), vals, keep
+end
+
+# Two results on one set of edges, reduced to the bins both hold.
+function _paired_bins(a::SFO.AbstractStructureFunction, b::SFO.AbstractStructureFunction)
+    a.distance == b.distance || throw(ArgumentError(
+        "the two structure functions must share their distance bins",
+    ))
+    r, va, ka = _binned(a)
+    _, vb, kb = _binned(b)
+    keep = intersect(ka, kb)
+    isempty(keep) && throw(ArgumentError("no bin holds a value in both structure functions"))
+    return r[keep], va[keep], vb[keep]
+end
+
+"""`∫₀^∞ f(r) J_N(kr) r dr` at each wavenumber, by the same quadrature as [`isotropic_spectrum`](@ref)."""
+function _hankel(::Val{N}, separations::AbstractVector, values::AbstractVector, wavenumbers::AbstractVector) where {N}
+    FT = float(promote_type(eltype(separations), eltype(values), eltype(wavenumbers)))
+    out = Vector{FT}(undef, length(wavenumbers))
+    @inbounds for (j, k) in pairs(wavenumbers)
+        acc = zero(FT)
+        for i in eachindex(separations)
+            r = FT(separations[i])
+            acc += FT(values[i]) * bessel_kernel(Val(N), k * r) * r * _quad_width(separations, i)
+        end
+        out[j] = acc
+    end
+    return out
+end
+
 function _component_spectrum(op, r, sums, counts, wavenumbers, asymptote)
     keep = findall(>(0), counts)
     isempty(keep) && throw(ArgumentError("every bin of the $(nameof(typeof(op))) component is empty"))
@@ -210,6 +291,7 @@ spectrum; converting from them needs the isotropy relation between longitudinal 
 components, which this transform does not apply. Orders other than two are fluxes, not spectra.
 """
 assert_invertible(::SFT.SecondOrderStructureFunctionType) = nothing
+assert_invertible(::SFT.ScalarStructureFunctionType{2}) = nothing
 
 function assert_invertible(op::SFT.ProjectedStructureFunctionType{NL, NT}) where {NL, NT}
     if NL + NT == 2
@@ -315,6 +397,188 @@ function isotropic_spectrum(sf::SFO.StructureFunctionSumsAndCounts, wavenumbers:
 end
 
 """
+    isotropic_spectrum(result, geometry::SphericalGeometry, lmax) -> (l, C)
+
+Angular power spectrum `C_l`, `l = 1:lmax`, of a scalar or of the trace on a sphere, from a
+second-order structure function binned in separation `r = R σ`.
+
+The isotropic correlation is `C(σ) = Σ_l (2l+1)/(4π) C_l P_l(cos σ)` and `D(σ) = 2[C(0) − C(σ)]`, so by
+the orthogonality of the Legendre polynomials
+
+```math
+C_l = -π ∫_0^π D(σ)\\, P_l(\\cos σ)\\, \\sin σ\\, dσ, \\qquad l ≥ 1,
+```
+
+with no variance needed: the constant `C(0)` is orthogonal to every `P_l` but `P_0`, which is the
+one degree lost — the sphere's `k = 0`. Each bin's value is taken as constant across the bin and the
+kernel is integrated over the bin in closed form, so the only error is that of the binning itself.
+Every bin must hold a value: the integral runs over the whole sphere. A kernel-binned result on
+[`HarmonicNodes`](@ref) integrates by the nodes' quadrature weights.
+"""
+function isotropic_spectrum(sf::SFO.AbstractStructureFunction, g::SFH.SphericalGeometry, lmax::Integer)
+    assert_invertible(sf.operator)
+    D, Q = _legendre_quadrature(sf, sf.distance, g, lmax)   # values, and ∫ P_l sin σ dσ over each value's support, l = 0:lmax
+    C = [-π * sum(D[i] * Q[i, l + 1] for i in eachindex(D)) for l in 1:lmax]
+    return (l = 1:lmax, C = C)
+end
+
+"""
+    helmholtz_spectra(L2, T2, geometry::SphericalGeometry, lmax; variance) -> (l, E, B)
+
+Gradient (`E`) and curl (`B`) angular power spectra, `l = 1:lmax`, of a tangent vector field on a
+sphere, from its longitudinal and transverse second-order structure functions binned in `r = R σ`.
+
+In the geodesic frame `ξ₊ = C_LL + C_TT = Σ_l (2l+1)/(4π) (C^E_l + C^B_l) d^l_{11}(σ)` and
+`ξ₋ = C_LL − C_TT = −Σ_l (2l+1)/(4π) (C^E_l − C^B_l) d^l_{1,−1}(σ)`, and the Wigner functions are
+orthogonal with `∫₀^π d^l_{ss'} d^{l'}_{ss'} sin σ dσ = 2δ_{ll'}/(2l+1)`, so
+
+```math
+C^E_l - C^B_l = π ∫_0^π (D_{LL} - D_{TT})\\, d^l_{1,-1}\\, \\sin σ\\, dσ, \\qquad
+C^E_l + C^B_l = 2π ∫_0^π \\Big(⟨‖u‖²⟩ - \\frac{D_{LL} + D_{TT}}{2}\\Big)\\, d^l_{11}\\, \\sin σ\\, dσ .
+```
+
+The difference needs no constant because `C_LL(0) = C_TT(0)`; the sum needs the field's mean square
+`⟨‖u‖²⟩`, which a structure function cannot supply, so `variance` is required. Bins are integrated in
+closed form as in [`isotropic_spectrum`](@ref) on a sphere, nodes by their quadrature weights.
+"""
+function helmholtz_spectra(
+    L2::SFO.AbstractStructureFunction, T2::SFO.AbstractStructureFunction, g::SFH.SphericalGeometry,
+    lmax::Integer; variance::Real,
+)
+    _assert_projection(L2.operator, 2, 0, "longitudinal")
+    _assert_projection(T2.operator, 0, 2, "transverse")
+    L2.distance == T2.distance || throw(ArgumentError(
+        "the two structure functions must share their distance bins",
+    ))
+    DLL, Gp, Gm = _wigner_quadrature(L2, L2.distance, g, lmax)   # values, ∫ d^l_{11} sin σ dσ and ∫ d^l_{1,-1} sin σ dσ, l = 1:lmax
+    DTT, _, _ = _wigner_quadrature(T2, T2.distance, g, lmax)
+    E = Vector{Float64}(undef, lmax)
+    B = Vector{Float64}(undef, lmax)
+    for l in 1:lmax
+        diff = π * sum((DLL[i] - DTT[i]) * Gm[i, l] for i in eachindex(DLL))
+        total = 2π * sum((variance - (DLL[i] + DTT[i]) / 2) * Gp[i, l] for i in eachindex(DLL))
+        E[l] = (total + diff) / 2
+        B[l] = (total - diff) / 2
+    end
+    return (l = 1:lmax, E = E, B = B)
+end
+
+# Bin values and edges in central angle, every bin holding a value.
+function _spherical_bins(sf::SFO.AbstractStructureFunction, g::SFH.SphericalGeometry)
+    _, vals, keep = _binned(sf)
+    length(keep) == length(vals) || throw(ArgumentError(
+        "every bin must hold a value to integrate over the sphere; bins $(setdiff(eachindex(vals), keep)) are empty",
+    ))
+    edges = collect(sf.distance) ./ g.radius
+    last(edges) <= π * (1 + 1e-12) || throw(ArgumentError(
+        "the bins reach a central angle of $(last(edges)) on a sphere of radius $(g.radius); the largest " *
+        "separation on a sphere is π·R",
+    ))
+    return vals, edges
+end
+
+# Every node's value, in the nodes' order.
+function _node_values(sf::SFO.AbstractStructureFunction)
+    _, vals, keep = _binned(sf)
+    length(keep) == length(vals) || throw(ArgumentError(
+        "every node must hold a value to integrate over the sphere; nodes $(setdiff(eachindex(vals), keep)) have none",
+    ))
+    return vals
+end
+
+# The values and, for l = 0:L, `∫ P_l(cos σ) sin σ dσ` over each value's support as (n_values, L + 1):
+# closed-form bin integrals for edges, quadrature weights for nodes.
+function _legendre_quadrature(sf, edges, g, L)
+    D, e = _spherical_bins(sf, g)
+    return D, _legendre_bin_integrals(e, L)
+end
+
+function _legendre_quadrature(sf, nodes::HarmonicNodes, g, L)
+    D = _node_values(sf)
+    Q = Matrix{Float64}(undef, length(nodes), L + 1)
+    for k in eachindex(D)
+        Q[k, :] .= nodes.weights[k] .* _legendre_values(cos(nodes.separations[k]), L)
+    end
+    return D, Q
+end
+
+# Likewise `∫ d^l_{11} sin σ dσ` and `∫ d^l_{1,−1} sin σ dσ`, l = 1:L.
+function _wigner_quadrature(sf, edges, g, L)
+    D, e = _spherical_bins(sf, g)
+    Gp, Gm = _wigner_bin_integrals(e, L)
+    return D, Gp, Gm
+end
+
+function _wigner_quadrature(sf, nodes::HarmonicNodes, g, L)
+    D = _node_values(sf)
+    Gp = Matrix{Float64}(undef, length(nodes), L)
+    Gm = Matrix{Float64}(undef, length(nodes), L)
+    for k in eachindex(D)
+        β = nodes.separations[k]
+        Gp[k, :] .= nodes.weights[k] .* @view(wigner_d_column(1, 1, β, L)[2:end])
+        Gm[k, :] .= nodes.weights[k] .* @view(wigner_d_column(1, -1, β, L)[2:end])
+    end
+    return D, Gp, Gm
+end
+
+# P_0 … P_L at x by the three-term recurrence.
+function _legendre_values(x::Real, L::Integer)
+    P = Vector{typeof(float(x))}(undef, L + 1)
+    P[1] = one(x)
+    L >= 1 && (P[2] = x)
+    for l in 1:(L - 1)
+        P[l + 2] = ((2l + 1) * x * P[l + 1] - l * P[l]) / (l + 1)
+    end
+    return P
+end
+
+# ∫ P_l dx = (P_{l+1} − P_{l−1})/(2l+1) for l ≥ 1, and x for l = 0; `P` holds P_0 … P_{L+1}.
+@inline _legendre_antiderivative(P, l, x) = l == 0 ? x : (P[l + 2] - P[l]) / (2l + 1)
+
+# ∫_{σ_i}^{σ_{i+1}} P_l(cos σ) sin σ dσ for every bin and l = 0:L, as (n_bins, L + 1).
+function _legendre_bin_integrals(edges::AbstractVector, L::Integer)
+    x = cos.(edges)
+    nb = length(edges) - 1
+    Q = Matrix{Float64}(undef, nb, L + 1)
+    Plo = _legendre_values(x[1], L + 1)
+    for i in 1:nb
+        Phi = _legendre_values(x[i + 1], L + 1)
+        for l in 0:L
+            Q[i, l + 1] = _legendre_antiderivative(Plo, l, x[i]) - _legendre_antiderivative(Phi, l, x[i + 1])
+        end
+        Plo = Phi
+    end
+    return Q
+end
+
+# ∫_{σ_i}^{σ_{i+1}} d^l_{11} sin σ dσ and ∫ d^l_{1,−1} sin σ dσ for l = 1:L, from
+# d^l_{11} = P_l + (1 − x) P_l'/(l(l+1)), d^l_{1,−1} = −P_l + (1 + x) P_l'/(l(l+1)) and
+# ∫ x P_l' dx = x P_l − ∫ P_l dx.
+function _wigner_bin_integrals(edges::AbstractVector, L::Integer)
+    x = cos.(edges)
+    nb = length(edges) - 1
+    Gp = Matrix{Float64}(undef, nb, L)
+    Gm = Matrix{Float64}(undef, nb, L)
+    anti(P, l, xx) = begin
+        Ql = _legendre_antiderivative(P, l, xx)
+        Pl = P[l + 1]
+        (Ql + ((1 - xx) * Pl + Ql) / (l * (l + 1)), -Ql + ((1 + xx) * Pl - Ql) / (l * (l + 1)))
+    end
+    Plo = _legendre_values(x[1], L + 1)
+    for i in 1:nb
+        Phi = _legendre_values(x[i + 1], L + 1)
+        for l in 1:L
+            plo, mlo = anti(Plo, l, x[i])
+            phi, mhi = anti(Phi, l, x[i + 1])
+            Gp[i, l] = plo - phi
+            Gm[i, l] = mlo - mhi
+        end
+        Plo = Phi
+    end
+    return Gp, Gm
+end
+
+"""
     shell_spectrum(P, wavenumbers, ::Val{D})
 
 Shell-integrated spectrum `E(k) = Ω_D k^(D-1) P(k)` from a power spectral density.
@@ -349,7 +613,9 @@ end
 assert_advective(op) = throw(ArgumentError(
     "$(nameof(typeof(op))) is not a cross-channel moment. A spectral flux follows from an " *
     "advective structure function ⟨δφ δ𝓐_φ⟩, built with `VectorDotSFType(a, b)` or " *
-    "`ScalarDotSFType(a, b)` over a field carrying the quantity and its advection as two channels.",
+    "`ScalarDotSFType(a, b)` over a field carrying the quantity and its advection as two channels. " *
+    "The third-order routes are the `spectral_flux` methods on `S3SFType`, `L3SFType` (with `S3`) " *
+    "and `MixedSFType{1,0,2}`.",
 ))
 
 """
@@ -364,39 +630,29 @@ Interscale flux at each of `wavenumbers`, from an advective structure function s
 
 `SF_A` is the advective structure function averaged over the directions of the separation, so the
 same uniform-direction assumption [`isotropic_spectrum`](@ref) carries applies here. The relation
-itself assumes no isotropy of the flow, which is what these estimators are for.
+itself assumes no isotropy of the flow, which is what these estimators are for. The integral is the
+trapezoid rule over the samples from the origin, where the integrand vanishes, to the last separation.
 
 The kernel's first peak sets which separations carry the most weight at a given wavenumber: `J₁`
 peaks at `Kr ≈ 1.84`, so the flux at `K` is reported on mostly by separations near `1.84/K`. That is
 a statement about weighting, not about where `Π` itself is largest — the explicit factor of `K`
 means `|Π|` keeps growing with `K` for a fixed feature.
 
-This is the `J₁` relation, which takes the advective structure function. The companion relations
-built on third-order structure functions use `J₂` and `J₃` with their own prefactors and carry
-boundary terms that do not generally vanish, so they are not reachable by swapping the kernel order
-here.
+This is the `J₁` relation, which takes the advective structure function and assumes no isotropy of
+the flow. The companion relations on third-order structure functions are the methods on
+`S3SFType`, `L3SFType` and `MixedSFType{1,0,2}`, each with the boundary term its integration by
+parts leaves at the last separation.
 """
 function spectral_flux(
     operator, separations::AbstractVector, values::AbstractVector,
     wavenumbers::AbstractVector,
 )
     assert_advective(operator)
-    length(separations) == length(values) || throw(DimensionMismatch(
-        "separations and values must agree in length; got $(length(separations)) and $(length(values))",
-    ))
-    issorted(separations) || throw(ArgumentError("separations must be sorted"))
-
-    FT = float(promote_type(eltype(separations), eltype(values), eltype(wavenumbers)))
-    out = Vector{FT}(undef, length(wavenumbers))
-    @inbounds for (j, K) in pairs(wavenumbers)
-        acc = zero(FT)
-        for i in eachindex(separations)
-            acc += FT(values[i]) * bessel_kernel(Val(1), K * FT(separations[i])) *
-                   _quad_width(separations, i)
-        end
-        out[j] = -FT(K) * acc / 2
-    end
-    return out
+    FT = _flux_samples(separations, values)
+    return [begin
+        K = FT(K0)
+        -K * _flux_quadrature(r -> bessel_kernel(Val(1), K * r), separations, values, FT) / 2
+    end for K0 in wavenumbers]
 end
 
 function spectral_flux(sf::SFO.StructureFunction, wavenumbers::AbstractVector)
@@ -414,23 +670,197 @@ function spectral_flux(sf::SFO.StructureFunctionSumsAndCounts, wavenumbers::Abst
                          wavenumbers)
 end
 
+# One sorted abscissa with every series sampled on it; returns the common float type.
+function _flux_samples(separations::AbstractVector, series::AbstractVector...)
+    for v in series
+        length(v) == length(separations) || throw(DimensionMismatch(
+            "separations and values must agree in length; got $(length(separations)) and $(length(v))",
+        ))
+    end
+    issorted(separations) || throw(ArgumentError("separations must be sorted"))
+    isempty(separations) && throw(ArgumentError("no separation to integrate over"))
+    return float(promote_type(eltype(separations), map(eltype, series)...))
+end
+
+# ∫₀^R values(r) g(r) dr by the trapezoid rule over the samples from the origin, where every flux
+# integrand vanishes; `g` is the kernel with its powers of r.
+function _flux_quadrature(g, separations::AbstractVector, values::AbstractVector, ::Type{FT}) where {FT}
+    acc = zero(FT)
+    r0 = zero(FT)
+    f0 = zero(FT)
+    @inbounds for i in eachindex(separations)
+        r = FT(separations[i])
+        f = FT(values[i]) * g(r)
+        acc += (f0 + f) * (r - r0) / 2
+        r0, f0 = r, f
+    end
+    return acc
+end
+
+# Π_K = −(K²/4) ∫₀^R S(r) J₂(Kr) dr − (K/4) S(R) J₁(KR), for S = ⟨δu_L ‖δu‖²⟩ or ⟨δu_L (δθ)²⟩.
+function _j2_flux(separations::AbstractVector, S::AbstractVector, wavenumbers::AbstractVector)
+    FT = _flux_samples(separations, S)
+    R, SR = FT(last(separations)), FT(last(S))
+    return [begin
+        K = FT(K0)
+        integral = _flux_quadrature(r -> bessel_kernel(Val(2), K * r), separations, S, FT)
+        -K^2 * integral / 4 - K * SR * bessel_kernel(Val(1), K * R) / 4
+    end for K0 in wavenumbers]
+end
+
 """
-    gridded_spectrum(u, schedule, ::Val{D}, spectral_backend; valid) -> (wavenumbers, density)
+    spectral_flux(::S3SFType, separations, S3, wavenumbers)
+
+Interscale energy flux of a two-dimensional isotropic flow from `S3 = ⟨δu_L ‖δu‖²⟩`, sampled at
+`separations` up to `R`:
+
+```
+Π_K = -(K²/4) ∫₀^R S3(r) J₂(Kr) dr - (K/4) S3(R) J₁(KR)
+```
+
+The `J₁` relation integrated by parts with `SF_A = (1/2r) d(r S3)/dr`, the isotropic divergence of
+`⟨δu ‖δu‖²⟩`. The boundary term at `R` does not vanish at any finite `R` and is kept. `J₂` peaks at
+`Kr ≈ 3.05`, so the flux at `K` is reported on mostly by separations near `3.05/K`.
+"""
+spectral_flux(::SFT.S3SFType, separations::AbstractVector, S3::AbstractVector, wavenumbers::AbstractVector) =
+    _j2_flux(separations, S3, wavenumbers)
+
+"""
+    spectral_flux(::MixedSFType{1,0,2}, separations, S, wavenumbers)
+
+Interscale flux of the variance of a scalar `θ` (enstrophy, for the vorticity) in a two-dimensional
+isotropic flow from `S = ⟨δu_L (δθ)²⟩`, sampled at `separations` up to `R`:
+
+```
+Π_K = -(K²/4) ∫₀^R S(r) J₂(Kr) dr - (K/4) S(R) J₁(KR)
+```
+
+The `J₁` relation on `⟨δθ δ𝓐_θ⟩ = (1/2r) d(r S)/dr` integrated by parts, boundary term kept.
+"""
+spectral_flux(::SFT.MixedStructureFunctionType{1, 0, 2}, separations::AbstractVector, S::AbstractVector,
+              wavenumbers::AbstractVector) = _j2_flux(separations, S, wavenumbers)
+
+"""
+    spectral_flux(::L3SFType, separations, L3, S3, wavenumbers)
+
+Interscale energy flux of a two-dimensional isotropic flow from `L3 = ⟨δu_L³⟩`, with `S3 = ⟨δu_L ‖δu‖²⟩`
+on the same `separations` for the boundary term:
+
+```
+Π_K = -(K³/12) ∫₀^R L3(r) J₃(Kr) r dr - (K²/12) [ R L3(R) J₂(KR) + (3/K) S3(R) J₁(KR) ]
+```
+
+The `S3` relation integrated by parts once more with `S3 = (1/3r²) d(r³ L3)/dr`, which holds for an
+isotropic incompressible two-dimensional flow. Both boundary terms are kept. `J₃` peaks at `Kr ≈ 4.20`.
+"""
+function spectral_flux(::SFT.L3SFType, separations::AbstractVector, L3::AbstractVector, S3::AbstractVector,
+                       wavenumbers::AbstractVector)
+    FT = _flux_samples(separations, L3, S3)
+    R, LR, SR = FT(last(separations)), FT(last(L3)), FT(last(S3))
+    return [begin
+        K = FT(K0)
+        integral = _flux_quadrature(r -> bessel_kernel(Val(3), K * r) * r, separations, L3, FT)
+        -K^3 * integral / 12 -
+        K^2 * (R * LR * bessel_kernel(Val(2), K * R) + 3 * SR * bessel_kernel(Val(1), K * R) / K) / 12
+    end for K0 in wavenumbers]
+end
+
+"""
+    spectral_flux(L3, S3, wavenumbers)
+
+The `L3` route on two result objects sharing their distance bins, over the bins both hold.
+"""
+function spectral_flux(L3::SFO.AbstractStructureFunction, S3::SFO.AbstractStructureFunction,
+                       wavenumbers::AbstractVector)
+    L3.operator isa SFT.L3SFType || throw(ArgumentError(
+        "the first structure function must be ⟨δu_L³⟩ (L3SFType); got $(nameof(typeof(L3.operator)))",
+    ))
+    S3.operator isa SFT.S3SFType || throw(ArgumentError(
+        "the second structure function must be ⟨δu_L ‖δu‖²⟩ (S3SFType); got $(nameof(typeof(S3.operator)))",
+    ))
+    r, vL, vS = _paired_bins(L3, S3)
+    return spectral_flux(L3.operator, r, vL, vS, wavenumbers)
+end
+
+"""
+    enstrophy_flux(operator::VectorDotSFType, separations, SF_Au, wavenumbers)
+    enstrophy_flux(result, wavenumbers)
+
+Interscale enstrophy flux of a two-dimensional isotropic flow from the velocity's advective structure
+function `SF_Au = ⟨δu · δ𝓐_u⟩`, `𝓐_u = u·∇u`, sampled at `separations` up to `R`:
+
+```
+Π^ω_K = (K³/2) ∫₀^R SF_Au(r) [J₃(Kr) - J₁(Kr)]/2 dr + (K²/2) [ SF_Au(R) J₂(KR) + (1/K) SF_Au'(R) J₁(KR) ]
+```
+
+The `J₁` relation on `⟨δω δ𝓐_ω⟩ = -∇² SF_Au` integrated by parts twice; `[J₃ - J₁]/2 = -J₂'`. The
+slope `SF_Au'(R)` is the one-sided difference of the last two samples, so the boundary term is
+sensitive to noise in the last bins. `operator` must name two distinct channels, the velocity and
+its advection.
+"""
+function enstrophy_flux(op::SFT.VectorDotStructureFunctionType, separations::AbstractVector,
+                        SF_Au::AbstractVector, wavenumbers::AbstractVector)
+    assert_advective(op)
+    FT = _flux_samples(separations, SF_Au)
+    length(separations) >= 2 || throw(ArgumentError(
+        "the boundary term needs the slope of SF_Au at the last separation; give at least two",
+    ))
+    R, AR = FT(last(separations)), FT(last(SF_Au))
+    dA = (FT(SF_Au[end]) - FT(SF_Au[end - 1])) / (R - FT(separations[end - 1]))
+    return [begin
+        K = FT(K0)
+        integral = _flux_quadrature(r -> (bessel_kernel(Val(3), K * r) - bessel_kernel(Val(1), K * r)) / 2,
+                                    separations, SF_Au, FT)
+        K^3 * integral / 2 + K^2 * (AR * bessel_kernel(Val(2), K * R) + dA * bessel_kernel(Val(1), K * R) / K) / 2
+    end for K0 in wavenumbers]
+end
+
+function enstrophy_flux(sf::SFO.AbstractStructureFunction, wavenumbers::AbstractVector)
+    r, vals, keep = _binned(sf)
+    isempty(keep) && throw(ArgumentError("no finite structure function value to transform"))
+    return enstrophy_flux(sf.operator, r[keep], vals[keep], wavenumbers)
+end
+
+"""
+    AbstractMissingLagPolicy
+
+What a lag-space spectrum does with a lag no pair of held cells names. `RefuseMissingLags()` throws,
+since the structure function is undefined there. `ZeroDeviationAtMissingLags()` sets the
+autocovariance to zero at that lag, which is what a taper does at the lags beyond its reach.
+"""
+abstract type AbstractMissingLagPolicy end
+struct RefuseMissingLags <: AbstractMissingLagPolicy end
+struct ZeroDeviationAtMissingLags <: AbstractMissingLagPolicy end
+
+"""
+    gridded_spectrum(u, schedule, ::Val{D}, spectral_backend; valid, taper, missing_lags) -> (wavenumbers, density)
 
 Spectral density of a gridded field, by transforming its structure function over the whole lag
 space.
 
 No direction is averaged over and no separation is binned, so this carries none of the angular
-assumption [`isotropic_spectrum`](@ref) makes and is exact on a rectilinear grid. It reads the field
-only through its structure function, so it accepts a field with cells missing, which is the case
-where the field's own transform is meaningless while the pair average is still unbiased.
+assumption [`isotropic_spectrum`](@ref) makes. It reads the field only through its structure function
+and the variance of its held cells, so it accepts a field with cells missing, which is the case where
+the field's own transform is meaningless while the pair average is still unbiased.
+
+On a complete periodic grid the result is the field's own spectrum to round-off. With cells missing,
+or on a bounded direction, it is an **estimate**: the exact transform of the exact masked structure
+function, equal to the complete field's spectrum in expectation, with a statistical error set by the
+pair count behind each lag. A bounded direction is padded so the transform of the lags `|h| < n` is
+their linear transform; `wavenumbers` then has the padded length along it. `taper` weights the lags
+(see [`AbstractTaper`](@ref)) and `missing_lags` says what to do with a lag no held pair names (see
+[`AbstractMissingLagPolicy`](@ref)).
 
 `wavenumbers` is one angular-wavenumber vector per grid direction; `density` is the `Dg`-dimensional
 array over those, on the same convention as [`isotropic_spectrum`](@ref) — integrating it over
-`d^D k` returns the variance, so `sum(density) * prod(step)` does, with `step` the wavenumber
-spacing of each direction.
+`d^D k` returns the variance of the held cells, so `sum(density) * prod(step)` does exactly, with
+`step` the wavenumber spacing of each direction. The `k = 0` value is the sum of the weighted
+autocovariance over the lags: zero to round-off on a complete periodic grid, where no pair sees the
+mean, and the estimator's own low-wavenumber value otherwise.
 """
-function gridded_spectrum(u, schedule, ::Val{D}, spectral_backend; valid = AllValid()) where {D}
+function gridded_spectrum(u, schedule, ::Val{D}, spectral_backend; valid = AllValid(),
+                          taper::AbstractTaper = NoTaper(),
+                          missing_lags::AbstractMissingLagPolicy = RefuseMissingLags()) where {D}
     throw(ArgumentError(
         "no method transforms a gridded structure function with $(typeof(spectral_backend)). " *
         "Load an AbstractFFTs implementation — `using FFTW` on CPU.",

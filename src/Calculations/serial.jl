@@ -140,6 +140,19 @@ Every pair can land in one bin, so that product is the only safe bound. `UInt32`
     return nothing
 end
 
+# A floating-point count (a joint histogram over angle splits pairs between bins) is exact up to
+# `maxintfloat`.
+@inline function _assert_counts_representable(::Type{CT}, n_points::Integer) where {CT <: AbstractFloat}
+    n_pairs = (Int128(n_points) * (Int128(n_points) - 1)) ÷ 2
+    n_pairs <= Int128(maxintfloat(CT)) || throw(
+        ArgumentError(
+            "count_eltype=$CT counts exactly only up to $(maxintfloat(CT)), below the worst-case pair " *
+            "count $n_pairs for N=$n_points; pass count_eltype=Float64.",
+        ),
+    )
+    return nothing
+end
+
 """
     _bin_average!(out, sums, counts)
     _bin_average(sums, counts)

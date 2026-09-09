@@ -1,6 +1,7 @@
 module StructureFunctionTypes
 
 using LinearAlgebra: LinearAlgebra as LA
+using StaticArrays: StaticArrays as SA
 using ..HelperFunctions: HelperFunctions as SFH
 using ..Channels: Channels as CH
 
@@ -537,5 +538,345 @@ order(::LongitudinalTransverseComponentThirdOrderStructureFunctionType) = 3
 order(::RotationalSecondOrderStructureFunctionType) = 2
 order(::DivergentSecondOrderStructureFunctionType) = 2
 order(::HelmholtzDecomposition2DType) = 2
+order(::ScalarStructureFunctionType{P}) where {P} = P
+order(::MixedStructureFunctionType{NL, NT, P}) where {NL, NT, P} = NL + NT + P
+order(::ScalarDotStructureFunctionType) = 2
+order(::VectorDotStructureFunctionType) = 2
+
+"""
+    scalar_order(sf) -> Int
+
+The total power of scalar-channel increments in `sf`.
+
+Reading a pair from its other end leaves every vector quantity unchanged — `δu`, `r̂` and `n̂` all
+flip together — and negates each scalar increment, so `sf` changes sign under that reading exactly
+when this is odd. Such an operator is evaluated with the pair read from the lower to the upper end
+along the first coordinate that separates its two points (on a sphere: from south to north, and along
+one parallel from west to east); where neither end comes first, the two readings are averaged and the
+moment is zero.
+"""
+scalar_order(::AbstractStructureFunctionType) = 0
+scalar_order(::ScalarStructureFunctionType{P}) where {P} = P
+scalar_order(::MixedStructureFunctionType{NL, NT, P}) where {NL, NT, P} = P
+scalar_order(::ScalarDotStructureFunctionType) = 2
+
+"""Whether `sf` changes sign when a pair is read from its other end."""
+@inline is_odd_in_scalars(sf::AbstractStructureFunctionType) = isodd(scalar_order(sf))
+
+# ---------------------------------------------------------------------------
+# Polynomial contract: an operator as a contraction of the increment moment tensor
+# ---------------------------------------------------------------------------
+
+"""
+    is_polynomial_operator(sf) -> Bool
+
+Whether `sf(δu, r̂)` is a homogeneous polynomial in the packed increment `δu` with coefficients that
+depend only on `r̂`, so that `Σ_pairs sf(δu, r̂)` is [`moment_contract`](@ref) of the increment moment
+tensor.
+"""
+@inline is_polynomial_operator(::AbstractStructureFunctionType) = false
+@inline is_polynomial_operator(::SecondOrderStructureFunctionType) = true
+@inline is_polynomial_operator(::ProjectedStructureFunctionType{NL, NT}) where {NL, NT} = NL + NT >= 1
+@inline is_polynomial_operator(::ThirdOrderStructureFunctionType) = true
+@inline is_polynomial_operator(::FullVectorStructureFunctionType{NF}) where {NF} = NF >= 2 && iseven(NF)
+@inline is_polynomial_operator(::TransverseComponentSecondOrderStructureFunctionType) = true
+@inline is_polynomial_operator(::LongitudinalTransverseComponentThirdOrderStructureFunctionType) = true
+@inline is_polynomial_operator(::ScalarStructureFunctionType{P}) where {P} = P >= 1
+@inline is_polynomial_operator(::MixedStructureFunctionType{NL, NT, P}) where {NL, NT, P} =
+    iseven(NT) && NL + NT + P >= 1
+@inline is_polynomial_operator(::ScalarDotStructureFunctionType) = true
+@inline is_polynomial_operator(::VectorDotStructureFunctionType) = true
+
+"""
+    SymmetricMoments{W, P}(data::SVector)
+
+The rank-`P` symmetric increment moment tensor over `W` packed components, stored as its
+`binomial(W + P - 1, P)` independent entries `M[j₁ ≤ … ≤ j_P]` in the order of
+[`symmetric_indices`](@ref).
+"""
+struct SymmetricMoments{W, P, N, T}
+    data::SA.SVector{N, T}
+    function SymmetricMoments{W, P}(data::SA.SVector{N, T}) where {W, P, N, T}
+        N == binomial(W + P - 1, P) || throw(DimensionMismatch(
+            "a rank-$P symmetric tensor over $W components has $(binomial(W + P - 1, P)) " *
+            "independent entries; got $N",
+        ))
+        return new{W, P, N, T}(data)
+    end
+end
+
+Base.eltype(::SymmetricMoments{W, P, N, T}) where {W, P, N, T} = T
+
+"""
+    symmetric_indices(Val(W), Val(P)) -> NTuple{N, NTuple{P, Int}}
+
+The sorted multi-indices `j₁ ≤ … ≤ j_P` over `1:W` in storage order: entry `n` has
+`n - 1 = Σ_k binomial(j_k + k - 2, k)`.
+"""
+@generated function symmetric_indices(::Val{W}, ::Val{P}) where {W, P}
+    combos = [c for c in Iterators.product(ntuple(_ -> 1:W, P)...) if issorted(c)]
+    sort!(combos; by = c -> sum(binomial(c[k] + k - 2, k) for k in 1:P))
+    return Meta.quot(Tuple(combos))
+end
+
+# Storage position of a multi-index in any order: sort it, then rank the sorted tuple.
+@generated function symmetric_rank(::Val{W}, ::Val{P}, idx::NTuple{P, Int}) where {W, P}
+    vars = [Symbol(:j, k) for k in 1:P]
+    ex = Expr[]
+    for k in 1:P
+        push!(ex, :($(vars[k]) = idx[$k]))
+    end
+    for k in 2:P, m in k:-1:2
+        a, b = vars[m - 1], vars[m]
+        push!(ex, :(if $a > $b; $a, $b = $b, $a; end))
+    end
+    terms = Expr[]
+    for k in 1:P
+        lut = ntuple(n -> binomial(n - 1, k), W + P)
+        push!(terms, :($(lut)[$(vars[k]) + $(k - 1)]))
+    end
+    push!(ex, :(return 1 + $(Expr(:call, :+, terms...))))
+    return Expr(:block, ex...)
+end
+
+"""
+    moment_contract(sf, M::SymmetricMoments, r̂, ::Val{V}, ::Val{K})
+
+`Σ_pairs sf(δu, r̂)` from the increment moment tensor `M[i₁, …, i_p] = Σ_pairs Π_k δu[i_k]` of the
+pairs sharing the unit separation `r̂`. `δu` is packed as `V` vector channels of width `D = length(r̂)`
+followed by `K` scalar channels, so `M` has `W = V * D + K` components. Operators that are not
+polynomials in `δu` have no method.
+"""
+function moment_contract(sf::AbstractStructureFunctionType, M, r̂, ::Val, ::Val)
+    throw(ArgumentError(
+        "$(typeof(sf)) is not a polynomial in the increment, so its pair average is not a " *
+        "contraction of an increment moment tensor. Omit the spectral backend for the lag sweep, " *
+        "which evaluates any pairwise operator exactly.",
+    ))
+end
+
+@inline function _check_packed_width(::SymmetricMoments{W}, ::Val{D}, ::Val{V}, ::Val{K}) where {W, D, V, K}
+    W == V * D + K || throw(DimensionMismatch(
+        "the moment tensor has $W components but the field packs $V vector channel(s) of width $D " *
+        "and $K scalar channel(s), $(V * D + K) components",
+    ))
+    return nothing
+end
+
+@inline _unit(::Val{W}, i::Integer, ::Type{T}) where {W, T} =
+    SA.SVector{W, T}(ntuple(j -> T(j == i), Val(W)))
+
+# `r̂` placed in vector channel `a` of the packed layout, zero elsewhere.
+@inline function _embed(::Val{W}, r̂::SA.SVector{D, T}, a::Integer) where {W, D, T}
+    off = (a - 1) * D
+    return SA.SVector{W, T}(ntuple(j -> off < j <= off + D ? r̂[j - off] : zero(T), Val(W)))
+end
+
+# One literal each: a device kernel compiles a throw of a constant, never a formatted or joined string.
+# The entry points name the channel and the field's layout before any moment is contracted.
+@inline function _require_vector_channel(a::Integer, ::Val{V}) where {V}
+    1 <= a <= V || throw(ArgumentError(
+        "the operator reads a vector channel the field does not carry; build the field with Fields(vectors = (...), ...) or use a scalar operator",
+    ))
+    return nothing
+end
+
+@inline function _require_scalar_channel(k::Integer, ::Val{K}) where {K}
+    1 <= k <= K || throw(ArgumentError(
+        "the operator reads a scalar channel the field does not carry; build the field with Fields(scalars = (...), ...) to carry one",
+    ))
+    return nothing
+end
+
+# Σ over every index tuple of M[i₁, …, i_p] · Π_k vs[k][i_k].
+@generated function _contract(
+    M::SymmetricMoments{W, P, N, TM}, vs::NTuple{P, SA.SVector{W}},
+) where {W, P, N, TM}
+    T = P == 0 ? TM : promote_type(TM, eltype(vs.parameters[1]))
+    idx = [Symbol(:i, k) for k in 1:P]
+    coeff = Expr(:call, :*, (:(vs[$k][$(idx[k])]) for k in 1:P)...)
+    body = :(acc += M.data[symmetric_rank(Val($W), Val($P), ($(idx...),))] * $coeff)
+    for k in P:-1:1
+        body = :(for $(idx[k]) in 1:$W; $body; end)
+    end
+    return quote
+        acc = zero($T)
+        @inbounds $body
+        return acc
+    end
+end
+
+@inline function _vector_dot(M::SymmetricMoments{W, 2}, a::Integer, b::Integer, ::Val{D}) where {W, D}
+    acc = zero(eltype(M))
+    @inbounds for d in 1:D
+        acc += M.data[symmetric_rank(Val(W), Val(2), ((a - 1) * D + d, (b - 1) * D + d))]
+    end
+    return acc
+end
+
+# `n` trailing slot pairs, each Σ_c e_c ⊗ e_c over the components of vector channel `a`: ‖δu‖² per pair.
+@inline _norm2_pairs(M, prefix::Tuple, ::Val{0}, a, ::Val{D}, ::Val{W}, ::Type{T}) where {D, W, T} =
+    _contract(M, prefix)
+@inline function _norm2_pairs(
+    M, prefix::Tuple, ::Val{n}, a, ::Val{D}, ::Val{W}, ::Type{T},
+) where {n, D, W, T}
+    acc = zero(T)
+    for c in 1:D
+        e = _unit(Val(W), (a - 1) * D + c, T)
+        acc += _norm2_pairs(M, (prefix..., e, e), Val(n - 1), a, Val(D), Val(W), T)
+    end
+    return acc
+end
+
+# `n` trailing slot pairs, each Σ_c e_c ⊗ e_c − rp ⊗ rp: ‖δu_T‖² per pair.
+@inline _transverse_pairs(
+    M, prefix::Tuple, ::Val{0}, rp, a, ::Val{D}, ::Val{W}, ::Type{T},
+) where {D, W, T} = _contract(M, prefix)
+@inline function _transverse_pairs(
+    M, prefix::Tuple, ::Val{n}, rp, a, ::Val{D}, ::Val{W}, ::Type{T},
+) where {n, D, W, T}
+    acc = zero(T)
+    for c in 1:D
+        e = _unit(Val(W), (a - 1) * D + c, T)
+        acc += _transverse_pairs(M, (prefix..., e, e), Val(n - 1), rp, a, Val(D), Val(W), T)
+    end
+    return acc - _transverse_pairs(M, (prefix..., rp, rp), Val(n - 1), rp, a, Val(D), Val(W), T)
+end
+
+@inline function moment_contract(
+    ::SecondOrderStructureFunctionType, M::SymmetricMoments{W, 2}, r̂::SA.SVector{D}, ::Val{V}, ::Val{K},
+) where {W, D, V, K}
+    _check_packed_width(M, Val(D), Val(V), Val(K))
+    _require_vector_channel(1, Val(V))
+    return _vector_dot(M, 1, 1, Val(D))
+end
+
+@generated function moment_contract(
+    ::ProjectedStructureFunctionType{NL, NT}, M::SymmetricMoments{W, P, N, TM}, r̂::SA.SVector{D, TR},
+    ::Val{V}, ::Val{K},
+) where {NL, NT, W, P, N, TM, D, TR, V, K}
+    NL + NT >= 1 || return :(throw(ArgumentError(
+        "ProjectedStructureFunctionType{0, 0} is the constant 1 and has no moment tensor",
+    )))
+    T = promote_type(TM, TR)
+    rps = fill(:rp, NL)
+    if NT == 0
+        core = :(_contract(M, ($(rps...),)))
+        frame = :(rp = _embed(Val($W), r̂, 1))
+    elseif NT == 2
+        core = :(_transverse_pairs(M, ($(rps...),), Val(1), rp, 1, Val($D), Val($W), $T))
+        frame = :(rp = _embed(Val($W), r̂, 1))
+    else
+        core = :(_contract(M, ($(rps...), $(fill(:np, NT)...))))
+        frame = quote
+            rp = _embed(Val($W), r̂, 1)
+            np = _embed(Val($W), SFH.n̂(r̂), 1)
+        end
+    end
+    return quote
+        _check_packed_width(M, Val($D), Val($V), Val($K))
+        _require_vector_channel(1, Val($V))
+        $frame
+        return $core
+    end
+end
+
+@inline function moment_contract(
+    ::ThirdOrderStructureFunctionType, M::SymmetricMoments{W, 3}, r̂::SA.SVector{D, TR}, ::Val{V}, ::Val{K},
+) where {W, D, TR, V, K}
+    _check_packed_width(M, Val(D), Val(V), Val(K))
+    _require_vector_channel(1, Val(V))
+    T = promote_type(eltype(M), TR)
+    rp = _embed(Val(W), r̂, 1)
+    return _norm2_pairs(M, (rp,), Val(1), 1, Val(D), Val(W), T)
+end
+
+@generated function moment_contract(
+    ::FullVectorStructureFunctionType{NF}, M::SymmetricMoments{W, P, N, TM}, r̂::SA.SVector{D, TR},
+    ::Val{V}, ::Val{K},
+) where {NF, W, P, N, TM, D, TR, V, K}
+    (NF >= 2 && iseven(NF)) || return :(throw(ArgumentError(
+        "FullVectorStructureFunctionType{$($NF)} is ‖δu‖^$($NF), an odd power of a norm and not a " *
+        "polynomial in the increment; the lag sweep evaluates it exactly.",
+    )))
+    T = promote_type(TM, TR)
+    return quote
+        _check_packed_width(M, Val($D), Val($V), Val($K))
+        _require_vector_channel(1, Val($V))
+        return _norm2_pairs(M, (), Val($(NF ÷ 2)), 1, Val($D), Val($W), $T)
+    end
+end
+
+@inline function moment_contract(
+    ::TransverseComponentSecondOrderStructureFunctionType, M::SymmetricMoments, r̂::SA.SVector{D},
+    ::Val{V}, ::Val{K},
+) where {D, V, K}
+    D > 1 || throw(ArgumentError(
+        "T2ComponentSF averages over the transverse directions, of which there are none at D = 1",
+    ))
+    return moment_contract(ProjectedStructureFunctionType{0, 2}(), M, r̂, Val(V), Val(K)) / (D - 1)
+end
+
+@inline function moment_contract(
+    ::LongitudinalTransverseComponentThirdOrderStructureFunctionType, M::SymmetricMoments,
+    r̂::SA.SVector{D}, ::Val{V}, ::Val{K},
+) where {D, V, K}
+    D > 1 || throw(ArgumentError(
+        "L1T2ComponentSF averages over the transverse directions, of which there are none at D = 1",
+    ))
+    return moment_contract(ProjectedStructureFunctionType{1, 2}(), M, r̂, Val(V), Val(K)) / (D - 1)
+end
+
+@inline function moment_contract(
+    sf::ScalarStructureFunctionType{P}, M::SymmetricMoments{W, P}, r̂::SA.SVector{D}, ::Val{V}, ::Val{K},
+) where {P, W, D, V, K}
+    _check_packed_width(M, Val(D), Val(V), Val(K))
+    _require_scalar_channel(sf.channel, Val(K))
+    s = V * D + sf.channel
+    return @inbounds M.data[symmetric_rank(Val(W), Val(P), ntuple(_ -> s, Val(P)))]
+end
+
+@generated function moment_contract(
+    sf::MixedStructureFunctionType{NL, NT, P}, M::SymmetricMoments{W, PM, N, TM}, r̂::SA.SVector{D, TR},
+    ::Val{V}, ::Val{K},
+) where {NL, NT, P, W, PM, N, TM, D, TR, V, K}
+    iseven(NT) || return :(throw(ArgumentError(
+        "MixedStructureFunctionType{$($NL), $($NT), $($P)} raises ‖δu_T‖ to an odd power, which is " *
+        "not a polynomial in the increment; the lag sweep evaluates it exactly.",
+    )))
+    NL + NT + P >= 1 || return :(throw(ArgumentError(
+        "MixedStructureFunctionType{0, 0, 0} is the constant 1 and has no moment tensor",
+    )))
+    T = promote_type(TM, TR)
+    slots = vcat(fill(:rp, NL), fill(:es, P))
+    return quote
+        _check_packed_width(M, Val($D), Val($V), Val($K))
+        _require_vector_channel(sf.vector_channel, Val($V))
+        _require_scalar_channel(sf.scalar_channel, Val($K))
+        rp = _embed(Val($W), r̂, sf.vector_channel)
+        es = _unit(Val($W), $V * $D + sf.scalar_channel, $T)
+        return _transverse_pairs(
+            M, ($(slots...),), Val($(NT ÷ 2)), rp, sf.vector_channel, Val($D), Val($W), $T,
+        )
+    end
+end
+
+@inline function moment_contract(
+    sf::ScalarDotStructureFunctionType, M::SymmetricMoments{W, 2}, r̂::SA.SVector{D}, ::Val{V}, ::Val{K},
+) where {W, D, V, K}
+    _check_packed_width(M, Val(D), Val(V), Val(K))
+    _require_scalar_channel(sf.a, Val(K))
+    _require_scalar_channel(sf.b, Val(K))
+    return @inbounds M.data[symmetric_rank(Val(W), Val(2), (V * D + sf.a, V * D + sf.b))]
+end
+
+@inline function moment_contract(
+    sf::VectorDotStructureFunctionType, M::SymmetricMoments{W, 2}, r̂::SA.SVector{D}, ::Val{V}, ::Val{K},
+) where {W, D, V, K}
+    _check_packed_width(M, Val(D), Val(V), Val(K))
+    _require_vector_channel(sf.a, Val(V))
+    _require_vector_channel(sf.b, Val(V))
+    return _vector_dot(M, sf.a, sf.b, Val(D))
+end
 
 end # module

@@ -25,9 +25,11 @@ Fields(vectors = (u, 𝓐u))                     # velocity and its advection
 Fields(scalars = (ω, 𝓐ω))                     # a scalar and its advection
 ```
 
-Each vector is `(D, N)` and each scalar is `(N,)` or `(1, N)`. They are packed once, at construction,
-into the single `(V·D + K, N)` array the kernels already load — so a pair costs one contiguous read
-whatever it carries, and the channel counts are type parameters, so the kernel specialises on them.
+Each vector is `(D, N)` and each scalar is `(N,)` or `(1, N)`; on a grid, each vector is
+`(D, cells...)` and each scalar `(cells...)`, the cells flattened in the order the array stores them.
+They are packed once, at construction, into the single `(V·D + K, N)` array the kernels already load —
+so a pair costs one contiguous read whatever it carries, and the channel counts are type parameters,
+so the kernel specialises on them.
 
 The name says what it is: these are the fields; those ones are vector fields; those are scalar
 fields. Which is transported and which is not follows from that, and from nothing else.
@@ -59,30 +61,34 @@ function Fields(; vectors = (), scalars = ())
     ))
     D = V == 0 ? 0 : size(first(vectors), 1)
     for (i, v) in enumerate(vectors)
-        ndims(v) == 2 || throw(ArgumentError(
-            "vector channel $i must be (D, N); got an array of $(ndims(v)) dimensions",
+        ndims(v) >= 2 || throw(ArgumentError(
+            "vector channel $i must be (D, N) or (D, cells...); got an array of $(ndims(v)) dimensions",
         ))
         size(v, 1) == D || throw(DimensionMismatch(
             "vector channel $i has $(size(v, 1)) components, channel 1 has $D; every vector " *
             "channel is transported by the same geometry and so must have the same dimension",
         ))
     end
-    N = V > 0 ? size(first(vectors), 2) : length(first(scalars))
+    cells = V > 0 ? size(first(vectors))[2:end] : size(first(scalars))
+    N = prod(cells)
     for (i, v) in enumerate(vectors)
-        size(v, 2) == N || throw(DimensionMismatch(
-            "vector channel $i covers $(size(v, 2)) points, expected $N",
+        size(v)[2:end] == cells || throw(DimensionMismatch(
+            "vector channel $i covers cells $(size(v)[2:end]), expected $cells",
         ))
     end
     for (i, s) in enumerate(scalars)
-        length(s) == N || throw(DimensionMismatch(
-            "scalar channel $i covers $(length(s)) points, expected $N",
+        (size(s) == cells || length(s) == N) || throw(DimensionMismatch(
+            "scalar channel $i covers $(size(s)), expected $cells or $N points",
         ))
     end
 
     T = promote_type((eltype(v) for v in vectors)..., (eltype(s) for s in scalars)...)
     data = Matrix{T}(undef, V * D + K, N)
-    @inbounds for (i, v) in enumerate(vectors), n in 1:N, d in 1:D
-        data[(i - 1) * D + d, n] = v[d, n]
+    @inbounds for (i, v) in enumerate(vectors)
+        vf = reshape(v, D, N)
+        for n in 1:N, d in 1:D
+            data[(i - 1) * D + d, n] = vf[d, n]
+        end
     end
     @inbounds for (i, s) in enumerate(scalars), n in 1:N
         data[V * D + i, n] = s[n]

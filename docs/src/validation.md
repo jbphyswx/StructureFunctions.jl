@@ -14,6 +14,7 @@ were of exactly that kind — a plausible number that was wrong by a constant fa
 | 1 | Closed-form Fourier modes | round-off | binning, operators, lag enumeration | `test/test_known_truth.jl` |
 | 2 | Transform vs direct sweep | round-off | the two gridded algorithms against each other | `test/test_gridded_fft.jl` |
 | 3 | Gridded vs unstructured pair loop | exact counts | the whole gridded path against the reference loop | `test/test_gridded.jl` |
+| 3b | Separable transform vs sweep vs pair loop | exact counts, round-off | lat-lon and stretched grids on both algorithms and every backend | `test/test_gridded_separable.jl` |
 | 4 | Culled vs uncalled | exact counts | culling changes cost, never results | `test/test_cpu_pair_blocking.jl` |
 | 5 | Backend agreement | round-off | serial, threaded, distributed, MPI, GPU | `test/test_parallel_equivalence.jl` |
 | 6 | Unit invariance | round-off | quantities that may not depend on a choice of unit | `test/test_known_truth.jl` |
@@ -24,6 +25,14 @@ were of exactly that kind — a plausible number that was wrong by a constant fa
 | 11 | Gridded transform vs the field's own spectrum | round-off | the lag-space spectral route | `test/test_transforms.jl` |
 | 12 | Closed-form quadrature | round-off | the flux relation's kernel and prefactor | `test/test_transforms.jl` |
 | 13 | Linearity of the Helmholtz split | round-off | rotational + divergent spectra sum to the trace's | `test/test_transforms.jl` |
+| 14 | Windowed estimator vs its definition | round-off | the bounded-domain spectrum against the unbiased autocovariance written out | `test/test_spectra_lagspace.jl` |
+| 15 | Closed-form Helmholtz spectra | quadrature | the `J₀`/`J₂` inversion against a Gaussian gradient and curl field | `test/test_spectra_lagspace.jl` |
+| 16 | Prescribed angular spectrum | quadrature | the spherical inversion returns the `C_l`, `C^E_l`, `C^B_l` it was built from | `test/test_spectra_lagspace.jl` |
+| 17 | Harmonic identity | round-off | the pseudo-spectral series against the kernel-weighted pair sum with random weights and a mask | `test/test_harmonic_sphere.jl` |
+| 18 | Exact rotation average | 10⁻⁹ | every polynomial operator through fourth order on a band-limited field, by an independent quadrature over pairs | `test/test_harmonic_sphere.jl` |
+| 19 | Spin-1 closed forms | round-off | `L2`, `T2` and the `E`/`B` spectra of single gradient and curl harmonics | `test/test_harmonic_sphere.jl` |
+| 20 | Third-order flux routes | quadrature | the `S3`, `L3`, scalar-variance and enstrophy routes against closed forms, and against the `J₁` route on analytic isotropic families | `test/test_transforms.jl` |
+| 21 | Device engine parity | round-off, counts exact | the transform engine on a KernelAbstractions backend against the CPU engine on every schedule, masked and complete, one-dimensional and joint | `test/test_gridded_device.jl`, `gpu/test_cuda_gridded_parity.jl` |
 
 ### 1. Closed-form Fourier modes
 
@@ -125,6 +134,14 @@ cannot meet on a grid, where the lattice's separations are biased toward its axe
 constant advective structure function `c` must give ``Π_K = -(c/2)(1 - J_0(KR))`` exactly. That pins
 the kernel and the prefactor with nothing left to fit — which matters, because a flux wrong by a
 constant, or by a sign, still looks like a cascade.
+
+**The third-order routes against each other.** For an isotropic incompressible flow the advective,
+`S3` and `L3` structure functions are tied by `SF_A = (1/2r)\,d(r\,S3)/dr` and
+`S3 = (1/3r^2)\,d(r^3 L3)/dr`, so the three flux relations must agree on any analytic family built
+through those relations. They do only with the boundary terms their integrations by parts leave at
+the last separation: the tests show the integrals alone miss by tens of percent and can change sign,
+and the three routes then agree to `10⁻⁶`. The enstrophy routes are gated the same way through
+`SF_{Aω} = -∇² SF_{Au}`.
 
 **The Helmholtz split by linearity.** ``D_{rot} + D_{div} = D_{LL} + D_{TT}`` exactly and the
 transform is linear, so the rotational and divergent spectra must sum to the spectrum of the trace,

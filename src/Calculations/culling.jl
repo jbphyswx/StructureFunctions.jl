@@ -139,7 +139,7 @@ A counting sort is faster but needs scratch proportional to the **cell-id space*
 unbounded in the cutoff. So it is used only while that space stays within a small multiple of the
 point count; `sortperm` covers the rest, where the cells are mostly empty anyway.
 """
-function _cull_sortperm(cell_raw::Vector{Int}, n_cells::Int, N::Int)
+function _cull_sortperm(cell_raw::AbstractVector{Int}, n_cells::Int, N::Int)
     n_cells <= SF_CULL_COUNTING_SORT_CELLS_PER_POINT * N || return sortperm(cell_raw)
     cursor = zeros(Int, n_cells + 1)
     @inbounds for i in 1:N

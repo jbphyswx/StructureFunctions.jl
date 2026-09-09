@@ -146,7 +146,7 @@ end
 @inline _ws_ub(ws::CPUSFWorkspace) = ws.ub
 @inline _ws_xb(ws::CPUSFWorkspace) = ws.xb
 
-function _bl_accum_pool(ws::CPUSFWorkspace, ::F, widths::Vector{Int}) where {F}
+function _bl_accum_pool(ws::CPUSFWorkspace, ::F, widths::AbstractVector{Int}) where {F}
     ws.widths == widths || throw(ArgumentError(
         "CPUSFWorkspace holds accumulators of batch widths $(ws.widths); this call needs $widths. \
          Rebuild it with the same inputs, backend and n_tasks as the call."))

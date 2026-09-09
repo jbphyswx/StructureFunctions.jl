@@ -107,46 +107,64 @@ Test.@testset "the adapter refuses only what is genuinely ill-posed" begin
         SF1D, uniform, randn(2, 4, 4), bins; nonsense = 1, verbose = false, show_progress = false)
 end
 
-Test.@testset "grids with no structure to exploit are enumerated, not refused" begin
-    # A stretched axis, a curvilinear mesh and a pixelized sphere share no separation between pairs.
-    # Each is still a valid question, so the adapter routes it to the pair loop rather than erroring.
-    Random.seed!(5300)
+# Bin edges between the separations a point set can produce, for grids whose separations are not
+# `i·h`: near-equal separations are merged first, so no edge lands inside one shell.
+function _separated_bins_points(x, n_bins)
+    N = size(x, 2)
+    seps = sort!([sqrt(sum(abs2, x[:, j] .- x[:, i])) for i in 1:(N - 1) for j in (i + 1):N])
+    distinct = [seps[1]]
+    for s in seps
+        s - distinct[end] > 1e-9 && push!(distinct, s)
+    end
+    idx = unique(round.(Int, range(1, length(distinct) - 1; length = n_bins)))
+    return [0.0; [(distinct[i] + distinct[i + 1]) / 2 for i in idx]]
+end
 
-    # a stretched Cartesian axis: the answer must equal the unstructured path on the same points
+Test.@testset "a stretched axis keeps the lags of the uniform one beside it; no structure is enumerated" begin
+    # A stretched axis beside a uniform one shares a separation along the uniform one between every pair
+    # of stretched positions; two stretched axes share nothing. Both are valid questions, both are exact,
+    # and both must equal the unstructured path on the same points.
+    Random.seed!(5300)
     geo = FG.Geometry.CartesianGeometry()
     xs = [0.0, 0.1, 0.35, 0.8, 0.85]
     ys = range(0.0, step = 0.2, length = 4)
-    stretched = FG.Grids.StructuredGrid(geo, xs, ys)
-    u = randn(2, length(xs), length(ys))
-    bins = collect(range(0.0, 1.5; length = 7))
-    got = SFC.calculate_structure_function(
-        SF1D, stretched, u, bins, UInt32; output_type = SF.StructureFunctionSumsAndCounts,
-        verbose = false, show_progress = false)
+    sched_of(grid) = Base.invokelatest(
+        getfield(Base.get_extension(SF, :StructureFunctionsFlowGeometriesExt), :_lag_schedule), grid)
     N = length(xs) * length(ys)
     x = Matrix{Float64}(undef, 2, N)
     for (k, I) in enumerate(CartesianIndices((length(xs), length(ys))))
         x[1, k] = xs[I[1]]
         x[2, k] = ys[I[2]]
     end
-    ref_s = zeros(6); ref_c = zeros(UInt32, 6)
+    bins = _separated_bins_points(x, 6)
+    nb = length(bins) - 1
+    u = randn(2, length(xs), length(ys))
+
+    stretched = FG.Grids.StructuredGrid(geo, xs, ys)
+    Test.@test sched_of(stretched) isa SFC.RectilinearLagSchedule
+    Test.@test SFC.n_cells(sched_of(stretched)) == N
+    got = SFC.calculate_structure_function(
+        SF1D, stretched, u, bins, UInt32; output_type = SF.StructureFunctionSumsAndCounts,
+        verbose = false, show_progress = false)
+    ref_s = zeros(nb); ref_c = zeros(UInt32, nb)
     SF.calculate_structure_function!(ref_s, ref_c, SF1D, x, reshape(u, 2, N), bins)
     Test.@test got.counts == ref_c
     Test.@test isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)
     Test.@test sum(got.counts) > 0
 
-    # the schedule chosen really is the structureless one, not a lag sweep
-    sched = Base.invokelatest(
-        getfield(Base.get_extension(SF, :StructureFunctionsFlowGeometriesExt), :_lag_schedule),
-        stretched)
-    Test.@test sched isa SFC.ScatteredPairs
-    Test.@test SFC.n_scattered_cells(sched) == N
+    # the same points with both axes as coordinate lists share no lag, and are enumerated
+    structureless = FG.Grids.StructuredGrid(geo, xs, collect(ys))
+    Test.@test sched_of(structureless) isa SFC.ScatteredPairs
+    Test.@test SFC.n_scattered_cells(sched_of(structureless)) == N
+    got2 = SFC.calculate_structure_function(
+        SF1D, structureless, u, bins, UInt32; output_type = SF.StructureFunctionSumsAndCounts,
+        verbose = false, show_progress = false)
+    Test.@test got2.counts == ref_c
+    Test.@test isapprox(got2.sums, ref_s; rtol = 1e-10, atol = 1e-12)
 
     # while a uniform grid still gets the lag sweep
     uniform = FG.Grids.StructuredGrid(geo, range(0.0, step = 0.2, length = 5), ys)
-    sched_u = Base.invokelatest(
-        getfield(Base.get_extension(SF, :StructureFunctionsFlowGeometriesExt), :_lag_schedule),
-        uniform)
-    Test.@test sched_u isa SFC.UniformLagSchedule
+    Test.@test sched_of(uniform) isa SFC.UniformLagSchedule
 end
 
 Test.@testset "a pixelized sphere is enumerated too" begin

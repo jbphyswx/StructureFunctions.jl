@@ -32,6 +32,7 @@ using .KHM
 
 # Re-export key APIs
 export Fields
+export AbstractTaper, NoTaper, Bartlett, GaussianTaper, HarmonicNodes, gauss_legendre
 export AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges, LogBinEdges_from_log_edges,
     InfPaddedBinEdges, physical_edges_vector, n_histogram_bins
 export calculate_structure_function, calculate_structure_function!, calculate_structure_functions_single_pass,
@@ -45,7 +46,7 @@ export calculate_structure_function, calculate_structure_function!, calculate_st
     GPUSFWorkspace, CPUSFWorkspace, reset_histogram!, release!,
     joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256
 export isotropic_spectrum, shell_spectrum, gridded_spectrum, shell_average,
-    helmholtz_spectra, spectral_flux, covariance, covariance_matrix
+    helmholtz_spectra, spectral_flux, enstrophy_flux, covariance, covariance_matrix
 export marginalize
 export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2DSumsAndCounts
 export StructureFunctionTensor, StructureFunctionTensorSumsAndCounts, HelmholtzDecomposition2D
@@ -84,6 +85,7 @@ export transverse_norm2,
     ReferenceAxisTransverseBasis,
     CoordinateGaugeTransverseBasis,
     UserTransverseBasis,
+    SphericalDistance,
     midpoints
 
 

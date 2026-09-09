@@ -18,8 +18,7 @@ KA.@kernel unsafe_indices = true function _channel_kernel!(
             if ok
                 bin = SFC.squared_digitize(plan, r * r)
                 if 1 <= bin <= N_bins
-                    inc = SFC.channel_increment(Val(F), Val(V), Val(K), data, geom, frame, i, j)
-                    val = sf(inc, SFH.pair_direction(geom, frame, r))
+                    val = SFC._channel_value(sf, Val(F), Val(V), Val(K), data, geom, frame, r, i, j)
                     @atomic sums[bin] += val
                     @atomic counts[bin] += one(eltype(counts))
                 end

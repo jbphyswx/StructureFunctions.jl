@@ -846,6 +846,31 @@ function SFC._partial_sums_counts(
 end
 
 
+# --- Gridded sweeps ---
+
+# Each task takes a round-robin share of the sweep's items into private histograms and its own
+# scratch; the partials add because a histogram is order-independent.
+function SFC.threaded_sweep_reduce!(
+    sums::AbstractArray{OT}, counts::AbstractArray{CT}, items::AbstractVector, make_scratch, body!,
+) where {OT, CT}
+    isempty(items) && return nothing
+    n = min(Threads.nthreads(), length(items))
+    part = OMT.tmapreduce(_hist_add, OMT.chunks(items; n, split = OMT.RoundRobin())) do chunk
+        ls = zeros(OT, size(sums))
+        lc = zeros(CT, size(counts))
+        scratch = make_scratch()
+        for it in chunk
+            body!(ls, lc, it, scratch)
+        end
+        (ls, lc)
+    end
+    sums .+= part[1]
+    counts .+= part[2]
+    return nothing
+end
+
+@inline _hist_add(a, b) = (a[1] .+= b[1]; a[2] .+= b[2]; a)
+
 # --- Tensor structure functions ---
 
 # Each task takes a round-robin share of the outer index and accumulates into its own buffers; the

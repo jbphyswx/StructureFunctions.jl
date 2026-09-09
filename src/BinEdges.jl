@@ -621,3 +621,121 @@ Exact `digitize(r, edges)` computed from `r²` alone. Out-of-range gives `0` (be
     return squared_correct(inner, r2, i) + 1
 end
 
+
+# ========================================================================================= #
+# 6. Tapers and the harmonic nodes of a kernel-binned statistic
+# ========================================================================================= #
+
+"""
+    AbstractTaper
+
+A weight applied before a transform: on a lag-space autocovariance, as a function of the lag's
+length; on a spherical harmonic series, as a function of the degree. `NoTaper()` leaves every term as
+it is, `Bartlett()` falls linearly to zero at the largest lag or degree, `GaussianTaper(σ)` weights a
+lag of length `r` by `exp(-r²/2σ²)` and a degree `l` by `exp(-l(l+1)σ²/2)`, with `σ` in the lag's or
+the sphere's own unit. A taper trades resolution for variance, or a hard bin for a positive kernel.
+"""
+abstract type AbstractTaper end
+struct NoTaper <: AbstractTaper end
+struct Bartlett <: AbstractTaper end
+struct GaussianTaper{T <: Real} <: AbstractTaper
+    σ::T
+end
+
+"""Weight of a lag of length `r` when the largest lag has length `r_max`."""
+@inline taper_weight(::NoTaper, r, r_max) = one(r)
+@inline taper_weight(::Bartlett, r, r_max) = max(zero(r), one(r) - r / r_max)
+@inline taper_weight(t::GaussianTaper, r, r_max) = exp(-r * r / (2 * t.σ * t.σ))
+
+"""Weight of degree `l` in a series truncated at `lmax`."""
+@inline harmonic_taper(::NoTaper, l::Integer, lmax::Integer) = 1.0
+@inline harmonic_taper(::Bartlett, l::Integer, lmax::Integer) = max(0.0, 1.0 - l / (lmax + 1))
+@inline harmonic_taper(t::GaussianTaper, l::Integer, lmax::Integer) = exp(-l * (l + 1) * t.σ^2 / 2)
+
+"""
+    HarmonicNodes(separations, lmax; taper = NoTaper())
+    HarmonicNodes(n::Integer, lmax; taper = NoTaper())
+
+The "bins" of a kernel-binned pair statistic on a sphere: the central angles `separations` (radians)
+at which it is reported, the degree `lmax` its harmonic series is truncated at, and the `taper` on
+that series. Together they are the kernel, `K(γ, β) = (1/16π²) Σ_{l ≤ lmax} (2l+1) b_l d^l(cos γ) d^l(cos β)`,
+which replaces a hard bin around `β`; it narrows as `π/lmax` and tends to a delta in `cos γ`.
+
+`weights` are quadrature weights in `μ = cos β`, `∫_{-1}^{1} f dμ ≈ Σ_k w_k f(μ_k)`: Gauss–Legendre for
+the `n`-node form, whose nodes are the Gauss–Legendre points of `μ`, and the midpoint rule on the
+nodes' own cells for given separations. They are what inverts the statistic back to a spectrum.
+
+Not a vector of edges: one value is reported per node, so a result built on these has as many values
+as nodes.
+"""
+struct HarmonicNodes{T <: Real, SV <: AbstractVector{T}, WV <: AbstractVector{T}, B <: AbstractTaper}
+    separations::SV
+    weights::WV
+    lmax::Int
+    taper::B
+    function HarmonicNodes(separations::AbstractVector{T}, weights::AbstractVector{T}, lmax::Integer,
+                           taper::B) where {T <: Real, B <: AbstractTaper}
+        length(separations) == length(weights) || throw(DimensionMismatch(
+            "$(length(separations)) separations and $(length(weights)) weights",
+        ))
+        issorted(separations) || throw(ArgumentError("separations must be sorted"))
+        (isempty(separations) || (first(separations) >= 0 && last(separations) <= π)) ||
+            throw(ArgumentError("separations are central angles in radians, in [0, π]"))
+        lmax >= 0 || throw(ArgumentError("lmax must be non-negative"))
+        return new{T, typeof(separations), typeof(weights), B}(separations, weights, Int(lmax), taper)
+    end
+end
+
+function HarmonicNodes(separations::AbstractVector{<:Real}, lmax::Integer; taper::AbstractTaper = NoTaper())
+    T = float(eltype(separations))
+    sep = convert(AbstractVector{T}, separations)
+    μ = cos.(sep)
+    n = length(μ)
+    w = Vector{T}(undef, n)
+    @inbounds for k in 1:n
+        hi = k == 1 ? one(T) : (μ[k - 1] + μ[k]) / 2
+        lo = k == n ? -one(T) : (μ[k] + μ[k + 1]) / 2
+        w[k] = hi - lo
+    end
+    return HarmonicNodes(sep, w, lmax, taper)
+end
+
+function HarmonicNodes(n::Integer, lmax::Integer; taper::AbstractTaper = NoTaper())
+    μ, w = gauss_legendre(Int(n))
+    return HarmonicNodes(acos.(reverse(μ)), reverse(w), lmax, taper)
+end
+
+"""
+    gauss_legendre(n) -> (nodes, weights)
+
+The `n` Gauss–Legendre nodes on `(-1, 1)`, ascending, and their weights, by Newton's method on `P_n`
+from the Tricomi estimate.
+"""
+function gauss_legendre(n::Integer)
+    n >= 1 || throw(ArgumentError("need at least one node"))
+    x = Vector{Float64}(undef, n)
+    w = Vector{Float64}(undef, n)
+    for k in 1:n
+        z = cos(π * (k - 0.25) / (n + 0.5))
+        dp = 0.0
+        for _ in 1:100
+            p0, p1 = 1.0, z
+            for l in 1:(n - 1)
+                p0, p1 = p1, ((2l + 1) * z * p1 - l * p0) / (l + 1)
+            end
+            dp = n * (z * p1 - p0) / (z * z - 1)
+            dz = p1 / dp
+            z -= dz
+            abs(dz) < 1e-15 && break
+        end
+        x[n + 1 - k] = z
+        w[n + 1 - k] = 2 / ((1 - z * z) * dp * dp)
+    end
+    return x, w
+end
+
+@inline midpoints(nodes::HarmonicNodes) = nodes.separations
+@inline n_histogram_bins(nodes::HarmonicNodes) = length(nodes.separations)
+@inline Base.length(nodes::HarmonicNodes) = length(nodes.separations)
+Base.:(==)(a::HarmonicNodes, b::HarmonicNodes) =
+    a.separations == b.separations && a.weights == b.weights && a.lmax == b.lmax && a.taper == b.taper

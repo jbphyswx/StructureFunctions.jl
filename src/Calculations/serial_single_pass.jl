@@ -68,12 +68,12 @@ function helmholtz_decompose_2d(
         F_prev = (D_TT[k-1] - D_LL[k-1]) / bin_mids[k-1]
         F_curr = (D_TT[k] - D_LL[k]) / bin_mids[k]
         ds = bin_mids[k] - bin_mids[k-1]
-        I[k] = I[k-1] + 0.5f0 * (F_prev + F_curr) * ds
+        I[k] = I[k-1] + (F_prev + F_curr) * ds / 2
     end
     
     rotational_sums = zeros(OT, n_bins)
     divergent_sums = zeros(OT, n_bins)
-    rotational_counts = copy(L2_counts)
+    rotational_counts = copy(T2_counts)
     divergent_counts = copy(L2_counts)
 
     for k in 1:n_bins

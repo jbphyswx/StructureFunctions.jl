@@ -1,6 +1,11 @@
 module StructureFunctionObjects
 
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
+using ..StructureFunctions: HarmonicNodes
+
+# Values a result on this distance object carries: one per bin between flat edges, one per node.
+@inline _value_slots(distance) = length(distance) - 1
+@inline _value_slots(distance::HarmonicNodes) = length(distance)
 
 export AbstractStructureFunction,
     StructureFunction,
@@ -35,7 +40,7 @@ struct StructureFunction{FT, OT <: SFT.AbstractStructureFunctionType, BT, VT} <:
 
     function StructureFunction(operator::OT, distance::BT, values::VT) where {OT, BT, VT}
         n_values = values isa AbstractArray && ndims(values) > 1 ? size(values, 1) : length(values)
-        (length(distance) == n_values + 1) || throw(DimensionMismatch("Flat distance edges must have length one greater than the leading value-bin axis (got edges=$(length(distance)), value bins=$n_values)"))
+        (_value_slots(distance) == n_values) || throw(DimensionMismatch("Flat distance edges must have length one greater than the leading value-bin axis (got edges=$(length(distance)), value bins=$n_values)"))
         FT = eltype(VT)
         return new{FT, OT, BT, VT}(operator, distance, values)
     end
@@ -67,7 +72,7 @@ struct StructureFunctionSumsAndCounts{
     ) where {OT, BT, VT, CT}
         n_sums = sums isa AbstractArray && ndims(sums) > 1 ? size(sums, 1) : length(sums)
         n_counts = counts isa AbstractArray && ndims(counts) > 1 ? size(counts, 1) : length(counts)
-        ((length(distance) == n_sums + 1) && (n_sums == n_counts) && (size(sums) == size(counts))) || throw(DimensionMismatch("Flat distance edges must satisfy length(distance) == size(sums,1) + 1 and sums/counts must match shape (got edges=$(length(distance)), sums=$(size(sums)), counts=$(size(counts)))"))
+        ((_value_slots(distance) == n_sums) && (n_sums == n_counts) && (size(sums) == size(counts))) || throw(DimensionMismatch("Flat distance edges must satisfy length(distance) == size(sums,1) + 1 and sums/counts must match shape (got edges=$(length(distance)), sums=$(size(sums)), counts=$(size(counts)))"))
         FT = eltype(sums)
         return new{FT, OT, BT, VT, CT}(operator, distance, sums, counts)
     end

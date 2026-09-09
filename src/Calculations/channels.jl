@@ -28,6 +28,18 @@ nothing to transport.
 end
 
 """
+    _channel_value(sf, ::Val{F}, ::Val{V}, ::Val{K}, data, geom, frame, r, i, j)
+
+One pair's operator value for a channel bundle, with the pair read in its canonical orientation
+(see `pair_orientation`): an operator odd in a scalar increment takes the orientation's sign.
+"""
+@inline function _channel_value(sf, ::Val{F}, ::Val{V}, ::Val{K}, data, geom, frame, r, i, j) where {F, V, K}
+    inc = channel_increment(Val(F), Val(V), Val(K), data, geom, frame, i, j)
+    v = sf(inc, SFH.pair_direction(geom, frame, r))
+    return SFT.is_odd_in_scalars(sf) ? SFH.pair_orientation(geom, frame) * v : v
+end
+
+"""
     _kernel_channels(fields, geom, x) -> (x_kernel, packed_kernel, Val{F})
 
 The field in the form the kernels index: every vector channel widened by the geometry exactly as a
@@ -108,7 +120,7 @@ task loop — doing them inside one would pay them per task.
 """
 function channel_setup(f::CH.Fields{D, V, K}, x::AbstractMatrix, distance_bins,
                        distance_metric, culling::CullingPolicy) where {D, V, K}
-    geom = SFH.pair_geometry_for(distance_metric, Val(max(D, 1)))
+    geom = _channel_geometry(distance_metric, Val(D), Val(V), x)
     xk, data, vF = _kernel_channels(f, geom, x)
     W = SFC_val_int(SFH.coordinate_width(geom))
     plan = squared_digitize_plan(distance_bins)
@@ -120,6 +132,12 @@ function channel_setup(f::CH.Fields{D, V, K}, x::AbstractMatrix, distance_bins,
     end
     return geom, xk, data, vF, plan, grid
 end
+
+# The geometry's dimension is the velocity dimension where there is one; a field of scalars alone has
+# none, and its points are located by however many coordinates they carry.
+@inline _channel_geometry(distance_metric, ::Val{D}, ::Val{V}, x::AbstractMatrix) where {D, V} =
+    V == 0 ? SFH.pair_geometry_for(distance_metric, Val(size(x, 1))) :
+             SFH.pair_geometry_for(distance_metric, Val(D))
 
 # Dispatch on the grid so the kernel receives one concretely typed schedule, as the single-channel
 # path does.
@@ -172,8 +190,9 @@ function _channel_pairs!(
                 end
                 scalars = ntuple(c -> data[V * F + c, j] - data[V * F + c, i], Val(K))
                 inc = CH.ChannelIncrement{F, V, K, T}(vectors, scalars)
+                sgn = SFT.is_odd_in_scalars(sf) ? SFH.pair_orientation(geom, dx) : 1
                 keybuf[j] = digitize_key(plan, r2)
-                valbuf[j] = OT(sf(inc, dx / sqrt(r2)))
+                valbuf[j] = OT(sgn * sf(inc, dx / sqrt(r2)))
                 if has_vector_index(plan)
                     idxbuf[j] = squared_approx_index(plan, r2)
                 end
@@ -209,8 +228,7 @@ function _channel_pairs!(
                 ok || continue
                 b = squared_digitize(plan, r * r)
                 1 <= b <= nb || continue
-                inc = channel_increment(Val(F), Val(V), Val(K), data, geom, frame, i, j)
-                sums[b] += OT(sf(inc, SFH.pair_direction(geom, frame, r)))
+                sums[b] += OT(_channel_value(sf, Val(F), Val(V), Val(K), data, geom, frame, r, i, j))
                 counts[b] += one(CT)
             end
         end
@@ -243,8 +261,10 @@ Refuse an operator that reads a channel the bundle does not carry.
 Checked once at the entry rather than per pair: the per-pair check would be inside a task on a
 threaded backend, where the error surfaces wrapped in a `TaskFailedException` instead of as itself.
 """
-function validate_channels(sf::SFT.AbstractPairwiseStructureFunctionType,
-                           f::CH.Fields{D, V, K}) where {D, V, K}
+validate_channels(sf::SFT.AbstractPairwiseStructureFunctionType, ::CH.Fields{D, V, K}) where {D, V, K} =
+    validate_channels(sf, Val(V), Val(K))
+
+function validate_channels(sf::SFT.AbstractPairwiseStructureFunctionType, ::Val{V}, ::Val{K}) where {V, K}
     nv, ns = required_channels(sf)
     nv <= V || throw(ArgumentError(
         "$(nameof(typeof(sf))) reads vector channel $nv, but this field carries $V. Build the " *
@@ -332,6 +352,21 @@ function _channel_dispatch!(::CB.AbstractAutoBackend, sums, counts, sf, x, f, bi
         return threaded_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
     end
     return serial_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
+end
+
+"""
+    calculate_structure_function!(sums, counts, sf, x, fields, distance_bins; backend, kwargs...)
+
+Accumulate a multi-channel field's pairs into `sums`/`counts` on `backend`.
+"""
+function calculate_structure_function!(
+    sums, counts, sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::CH.Fields,
+    distance_bins; backend::CB.AbstractExecutionBackend = CB.SerialBackend(), kwargs...,
+)
+    _assert_counts_representable(eltype(counts), size(CH.packed(f), 2))
+    validate_channels(sf, f)
+    _channel_dispatch!(backend, sums, counts, sf, x, f, distance_bins; kwargs...)
+    return nothing
 end
 
 """

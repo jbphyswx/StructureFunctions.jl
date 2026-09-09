@@ -32,14 +32,31 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Gridded Masked Test ---")
     include("test_gridded_masked.jl")
 
+    println("--- Running Gridded Moments Test ---")
+    include("test_gridded_moments.jl")
+
     println("--- Running Gridded Lat-Lon Test ---")
     include("test_gridded_zonal.jl")
+
+    println("--- Running Gridded Separable Schedules Test ---")
+    include("test_gridded_separable.jl")
+    println("--- Running Gridded Device Engine Test ---")
+    include("test_gridded_device.jl")
+
+    println("--- Running Lag-Space Spectra Test ---")
+    include("test_spectra_lagspace.jl")
+
+    println("--- Running Spherical Harmonic Route Test ---")
+    include("test_harmonic_sphere.jl")
 
     println("--- Running Directional Test ---")
     include("test_directional.jl")
 
     println("--- Running Multi-Channel Fields Test ---")
     include("test_channels.jl")
+
+    println("--- Running Operator Polynomial Contract Test ---")
+    include("test_operator_contract.jl")
 
     println("--- Running Single-Pass & Helmholtz Test ---")
     include("test_single_pass.jl")

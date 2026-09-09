@@ -444,7 +444,7 @@ end
 One accumulator per task, of the given batch widths, drawn from the workspace when there is one and
 allocated fresh otherwise. Always built outside the parallel region, so tasks only read their slot.
 """
-_bl_accum_pool(::Nothing, make_accum::F, widths::Vector{Int}) where {F} =
+_bl_accum_pool(::Nothing, make_accum::F, widths::AbstractVector{Int}) where {F} =
     [make_accum(w) for w in widths]
 
 """The full-width reduction accumulator, from the workspace when there is one."""

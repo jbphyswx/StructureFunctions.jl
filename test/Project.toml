@@ -15,6 +15,8 @@ JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+NUFSHT = "e99b67a3-9706-455a-90e2-85b195a33206"
+NonuniformFFTs = "cd96f58b-6017-4a02-bb9e-f4d81626177f"
 OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
@@ -28,4 +30,5 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
 FlowGeometries = { url = "https://github.com/jbphyswx/FlowGeometries.jl" }
+NUFSHT = { url = "https://github.com/jbphyswx/NUFSHT.jl" }
 SpectralBackends = { url = "https://github.com/jbphyswx/SpectralBackends.jl" }

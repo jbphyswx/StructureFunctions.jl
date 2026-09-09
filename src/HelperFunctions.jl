@@ -35,6 +35,7 @@ export digitize,
     geodesic_increments,
     FlatGeometry,
     SphericalGeometry,
+    SphericalDistance,
     coordinate_width,
     input_coordinate_width,
     field_width,
@@ -43,6 +44,7 @@ export digitize,
     pair_frame,
     pair_direction,
     pair_delta,
+    pair_orientation,
     pair_invariants,
     pair_increments,
     pair_geometry,
@@ -333,6 +335,33 @@ end
 end
 
 """
+    pair_orientation(geometry, frame) -> Int
+
+Which end of a pair is read first: `+1` when the pair as given runs from the lower to the upper end
+along the first coordinate that separates its points, `-1` when it runs the other way, `0` when
+neither end comes first. On a sphere a pair is read from south to north, and along one parallel from
+west to east by the shorter way round. Only operators odd in a scalar increment see this sign; every
+vector quantity is the same read either way.
+"""
+@inline function pair_orientation(::FlatGeometry, dx)
+    @inbounds for d in eachindex(dx)
+        iszero(dx[d]) || return dx[d] > 0 ? 1 : -1
+    end
+    return 0
+end
+
+@inline function pair_orientation(::SphericalGeometry, frame)
+    p̂, q̂ = frame[4], frame[5]
+    north = q̂[3] - p̂[3]                        # exact for two points on one parallel
+    iszero(north) || return north > 0 ? 1 : -1
+    east = p̂[1] * q̂[2] - p̂[2] * q̂[1]          # (p̂ × q̂)·ẑ, the sense of the shorter turn about ẑ
+    iszero(east) || return east > 0 ? 1 : -1
+    return 0
+end
+
+pair_orientation(geometry, frame) = 1
+
+"""
     pair_delta(geometry, frame, x1, x2, u1, u2) -> δu
 
 Velocity difference expressed in the pair's common frame, given the `frame` from
@@ -476,11 +505,31 @@ pair_geometry_for(m::DI.Haversine, ::Val{D}) where {D} = SphericalGeometry{D}(m,
 pair_geometry_for(m::DI.SphericalAngle, ::Val{D}) where {D} = SphericalGeometry{D}(m, 1)
 
 """
+    SphericalDistance(radius)
+
+Great-circle distance on a sphere of the given `radius` between points given as `(longitude,
+latitude)` in **radians**: `radius` times `Distances.SphericalAngle`. The one metric a
+spherical grid of known radius hands to every route, so separations come out in the radius's unit
+on each of them.
+"""
+struct SphericalDistance{T <: Real} <: DI.Metric
+    radius::T
+end
+
+@inline (m::SphericalDistance)(x, y) = m.radius * DI.SphericalAngle()(x, y)
+
+DI.result_type(m::SphericalDistance, ::Type{T1}, ::Type{T2}) where {T1 <: Number, T2 <: Number} =
+    float(promote_type(typeof(m.radius), T1, T2))
+
+pair_geometry_for(m::SphericalDistance, ::Val{D}) where {D} = SphericalGeometry{D}(m, m.radius)
+
+"""
     unit_position(metric, lon, lat) -> SVector{3}
     local_east_north(metric, lon, lat) -> (Ê, N̂)
 
 Ingest helpers that take the angle unit from the metric's own documented convention:
-`Distances.Haversine` is **degrees**, `Distances.SphericalAngle` is **radians**. Confusing the two
+`Distances.Haversine` is **degrees**, `Distances.SphericalAngle` and [`SphericalDistance`](@ref) are
+**radians**. Confusing the two
 silently rescales every separation by a factor of ~57, so the convention is pinned next to the metric
 that defines it rather than repeated at each call site.
 """
@@ -489,6 +538,9 @@ that defines it rather than repeated at each call site.
 @inline unit_position(::DI.SphericalAngle, lon, lat) =
     _unit_position(sincos(lon)..., sincos(lat)...)
 @inline local_east_north(::DI.SphericalAngle, lon, lat) =
+    _local_east_north(sincos(lon)..., sincos(lat)...)
+@inline unit_position(::SphericalDistance, lon, lat) = _unit_position(sincos(lon)..., sincos(lat)...)
+@inline local_east_north(::SphericalDistance, lon, lat) =
     _local_east_north(sincos(lon)..., sincos(lat)...)
 
 pair_geometry_for(m, ::Val{D}) where {D} = throw(ArgumentError(

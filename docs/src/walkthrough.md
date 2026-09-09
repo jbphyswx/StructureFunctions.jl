@@ -44,6 +44,11 @@ x = 2π .* rand(2, 6000)
 u = solenoidal_field(x)
 ```
 
+A point list carries no mask. A non-finite sample makes every bin it pairs into `NaN`, as any sum
+does, so drop such points before the call: `keep = vec(all(isfinite, u; dims = 1))`, then
+`x[:, keep]` and `u[:, keep]`. Grids are different, because their lags and transforms need every cell
+in place; there the mask travels with the data (Act 2).
+
 ### Six invariants in one pass
 
 The six second- and third-order invariants share a pair loop, a separation and a bin, so computing
@@ -213,6 +218,84 @@ one-decade band gives a slope that declines monotonically through `2/3` without 
 fitting a single exponent to it returns whatever the fit window happens to select. Resolving a
 scaling range needs the dynamic range a grid provides.
 
+### Grids with one uniform direction
+
+A lat-lon grid has no constant lag — a step in longitude is a different distance at every latitude —
+but longitude is uniform, so every pair of latitude rows shares its geodesic frame around the whole
+circle. The transform runs along longitude for each pair of rows, with the frame applied per lag, and
+the same holds for a Cartesian grid with a stretched axis beside a uniform one. Nothing changes at the
+call site: the grid's axis **types** decide the route (a range is uniform, a vector of coordinates is
+not), every route is exact, and `verbose = true` names the one chosen.
+
+```julia
+using FlowGeometries: FlowGeometries as FG
+using ComputationalBackends: ComputationalBackends as CB
+
+n_lon, n_lat = 1440, 720
+geo = FG.Geometry.SphericalGeometry(6.371e6)
+grid = FG.Grids.StructuredGrid(geo, range(0.0, step = 2π / n_lon, length = n_lon),
+                               range(-π / 2 + π / (2n_lat), π / 2 - π / (2n_lat); length = n_lat))
+u = randn(2, n_lon, n_lat)                                   # (east, north) at every cell
+bins = 6.371e6 .* collect(range(0.0, π; length = 41))       # metres, as the radius is
+
+sf = SF.calculate_structure_function(SFT.L2SFType(), grid, u, bins, UInt64,
+                                     SB.FastFourierTransformSpectralBackend();
+                                     backend = CB.ThreadedBackend())
+```
+
+Separations come out in the unit of the geometry's radius on every route, the threaded backend
+splits the row pairs across tasks, and a field of several channels (`Fields`) rides along, so a
+scalar's odd moments and the mixed moments of a Yaglom-type relation come from the same transform.
+
+On eight dedicated cores the transform above bins `5.4 × 10¹¹` pairs in `10.5 s` (`54 s` on one core).
+Against the direct row-by-row sweep of the same grid at 180 latitude rows the transform is `62×`
+faster for `L2` and `16×` for `L3`, with counts identical and sums agreeing to `10⁻¹⁵`; the gap
+narrows at third order because the frame algebra per lag grows with the moment's rank while the
+transforms do not.
+
+### The same engine on a device
+
+The transform engine takes the hardware from the same `backend` keyword the point entries use. With
+`using KernelAbstractions` and a device package loaded, `backend = CB.GPUBackend(CUDA.CUDABackend())`
+moves the masked monomials to the device, takes their transforms there through the device's own
+AbstractFFTs implementation, and bins every lag of every slab pair in one kernel with a privatized
+histogram. Nothing about the schedule changes: uniform, stretched and lat-lon grids, masks, channel
+bundles and every polynomial order run through the same code, and the counts are exactly the CPU
+engine's. `CB.GPUBackend(KernelAbstractions.CPU())` runs the identical kernel on the host, which is
+how the suite checks it without a device.
+
+### The sphere by spherical harmonics
+
+A pair statistic on a sphere has a second exact route that never enumerates pairs or lags. For any
+point set, weights and mask, the spherical harmonic **pseudo-coefficients** of the masked field's
+monomials give, as an identity, the pair sum with a soft kernel in place of a hard bin:
+
+```
+Σ_ij w_i w_j (θ_j − θ_i)^p K_L(γ_ij, β) = Σ_{l ≤ L} (2l+1)/(4π) b_l X_l P_l(cos β),
+K_L(γ, β) = (1/16π²) Σ_l (2l+1) b_l P_l(cos γ) P_l(cos β) → (1/8π²) δ(cos γ − cos β).
+```
+
+Vectors ride the same identity through their spin-1 quantity `u_θ + i u_φ`, with Wigner `d^l_{ss′}`
+kernels for the spin-weighted monomials the operator's polynomial expands into. The "bin" is the node
+set: separations, the truncation degree and a taper on the series.
+
+```julia
+nodes = HarmonicNodes(32, 64; taper = GaussianTaper(0.02))   # 32 Gauss–Legendre nodes, lmax = 64
+res = SF.calculate_structure_function(SFT.L3SFType(), x, u, nodes, SB.NUFSHTSpectralBackend();
+                                      distance_metric = DI.SphericalAngle())
+res.values                                                    # the kernel-binned ⟨δu_L³⟩ at the nodes
+```
+
+`SB.DirectSumSpectralBackend()` computes the same coefficients by direct summation, `O(N lmax²)`, and
+is the reference; `using NUFSHT` supplies the fast transform. On a Gauss–Legendre grid with exact
+quadrature weights the pseudo-coefficients are the coefficients, the series of a band-limited field
+terminates, and the route returns the continuous rotation-averaged structure function exactly — the
+tests hold every polynomial operator through fourth order to `10⁻⁹` against an independent quadrature
+over pairs. The same coefficients give the field's `E`/`B` spectra, `SFC.harmonic_spectra`, and a
+kernel-binned result inverts to `C_l` through `isotropic_spectrum(res, g, lmax)` by the nodes' own
+quadrature weights: on a masked field that ratio of kernel-binned sums to kernel-binned counts follows
+the spectrum of the complete field where the pseudo-spectrum of the masked field does not.
+
 ## Act 3 — into spectral space
 
 A structure function and a spectrum carry the same second-order information, and the package
@@ -265,6 +348,24 @@ complete-field spectrum on a 48² grid:
 
 ![Spectrum with missing data](assets/sf_missing_data.png)
 
+### Bounded directions, tapers and missing lags
+
+A direction that does not wrap has no Fourier basis of its own, so its spectrum is an estimate: the
+transform, on a padded lag grid, of the unbiased autocovariance `C(h) = σ² − D(h)/2` that the pair
+counts give at every lag `|h| < n`. The same call serves it; `wavenumbers` has the padded length along
+a bounded direction, and the density still integrates to the variance of the held cells.
+
+```julia
+kaxes, density = SFC.gridded_spectrum(u, sched, Val(2), SB.FastFourierTransformSpectralBackend();
+                                      taper = SFC.Bartlett())
+```
+
+`taper` weights the lags before the transform: the far lags of a bounded domain are averaged over
+few pairs, and `Bartlett()` (linear to zero at the largest lag) or `GaussianTaper(σ)` trades
+resolution in wavenumber for a steadier estimate; `NoTaper()` is the default. With cells missing, a
+lag that no pair of held cells names has no structure function at all; the call refuses it unless
+`missing_lags = SFC.ZeroDeviationAtMissingLags()` says to take its covariance as zero.
+
 ### From scattered points: isotropic, and one assumption
 
 Scattered data has no lag grid, so the transform integrates against a dimension-appropriate kernel —
@@ -299,3 +400,18 @@ Because `D_rot + D_div = D_LL + D_TT` exactly and the transform is linear, the t
 spectrum of the trace — an identity that holds whatever the field is, and the one the tests assert.
 
 ![Helmholtz spectra](assets/sf_helmholtz_spectra.png)
+
+The same split follows directly from the two projections, without the real-space decomposition and
+its cumulative integral: the sum `D_LL + D_TT` transforms with `J₀` as the trace does, and the
+difference `D_LL − D_TT` with `J₂`, so
+
+```julia
+spec = SFC.helmholtz_spectra(res.L2, res.T2, kq)       # (rotational, divergent), by J₀ and J₂
+```
+
+carries only the truncation error of the two Hankel integrals. On a sphere the counterpart is a
+Legendre inversion: a scalar's or the trace's structure function binned in `R·σ` gives `C_l` by
+`SFC.isotropic_spectrum(sf, geometry, lmax)`, and the two projections give the gradient and curl
+spectra `C^E_l`, `C^B_l` by `SFC.helmholtz_spectra(L2, T2, geometry, lmax; variance)` — the sum of the
+two needs the field's mean square, which no structure function carries, while their difference does
+not.

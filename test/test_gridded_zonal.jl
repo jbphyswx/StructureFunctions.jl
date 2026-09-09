@@ -80,6 +80,62 @@ Test.@testset "the zonal sweep equals the unstructured spherical path" begin
     end
 end
 
+Test.@testset "odd scalar moments on a lat-lon grid read south to north, then west to east" begin
+    # ⟨δu_L δθ⟩ changes sign when a pair is read from its other end; the zonal sweep and the
+    # unstructured spherical channel path must read every pair the same way. An odd longitude count:
+    # two points exactly half a turn apart on one parallel have no first end, which the lattice knows
+    # from the integer offset while a point path sees sin(π) as round-off.
+    n_lon, lats = 11, collect(range(-0.6, 0.6; length = 5))
+    n_lat = length(lats)
+    dlon = 2π / n_lon
+    Random.seed!(9150)
+    u = randn(2, n_lon, n_lat)
+    th = randn(n_lon, n_lat)
+    x, uu = _zonal_points(lats, n_lon, dlon, u)
+    f_grid = SF.Fields(vectors = (u,), scalars = (th,))
+    f_pts = SF.Fields(vectors = (uu,), scalars = (vec(th),))
+    bins = collect(range(0.0, 0.45 * π; length = 7))
+    nb = length(bins) - 1
+    sched = SFC.ZonalLagSchedule(lats, n_lon, dlon, R_UNIT, true)
+    for sf in (SFT.MixedSFType{1, 0, 1}(), SFT.ScalarSFType{3}(), SFT.MixedSFType{1, 0, 2}())
+        got_s = zeros(nb); got_c = zeros(Int, nb)
+        SFC.gridded_lag_sweep!(got_s, got_c, sf, f_grid, sched, bins)
+        ref = SFC.calculate_structure_function(sf, x, f_pts, bins; distance_metric = DI.SphericalAngle(),
+            output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+        Test.@test got_c == Int.(ref.counts)
+        Test.@test isapprox(got_s, ref.sums; rtol = 1e-9, atol = 1e-10)
+        Test.@test any(!iszero, got_s)
+    end
+end
+
+Test.@testset "a descending axis reads pairs the same way as an ascending one" begin
+    # The reading is fixed by the points, not by the order the grid stores them in: a grid whose
+    # latitudes run north to south, or whose longitudes run westward, must agree with the point path.
+    n_lon = 11
+    Random.seed!(9160)
+    for (lats, dlon) in ((collect(range(0.6, -0.6; length = 5)), 2π / n_lon),
+                         (collect(range(-0.6, 0.6; length = 5)), -2π / n_lon))
+        n_lat = length(lats)
+        u = randn(2, n_lon, n_lat)
+        th = randn(n_lon, n_lat)
+        x, uu = _zonal_points(lats, n_lon, dlon, u)
+        f_grid = SF.Fields(vectors = (u,), scalars = (th,))
+        f_pts = SF.Fields(vectors = (uu,), scalars = (vec(th),))
+        bins = collect(range(0.0, 0.45 * π; length = 7))
+        nb = length(bins) - 1
+        sched = SFC.ZonalLagSchedule(lats, n_lon, dlon, R_UNIT, true)
+        for sf in (SFT.MixedSFType{1, 0, 1}(), SFT.ScalarSFType{3}())
+            got_s = zeros(nb); got_c = zeros(Int, nb)
+            SFC.gridded_lag_sweep!(got_s, got_c, sf, f_grid, sched, bins)
+            ref = SFC.calculate_structure_function(sf, x, f_pts, bins; distance_metric = DI.SphericalAngle(),
+                output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+            Test.@test got_c == Int.(ref.counts)
+            Test.@test isapprox(got_s, ref.sums; rtol = 1e-9, atol = 1e-10)
+            Test.@test any(!iszero, got_s)
+        end
+    end
+end
+
 Test.@testset "the zonal sweep counts every pair once" begin
     n_lon = 10
     lats = collect(range(-0.4, 0.4; length = 4))
@@ -140,7 +196,7 @@ Test.@testset "the zonal sweep honours missing cells" begin
     for k in (3, 17, 28)
         uf[1, k] = NaN
     end
-    valid = SFC.field_validity(u, Val(2))
+    valid = SFC.field_validity(u)
     sched = SFC.ZonalLagSchedule(lats, n_lon, dlon, R_UNIT, true)
     bins = collect(range(0.0, 10.0; length = 4))
     s = zeros(3); c = zeros(Int, 3)

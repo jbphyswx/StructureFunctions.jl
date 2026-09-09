@@ -5,6 +5,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: dot
 using OhMyThreads: OhMyThreads
+using Distances: Distances as DI
+using KernelAbstractions: KernelAbstractions as KA
 using Random: Random
 
 # Every pair, evaluated straight from the inputs. Independent of the packing and of the sweep.
@@ -71,7 +73,10 @@ Test.@testset "the bundle refuses what it cannot mean" begin
     Test.@test_throws ArgumentError SF.Fields()
     Test.@test_throws DimensionMismatch SF.Fields(vectors = (randn(2, 5), randn(3, 5)))
     Test.@test_throws DimensionMismatch SF.Fields(vectors = (randn(2, 5),), scalars = (randn(4),))
-    Test.@test_throws ArgumentError SF.Fields(vectors = (randn(2, 5, 2),))
+    Test.@test_throws ArgumentError SF.Fields(vectors = (randn(5),))
+    Test.@test_throws DimensionMismatch SF.Fields(vectors = (randn(2, 5, 2),), scalars = (randn(5, 3),))
+    # a grid-shaped channel is one vector channel over the flattened cells
+    Test.@test size(CH.packed(SF.Fields(vectors = (randn(2, 5, 2),), scalars = (randn(5, 2),)))) == (3, 10)
 end
 
 Test.@testset "the scalar structure function matches brute force" begin
@@ -83,7 +88,9 @@ Test.@testset "the scalar structure function matches brute force" begin
     f = SF.Fields(vectors = (randn(2, N),), scalars = (th,))
     for P in (2, 3)
         got = _run(SFT.ScalarSFType{P}(), x, f, bins)
-        ref_s, ref_c = _brute((dv, ds, rh) -> ds[1]^P, x, (), (th,), bins)
+        # an odd power reads the pair from the lower to the upper end along the first separating axis
+        orient(rh) = isodd(P) ? (rh[1] != 0 ? sign(rh[1]) : sign(rh[2])) : 1.0
+        ref_s, ref_c = _brute((dv, ds, rh) -> orient(rh) * ds[1]^P, x, (), (th,), bins)
         Test.@test got.counts == ref_c
         Test.@test isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)
         Test.@test sum(got.counts) == N * (N - 1) ÷ 2
@@ -107,8 +114,75 @@ Test.@testset "Yaglom's mixed moment matches brute force" begin
 
     # and the first-order flux of the tracer itself
     got1 = _run(SFT.MixedSFType{1, 0, 1}(), x, f, bins)
-    ref1_s, _ = _brute((dv, ds, rh) -> dot(dv[1], rh) * ds[1], x, (u,), (th,), bins)
+    orient(rh) = rh[1] != 0 ? sign(rh[1]) : sign(rh[2])     # odd in θ: read along the first separating axis
+    ref1_s, _ = _brute((dv, ds, rh) -> orient(rh) * dot(dv[1], rh) * ds[1], x, (u,), (th,), bins)
     Test.@test isapprox(got1.sums, ref1_s; rtol = 1e-10, atol = 1e-12)
+end
+
+Test.@testset "a field of scalars alone is located by its coordinates" begin
+    # With no vector channel there is no velocity dimension to read the geometry from; the points
+    # carry it. Checked against brute force on two- and three-dimensional points.
+    Random.seed!(1550)
+    N = 60
+    for Dx in (2, 3)
+        x = rand(Dx, N)
+        th = randn(N)
+        ph = randn(N)
+        bins = collect(range(0.0, 1.2; length = 6))
+        f = SF.Fields(scalars = (th, ph))
+        got = _run(SFT.ScalarSFType{2}(), x, f, bins)
+        ref_s, ref_c = _brute((dv, ds, rh) -> ds[1]^2, x, (), (th, ph), bins)
+        Test.@test got.counts == ref_c
+        Test.@test isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)
+        gotx = _run(SFT.ScalarDotSFType(1, 2), x, f, bins)
+        refx_s, _ = _brute((dv, ds, rh) -> ds[1] * ds[2], x, (), (th, ph), bins)
+        Test.@test isapprox(gotx.sums, refx_s; rtol = 1e-10, atol = 1e-12)
+    end
+end
+
+Test.@testset "odd scalar moments do not depend on how the points are ordered" begin
+    # ⟨δu_L δθ⟩ and ⟨(δθ)³⟩ change sign when a pair is read from its other end, so their value is fixed
+    # by reading every pair from the lower to the upper end along the first separating coordinate —
+    # never by the order the points arrive in.
+    Random.seed!(1570)
+    N = 60
+    for (Dx, metric) in ((2, DI.Euclidean()), (3, DI.Euclidean()), (2, DI.Haversine(6.371e6)))
+        x = Dx == 2 && metric isa DI.Haversine ? vcat(120 .* rand(1, N) .- 60, 100 .* rand(1, N) .- 50) : rand(Dx, N)
+        u = randn(Dx == 3 ? 3 : 2, N)
+        th = randn(N)
+        bins = metric isa DI.Haversine ? collect(range(0.0, 1.2e7; length = 6)) :
+                                         collect(range(0.0, 1.5; length = 6))
+        perm = Random.randperm(N)
+        f = SF.Fields(vectors = (u,), scalars = (th,))
+        fp = SF.Fields(vectors = (u[:, perm],), scalars = (th[perm],))
+        for sf in (SFT.MixedSFType{1, 0, 1}(), SFT.ScalarSFType{3}())
+            a = SFC.calculate_structure_function(sf, x, f, bins; backend = CB.SerialBackend(),
+                distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
+                verbose = false, show_progress = false)
+            b = SFC.calculate_structure_function(sf, x[:, perm], fp, bins; backend = CB.SerialBackend(),
+                distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
+                verbose = false, show_progress = false)
+            Test.@test a.counts == b.counts
+            Test.@test isapprox(a.sums, b.sums; rtol = 1e-10, atol = 1e-12)
+            Test.@test any(!iszero, a.sums)
+            c = SFC.calculate_structure_function(sf, x[:, perm], fp, bins; backend = CB.ThreadedBackend(),
+                distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
+                verbose = false, show_progress = false)
+            Test.@test isapprox(c.sums, a.sums; rtol = 1e-10, atol = 1e-12)
+            d = SFC.calculate_structure_function(sf, x[:, perm], fp, bins;
+                backend = CB.GPUBackend(KA.CPU()), distance_metric = metric,
+                output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+            Test.@test d.counts == a.counts
+            Test.@test isapprox(d.sums, a.sums; rtol = 1e-10, atol = 1e-12)
+            if metric isa DI.Euclidean
+                # the reading is the lexicographic one on the displacement, checked pair by pair
+                ref_s, ref_c = _brute((dv, ds, rh) -> (rh[1] != 0 ? sign(rh[1]) : sign(rh[2])) *
+                    (sf isa SFT.ScalarSFType ? ds[1]^3 : dot(dv[1], rh) * ds[1]), x, (u,), (th,), bins)
+                Test.@test a.counts == ref_c
+                Test.@test isapprox(a.sums, ref_s; rtol = 1e-10, atol = 1e-12)
+            end
+        end
+    end
 end
 
 Test.@testset "cross-channel moments are what an advective structure function is" begin
