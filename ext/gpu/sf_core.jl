@@ -73,6 +73,29 @@ KA.Adapt.adapt_structure(to, d::SFGeneralDigitizer) =
 KA.Adapt.adapt_structure(to, s::TilePairWorkList) =
     TilePairWorkList(KA.Adapt.adapt(to, s.pairs), s.n_tiles)
 
+# Bin edges, digitize plans and lag schedules reach a kernel with their vectors on the device.
+KA.Adapt.adapt_structure(to, b::SF.BinEdges) = SF.BinEdges(KA.Adapt.adapt(to, b.edges))
+KA.Adapt.adapt_structure(to, b::SF.InfPaddedBinEdges) = SF.InfPaddedBinEdges(KA.Adapt.adapt(to, b.edges))
+function KA.Adapt.adapt_structure(to, p::SF.SquaredLogPlan{T}) where {T}
+    sq = KA.Adapt.adapt(to, p.sqedges)
+    return SF.SquaredLogPlan{T, typeof(sq)}(p.a, p.b, p.n_bins, sq)
+end
+function KA.Adapt.adapt_structure(to, p::SF.SquaredLinearPlan{T}) where {T}
+    sq = KA.Adapt.adapt(to, p.sqedges)
+    return SF.SquaredLinearPlan{T, typeof(p.edges), typeof(sq)}(p.edges, p.n_bins, sq)
+end
+function KA.Adapt.adapt_structure(to, p::SF.SquaredGeneralPlan{T}) where {T}
+    sq = KA.Adapt.adapt(to, p.sqedges)
+    return SF.SquaredGeneralPlan{T, typeof(sq)}(p.n_bins, sq)
+end
+KA.Adapt.adapt_structure(to, p::SF.SquaredInfPaddedPlan) = SF.SquaredInfPaddedPlan(KA.Adapt.adapt(to, p.inner))
+KA.Adapt.adapt_structure(to, s::SFC.RectilinearLagSchedule) =
+    SFC.RectilinearLagSchedule(s.uniform, map(v -> KA.Adapt.adapt(to, v), s.enumerated), s.axis_order)
+KA.Adapt.adapt_structure(to, s::SFC.ZonalLagSchedule) =
+    SFC.ZonalLagSchedule(KA.Adapt.adapt(to, s.lats), s.n_lon, s.dlon, s.radius, s.lon_periodic)
+KA.Adapt.adapt_structure(to, s::SFC.ScatteredModesSchedule) =
+    SFC.ScatteredModesSchedule(KA.Adapt.adapt(to, s.points), s.origin, s.box, s.modes, s.taper)
+
 @inline (d::SFGeneralDigitizer)(r) = _gpu_digitize_general(r, d.edges, d.n_edges)
 
 # Number of bins (edges - 1) for a digitizer.

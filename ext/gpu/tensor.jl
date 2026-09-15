@@ -19,10 +19,11 @@ KA.@kernel unsafe_indices = true function _tensor_kernel!(
             ok, dist, frame = SFH.pair_frame(geom, X1, X2)
             bin = SFH.digitize(dist, dist_be)
             if ok && 1 <= bin <= N_bins
+                sgn = SFC._tensor_reading(Val(P), geom, frame)
                 for b in 1:B
                     U1 = SA.SVector{F, UT}(ntuple(d -> @inbounds(u_mat[d, i, b]), Val(F)))
                     U2 = SA.SVector{F, UT}(ntuple(d -> @inbounds(u_mat[d, j, b]), Val(F)))
-                    du = SFH.pair_delta(geom, frame, X1, X2, U1, U2)
+                    du = sgn * SFH.pair_delta(geom, frame, X1, X2, U1, U2)
                     if P == 2
                         for a in 1:D, c in 1:D
                             @atomic sums[(a - 1) * D + c, bin, b] += du[a] * du[c]
@@ -45,8 +46,14 @@ function SFC.gpu_calculate_structure_function_tensor!(
     sums::AbstractArray, counts::AbstractArray, order::Val{P},
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
 ) where {P, D}
+    axis === nothing || throw(ArgumentError(
+        "the joint tensor over the separation angle runs on the CPU backends",
+    ))
+    2 <= P <= 3 || throw(ArgumentError(
+        "the GPU tensor kernel accumulates orders 2 and 3; order $P runs on the CPU backends",
+    ))
     s = SFC._tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric)
     s.fixed_x || throw(ArgumentError(
         "the GPU tensor kernel takes one shared position set; `x` varying per auxiliary slice is a " *
@@ -62,9 +69,10 @@ function SFC.gpu_calculate_structure_function_tensor!(
     u_dev = KA.adapt(ka, reshape(collect(s.uk), F, N, B))
     sums_dev = KA.adapt(ka, zeros(OT, D^P, n_bins, B))
     counts_dev = KA.adapt(ka, zeros(CT, n_bins, B))
+    dist_dev = KA.adapt(ka, s.dist_be)
 
     kernel = _tensor_kernel!(ka, 256)
-    kernel(sums_dev, counts_dev, x_dev, u_dev, s.geom, s.dist_be, N, n_bins, B,
+    kernel(sums_dev, counts_dev, x_dev, u_dev, s.geom, dist_dev, N, n_bins, B,
            Val(W), Val(F), Val(D), order; ndrange = N)
     KA.synchronize(ka)
 

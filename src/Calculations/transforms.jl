@@ -833,7 +833,7 @@ struct RefuseMissingLags <: AbstractMissingLagPolicy end
 struct ZeroDeviationAtMissingLags <: AbstractMissingLagPolicy end
 
 """
-    gridded_spectrum(u, schedule, ::Val{D}, spectral_backend; valid, taper, missing_lags) -> (wavenumbers, density)
+    gridded_spectrum(u, schedule, ::Val{D}, spectral_backend; valid, weights, taper, missing_lags) -> (wavenumbers, density)
 
 Spectral density of a gridded field, by transforming its structure function over the whole lag
 space.
@@ -849,7 +849,9 @@ function, equal to the complete field's spectrum in expectation, with a statisti
 pair count behind each lag. A bounded direction is padded so the transform of the lags `|h| < n` is
 their linear transform; `wavenumbers` then has the padded length along it. `taper` weights the lags
 (see [`AbstractTaper`](@ref)) and `missing_lags` says what to do with a lag no held pair names (see
-[`AbstractMissingLagPolicy`](@ref)).
+[`AbstractMissingLagPolicy`](@ref)). `weights`, one per cell, makes every pair sum and pair count a
+`w_k w_kp`-weighted one and the variance a weighted variance, so the estimate is that of the weighted
+structure function.
 
 `wavenumbers` is one angular-wavenumber vector per grid direction; `density` is the `Dg`-dimensional
 array over those, on the same convention as [`isotropic_spectrum`](@ref) — integrating it over
@@ -858,7 +860,7 @@ array over those, on the same convention as [`isotropic_spectrum`](@ref) — int
 autocovariance over the lags: zero to round-off on a complete periodic grid, where no pair sees the
 mean, and the estimator's own low-wavenumber value otherwise.
 """
-function gridded_spectrum(u, schedule, ::Val{D}, spectral_backend; valid = AllValid(),
+function gridded_spectrum(u, schedule, ::Val{D}, spectral_backend; valid = AllValid(), weights = nothing,
                           taper::AbstractTaper = NoTaper(),
                           missing_lags::AbstractMissingLagPolicy = RefuseMissingLags()) where {D}
     throw(ArgumentError(

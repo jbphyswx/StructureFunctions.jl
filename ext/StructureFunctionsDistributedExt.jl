@@ -467,14 +467,14 @@ function SFC.distributed_calculate_structure_function_tensor!(
     sums::AbstractArray, counts::AbstractArray, order::Val{P},
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
 ) where {P, D}
     N = size(u, 2)
     chunks = SFC._balanced_index_chunks(N, max(Distributed.nworkers(), 1))
     CT = eltype(counts)
     partials = Distributed.pmap(chunks) do chunk
         SFC.tensor_partial(order, shape, x, u, distance_bins, chunk;
-                           distance_metric, count_eltype = CT)
+                           distance_metric, count_eltype = CT, axis)
     end
     for (ps, pc) in partials
         sums .+= ps

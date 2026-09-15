@@ -1,10 +1,9 @@
-module StructureFunctions # `using StructureFunctions`` should work `@everywhere` automatically... hopefully the methods and extensinos below follow...
+module StructureFunctions
 
 using StaticArrays: StaticArrays as SA
 using PrecompileTools: PrecompileTools
+using SpectralBackends: SpectralBackends
 
-# using Distributed
-# @everywhere include("ParallelCalculations.jl") # this works w/ include("src/StructureFunctions.jl") but not w/ using StructureFunctions, and the former dumps directly into Main...
 include("Channels.jl")
 include("BinEdges.jl")
 include("HelperFunctions.jl")
@@ -23,18 +22,19 @@ import .StructureFunctionObjects:
     StructureFunctionTensorSumsAndCounts,
     HelmholtzDecomposition2D
 
-using .Channels
-using .HelperFunctions
-using .StructureFunctionTypes
-using .StructureFunctionObjects
-using .Calculations
-using .KHM
+using .Channels: Channels # what is a channel
+using .HelperFunctions: HelperFunctions
+using .StructureFunctionTypes: StructureFunctionTypes
+using .StructureFunctionObjects: StructureFunctionObjects
+using .Calculations: Calculations
+using .KHM: KHM
 
 # Re-export key APIs
 export Fields
 export AbstractTaper, NoTaper, Bartlett, GaussianTaper, HarmonicNodes, gauss_legendre
 export AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges, LogBinEdges_from_log_edges,
-    InfPaddedBinEdges, physical_edges_vector, n_histogram_bins
+    InfPaddedBinEdges, ModeBinEdges, physical_edges_vector, n_histogram_bins
+export ScatteredModesSchedule, NonuniformFFTsSpectralBackend, FINUFFTSpectralBackend
 export calculate_structure_function, calculate_structure_function!, calculate_structure_functions_single_pass,
     calculate_structure_functions_single_pass!, calculate_structure_functions_single_pass_2d,
     calculate_structure_functions_single_pass_2d!, helmholtz_decompose_2d,
@@ -45,11 +45,15 @@ export calculate_structure_function, calculate_structure_function!, calculate_st
     calculate_structure_functions_single_pass_batch!, calculate_structure_functions_single_pass_2d_batch!,
     GPUSFWorkspace, CPUSFWorkspace, reset_histogram!, release!,
     joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256
-export isotropic_spectrum, shell_spectrum, gridded_spectrum, shell_average,
+export isotropic_spectrum, shell_spectrum, gridded_spectrum, shell_average, cell_measure,
     helmholtz_spectra, spectral_flux, enstrophy_flux, covariance, covariance_matrix
+export AbstractForwardModel, SpectrumForwardModel, HelmholtzForwardModel, FluxForwardModel, forward_matrix, flux_matrix,
+    AbstractFitMethod, RegularizedLeastSquares, NonNegativeLeastSquares, SegmentedPowerLaw, segmented_spectrum,
+    fit_spectrum, fit_helmholtz_spectra, fit_flux, tradeoff_curve, select_segments, independent_pair_variance
 export marginalize
 export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts, StructureFunction2DSumsAndCounts
-export StructureFunctionTensor, StructureFunctionTensorSumsAndCounts, HelmholtzDecomposition2D
+export StructureFunctionTensor, StructureFunctionTensorSumsAndCounts, StructureFunctionTensor2DSumsAndCounts,
+    HelmholtzDecomposition2D
 export LongitudinalSecondOrderStructureFunctionType,
     TransverseSecondOrderStructureFunctionType
 export AbstractPairwiseStructureFunctionType, AbstractDerivedStructureFunctionType
@@ -62,6 +66,8 @@ export RotationalSecondOrderStructureFunctionType, DivergentSecondOrderStructure
     HelmholtzDecomposition2DType
 export L2SFType, T2SFType, L3SFType, S2SFType, S3SFType, T3SFType, L2T1SFType, L1T2SFType
 export T2ComponentSFType, L1T2ComponentSFType
+export ScalarStructureFunctionType, MixedStructureFunctionType, ScalarDotStructureFunctionType,
+    VectorDotStructureFunctionType, ScalarSFType, MixedSFType, ScalarDotSFType, VectorDotSFType
 
 export LongitudinalSecondOrderStructureFunction, TransverseSecondOrderStructureFunction
 export SecondOrderStructureFunction, ThirdOrderStructureFunction
@@ -83,8 +89,6 @@ export transverse_norm2,
     AbstractTransverseBasisConvention,
     CanonicalTransverseBasis,
     ReferenceAxisTransverseBasis,
-    CoordinateGaugeTransverseBasis,
-    UserTransverseBasis,
     SphericalDistance,
     midpoints
 

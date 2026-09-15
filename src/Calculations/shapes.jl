@@ -6,9 +6,9 @@
 Which array-rank pattern a validated `(x, u)` pair forms, with `D` the number of velocity components
 on axis 1 of `u`. Backends dispatch on this, so `D` reaches the kernels as a static method parameter.
 
-- [`PointField`](@ref): `u` is `(D, N)`.
-- [`SharedPositionField`](@ref): `u` is `(D, N, auxiliary...)` — one set of positions, many fields.
-- [`VaryingPositionField`](@ref): `x` and `u` both carry matching auxiliary axes.
+- `PointField`: `u` is `(D, N)`.
+- `SharedPositionField`: `u` is `(D, N, auxiliary...)` — one set of positions, many fields.
+- `VaryingPositionField`: `x` and `u` both carry matching auxiliary axes.
 
 The coordinate count on axis 1 of `x` is deliberately **not** here: it is fixed by the metric's
 geometry (see `HelperFunctions.coordinate_width`), so it is read off that geometry once `D` is

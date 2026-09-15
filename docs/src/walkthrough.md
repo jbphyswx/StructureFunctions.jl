@@ -139,6 +139,38 @@ field has no energy cascade, so its third-order moments are consistent with zero
 (`⟨δu_L³⟩ = 1.3e-2` against `⟨δu_L²⟩ ≈ 1`, i.e. sampling noise). A meaningful `ε` needs data with a
 genuine flux — a forced simulation or an observational record.
 
+### Pair weights
+
+A weight per point turns every statistic into `Σ w_i w_j v_ij / Σ w_i w_j` and the counts into a
+weighted pair mass, which is why weighted results take floating-point counts:
+
+```julia
+w = 0.5 .+ rand(size(x, 2))
+sfw = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Float64; weights = w,
+                                       backend = CB.SerialBackend())
+```
+
+Weights of one reproduce the unweighted result bit for bit. On a grid, `cell_measure(grid)` gives the
+cell areas, so a lat-lon sum becomes an area average — the same weighting the harmonic route uses.
+
+### Points on a line
+
+One-dimensional data — a transect, a time series read as a line — never needs the pair loop. Once the
+points are sorted, every bin of every point is one index range, and the polynomial moments over a
+range are prefix-sum differences of the monomials. The CPU backends take this route automatically
+for every polynomial operator, arrays and channel bundles alike, and its cost is
+`O(N log N + N n_bins)`:
+
+```julia
+xl = reshape(sort(rand(100_000)) .* 100.0, 1, :)
+ul = randn(1, 100_000)
+sfl = SFC.calculate_structure_function(SFT.L3SFType(), xl, ul, collect(range(0.0, 0.5; length = 21)), Int64)
+```
+
+On eight cores a million points — five billion pairs binned — take `0.4 s`; the pair loop on the same
+data would take an hour. Counts are bit for bit the pair loop's, because the route bins each pair with
+the same `digitize` call on the same coordinate difference.
+
 ## Act 2 — a uniform grid
 
 On a grid the same quantity is available by transform, exactly, for every lag at once.
@@ -264,6 +296,62 @@ bundles and every polynomial order run through the same code, and the counts are
 engine's. `CB.GPUBackend(KernelAbstractions.CPU())` runs the identical kernel on the host, which is
 how the suite checks it without a device.
 
+### Tensors
+
+The transform forms the whole increment moment tensor at every lag before contracting it with an
+operator, so the tensor itself is available on a grid, at any order, in the pair frame — and jointly
+in separation and angle:
+
+```julia
+T3 = SF.calculate_structure_function_tensor(Val(3), grid, u, bins, SB.FastFourierTransformSpectralBackend())
+T3.values                                     # (2, 2, 2, n_bins): ⟨δu_a δu_b δu_c⟩ per bin
+T2θ = SF.calculate_structure_function_tensor(Val(2), grid, u, bins, ang, SB.FastFourierTransformSpectralBackend();
+                                             second_axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0)))
+```
+
+An odd-rank tensor changes sign when a pair is read from its other end, so in a fixed frame it takes
+the canonical pair reading, as the odd scalar moments do; in the sphere's geodesic frame the
+components are the same from either end and no sign enters. The point-list tensors follow the same
+rule on every backend, and `MomentTensorOperator{P}` names the tensor to the transform engine.
+
+### The transverse convention
+
+The signed transverse component that `T3SFType`, `L2T1SFType` and any odd `NT` read is defined by
+the operator's basis convention, `ProjectedStructureFunctionType{0, 3}(basis)`. The default
+`CanonicalTransverseBasis()` is `n̂ = ẑ × r̂` in two dimensions and the same rule normalised in three,
+continued about `x̂` where the separation is along `ẑ`; `ReferenceAxisTransverseBasis(a)` turns about
+an axis of the caller's choosing and refuses a pair whose separation is parallel to it. Every rule's
+first vector is odd under `r̂ ↦ −r̂`, which is what makes the operator's value the same from either end
+of a pair — and every result carries the convention that produced it, `res.operator.basis`. A rule of
+your own is a subtype of `AbstractTransverseBasisConvention` with one `transverse_basis(rule, r̂)`
+method obeying that contract; every route, the device kernels included, reads the sign through it.
+
+### Scattered points by non-uniform FFT
+
+A scattered point set has no lags, but placed in a padded box it has modes, and the type-1
+non-uniform FFT of its masked monomials is exactly the forward transform the gridded engine expects.
+The inverse products are then pair sums with a periodic Dirichlet kernel in place of a delta at each
+lag: **soft bins** of about one mode cell, sidelobes and all.
+
+```julia
+using NonuniformFFTs: NonuniformFFTs                           # or FINUFFT, or both
+s = SFC.ScatteredModesSchedule(x, 2.0, (128, 128); taper = GaussianTaper(0.05))   # r_max = 2, 128² modes
+soft = SF.calculate_structure_function(SFT.L2SFType(), s, u, bins, NonuniformFFTsSpectralBackend())
+soft.distance                                  # a ModeBinEdges: soft-binned, not pair counts
+```
+
+Two libraries serve the route, each named by its own tag carrying its own accuracy knob:
+`NonuniformFFTsSpectralBackend(half_support = 8)` and `FINUFFTSpectralBackend(tolerance = 1e-12)`, the
+latter running cuFINUFFT for points on a CUDA device. The plain
+`SB.NonUniformFastFourierTransformSpectralBackend()` names whichever one is loaded and refuses by name
+when both or neither are; the two agree to `1e-10`.
+
+This route is **not exact** and is never chosen automatically. Its statistic converges to the
+hard-binned pair sum as the mode count grows — the tests hold it on a lattice, where it is exact, and
+watch it converge off one — and the result's `ModeBinEdges` marks it so nothing downstream mistakes
+its counts for pair counts. Where it pays is size: 20 000 points onto 256×192 modes bin in `0.014 s`
+on eight cores and `0.008 s` on an A100, independent of how many pairs there are.
+
 ### The sphere by spherical harmonics
 
 A pair statistic on a sphere has a second exact route that never enumerates pairs or lags. For any
@@ -363,8 +451,9 @@ kaxes, density = SFC.gridded_spectrum(u, sched, Val(2), SB.FastFourierTransformS
 `taper` weights the lags before the transform: the far lags of a bounded domain are averaged over
 few pairs, and `Bartlett()` (linear to zero at the largest lag) or `GaussianTaper(σ)` trades
 resolution in wavenumber for a steadier estimate; `NoTaper()` is the default. With cells missing, a
-lag that no pair of held cells names has no structure function at all; the call refuses it unless
-`missing_lags = SFC.ZeroDeviationAtMissingLags()` says to take its covariance as zero.
+lag that no pair of held cells names has no structure function at all; the default
+`missing_lags = SFC.RefuseMissingLags()` throws, naming the lag, and
+`missing_lags = SFC.ZeroDeviationAtMissingLags()` takes its covariance as zero instead.
 
 ### From scattered points: isotropic, and one assumption
 
@@ -415,3 +504,45 @@ Legendre inversion: a scalar's or the trace's structure function binned in `R·�
 spectra `C^E_l`, `C^B_l` by `SFC.helmholtz_spectra(L2, T2, geometry, lmax; variance)` — the sum of the
 two needs the field's mean square, which no structure function carries, while their difference does
 not.
+
+## Act 4 — fitting instead of inverting
+
+The transforms above are the exact relations. On sparse or noisy data — drifters, a short record —
+an oscillatory Bessel kernel amplifies the noise and the finite range truncates the integral, and the
+estimator of choice in the recent literature is a **fit**: a forward model from values on wavenumber
+bins to the structure function at the measured separations, inverted with a stated prior. The
+package carries three forward models and three inversions, and holds the models to the transforms:
+the flux fitted from a synthetic `S3` is the flux the `J₂` transform recovers from the same `S3`.
+
+```julia
+using LsqFit                                              # only the segmented power law needs it
+k_edges = exp.(range(log(0.5), log(20.0); length = 13))   # 12 log-spaced wavenumber bins
+
+# the spectral energy flux from S3 = ⟨δu_L‖δu‖²⟩ (Gutierrez-Villanueva et al. 2026): regularised
+# least squares needs the data covariance — here the per-bin variance of the mean under independent
+# pairs, read from a value-binned joint histogram — and a prior on (ε, ξ₁…ξ₁₂)
+vbins = collect(range(-3.0, 3.0; length = 121))
+joint = SFC.calculate_structure_function(SFT.S3SFType(), x, u, bins, vbins)   # value-binned joint histogram
+W = SFC.independent_pair_variance(joint)
+fit = SFC.fit_flux(res.S3, k_edges, SFC.RegularizedLeastSquares(vcat(1e-7, fill(1e-10, 12))); W)
+fit.F, fit.ε, fit.ξ                                        # the flux at the bin centres, its large-scale value, the injection density
+fit.flux_covariance                                        # G C_xx Gᵀ
+
+# the monotone-flux variant (Balwada et al. 2022): non-negative least squares, no covariance
+nn = SFC.fit_flux(res.S3, k_edges, SFC.NonNegativeLeastSquares())
+
+# a segmented power-law spectrum from S2 (Bhattacharjee et al. 2026), on the relative residual
+seg = SFC.fit_spectrum(res.S2, [0.5, 20.0], SFC.SegmentedPowerLaw(2), Val(2))
+seg.parameters, seg.breakpoints                            # (b₁, α₁, α₂) and the log-uniform break
+sel = SFC.select_segments(res.S2, [0.5, 20.0], 1:4, Val(2))   # the segment count minimising the relative misfit
+
+# the gradient/curl spectra from the L2/T2 pair on bins, and the trade-off curve a prior is chosen from
+hb = SFC.fit_helmholtz_spectra(res.L2, res.T2, k_edges, SFC.NonNegativeLeastSquares())
+curve = SFC.tradeoff_curve(SFC.FluxForwardModel(SF.midpoints(res.S3.distance), k_edges), res.S3.values, W,
+                           10.0 .^ range(-12, -4; length = 17))   # (misfit, norm) per prior; nothing is chosen for you
+```
+
+Every fit returns what it fitted and, where the method gives one, the posterior covariance. The
+forward models themselves are exposed (`forward_matrix(model)`), so a different prior, a different
+solver or a bootstrap over `W` is a few lines on top. These are estimators with stated priors; the
+transforms of Act 3 are the exact relations they approximate.

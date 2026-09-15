@@ -90,6 +90,33 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         @test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
     end
 
+    @testset "row2b signed transverse operators on the batch kernels" begin
+        for sft in (SFT.T3SFType(), SFT.L2T1SFType())
+            x, u, lbe = _rand_batch_fixed(N, B)
+            NB = length(lbe.edges) - 1
+            cpu_s = zeros(Float32, NB, B)
+            cpu_c = zeros(UInt32, NB, B)
+            auxiliary_shared_positions!(cpu_s, cpu_c, x, u, sft, lbe)
+            gpu_out = SFC.calculate_structure_function(
+                sft, x, u, lbe;
+                backend = GPU_BE, output_type = SF.StructureFunctionSumsAndCounts, verbose = false,
+            )
+            @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
+            @test any(!iszero, cpu_s)
+
+            xv, uv, lbev = _rand_batch_varying(N, B)
+            NBv = length(lbev.edges) - 1
+            cpu_sv = zeros(Float32, NBv, B)
+            cpu_cv = zeros(UInt32, NBv, B)
+            auxiliary_varying_positions!(cpu_sv, cpu_cv, xv, uv, sft, lbev)
+            gpu_sv = zeros(Float32, NBv, B)
+            gpu_cv = zeros(UInt32, NBv, B)
+            SFC.calculate_structure_function_batch!(gpu_sv, gpu_cv, sft, xv, uv, lbev; backend = GPU_BE)
+            @test batch_histograms_equal(gpu_sv, gpu_cv, cpu_sv, cpu_cv; atol = 1f-4)
+            @test any(!iszero, cpu_sv)
+        end
+    end
+
     @testset "row3 SP1D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
         n_bins = length(lbe.edges) - 1

@@ -33,6 +33,17 @@ were of exactly that kind — a plausible number that was wrong by a constant fa
 | 19 | Spin-1 closed forms | round-off | `L2`, `T2` and the `E`/`B` spectra of single gradient and curl harmonics | `test/test_harmonic_sphere.jl` |
 | 20 | Third-order flux routes | quadrature | the `S3`, `L3`, scalar-variance and enstrophy routes against closed forms, and against the `J₁` route on analytic isotropic families | `test/test_transforms.jl` |
 | 21 | Device engine parity | round-off, counts exact | the transform engine on a KernelAbstractions backend against the CPU engine on every schedule, masked and complete, one-dimensional and joint | `test/test_gridded_device.jl`, `gpu/test_cuda_gridded_parity.jl` |
+| 22 | Transverse convention contract | round-off | every basis rule is unit, perpendicular and odd under `r̂ ↦ −r̂`; `op(−δu, −r̂) == op(δu, r̂)` for the odd transverse operators on every route | `test/test_helpers.jl`, `test/test_core_correctness.jl`, `test/test_gpu_tiled_parity.jl` |
+| 23 | Weighted pair loop | bit for bit, round-off | weights of one reproduce the unweighted results; random weights equal the weighted pair loop on sweep, transform, device and the point entries; `cell_measure` equals the point entry with the same weights | `test/test_gridded_weights.jl` |
+| 24 | Lattice identity of the NUFFT route | 10⁻⁹ | points on the mode grid reproduce the periodic gridded transform; the 1-D kernel identity written out; convergence to the hard bins with the mode count — on both providers, NonuniformFFTs and FINUFFT, which agree with each other to 10⁻¹⁰ | `test/test_scattered_modes.jl` |
+| 25 | Sorted line against the pair loop | counts exact, 10⁻¹² | every polynomial operator, channel bundles, weights, unsorted and coincident points; linear in the points | `test/test_sorted_line.jl` |
+| 26 | Tensor from the transform against the point tensor | counts exact, 10⁻⁹ | flat and spherical grids, orders 2–4, the joint tensor over angle | `test/test_tensor_khm.jl` |
+| 27 | Forward models against closed forms | 10⁻⁸–10⁻¹² | the spectrum, Helmholtz and flux forward models; round trips through the inversions; the fitted flux is the flux the `J₂` transform recovers | `test/test_fits.jl` |
+
+Every route with a device kernel — the point kernels, the transform engine on every schedule, the
+non-uniform FFT route and the tensor kernel — is also run on an A100 against the CPU by
+`gpu/test_cuda_gridded_parity.jl` and `gpu/runtests.jl`, counts exact and sums to round-off; the
+tolerance policy below says what "round-off" means there.
 
 ### 1. Closed-form Fourier modes
 
@@ -168,6 +179,73 @@ but under-resolved is off by a discretisation error. Tripping the check on a coa
 useful output — it says the representation cannot support a valid matrix — not a nuisance to be
 tuned away.
 
+### 22–27. The later routes
+
+**Weights.** The weighted statistic is ``\sum w_i w_j v_{ij} / \sum w_i w_j``. The gate is a pair loop
+written in the test with the same weights: the sweep matches it bit for bit, the transform to
+`1e-12`, and weights of one reproduce the unweighted results exactly, so the weighted code path
+cannot have drifted from the unweighted one.
+
+**The non-uniform FFT route.** Points placed exactly on the mode grid make the soft-binned route the
+periodic gridded transform, which is exact, and the two agree to `1e-9` in one, two and three
+dimensions with masks, weights and channel bundles. Off the grid the one-dimensional kernel identity
+is written out in the test — the pair sum with the Dirichlet or Gaussian-tapered kernel — and the
+route matches it to `1e-9`; against the hard-binned pair loop the error falls monotonically as the
+mode count grows. The route is soft-binned by construction and the tests say so: no finite mode
+count reproduces the hard bins.
+
+**The sorted line.** For one-dimensional points the pair loop and the sorted route bin every pair
+with the same `digitize` call on the same difference, so the counts are equal bit for bit and the
+sums to `1e-12`; the test also holds the route's cost linear in the points (10⁵ points in well under
+a second where the pair loop would need 5·10⁹ pairs).
+
+**Tensors.** The transform's symmetric moment store, expanded to the dense tensor, equals the point
+tensor on the grid's points at orders 2, 3 and 4 on flat grids and on a lat-lon grid, and the joint
+tensor over angle marginalises to the tensor and, through its trace, to the joint histogram of `S2`.
+Odd ranks read a pair canonically in a fixed frame and take no sign in the sphere's geodesic frame;
+both are tested.
+
+**Fits.** The forward models are held to closed forms (the one-dimensional bin integral is
+elementary; the flux model is exact for a piecewise-constant flux and equals the quadrature of the
+defining integral to `1e-8`), the inversions to round trips of the models' own data, the posterior
+covariance to ``σ²(HᵀH)^{-1}``, and the fitted flux to the flux the `J₂` transform of the same
+`S3` recovers between the model's jumps — so the forward model of the fits and the inverse relation
+of the transforms are the same transform.
+
+## Backend parity: the tolerance policy
+
+Two backends computing one statistic on one data set must give **equal counts** and sums that differ
+by round-off only. "Round-off" is stated as a relative bound on the largest sum,
+`max |Δsum| / max |sum|`, and the bound is what a different summation order can produce:
+
+| comparison | bound | why |
+|---|---|---|
+| serial vs threaded vs distributed CPU | `1e-12` | the same arithmetic in a different order |
+| CPU vs device, flat lattice | `1e-10`, counts exact | squared separations of rational spacings are exact on both, so bins agree bit for bit; sums differ by fused-multiply-add and reduction order |
+| CPU vs device, sphere | `1e-10`, counts exact **off the lattice's edges** | the device's `sin`/`cos`/`acos` round differently from the host's; a pair whose separation lies exactly on a bin edge can change bins, so the parity tests place edges between the lattice's own separations |
+| transform vs sweep | `1e-10` (`1e-9` at third order and above) | the transform's inverse FFT accumulates `O(n log n)` operations |
+| weighted counts | `1e-12` relative | a weighted count is a floating sum, not an integer |
+| soft-binned NUFFT route, CPU vs device | `1e-9` | the non-uniform FFT's own accuracy, once its kernel is evaluated in double precision |
+
+A test that needs a looser bound than these is testing something other than parity, and says what.
+The one exception recorded: NonuniformFFTs' CUDA extension evaluates its default Kaiser–Bessel kernel
+through the CUDA math library's modified Bessel function, which is far from double precision
+(`2e-5`); the package's extension asks for the backwards Kaiser–Bessel kernel with the fast
+polynomial approximation on every backend, which brings the device transform to `1e-15`.
+
+## The printed boundary terms of Pearson et al. (2025)
+
+The third-order flux relations (the `J₂` and `J₃` routes and the enstrophy route from the velocity's
+advective structure function) come from integrating the `J₁` relation by parts at a finite radius
+``R``, and the boundary terms are essential: the closed-form gate on the power-law family fails
+without them at every wavenumber, and the estimate can change sign. Appendix B of the paper prints
+two boundary terms in a form that is dimensionally inconsistent as read — `3 SF_Luu J₁(Kr)` in (B4)
+where a flux ``∼ u^3/L`` requires `(3/K) SF_Luu J₁(Kr)`, and `K (dSF_Au/dr) J₁` in (B7) where the
+enstrophy flux ``∼ u^3/L^3`` requires `(1/K)(dSF_Au/dr) J₁`. The consistent forms are the ones that
+close on the power-law family and make the three energy routes and the three enstrophy routes agree
+to `1e-6` on analytic isotropic families; they are what the package ships. The paper has no erratum
+at the time of writing; the difference may be a rendering of a small `/K`.
+
 ## What is checked statistically, and why it is not a gate
 
 The isotropic relation
@@ -208,4 +286,12 @@ Each oracle lives in a targeted test file that can be run on its own:
 julia --project=test test/test_known_truth.jl
 julia --project=test test/test_gridded_fft.jl
 julia --project=test test/test_spherical_geometry.jl
+julia --project=test test/test_gridded_weights.jl
+julia --project=test test/test_scattered_modes.jl
+julia --project=test test/test_sorted_line.jl
+julia --project=test test/test_tensor_khm.jl
+julia --project=test test/test_fits.jl
 ```
+
+The device parity runs need a GPU allocation: `sbatch gpu/run_cuda_gridded_parity.sh` writes its
+table to `gpu/benchmark_results/`, and `julia --project=gpu gpu/runtests.jl` runs every CUDA suite.

@@ -32,7 +32,7 @@ end
 
 @inline uniform_axes(s::ZonalLagSchedule) = UniformLagSchedule((s.n_lon,), (s.dlon,), (s.lon_periodic,))
 @inline n_slabs(s::ZonalLagSchedule) = length(s.lats)
-@inline separable_layout(::ZonalLagSchedule, data, valid) = (data, valid)
+@inline separable_layout(::ZonalLagSchedule, data, valid, weights) = (data, valid, weights)
 @inline lag_transport(::ZonalLagSchedule) = FrameTransport()
 
 # Two rows are never closer than their latitude difference, so a row pair beyond `r_max` contributes
@@ -85,7 +85,7 @@ Separation and the two transport matrices shared by every pair at latitudes `φ�
 
 One computation serves the whole circle of such pairs, because the geodesic frame written in the
 endpoints' local bases does not depend on absolute longitude — checked against
-[`pair_frame`](@ref) to `4e-15` over a full turn. It is evaluated at longitude zero, which is
+[`SFH.pair_frame`](@ref) to `4e-15` over a full turn. It is evaluated at longitude zero, which is
 therefore representative.
 
 Row 1 of each matrix is the longitudinal projection and row 2 the transverse, matching
@@ -209,29 +209,54 @@ function gridded_lag_sweep!(
     sums::AbstractVector, counts::AbstractVector,
     sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::ScatteredPairs, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
-    valid = AllValid(), backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
 ) where {D, V, K}
     n = n_scattered_cells(s)
     size(data) == (V * D + K, n) || throw(DimensionMismatch(
         "field holds $(size(data, 2)) cells of $(size(data, 1)) components, the grid $n cells of " *
         "$(V * D + K)",
     ))
+    w = _pair_weights(weights, n, float(eltype(data)))
+    _check_weighted_counts(w, eltype(counts))
     keep = valid isa AllValid ? Colon() : findall(valid)
     x = valid isa AllValid ? s.points : s.points[:, keep]
     uu = valid isa AllValid ? data : data[:, keep]
+    ww = w isa NoWeights ? nothing : w[keep]
     if V == 1 && K == 0
-        calculate_structure_function!(sums, counts, sf, x, uu, dist_be; distance_metric = s.metric, backend)
+        calculate_structure_function!(sums, counts, sf, x, uu, dist_be;
+                                      distance_metric = s.metric, backend, weights = ww)
     else
         f = CH.Fields{D, V, K, typeof(uu)}(uu)
-        calculate_structure_function!(sums, counts, sf, x, f, dist_be; distance_metric = s.metric, backend)
+        calculate_structure_function!(sums, counts, sf, x, f, dist_be;
+                                      distance_metric = s.metric, backend, weights = ww)
     end
+    return sums, counts
+end
+
+# A structureless grid's tensor is the point tensor over its held cells; the point kernels take no weights.
+function gridded_tensor_sweep!(
+    sums::AbstractArray, counts::AbstractVector, order::Val{P}, data::AbstractMatrix, s::ScatteredPairs, dist_be,
+    ::Val{D}, spectral_backend;
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+) where {P, D}
+    weights === nothing || throw(ArgumentError(
+        "pair weights are not implemented on the point tensor kernels, which a structureless grid's tensor uses",
+    ))
+    n = n_scattered_cells(s)
+    size(data) == (D, n) || throw(DimensionMismatch(
+        "field holds $(size(data, 2)) cells of $(size(data, 1)) components, the grid $n cells of $D",
+    ))
+    keep = valid isa AllValid ? Colon() : findall(valid)
+    x = valid isa AllValid ? s.points : s.points[:, keep]
+    uu = valid isa AllValid ? data : data[:, keep]
+    calculate_structure_function_tensor!(sums, counts, order, x, uu, dist_be; distance_metric = s.metric, backend)
     return sums, counts
 end
 
 function gridded_lag_sweep!(
     sums::AbstractMatrix, counts::AbstractMatrix, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::ScatteredPairs, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K};
-    valid = AllValid(), backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
     second_axis::SeparationAngleAxis,
 ) where {D, V, K}
     throw(ArgumentError(

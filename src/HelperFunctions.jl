@@ -24,8 +24,6 @@ export digitize,
     AbstractTransverseBasisConvention,
     CanonicalTransverseBasis,
     ReferenceAxisTransverseBasis,
-    CoordinateGaugeTransverseBasis,
-    UserTransverseBasis,
     r̂,
     n̂,
     δr,
@@ -79,20 +77,17 @@ function remove_nans(x_mat::AbstractMatrix{FT}, u_mat::AbstractMatrix{FT}) where
     return x_mat[:, valid_mask], u_mat[:, valid_mask]
 end
 
+"""
+    digitize(x, bins) -> Int
+
+The index of the bin `(bins[i], bins[i + 1]]` holding `x`: `0` below the first edge and `length(bins)`
+above the last. A vector `x` gives one index per element. The bins are right-inclusive.
+"""
 @inline function digitize(x, bins::AbstractVector)
-    """
-    Return the index of the bin that x belongs to
-    (see np.digitize and https://discourse.julialang.org/t/find-the-index-of-a-bin-where-a-value-between-two-bin-value/32080/2?u=jbphyswx )
-    Note that the bins are right inclusive, the bins are (a,b]
-    """
     searchsortedfirst(bins, x) - 1
 end
 
 @inline function digitize(x::AbstractVector, bins::AbstractVector)
-    """
-    Return the indices of the bins that x belongs to
-    (see np.digitize and https://discourse.julialang.org/t/find-the-index-of-a-bin-where-a-value-between-two-bin-value/32080/2?u=jbphyswx )
-    """
     digitize.(x, Ref(bins))
 end
 
@@ -576,11 +571,14 @@ end
 Oriented transverse unit vector for the longitudinal unit vector `r_hat`.
 
 2D: `n̂ = ẑ × r̂ = (−r̂₂, r̂₁)`, the counterclockwise quarter turn, so `(r̂, n̂, ẑ)` is right-handed.
-3D: `n̂ = normalize(ẑ × r̂)`, the same rule with `ẑ = (0,0,1)` as the reference axis.
+3D: `n̂ = normalize(ẑ × r̂)`, the same rule with `ẑ = (0,0,1)` as the reference axis; along `ẑ`, where
+that product vanishes (`‖ẑ × r̂‖² ≤ eps`), the rule continues with `x̂` as the axis, `n̂ = normalize(x̂ × r̂)`,
+which is `−ŷ` at `r̂ = ẑ` and `+ŷ` at `r̂ = −ẑ`.
 
 Only operators odd in the transverse component see this sign — `ProjectedStructureFunctionType{2,1}`
 and `{0,3}`. Everything else consumes `δu_T²` (see [`transverse_norm2`](@ref)) and is sign-blind.
-The 3D form is singular when `r̂ ∥ ẑ`; [`ReferenceAxisTransverseBasis`](@ref) is the guarded version.
+As a convention carried by an operator this rule is [`CanonicalTransverseBasis`](@ref); one with a
+chosen axis is [`ReferenceAxisTransverseBasis`](@ref).
 """
 @inline function n̂(r_hat::AbstractVector{FT}) where {FT}
     ND::Int = length(r_hat)
@@ -588,10 +586,7 @@ The 3D form is singular when `r̂ ∥ ẑ`; [`ReferenceAxisTransverseBasis`](@re
     if ND == 2
         return SA.SVector{2, FT}(-r_hat[2], r_hat[1]) # assume normalized
     elseif ND == 3
-        k_hat = SA.SVector{3, FT}(0, 0, 1)
-        return LA.normalize(
-            LA.cross(k_hat, SA.SVector{3, FT}(r_hat[1], r_hat[2], r_hat[3])),
-        )
+        return n̂(SA.SVector{3, FT}(r_hat[1], r_hat[2], r_hat[3]))
     else
         throw(ArgumentError(
             "an oriented transverse direction is defined here only for D = 2 (the quarter turn) " *
@@ -603,9 +598,19 @@ The 3D form is singular when `r̂ ∥ ẑ`; [`ReferenceAxisTransverseBasis`](@re
 end
 
 @inline n̂(r_hat::SA.SVector{2, T}) where {T} = SA.SVector{2, T}(-r_hat[2], r_hat[1])
-@inline n̂(r_hat::SA.SVector{3, T}) where {T} = LA.normalize(
-    LA.cross(SA.SVector{3, T}(0, 0, 1), SA.SVector{3, T}(r_hat[1], r_hat[2], r_hat[3])),
-)
+
+"""Squared-norm floor below which `ẑ × r̂` is taken as vanishing and the transverse rule falls to `x̂`."""
+@inline _transverse_degeneracy_tol(::Type{T}) where {T} = eps(T)
+
+@inline function n̂(r_hat::SA.SVector{3, T}) where {T}
+    c = LA.cross(SA.SVector{3, T}(0, 0, 1), r_hat)
+    c2 = LA.dot(c, c)
+    if c2 <= _transverse_degeneracy_tol(T)
+        c = LA.cross(SA.SVector{3, T}(1, 0, 0), r_hat)
+        c2 = LA.dot(c, c)
+    end
+    return c / sqrt(c2)
+end
 
 
 @inline n̂(r_hat::NTuple{2, T}) where {T} = (-r_hat[2], r_hat[1])
@@ -620,27 +625,33 @@ and Cho convention.
     return n̂(r̂(x1, x2))
 end
 
+"""
+    AbstractTransverseBasisConvention
+
+A rule giving the transverse basis of a pair from its unit separation: `transverse_basis(rule, r̂)`
+returns a tuple of unit vectors perpendicular to `r̂` and to each other, whose first vector is odd
+under `r̂ ↦ −r̂`. Operators odd in the transverse component read that first vector, and its oddness
+is what makes them read the same from either end of a pair. A new rule is a subtype with that one
+method.
+"""
 abstract type AbstractTransverseBasisConvention end
 
 """
     CanonicalTransverseBasis()
 
-The canonical oriented transverse basis in 2D, equivalent to [`n̂`](@ref).
-It is intentionally undefined for 3D because there is no unique oriented
-transverse direction without extra information.
+The transverse direction [`n̂`](@ref): in 2-D the quarter turn of `r̂`; in 3-D the turn about `ẑ`,
+continued about `x̂` where `r̂ ∥ ẑ`, followed by `r̂ × n̂`. Every projected operator carries this
+convention unless constructed with another.
 """
 struct CanonicalTransverseBasis <: AbstractTransverseBasisConvention end
 
 """
-    ReferenceAxisTransverseBasis(axis; parallel_tol=1e-12)
+    ReferenceAxisTransverseBasis(axis; parallel_tol = 1e-12)
 
-Project a physical reference axis into the plane perpendicular to `r̂` and
-normalize it to get the first transverse basis vector. In 3D, the second
-transverse vector is `cross(r̂, e₁)`.
-
-If the reference axis is parallel or nearly parallel to `r̂`, construction of
-the per-pair basis throws `ArgumentError`. The tolerance is explicit because
-this is a physical convention, not a hidden computational replacement.
+The rule of [`n̂`](@ref) about a chosen axis `a` in 3-D: `e₁ = normalize(a × r̂)` and `e₂ = r̂ × e₁`.
+With `a = ẑ` it is [`CanonicalTransverseBasis`](@ref) without the continuation along `ẑ`: where
+`‖a × r̂‖² ≤ parallel_tol²` it throws `ArgumentError`. Refused in 2-D, where the transverse line is
+`n̂` and an axis adds nothing.
 """
 struct ReferenceAxisTransverseBasis{A, T} <: AbstractTransverseBasisConvention
     axis::A
@@ -649,26 +660,6 @@ end
 
 ReferenceAxisTransverseBasis(axis; parallel_tol = 1e-12) =
     ReferenceAxisTransverseBasis(axis, parallel_tol)
-
-"""
-    CoordinateGaugeTransverseBasis()
-
-An always-defined computational gauge for 3D: choose the coordinate axis least
-aligned with `r̂`, project it into the perpendicular plane, and complete a
-right-handed basis. This is useful for deterministic component diagnostics,
-but the chosen direction can jump discontinuously as `r̂` changes.
-"""
-struct CoordinateGaugeTransverseBasis <: AbstractTransverseBasisConvention end
-
-"""
-    UserTransverseBasis(f)
-
-Use `f(r̂)` as the transverse basis provider. The function must return either
-a single unit vector or a tuple of unit vectors perpendicular to `r̂`.
-"""
-struct UserTransverseBasis{F} <: AbstractTransverseBasisConvention
-    basis_function::F
-end
 
 @inline function _sum_abs2(x)
     out = zero(eltype(x))
@@ -682,73 +673,53 @@ end
     return SA.SVector{length(r_hat), eltype(r_hat)}(ntuple(i -> x[i], length(r_hat)))
 end
 
-@inline function _project_reference_axis(axis, r_hat, parallel_tol)
-    a = _as_svector_like(r_hat, axis)
-    projected = a - LA.dot(a, r_hat) * r_hat
-    projected_norm2 = _sum_abs2(projected)
-    tol2 = parallel_tol * parallel_tol
-    projected_norm2 > tol2 || throw(
-        ArgumentError(
-            "reference axis is parallel or nearly parallel to r̂; " *
-            "choose a different axis or use CoordinateGaugeTransverseBasis()",
-        ),
-    )
-    return projected / sqrt(projected_norm2)
+@inline function _axis_transverse(axis, r_hat::SA.SVector{3}, parallel_tol)
+    c = LA.cross(_as_svector_like(r_hat, axis), r_hat)
+    c2 = _sum_abs2(c)
+    c2 > parallel_tol * parallel_tol || throw(ArgumentError(
+        "the reference axis is parallel to r̂ for this pair, which leaves no transverse direction; choose an axis no separation is parallel to, or CanonicalTransverseBasis()",
+    ))
+    return c / sqrt(c2)
 end
 
-@inline function transverse_basis(::CanonicalTransverseBasis, r_hat::SA.SVector{2})
-    return (n̂(r_hat),)
+"""
+    transverse_basis(rule::AbstractTransverseBasisConvention, r̂) -> NTuple of unit vectors
+
+The transverse basis of a pair with unit separation `r̂` under `rule`: one vector in two dimensions,
+two in three, each perpendicular to `r̂` and to the others, the first odd under `r̂ ↦ −r̂`.
+"""
+@inline transverse_basis(::CanonicalTransverseBasis, r_hat::SA.SVector{2}) = (n̂(r_hat),)
+
+@inline function transverse_basis(::CanonicalTransverseBasis, r_hat::SA.SVector{3})
+    n = n̂(r_hat)
+    return (n, LA.cross(r_hat, n))
 end
 
-@inline function transverse_basis(::CanonicalTransverseBasis, r_hat)
-    length(r_hat) == 2 || throw(ArgumentError("CanonicalTransverseBasis is only defined in 2D"))
-    return (n̂(r_hat),)
-end
-
-@inline function transverse_basis(basis::ReferenceAxisTransverseBasis, r_hat::SA.SVector{2})
-    e1 = _project_reference_axis(basis.axis, r_hat, basis.parallel_tol)
-    return (e1,)
+@inline function transverse_basis(basis::CanonicalTransverseBasis, r_hat)
+    D = length(r_hat)
+    D == 2 && return transverse_basis(basis, SA.SVector{2, eltype(r_hat)}(r_hat))
+    D == 3 && return transverse_basis(basis, SA.SVector{3, eltype(r_hat)}(r_hat))
+    throw(ArgumentError("CanonicalTransverseBasis is defined for D = 2 and D = 3"))
 end
 
 @inline function transverse_basis(basis::ReferenceAxisTransverseBasis, r_hat::SA.SVector{3})
-    e1 = _project_reference_axis(basis.axis, r_hat, basis.parallel_tol)
-    e2 = LA.cross(r_hat, e1)
-    return (e1, e2)
+    e1 = _axis_transverse(basis.axis, r_hat, basis.parallel_tol)
+    return (e1, LA.cross(r_hat, e1))
 end
 
 @inline function transverse_basis(basis::ReferenceAxisTransverseBasis, r_hat)
-    D = length(r_hat)
-    D == 2 && return transverse_basis(basis, SA.SVector{2, eltype(r_hat)}(r_hat))
-    D == 3 && return transverse_basis(basis, SA.SVector{3, eltype(r_hat)}(r_hat))
-    throw(ArgumentError("ReferenceAxisTransverseBasis currently supports D=2 or D=3"))
+    length(r_hat) == 3 || throw(ArgumentError(
+        "ReferenceAxisTransverseBasis is defined in 3-D; in 2-D the transverse direction is n̂, CanonicalTransverseBasis()",
+    ))
+    return transverse_basis(basis, SA.SVector{3, eltype(r_hat)}(r_hat))
 end
 
-@inline function transverse_basis(::CoordinateGaugeTransverseBasis, r_hat::SA.SVector{3, T}) where {T}
-    ax = abs(r_hat[1])
-    ay = abs(r_hat[2])
-    az = abs(r_hat[3])
-    axis = ax <= ay && ax <= az ? SA.SVector{3, T}(1, 0, 0) :
-           ay <= az ? SA.SVector{3, T}(0, 1, 0) :
-           SA.SVector{3, T}(0, 0, 1)
-    e1 = axis - LA.dot(axis, r_hat) * r_hat
-    e1 = e1 / sqrt(_sum_abs2(e1))
-    e2 = LA.cross(r_hat, e1)
-    return (e1, e2)
-end
+"""
+    transverse_basis_vector(r̂, rule, index = 1)
 
-@inline function transverse_basis(::CoordinateGaugeTransverseBasis, r_hat::SA.SVector{2})
-    return (n̂(r_hat),)
-end
-
-@inline function transverse_basis(basis::CoordinateGaugeTransverseBasis, r_hat)
-    D = length(r_hat)
-    D == 2 && return transverse_basis(basis, SA.SVector{2, eltype(r_hat)}(r_hat))
-    D == 3 && return transverse_basis(basis, SA.SVector{3, eltype(r_hat)}(r_hat))
-    throw(ArgumentError("CoordinateGaugeTransverseBasis currently supports D=2 or D=3"))
-end
-
-@inline transverse_basis(basis::UserTransverseBasis, r_hat) = basis.basis_function(r_hat)
-
+The `index`-th vector of [`transverse_basis`](@ref)`(rule, r̂)`; the first is the signed transverse
+direction an odd transverse operator reads.
+"""
 @inline function transverse_basis_vector(r_hat, basis::AbstractTransverseBasisConvention, basis_index::Integer = 1)
     basis_vectors = transverse_basis(basis, r_hat)
     1 <= basis_index <= length(basis_vectors) ||

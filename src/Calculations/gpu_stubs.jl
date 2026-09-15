@@ -195,6 +195,12 @@ function gpu_calculate_structure_function_batch(args...; kwargs...)
     )
 end
 
+"""
+    gpu_calculate_structure_function_2d_batch(sf, backend, x, u, distance_bins, value_bins; kwargs...)
+
+The value-binned joint histogram of a field with auxiliary axes on a device, one histogram per
+auxiliary slice; supplied by the KernelAbstractions extension.
+"""
 function gpu_calculate_structure_function_2d_batch(args...; kwargs...)
     throw(
         ArgumentError(

@@ -46,9 +46,11 @@ const VECTOR_OPS = (
     SFT.ProjectedStructureFunctionType{4, 0}(), SFT.ProjectedStructureFunctionType{2, 2}(),
     SFT.FullVectorStructureFunctionType{4}(), SFT.VectorDotSFType(1, 1),
 )
-# An oriented transverse direction exists at D = 2 everywhere, and at D = 3 not for lags along ẑ, so
-# these run on two-dimensional grids only.
+# Operators reading one signed transverse component; at D = 3 the lags along ẑ take the x̂ rule.
 const ODD_TRANSVERSE_OPS = (SFT.L2T1SFType(), SFT.T3SFType(), SFT.ProjectedStructureFunctionType{0, 4}())
+# The canonical rule about an axis no lattice lag is parallel to: a non-canonical basis through moment_contract.
+const AXIS_OPS = (SFT.ProjectedStructureFunctionType{0, 3}(
+    SF.ReferenceAxisTransverseBasis(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))),)
 
 Test.@testset "the transform equals the lag sweep for every polynomial operator" begin
     for (dims, spacing, periodic) in MOMENT_GRIDS
@@ -57,7 +59,8 @@ Test.@testset "the transform equals the lag sweep for every polynomial operator"
         u = randn(Dg, dims...)
         r_max = 0.7 * sum(d -> spacing[d] * dims[d], 1:Dg)
         bins = collect(range(0.0, r_max; length = 9))
-        ops = Dg == 2 ? (VECTOR_OPS..., ODD_TRANSVERSE_OPS...) : VECTOR_OPS
+        ops = Dg == 1 ? VECTOR_OPS :
+              Dg == 2 ? (VECTOR_OPS..., ODD_TRANSVERSE_OPS...) : (VECTOR_OPS..., ODD_TRANSVERSE_OPS..., AXIS_OPS...)
         for sf in ops
             Dg == 1 && sf isa Union{SFT.T2ComponentSFType, SFT.L1T2ComponentSFType} && continue
             ref_s, ref_c = _moments_run(sf, u, dims, spacing, periodic, bins)

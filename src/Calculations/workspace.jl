@@ -183,7 +183,6 @@ per-call `KA.zeros` allocation and repeated edge uploads.
 concretely typed — matching [`CPUSFWorkspace`](@ref). Use the matching constructor overload;
 `reset_histogram!(ws)` zeroes device outputs before each launch. The constructors live in
 `StructureFunctionsKernelAbstractionsExt` and need `using KernelAbstractions`.
-See [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md).
 """
 struct GPUSFWorkspace{kind, FT, BE, DB, VB, S, C, VE, DE, VP, ST, K, L}
     backend::BE

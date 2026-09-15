@@ -1,36 +1,12 @@
-module StructureFunctionsFFTKernelAbstractionsExt
+module StructureFunctionsAbsractFFTsKernelAbstractionsExt
 
 using KernelAbstractions: KernelAbstractions as KA, @index, @atomic, @Const, @localmem, @synchronize
-using AbstractFFTs: plan_irfft
-using LinearAlgebra: mul!
+using AbstractFFTs: AbstractFFTs 
+using LinearAlgebra: LinearAlgebra as LA 
 using StaticArrays: StaticArrays as SA
 using SpectralBackends: SpectralBackends as SB
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    HelperFunctions as SFH
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH
 
-const CB = SFC.CB
-const Adapt = KA.Adapt
-
-# Schedules, digitize plans and axis edges reach the kernel with their vectors on the device.
-Adapt.adapt_structure(to, s::SFC.RectilinearLagSchedule) =
-    SFC.RectilinearLagSchedule(s.uniform, map(v -> Adapt.adapt(to, v), s.enumerated), s.axis_order)
-Adapt.adapt_structure(to, s::SFC.ZonalLagSchedule) =
-    SFC.ZonalLagSchedule(Adapt.adapt(to, s.lats), s.n_lon, s.dlon, s.radius, s.lon_periodic)
-function Adapt.adapt_structure(to, p::SF.SquaredLogPlan{T}) where {T}
-    sq = Adapt.adapt(to, p.sqedges)
-    return SF.SquaredLogPlan{T, typeof(sq)}(p.a, p.b, p.n_bins, sq)
-end
-function Adapt.adapt_structure(to, p::SF.SquaredLinearPlan{T}) where {T}
-    sq = Adapt.adapt(to, p.sqedges)
-    return SF.SquaredLinearPlan{T, typeof(p.edges), typeof(sq)}(p.edges, p.n_bins, sq)
-end
-function Adapt.adapt_structure(to, p::SF.SquaredGeneralPlan{T}) where {T}
-    sq = Adapt.adapt(to, p.sqedges)
-    return SF.SquaredGeneralPlan{T, typeof(sq)}(p.n_bins, sq)
-end
-Adapt.adapt_structure(to, p::SF.SquaredInfPaddedPlan) = SF.SquaredInfPaddedPlan(Adapt.adapt(to, p.inner))
-Adapt.adapt_structure(to, b::SF.BinEdges) = SF.BinEdges(Adapt.adapt(to, b.edges))
-Adapt.adapt_structure(to, b::SF.InfPaddedBinEdges) = SF.InfPaddedBinEdges(Adapt.adapt(to, b.edges))
 
 """Bytes of inverse-transform scratch one batch of slab pairs may hold on the device."""
 const DEVICE_BATCH_BYTES = 1 << 30
@@ -72,9 +48,10 @@ end
 # shared memory when it fits and is flushed once per block; the joint histogram uses global atomics.
 KA.@kernel unsafe_indices = true function _lag_kernel!(
     sums::AbstractArray{OT}, counts::AbstractArray{CT}, @Const(out), @Const(pairs), sf, s, su, plan, second_axis,
-    axis_edges, n_box::Int, box_lo, box_len, box_strides, P, strides, masked::Bool, ncols::Int, nb::Int, na::Int, total::Int,
-    workgroup_size::Int, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N}, ::Val{NC}, ::Val{SHARED},
-) where {OT, CT, D, V, K, W, Po, N, NC, SHARED}
+    axis_edges, n_box::Int, box_lo, box_len, box_strides, P, strides, masked::Bool, weighted::Val{WEIGHTED}, ncols::Int,
+    nb::Int, na::Int, total::Int, workgroup_size::Int, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
+    ::Val{NC}, ::Val{SHARED},
+) where {OT, CT, WEIGHTED, D, V, K, W, Po, N, NC, SHARED}
     shared_s = @localmem OT (NC,)
     shared_c = @localmem CT (NC,)
     lid = @index(Local, Linear)
@@ -102,8 +79,7 @@ KA.@kernel unsafe_indices = true function _lag_kernel!(
             idx = SFC._lag_index(h, P, strides)
             outb = view(out, :, :, b)
             T = eltype(su.spacing)
-            named = masked ? round(Int, @inbounds(outb[idx, ncols])) : SFC._lag_pair_count(su, h)
-            n_pairs = self_reverse ? named ÷ 2 : named
+            n_pairs = SFC._named_pairs(weighted, masked, outb, idx, ncols, su, h, self_reverse)
             scale = self_reverse ? T(0.5) : one(T)
             inv_r = inv(sqrt(r2))
             tr = SFC.lag_transport(s)
@@ -174,16 +150,16 @@ function _batch_buffers(F1, P, ncols::Int, Bb::Int)
     CF = eltype(F1)
     spec = fill!(similar(F1, size(F1)..., ncols * Bb), zero(CF))
     out = fill!(similar(F1, real(CF), P..., ncols * Bb), zero(real(CF)))
-    return (spec = spec, out = out, iplan = plan_irfft(spec, P[1], 1:length(P)))
+    return (spec = spec, out = out, iplan = AbstractFFTs.plan_irfft(spec, P[1], 1:length(P)))
 end
 
 function SFC.device_transform_sweep!(
-    sums::AbstractArray{OT}, counts::AbstractArray{CT}, backend::CB.AbstractGPUBackend, sf, data, s, dist_be, plan,
-    nb::Int, ::Val{D}, ::Val{V}, ::Val{K}, valid, axis,
+    sums::AbstractArray{OT}, counts::AbstractArray{CT}, backend::SFC.CB.AbstractGPUBackend, sf, data, s, dist_be, plan,
+    nb::Int, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag, axis,
 ) where {OT, CT, D, V, K}
     dev = backend.backend
     to = x -> KA.adapt(dev, x)
-    eng = SFC.transform_engine(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid; to)
+    eng = SFC.transform_engine(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag; to)
     su, P, r_max = eng.su, eng.P, eng.r_max
     Dg = length(P)
     F1 = eng.fwd[1][1]
@@ -242,12 +218,12 @@ function SFC.device_transform_sweep!(
         spec_k(specf, F, d_terms, d_ptr, d_pairs, nlin, ncols, total_spec, WORKGROUP;
                ndrange = cld(total_spec, WORKGROUP) * WORKGROUP)
         KA.synchronize(dev)
-        mul!(out, iplan, spec)
+        LA.mul!(out, iplan, spec)
         out3 = reshape(out, Pn, ncols, Bb)
         total_lag = n_box * Bb
         lag_k(dsums, dcounts, out3, d_pairs, sf, s_dev, su, plan_dev, second_axis, d_axis_edges, n_box, box_lo,
-              box_len, box_strides, P, strides, eng.masked, ncols, nb, na, total_lag, WORKGROUP, Val(D), Val(V), Val(K),
-              eng.vW, eng.vP, eng.vN, Val(NC), Val(shared); ndrange = cld(total_lag, WORKGROUP) * WORKGROUP)
+              box_len, box_strides, P, strides, eng.masked, eng.weighted, ncols, nb, na, total_lag, WORKGROUP, Val(D),
+              Val(V), Val(K), eng.vW, eng.vP, eng.vN, Val(NC), Val(shared); ndrange = cld(total_lag, WORKGROUP) * WORKGROUP)
         KA.synchronize(dev)
     end
     sums .+= Array(dsums)

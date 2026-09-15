@@ -29,6 +29,13 @@ function _dispatch_execution_backend(
     throw(ArgumentError("MPI backend is unavailable. Load MPI (`using MPI`) to enable StructureFunctionsMPIExt, or use a different backend."))
 end
 
+"""
+    threaded_calculate_structure_function(sf, x, u, distance_bins[, value_bins][, count_eltype]; kwargs...)
+
+The point-list structure function on the threaded CPU backend, returning the raw sums and counts.
+Takes the arguments of [`calculate_structure_function`](@ref) without `backend`; supplied by the
+OhMyThreads extension, so `using OhMyThreads` is required.
+"""
 function threaded_calculate_structure_function(args...; kwargs...)
     throw(
         ArgumentError(
@@ -37,6 +44,12 @@ function threaded_calculate_structure_function(args...; kwargs...)
     )
 end
 
+"""
+    threaded_calculate_structure_function!(sums, counts, sf, x, u, distance_bins[, value_bins]; kwargs...)
+
+The in-place form of [`threaded_calculate_structure_function`](@ref), accumulating into `sums` and
+`counts`; supplied by the OhMyThreads extension.
+"""
 function threaded_calculate_structure_function!(args...; kwargs...)
     throw(
         ArgumentError(

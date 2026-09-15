@@ -173,6 +173,24 @@ Test.@testset "GPU joint 2D parity — L3SF log distance bins" begin
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
 end
 
+Test.@testset "GPU tiled parity — signed transverse operators keep the operator's convention" begin
+    for (D, N) in ((2, 50), (3, 40))
+        x = rand(Float64, D, N)
+        u = randn(Float64, D, N)
+        bin_edges = collect(range(0.0, 1.4; length = 8))
+        ops = (SFT.T3SFType(), SFT.L2T1SFType())
+        D == 3 && (ops = (ops..., SFT.ProjectedStructureFunctionType{0, 3}(
+            SF.ReferenceAxisTransverseBasis(LA.normalize(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))))))
+        for sft in ops
+            ref = _cpu_ref(sft, x, u, bin_edges)
+            gpu = _gpu_tiled(sft, x, u, bin_edges)
+            Test.@test gpu.counts == ref.counts
+            Test.@test gpu.sums ≈ ref.sums atol = 1e-10
+            Test.@test any(!iszero, ref.sums)
+        end
+    end
+end
+
 Test.@testset "GPU tiled parity — NB > SF_GPU_MAX_BINS errors" begin
     N = 20
     FT = Float64

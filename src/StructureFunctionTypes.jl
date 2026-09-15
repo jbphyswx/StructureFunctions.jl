@@ -5,8 +5,26 @@ using StaticArrays: StaticArrays as SA
 using ..HelperFunctions: HelperFunctions as SFH
 using ..Channels: Channels as CH
 
+"""
+    AbstractStructureFunctionType
+
+The operator of a structure function: which statistic of a pair's increment is accumulated.
+"""
 abstract type AbstractStructureFunctionType end
+
+"""
+    AbstractPairwiseStructureFunctionType
+
+An operator with a value on one pair, `sf(δu, r̂)`, that the pair loops, the gridded sweeps and the
+transforms accumulate.
+"""
 abstract type AbstractPairwiseStructureFunctionType <: AbstractStructureFunctionType end
+
+"""
+    AbstractDerivedStructureFunctionType
+
+A quantity derived from binned structure functions, with no value on one pair.
+"""
 abstract type AbstractDerivedStructureFunctionType <: AbstractStructureFunctionType end
 
 # Identity call: allows `SFType()` for singleton operator instances.
@@ -37,17 +55,28 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    ProjectedStructureFunctionType{NL,NT}
+    ProjectedStructureFunctionType{NL, NT}(basis = CanonicalTransverseBasis())
 
-Parametric type representing structure function operators
-with **longitudinal (`NL`)** and **transverse (`NT`)** contributions.
+Operator `δu_L^NL · δu_T^NT`: `NL` powers of the longitudinal increment `δu·r̂` and `NT` of the
+transverse one. `NT = 2` is the invariant transverse energy `‖δu‖² − δu_L²`; every other `NT` is the
+signed component along the first vector of `transverse_basis(basis, r̂)`, so the sign of an odd `NT`
+is the convention's. [`SFH.CanonicalTransverseBasis`](@ref) is `n̂`, the turn about `ẑ`. The basis travels
+with the operator into every result.
 """
-struct ProjectedStructureFunctionType{NL, NT} <: AbstractPairwiseStructureFunctionType end
+struct ProjectedStructureFunctionType{NL, NT, B <: SFH.AbstractTransverseBasisConvention} <:
+       AbstractPairwiseStructureFunctionType
+    basis::B
+end
 
-const ProjectedStructureFunction = ProjectedStructureFunctionType # Longhand alias for the type
+"""Alias of [`ProjectedStructureFunctionType`](@ref)."""
+const ProjectedStructureFunction = ProjectedStructureFunctionType
 
-ProjectedStructureFunctionType(NL::Integer, NT::Integer) =
-    ProjectedStructureFunctionType{NL, NT}()
+ProjectedStructureFunctionType{NL, NT}(
+    basis::B = SFH.CanonicalTransverseBasis(),
+) where {NL, NT, B <: SFH.AbstractTransverseBasisConvention} = ProjectedStructureFunctionType{NL, NT, B}(basis)
+
+ProjectedStructureFunctionType(NL::Integer, NT::Integer, basis = SFH.CanonicalTransverseBasis()) =
+    ProjectedStructureFunctionType{NL, NT}(basis)
 
 """
     (sf::ProjectedStructureFunctionType{NL,NT})(δu, r̂)
@@ -71,19 +100,15 @@ Compute the structure function kernel for longitudinal/transverse components.
         end
     end
 
-    # Transverse contribution
+    # Transverse contribution: NT = 2 is the invariant energy; any other NT is the signed component
+    # along the operator's basis.
     if !iszero(NT)
         if NT == 2
-            # fast path: invariant transverse energy, no basis and no sqrt
             ex = :($ex * SFH.transverse_norm2(δu, r̂))
-        elseif NT == 3
-            # standard magnitude cubed (precomputed scalar), avoids fractional exponent
-            ex = :($ex * (SFH.mδu_t(δu, r̂)^3))
         elseif NT == 1
-            ex = :($ex * SFH.mδu_t(δu, r̂))
+            ex = :($ex * SFH.mδu_t(δu, r̂, sf.basis))
         else
-            # generic path: use scalar magnitude raised to NT (for uncommon powers)
-            ex = :($ex * (SFH.mδu_t(δu, r̂)^$NT))
+            ex = :($ex * (SFH.mδu_t(δu, r̂, sf.basis)^$NT))
         end
     end
 
@@ -118,6 +143,23 @@ Generic full-vector norm-power operator, ``||δu||^NF``. This is not used for
 """
 struct FullVectorStructureFunctionType{NF} <: AbstractPairwiseStructureFunctionType end
 
+"""
+    MomentTensorOperator{P}()
+
+The transform engine's request for the whole rank-`P` increment moment tensor
+`M[i₁, …, i_P] = Σ_pairs Π_k δu[i_k]` of a field's vector channel, in place of one scalar contraction
+of it. It has no value on a single pair. In a fixed Cartesian frame an odd rank changes sign when a
+pair is read from its other end, exactly as an odd scalar increment does, so it takes the same
+canonical pair reading; in a pair's own geodesic frame the components are read the same from either
+end and no reading enters.
+"""
+struct MomentTensorOperator{P} <: AbstractPairwiseStructureFunctionType end
+
+(::MomentTensorOperator)(δu, r̂) = throw(ArgumentError(
+    "the moment tensor operator has no value on one pair; it names the whole increment moment tensor for the transform engine",
+))
+
+"""Alias of [`FullVectorStructureFunctionType`](@ref)."""
 const FullVectorStructureFunction = FullVectorStructureFunctionType
 
 FullVectorStructureFunctionType(NF::Integer) = FullVectorStructureFunctionType{NF}()
@@ -162,62 +204,90 @@ end
 # ---------------------------------------------------------------------------
 # Named Constants: Type Aliases (longhand and shorthands)
 
-# 2nd order Type Aliases
+"""`ProjectedStructureFunctionType{2, 0}`: the longitudinal second-order structure function ``⟨δu_L²⟩``."""
 const LongitudinalSecondOrderStructureFunctionType = ProjectedStructureFunctionType{2, 0}
+"""`ProjectedStructureFunctionType{0, 2}`: the transverse second-order structure function ``⟨‖δu_T‖²⟩ = ⟨‖δu‖² − δu_L²⟩``."""
 const TransverseSecondOrderStructureFunctionType = ProjectedStructureFunctionType{0, 2}
+"""Shorthand for [`TransverseComponentSecondOrderStructureFunctionType`](@ref)."""
 const T2ComponentSFType = TransverseComponentSecondOrderStructureFunctionType
 
-# 3rd order Type Aliases
+"""`ProjectedStructureFunctionType{3, 0}`: the longitudinal third-order structure function ``⟨δu_L³⟩``."""
 const DiagonalConsistentThirdOrderStructureFunctionType =
     ProjectedStructureFunctionType{3, 0}
+"""`ProjectedStructureFunctionType{2, 1}`: ``⟨δu_L² δu_T⟩`` with the signed transverse component of the operator's basis."""
 const DiagonalInconsistentThirdOrderStructureFunctionType =
     ProjectedStructureFunctionType{2, 1}
+"""`ProjectedStructureFunctionType{1, 2}`: ``⟨δu_L ‖δu_T‖²⟩``."""
 const OffDiagonalInconsistentThirdOrderStructureFunctionType =
     ProjectedStructureFunctionType{1, 2}
+"""`ProjectedStructureFunctionType{0, 3}`: ``⟨δu_T³⟩`` with the signed transverse component of the operator's basis."""
 const OffDiagonalConsistentThirdOrderStructureFunctionType =
     ProjectedStructureFunctionType{0, 3}
 
-# Shorthand Type Aliases
+"""Shorthand for [`SecondOrderStructureFunctionType`](@ref), ``⟨‖δu‖²⟩``."""
 const S2SFType = SecondOrderStructureFunctionType
+"""Shorthand for [`LongitudinalSecondOrderStructureFunctionType`](@ref), ``⟨δu_L²⟩``."""
 const L2SFType = LongitudinalSecondOrderStructureFunctionType
+"""Shorthand for [`TransverseSecondOrderStructureFunctionType`](@ref), ``⟨‖δu_T‖²⟩``."""
 const T2SFType = TransverseSecondOrderStructureFunctionType
+"""Shorthand for [`ThirdOrderStructureFunctionType`](@ref), ``⟨δu_L ‖δu‖²⟩``."""
 const S3SFType = ThirdOrderStructureFunctionType
+"""Shorthand for [`DiagonalConsistentThirdOrderStructureFunctionType`](@ref), ``⟨δu_L³⟩``."""
 const L3SFType = DiagonalConsistentThirdOrderStructureFunctionType
+"""Shorthand for [`OffDiagonalConsistentThirdOrderStructureFunctionType`](@ref), ``⟨δu_T³⟩``."""
 const T3SFType = OffDiagonalConsistentThirdOrderStructureFunctionType
+"""Shorthand for [`DiagonalInconsistentThirdOrderStructureFunctionType`](@ref), ``⟨δu_L² δu_T⟩``."""
 const L2T1SFType = DiagonalInconsistentThirdOrderStructureFunctionType
+"""Shorthand for [`OffDiagonalInconsistentThirdOrderStructureFunctionType`](@ref), ``⟨δu_L ‖δu_T‖²⟩``."""
 const L1T2SFType = OffDiagonalInconsistentThirdOrderStructureFunctionType
+"""Shorthand for [`LongitudinalTransverseComponentThirdOrderStructureFunctionType`](@ref)."""
 const L1T2ComponentSFType = LongitudinalTransverseComponentThirdOrderStructureFunctionType
 
 # ---------------------------------------------------------------------------
 # Named Constants: Singleton Functors (The "Longhand" names now point to instances)
 
-# 2nd order Singleton Functors
+"""The instance `SecondOrderStructureFunctionType()`."""
 const SecondOrderStructureFunction = SecondOrderStructureFunctionType()
+"""The instance `LongitudinalSecondOrderStructureFunctionType()`."""
 const LongitudinalSecondOrderStructureFunction =
     LongitudinalSecondOrderStructureFunctionType()
+"""The instance `TransverseSecondOrderStructureFunctionType()`."""
 const TransverseSecondOrderStructureFunction = TransverseSecondOrderStructureFunctionType()
+"""The instance `TransverseComponentSecondOrderStructureFunctionType()`."""
 const T2ComponentSF = TransverseComponentSecondOrderStructureFunctionType()
 
-# 3rd order Singleton Functors
+"""The instance `ThirdOrderStructureFunctionType()`."""
 const ThirdOrderStructureFunction = ThirdOrderStructureFunctionType()
+"""The instance `DiagonalConsistentThirdOrderStructureFunctionType()`."""
 const DiagonalConsistentThirdOrderStructureFunction =
     DiagonalConsistentThirdOrderStructureFunctionType()
+"""The instance `DiagonalInconsistentThirdOrderStructureFunctionType()`."""
 const DiagonalInconsistentThirdOrderStructureFunction =
     DiagonalInconsistentThirdOrderStructureFunctionType()
+"""The instance `OffDiagonalInconsistentThirdOrderStructureFunctionType()`."""
 const OffDiagonalInconsistentThirdOrderStructureFunction =
     OffDiagonalInconsistentThirdOrderStructureFunctionType()
+"""The instance `OffDiagonalConsistentThirdOrderStructureFunctionType()`."""
 const OffDiagonalConsistentThirdOrderStructureFunction =
     OffDiagonalConsistentThirdOrderStructureFunctionType()
+"""The instance `LongitudinalTransverseComponentThirdOrderStructureFunctionType()`."""
 const L1T2ComponentSF = LongitudinalTransverseComponentThirdOrderStructureFunctionType()
 
-# Shorthand Singleton Functors
+"""The instance `S2SFType()`."""
 const S2SF = SecondOrderStructureFunction
+"""The instance `L2SFType()`."""
 const L2SF = LongitudinalSecondOrderStructureFunction
+"""The instance `T2SFType()`."""
 const T2SF = TransverseSecondOrderStructureFunction
+"""The instance `S3SFType()`."""
 const S3SF = ThirdOrderStructureFunction
+"""The instance `L3SFType()`."""
 const L3SF = DiagonalConsistentThirdOrderStructureFunction
+"""The instance `T3SFType()`."""
 const T3SF = OffDiagonalConsistentThirdOrderStructureFunction
+"""The instance `L2T1SFType()`."""
 const L2T1SF = DiagonalInconsistentThirdOrderStructureFunction
+"""The instance `L1T2SFType()`."""
 const L1T2SF = OffDiagonalInconsistentThirdOrderStructureFunction
 
 # ---------------------------------------------------------------------------
@@ -267,6 +337,7 @@ struct ScalarStructureFunctionType{P} <: AbstractPairwiseStructureFunctionType
 end
 
 ScalarStructureFunctionType{P}() where {P} = ScalarStructureFunctionType{P}(1)
+"""Shorthand for [`ScalarStructureFunctionType`](@ref)."""
 const ScalarSFType = ScalarStructureFunctionType
 
 @inline (sf::ScalarStructureFunctionType{P})(δu, r̂) where {P} =
@@ -288,6 +359,7 @@ end
 
 MixedStructureFunctionType{NL, NT, P}() where {NL, NT, P} =
     MixedStructureFunctionType{NL, NT, P}(1, 1)
+"""Shorthand for [`MixedStructureFunctionType`](@ref)."""
 const MixedSFType = MixedStructureFunctionType
 
 @inline function (sf::MixedStructureFunctionType{NL, NT, P})(δu, r̂) where {NL, NT, P}
@@ -385,8 +457,11 @@ rotational and divergent second-order components.
 """
 struct HelmholtzDecomposition2DType <: AbstractDerivedStructureFunctionType end
 
+"""The instance `RotationalSecondOrderStructureFunctionType()`."""
 const RotationalSecondOrderStructureFunction = RotationalSecondOrderStructureFunctionType()
+"""The instance `DivergentSecondOrderStructureFunctionType()`."""
 const DivergentSecondOrderStructureFunction = DivergentSecondOrderStructureFunctionType()
+"""The instance `HelmholtzDecomposition2DType()`."""
 const HelmholtzDecomposition2DOperator = HelmholtzDecomposition2DType()
 
 # ---------------------------------------------------------------------------
@@ -444,7 +519,6 @@ export AbstractStructureFunctionType,
     SecondOrderStructureFunction,
     LongitudinalSecondOrderStructureFunction,
     TransverseSecondOrderStructureFunction,
-    T2ComponentSF,
     RotationalSecondOrderStructureFunction,
     DivergentSecondOrderStructureFunction,
     HelmholtzDecomposition2DOperator,
@@ -453,10 +527,12 @@ export AbstractStructureFunctionType,
     DiagonalInconsistentThirdOrderStructureFunction,
     OffDiagonalInconsistentThirdOrderStructureFunction,
     OffDiagonalConsistentThirdOrderStructureFunction,
-    L1T2ComponentSF,
     S2SF, L2SF, T2SF, S3SF, L3SF, T3SF, L2T1SF, L1T2SF,
     T2ComponentSF, L1T2ComponentSF, ProjectedStructureFunctionType,
-    FullVectorStructureFunctionType,
+    FullVectorStructureFunctionType, MomentTensorOperator,
+    ScalarStructureFunctionType, MixedStructureFunctionType,
+    ScalarDotStructureFunctionType, VectorDotStructureFunctionType,
+    ScalarSFType, MixedSFType, ScalarDotSFType, VectorDotSFType,
     ProjectedStructureFunction,
     FullVectorStructureFunction,
     get_structure_function_type
@@ -540,6 +616,7 @@ order(::DivergentSecondOrderStructureFunctionType) = 2
 order(::HelmholtzDecomposition2DType) = 2
 order(::ScalarStructureFunctionType{P}) where {P} = P
 order(::MixedStructureFunctionType{NL, NT, P}) where {NL, NT, P} = NL + NT + P
+order(::MomentTensorOperator{P}) where {P} = P
 order(::ScalarDotStructureFunctionType) = 2
 order(::VectorDotStructureFunctionType) = 2
 
@@ -562,6 +639,7 @@ scalar_order(::ScalarDotStructureFunctionType) = 2
 
 """Whether `sf` changes sign when a pair is read from its other end."""
 @inline is_odd_in_scalars(sf::AbstractStructureFunctionType) = isodd(scalar_order(sf))
+@inline is_odd_in_scalars(::MomentTensorOperator{P}) where {P} = isodd(P)
 
 # ---------------------------------------------------------------------------
 # Polynomial contract: an operator as a contraction of the increment moment tensor
@@ -586,6 +664,7 @@ tensor.
     iseven(NT) && NL + NT + P >= 1
 @inline is_polynomial_operator(::ScalarDotStructureFunctionType) = true
 @inline is_polynomial_operator(::VectorDotStructureFunctionType) = true
+@inline is_polynomial_operator(::MomentTensorOperator) = true
 
 """
     SymmetricMoments{W, P}(data::SVector)
@@ -752,7 +831,7 @@ end
 end
 
 @generated function moment_contract(
-    ::ProjectedStructureFunctionType{NL, NT}, M::SymmetricMoments{W, P, N, TM}, r̂::SA.SVector{D, TR},
+    sf::ProjectedStructureFunctionType{NL, NT}, M::SymmetricMoments{W, P, N, TM}, r̂::SA.SVector{D, TR},
     ::Val{V}, ::Val{K},
 ) where {NL, NT, W, P, N, TM, D, TR, V, K}
     NL + NT >= 1 || return :(throw(ArgumentError(
@@ -770,7 +849,7 @@ end
         core = :(_contract(M, ($(rps...), $(fill(:np, NT)...))))
         frame = quote
             rp = _embed(Val($W), r̂, 1)
-            np = _embed(Val($W), SFH.n̂(r̂), 1)
+            np = _embed(Val($W), SFH.transverse_basis_vector(r̂, sf.basis), 1)
         end
     end
     return quote

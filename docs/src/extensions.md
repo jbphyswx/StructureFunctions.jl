@@ -1,85 +1,75 @@
 # Extensions
 
-StructureFunctions.jl keeps optional integrations behind Julia package extensions. The core package should stay focused on array-based structure-function calculations; extensions only add execution backends or visualization helpers.
+The core package computes structure functions of arrays and channel bundles on the serial backend
+and depends on nothing but `ComputationalBackends`, `Distances`, `LinearAlgebra`, `ProgressMeter`,
+`SpectralBackends` and `StaticArrays`. Everything else — parallel execution, transforms, grids,
+spectral providers, fits — is a package extension that loads when its trigger packages are loaded. A
+method that needs an extension which is not loaded throws an `ArgumentError` naming the package to
+load; nothing falls back silently.
 
-## Available Extensions
+The algorithm tags — `AutoSpectralBackend()`, `DirectSumSpectralBackend()`,
+`FastFourierTransformSpectralBackend()`, `NUFSHTSpectralBackend()` and the non-uniform FFT tags — come
+from `SpectralBackends`, a dependency, so they are always available (also as
+`StructureFunctions.SpectralBackends`); the two provider-specific non-uniform FFT tags,
+`NonuniformFFTsSpectralBackend(; half_support)` and `FINUFFTSpectralBackend(; tolerance)`, are this
+package's own. A tag whose transform is not loaded refuses by name.
 
-### OhMyThreads
+| Extension | Load | Adds |
+|---|---|---|
+| `StructureFunctionsOhMyThreadsExt` | `using OhMyThreads` | `ThreadedBackend()` on every CPU path: point lists, channel bundles, gridded sweeps and transforms, tensors, the sorted line route |
+| `StructureFunctionsDistributedExt` | `using Distributed` | `DistributedBackend()` for point lists, channel bundles and tensors across worker processes |
+| `StructureFunctionsMPIExt` | `using MPI` | the MPI backend for point lists |
+| `StructureFunctionsKernelAbstractionsExt` | `using KernelAbstractions` | `GPUBackend(device)` kernels: point lists, joint histograms, single-pass invariants, batches over auxiliary axes, tensors, channel bundles; `KernelAbstractions.CPU()` runs them on the host |
+| `StructureFunctionsCUDAExt` | `using CUDA` with `KernelAbstractions` | CUDA-specific launch configuration and shared-memory routes for the device kernels |
+| `StructureFunctionsFFTExt` | `using FFTW` (any `AbstractFFTs` implementation) | the transform engine: every polynomial operator on every separable schedule, masks, weights, joint histograms over angle, moment tensors, `gridded_spectrum`, and the `Auto` cost model |
+| `StructureFunctionsFFTKernelAbstractionsExt` | the one above with `KernelAbstractions` | the transform engine on a device: monomial transforms through the device's `AbstractFFTs` and one lag kernel for the binning |
+| `StructureFunctionsNonuniformFFTsExt` | `using NonuniformFFTs` with `KernelAbstractions` | the NonuniformFFTs provider of the soft-binned route for scattered points on a `ScatteredModesSchedule` (`NonuniformFFTsSpectralBackend`): type-1 non-uniform FFTs of the masked, weighted monomials, on the CPU or a device |
+| `StructureFunctionsFINUFFTExt` | `using FINUFFT` with `KernelAbstractions` | the FINUFFT provider of the same route (`FINUFFTSpectralBackend`), two real monomials per complex transform in one batched plan; cuFINUFFT for points on a CUDA device |
+| `StructureFunctionsNUFSHTExt` | `using NUFSHT` | the fast spherical harmonic pseudo-coefficients behind the harmonic route on `HarmonicNodes` and `harmonic_spectra` |
+| `StructureFunctionsFlowGeometriesExt` | `using FlowGeometries` | the grid entries: `calculate_structure_function(sf, grid, u, bins[, spectral_backend]; …)`, `calculate_structure_function_tensor(order, grid, …)`, `cell_measure(grid)`, routing a grid's axis types to the uniform, rectilinear, zonal or scattered schedule |
+| `StructureFunctionsBesselsExt` | `using Bessels` | the Bessel functions `J₀`–`J₃`: the two-dimensional isotropic kernel, the flux relations, the Helmholtz spectra and forward models |
+| `StructureFunctionsLsqFitExt` | `using LsqFit` | the bounded Levenberg–Marquardt fit behind `SegmentedPowerLaw` |
 
-Loading `OhMyThreads.jl` activates threaded CPU methods used by `ThreadedBackend()`.
+## Examples
+
+Threads:
 
 ```julia
-using StructureFunctions
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads
 
-result = calculate_structure_function(sf, x, u, bins; backend = ThreadedBackend())
+res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.ThreadedBackend())
 ```
 
-### Distributed
-
-Loading `Distributed` activates the distributed CPU methods used by `DistributedBackend()`.
+A device:
 
 ```julia
-using StructureFunctions
-using Distributed
-
-addprocs(4)
-result = calculate_structure_function(sf, x, u, bins; backend = DistributedBackend())
+using KernelAbstractions, CUDA
+res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.GPUBackend(CUDA.CUDABackend()))
 ```
 
-### KernelAbstractions
+`CB.GPUBackend(KernelAbstractions.CPU())` runs the same kernels on the host, which is how the test
+suite covers them without a device.
 
-Loading `KernelAbstractions.jl` activates GPU and KA.CPU methods used by `GPUBackend`.
+The transform on a grid:
 
 ```julia
-using StructureFunctions
-using KernelAbstractions
-
-backend = GPUBackend(KernelAbstractions.CPU())
-result = calculate_structure_function(sf, x, u, bins; backend)
+using FFTW, FlowGeometries
+using SpectralBackends: SpectralBackends as SB
+sf = calculate_structure_function(SFT.L3SFType(), grid, u, bins, SB.FastFourierTransformSpectralBackend())
 ```
 
-Use CUDA.jl or another KernelAbstractions backend package to run on actual accelerator hardware.
+`SB.AutoSpectralBackend()` costs the transform and the direct sweep and takes the cheaper; the direct
+sweep is the default when no tag is given.
 
-### CairoMakie
+## Not provided
 
-Loading `CairoMakie.jl` activates plotting helpers, if those helpers are used by downstream code.
+The package reads arrays, `Fields` bundles and `FlowGeometries` grids. File formats, preprocessing and
+metadata belong to the caller.
 
-```julia
-using StructureFunctions
-using CairoMakie
-```
-
-## Not Provided
-
-StructureFunctions.jl does not provide file-format loaders. Pass arrays directly to the calculation APIs:
-
-```julia
-calculate_structure_function(sf, x, u, bins)
-```
-
-Application-specific I/O, preprocessing, and metadata handling should live outside this package.
-
-## Project.toml Entries
-
-The package currently declares only the optional dependencies needed by the remaining extensions:
-
-```toml
-[weakdeps]
-CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
-Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
-KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
-OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
-
-[extensions]
-StructureFunctionsCairoMakieExt = ["CairoMakie"]
-StructureFunctionsDistributedExt = ["Distributed"]
-StructureFunctionsKernelAbstractionsExt = ["KernelAbstractions"]
-StructureFunctionsOhMyThreadsExt = ["OhMyThreads"]
-```
-
-## Related Topics
+## Related pages
 
 - [Backends](backends.md)
-- [GPU](gpu.md)
+- [GPU acceleration](gpu.md)
 - [Architecture](architecture.md)

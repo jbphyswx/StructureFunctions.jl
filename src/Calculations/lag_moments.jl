@@ -13,6 +13,27 @@ end
     prod(ntuple(d -> @inbounds(s.periodic[d]) ? @inbounds(s.dims[d]) :
                      @inbounds(s.dims[d]) - abs(h[d]), Val(Dg)))
 
+"""
+Pairs a lag names between two slabs: the count column of the inverted transforms when the field is masked
+or weighted (a weighted pair mass in the latter case), the slab overlap otherwise; halved on a lag equal
+to its own reverse.
+"""
+@inline function _named_pairs(::Val{false}, masked::Bool, out, idx::Int, ncol::Int, su::UniformLagSchedule, h,
+                              self_reverse::Bool)
+    n = masked ? round(Int, @inbounds(out[idx, ncol])) : _lag_pair_count(su, h)
+    return self_reverse ? n ÷ 2 : n
+end
+
+@inline function _named_pairs(::Val{true}, ::Bool, out, idx::Int, ncol::Int, ::UniformLagSchedule, h,
+                              self_reverse::Bool)
+    n = @inbounds out[idx, ncol]
+    return self_reverse ? n / 2 : n
+end
+
+"""Whether a sweep carries pair weights, as a `Val` the kernels specialise on."""
+@inline _weighted_val(::NoWeights) = Val(false)
+@inline _weighted_val(::AbstractVector) = Val(true)
+
 """Column-major strides of a transform of size `P`."""
 @inline _lag_strides(P::NTuple{Dg, Int}) where {Dg} =
     ntuple(d -> prod(ntuple(k -> P[k], d - 1); init = 1), Val(Dg))
@@ -161,6 +182,27 @@ end
 ) where {T, W, P, N}
     raw = SA.SVector{N, T}(ntuple(n -> T(@inbounds(out[idx, n])), Val(N)))
     return _frame_moments(A, B, raw, scale, Val(W), Val(P))
+end
+
+# The symmetric moment store of one lag, averaged over the lag's frames where the transport gives it
+# more than one.
+@inline function _lag_tensor(
+    tr::IdentityTransport, out, idx, scale::T, geometry, ::Val{W}, ::Val{P}, ::Val{N},
+) where {T, W, P, N}
+    return _lag_moments(tr, out, idx, scale, nothing, nothing, Val(W), Val(P), Val(N)).data
+end
+
+@inline function _lag_tensor(
+    tr::FrameTransport, out, idx, scale::T, geometry, ::Val{W}, ::Val{P}, ::Val{N},
+) where {T, W, P, N}
+    return with_frames(tr, geometry) do frames
+        acc = _lag_moments(tr, out, idx, scale, frames[1].A, frames[1].B, Val(W), Val(P), Val(N)).data
+        for m in 2:length(frames)
+            f = frames[m]
+            acc += _lag_moments(tr, out, idx, scale, f.A, f.B, Val(W), Val(P), Val(N)).data
+        end
+        acc / length(frames)
+    end
 end
 
 # The operator on one lag, averaged over the lag's frames.

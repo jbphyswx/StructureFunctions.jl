@@ -2,6 +2,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT, Channels as CH
+using StructureFunctions: MixedSFType, ScalarSFType, VectorDotSFType, ScalarDotSFType, MixedStructureFunctionType
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: dot
 using OhMyThreads: OhMyThreads
@@ -312,4 +313,12 @@ Test.@testset "the threaded backend gives the serial answer" begin
         Test.@test isapprox(thr_s, ser_s; rtol = 1e-10, atol = 1e-12)
         Test.@test sum(thr_c) == N * (N - 1) ÷ 2
     end
+end
+
+Test.@testset "the channel operators are exported" begin
+    Test.@test MixedSFType === MixedStructureFunctionType
+    Test.@test MixedSFType{1, 0, 2}() === SFT.MixedSFType{1, 0, 2}()
+    Test.@test ScalarSFType{2}() === SFT.ScalarSFType{2}()
+    Test.@test VectorDotSFType(1, 2) === SFT.VectorDotSFType(1, 2)
+    Test.@test ScalarDotSFType(1, 2) === SFT.ScalarDotSFType(1, 2)
 end

@@ -13,6 +13,7 @@ export AbstractStructureFunction,
     StructureFunction2DSumsAndCounts,
     StructureFunctionTensor,
     StructureFunctionTensorSumsAndCounts,
+    StructureFunctionTensor2DSumsAndCounts,
     HelmholtzDecomposition2D,
     marginalize
 
@@ -150,6 +151,38 @@ struct StructureFunctionTensorSumsAndCounts{P, FT, BT, VT, CT} <: AbstractStruct
             throw(DimensionMismatch("counts auxiliary axes must match tensor sums auxiliary axes"))
         FT = eltype(sums)
         return new{P, FT, BT, VT, CT}(order, distance_bins, sums, counts)
+    end
+end
+
+"""
+    StructureFunctionTensor2DSumsAndCounts(order, distance_bins, axis_bins, sums, counts)
+
+Raw tensor structure function joint in separation and a second axis: `sums` has shape
+`(D, …, D, n_bins, n_axis)` with `P` component axes, `counts` `(n_bins, n_axis)`, `axis_bins` the
+edges of the second axis.
+"""
+struct StructureFunctionTensor2DSumsAndCounts{P, FT, BT, AT, VT, CT} <: AbstractStructureFunction
+    order::Val{P}
+    distance_bins::BT
+    axis_bins::AT
+    sums::VT
+    counts::CT
+
+    function StructureFunctionTensor2DSumsAndCounts(
+        order::Val{P}, distance_bins::BT, axis_bins::AT, sums::VT, counts::CT,
+    ) where {P, BT, AT, VT, CT}
+        P >= 1 || throw(ArgumentError("tensor order must be positive"))
+        ndims(sums) == P + 2 || throw(DimensionMismatch(
+            "joint tensor sums must have $P component axes, a distance-bin axis and a second-axis axis",
+        ))
+        n_bins, n_axis = size(sums, P + 1), size(sums, P + 2)
+        length(distance_bins) == n_bins + 1 ||
+            throw(DimensionMismatch("distance_bins must have length size(sums, $(P + 1)) + 1"))
+        length(axis_bins) == n_axis + 1 ||
+            throw(DimensionMismatch("axis_bins must have length size(sums, $(P + 2)) + 1"))
+        size(counts) == (n_bins, n_axis) ||
+            throw(DimensionMismatch("counts must be ($n_bins, $n_axis); got $(size(counts))"))
+        return new{P, eltype(sums), BT, AT, VT, CT}(order, distance_bins, axis_bins, sums, counts)
     end
 end
 

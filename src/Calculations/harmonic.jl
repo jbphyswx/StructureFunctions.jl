@@ -358,14 +358,19 @@ the hard-binned pair average.
 An operator odd in a scalar increment is refused: the kernel sum runs over both readings of every
 pair, so such a moment is identically zero here.
 """
-function harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::HarmonicNodes, ::Val{D},
-                         ::Val{V}, ::Val{K}, spectral_backend; valid = AllValid()) where {D, V, K}
-    throw(ArgumentError(
-        "no method computes spherical harmonic pseudo-coefficients with $(typeof(spectral_backend)). " *
-        "`using SpectralBackends` supplies the direct sum (DirectSumSpectralBackend); `using NUFSHT` " *
-        "supplies the fast transform (NUFSHTSpectralBackend).",
-    ))
-end
+harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::HarmonicNodes, ::Val{D}, ::Val{V}, ::Val{K},
+                ::SB.AbstractDirectSumSpectralBackend; valid = AllValid()) where {D, V, K} =
+    _harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes, Val(D), Val(V), Val(K), valid,
+                     direct_sum_provider)
+
+harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::HarmonicNodes, ::Val{D}, ::Val{V}, ::Val{K},
+                spectral_backend; valid = AllValid()) where {D, V, K} = _no_harmonic_provider(spectral_backend)
+
+_no_harmonic_provider(spectral_backend) = throw(ArgumentError(
+    "no method computes spherical harmonic pseudo-coefficients with $(typeof(spectral_backend)). " *
+    "DirectSumSpectralBackend() is the direct sum; `using NUFSHT` supplies the fast transform " *
+    "(NUFSHTSpectralBackend()).",
+))
 
 function _harmonic_sweep!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
@@ -513,15 +518,13 @@ so that `Σ_l (2l+1)/(4π) (C^E_l + C^B_l)` is the mean square of `u` on a compl
 quadrature weights. On a masked or unevenly sampled sphere these are the pseudo-spectra of the
 window and the field together, the input to the kernel-binned statistics.
 """
-function harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, spectral_backend;
-                          distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing,
-                          valid = nothing)
-    throw(ArgumentError(
-        "no method computes spherical harmonic pseudo-coefficients with $(typeof(spectral_backend)). " *
-        "`using SpectralBackends` supplies the direct sum (DirectSumSpectralBackend); `using NUFSHT` " *
-        "supplies the fast transform (NUFSHTSpectralBackend).",
-    ))
-end
+harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, ::SB.AbstractDirectSumSpectralBackend;
+                 distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing) =
+    _harmonic_spectra(x, u, lmax, distance_metric, weights, valid, direct_sum_provider)
+
+harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, spectral_backend;
+                 distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing) =
+    _no_harmonic_provider(spectral_backend)
 
 function _harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, distance_metric, weights,
                            valid, make_provider)

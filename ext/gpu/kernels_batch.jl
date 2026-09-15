@@ -77,14 +77,15 @@ end
 @inline _gpu_pow_int(x, ::Val{3}) = x * x * x
 @inline _gpu_pow_int(x, ::Val{N}) where {N} = x^N
 
-@inline function _gpu_sf_value_2d(::SFT.ProjectedStructureFunctionType{NL, NT}, du_x, du_y, rx, ry) where {NL, NT}
+@inline function _gpu_sf_value_2d(sf::SFT.ProjectedStructureFunctionType{NL, NT}, du_x, du_y, rx, ry) where {NL, NT}
     du_L = rx * du_x + ry * du_y
-    du_T = ry * du_x - rx * du_y
     val = one(du_L)
     if NL != 0
         val *= _gpu_pow_int(du_L, Val(NL))
     end
     if NT != 0
+        e = SFH.transverse_basis_vector(SA.SVector(rx, ry), sf.basis)
+        du_T = e[1] * du_x + e[2] * du_y
         val *= _gpu_pow_int(du_T, Val(NT))
     end
     return val

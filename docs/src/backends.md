@@ -1,494 +1,92 @@
-# Backends: Execution Models & Performance
+# Backends
 
-This document explains each execution backend, when to use it, and performance characteristics.
+Where a calculation runs is a type passed as `backend`. The result never depends on it: every backend
+gives the same counts exactly and the same sums to round-off, and the tests hold each pair of
+backends to that (see [Validation](validation.md) for the tolerance policy).
 
-## Table of Contents
-- [Backend Comparison](#backend-comparison)
-- [SerialBackend](#serialbackend)
-- [ThreadedBackend](#threaded-backend)
-- [DistributedBackend](#distributedbackend)
-- [GPUBackend](#gpubackend)
-- [AutoBackend](#autobackend)
-- [Performance Tuning](#performance-tuning)
+| backend | needs | runs |
+|---|---|---|
+| `SerialBackend()` | nothing | every route, on one thread; the reference the others are checked against |
+| `ThreadedBackend()` | `using OhMyThreads`, `julia -t N` | point lists, channel bundles, tensors, the gridded sweeps and transforms, the sorted line route |
+| `DistributedBackend()` | `using Distributed`, `addprocs` | point lists, channel bundles and tensors, each worker taking a share of the outer index; `DistributedBackend(ThreadedBackend())` threads inside each worker |
+| `MPIBackend()` | `using MPI` | point lists across ranks |
+| `GPUBackend(device)` | `using KernelAbstractions` and a device package | point lists, joint histograms, single-pass invariants, batches over auxiliary axes, tensors, channel bundles, and the gridded transform engine; `GPUBackend(KernelAbstractions.CPU())` runs the same kernels on the host |
+| `AutoBackend()` | — | the default: the distributed backend when workers are present, the threaded one when Julia has more than one thread and its extension is loaded, the serial one otherwise |
 
----
-
-## Backend Comparison
-
-| Backend | Best For | Parallelism | Memory Overhead | Setup Time |
-|---------|----------|-------------|-----------------|------------|
-| **Serial** | Development, debugging, small data (~10M points) | None | Minimal | Immediate |
-| **Threaded** | Medium data (10M–500M points), shared-memory systems | Within-node threads | Low | ~100ms (OhMyThreads) |
-| **Distributed** | Large data (>500M points), multi-node clusters | Across nodes | Moderate | ~1s (worker startup) |
-| **GPU** | Very large data (>1B points), if GPU available | GPU device | Moderate | ~500ms (kernel compile) |
-| **Auto** | Unknown resource availability | Adaptive | Low | ~100ms (detection) |
-
----
-
-## SerialBackend
-
-### Definition
-Single-threaded, reference implementation. All computations run on the calling thread.
-
-### When to Use
-- ✅ **Development & debugging**: Deterministic, easy to profile
-- ✅ **Small datasets**: <10M points (threads don't help much)
-- ✅ **Shared environments**: Where spawning threads is discouraged
-- ✅ **Validation**: Reference implementation for comparing other backends
-
-### When NOT to Use
-- ❌ Large data (>10M points): Too slow
-- ❌ Multi-CPU available: Wastes resources
-
-### Examples
-
-**1. Allocating API:**
+The backend types come from `ComputationalBackends`:
 
 ```julia
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 
-# Small test dataset
-x = (randn(1000), randn(1000))
-u = (randn(1000), randn(1000))
-bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
+x = rand(2, 50_000) .* 100.0          # (D, N) coordinates
+u = randn(2, 50_000)                  # (D, N) velocities
+bins = range(0.0, 20.0; length = 41)  # a range is wrapped as LinearBinEdges, O(1) digitizing
 
-# Calculate using SerialBackend explicitly
-result = SFC.calculate_structure_function(
-    SFT.S2SFType(),
-    x, u, bins;
-    backend=CB.SerialBackend(),
-    show_progress=true
-)
-
-println("Structure Function values: ", result.values)
+SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.SerialBackend())
+SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.ThreadedBackend())
+SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins)   # AutoBackend()
 ```
 
-**2. Pre-allocated In-place API:**
+## In place
+
+Every entry has a mutating form that accumulates into caller-owned buffers, for loops over time
+steps or for adding partial results across processes:
 
 ```julia
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
-
-x = (randn(1000), randn(1000))
-u = (randn(1000), randn(1000))
-bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
-
-# Pre-allocate output arrays
-n_bins = length(bins)
-sums = zeros(Float64, n_bins)
-counts = zeros(Float64, n_bins)
-
-# Compute in-place (accumulates directly into provided arrays)
-SFC.calculate_structure_function!(
-    sums, counts, SFT.S2SFType(),
-    x, u, bins;
-    backend=CB.SerialBackend()
-)
+sums = zeros(Float64, length(bins) - 1)
+counts = zeros(UInt32, length(bins) - 1)
+SFC.calculate_structure_function!(sums, counts, SFT.L2SFType(), x, u, bins; backend = CB.ThreadedBackend())
 ```
 
-### Performance Notes
-- O(N²) complexity; for N=1M, expect ~1 sec
-- Mutating `calculate_structure_function!` completely avoids allocating temporary arrays, making it ideal for temporal loops.
-
----
-
-## ThreadedBackend
-
-### Definition
-Multi-threaded execution using OhMyThreads.jl. Distributes pairwise calculations across `Threads.nthreads()` worker threads.
-
-### When to Use
-- ✅ **Medium datasets**: 10M–500M points
-- ✅ **Shared-memory systems**: Single workstation, server
-- ✅ **Quick turnaround**: Faster than serial, no cluster setup
-- ✅ **Memory-constrained**: All threads can access same data
-
-### When NOT to Use
-- ❌ Only 1 thread available: Falls back to serial (no benefit)
-- ❌ Very large data (>500M): GPU/Distributed faster
-- ❌ Cluster environment: Use DistributedBackend instead
-
-### Requirements
-
-```toml
-# Add to Project.toml if not present
-[extras]
-OhMyThreads = "67456a42-ebe4-4781-8ad1-67f7eda8d8f7"
-```
-
-### Examples
-
-**1. Allocating API:**
-
-```julia
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
-
-N = 50_000
-x = (randn(N), randn(N))
-u = (randn(N), randn(N))
-bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
-
-result = SFC.calculate_structure_function(
-    SFT.L2SFType(),
-    x, u, bins;
-    backend=CB.ThreadedBackend(),
-    show_progress=true
-)
-```
-
-**2. Pre-allocated In-place API:**
-
-```julia
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
-
-N = 50_000
-x = (randn(N), randn(N))
-u = (randn(N), randn(N))
-bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
-
-# Pre-allocate output arrays
-n_bins = length(bins)
-sums = zeros(Float64, n_bins)
-counts = zeros(Float64, n_bins)
-
-# Compute in-place (accumulates directly into provided arrays)
-SFC.calculate_structure_function!(
-    sums, counts, SFT.L2SFType(),
-    x, u, bins;
-    backend=CB.ThreadedBackend()
-)
-```
-
-### Performance & Memory Efficiency
-
-The modern mutating threaded backend (`threaded_calculate_structure_function!`) utilizes a **chunked reduction** strategy via `OhMyThreads.chunks` to divide point indexes into exactly `nthreads()` sub-ranges.
-
-* **Chunked Workspaces**: Each task/thread allocates exactly **one local buffer pair** for its entire chunk (rather than per-point).
-* **Memory Scaling**: This reduces the number of thread-local heap allocations to exactly **$O(n_{\text{threads}})$**, compared to the highly wasteful **$O(N_{\text{points}})$** allocation pattern in naive map-reduce implementations.
-* **Cache Locality**: This optimization maximizes L1/L2 cache locality while maintaining complete thread safety and task-migration protection.
-
-### Thread Safety
-
-ThreadedBackend uses **thread-local reduction buffers** to avoid race conditions:
-- Each task computes on its own local chunk workspace.
-- The results are folded together thread-safely using a parallel tree reduction.
-- No global locks or atomic conflicts are triggered, maximizing performance.
-
----
-
-## DistributedBackend
-
-### Definition
-Multi-process execution using Distributed.jl. Distributes work across multiple Julia processes, potentially on different compute nodes.
-
-### When to Use
-- ✅ **Very large data**: >500M points
-- ✅ **Cluster environments**: HPC, cloud, multiple machines
-- ✅ **Limited per-node memory**: Distribute data across nodes
-- ✅ **Need fault tolerance**: Can add checkpointing
-
-### When NOT to Use
-- ❌ Shared-memory system with <10 cores: ThreadedBackend faster
-- ❌ Interactive/exploratory work: Higher latency
-- ❌ Small data: Communication overhead kills performance
-
-### Setup
-
-```julia
-using StructureFunctions
-using Distributed
-
-# Start 4 worker processes (can be on different machines)
-addprocs(4)
-
-# Ensure StructureFunctions is loaded on all workers
-@everywhere using StructureFunctions
-
-# Large dataset (distributed across RAM)
-N = 1_000_000_000  # 1 billion points
-x = randn(N, 2)
-u = randn(N, 2)
-
-backend = DistributedBackend()
-bins = 10:10:5000
-
-@time result = calculate_structure_function(
-    SecondOrderStructureFunctionType(),
-    x, u, bins;
-    backend=backend,
-    verbose=true
-)
-
-# Clean up
-rmprocs(workers())
-```
-
-### Cluster Job Submission
-
-Example SLURM submission script:
-
-```bash
-#!/bin/bash
-#SBATCH --nodes=4           # Request 4 nodes
-#SBATCH --cpus-per-task=8   # 8 CPUs per node
-#SBATCH --time=01:00:00     # 1 hour
-
-export JULIA_NUM_THREADS=8  # Let each process use 8 threads
-
-srun julia -p $((${SLURM_NNODES} * ${SLURM_CPUS_PER_TASK})) compute_sf.jl
-```
-
-### Performance Notes
-- Communication overhead: ~50–200 ms per calculation (one-time cost)
-- Scales nearly linearly with process count (for large enough problems)
-- Best when N >> communication cost (i.e., N > 100M)
-
----
-
-## GPUBackend
-
-### Definition
-GPU-accelerated computation using KernelAbstractions.jl. Production kernels live in
-`StructureFunctionsKernelAbstractionsExt` (tiled pair histograms, UInt32 counts). See **[gpu.md](gpu.md)**
-for workspace reuse, slice batches, testing tiers, and benchmark regeneration.
-
-### When to Use
-- ✅ **Large datasets**: roughly **few×10³ points and up** (see committed GPU scaling JSON)
-- ✅ **GPUs available**: NVIDIA A100, RTX 4090, AMD MI200, etc.
-- ✅ **Repeated calls or time series**: `GPUSFWorkspace` and `calculate_structure_function_batch!`
-- ✅ **Research clusters**: Many HPC centers provide GPUs
-
-### When NOT to Use
-- ❌ No GPU: `KA.CPU()` is slower than `ThreadedBackend`
-- ❌ Data doesn't fit on GPU memory
-- ❌ Very small N: CPU threading wins
-
-### Requirements
-
-```toml
-[weakdeps]
-KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
-
-# Plus one of: CUDA.jl, AMDGPU.jl, Metal.jl
-```
-
-### Example: single snapshot + workspace
-
-```julia
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC
-using KernelAbstractions: KernelAbstractions as KA
-using CUDA: CUDA
-
-backend = CUDA.CUDABackend()
-N = 20_000
-FT = Float32
-x = CUDA.CuArray{FT}(rand(FT, 3, N))
-u = CUDA.CuArray{FT}(rand(FT, 3, N))
-bins = collect(FT, range(0.0f0, 1.5f0; length = 21))
-sft = SF.LongitudinalSecondOrderStructureFunctionType()
-
-ws = SFC.GPUSFWorkspace(backend, bins)
-result = SFC.gpu_calculate_structure_function(
-    sft, backend, x, u, bins; workspace = ws,
-)  # returns a StructureFunctionSumsAndCounts (raw sums + counts)
-SFC.release!(ws)
-```
-
-### Example: time-slice batch `(N_dims, N, T)`
-
-```julia
-T = 100
-x_batch = CUDA.CuArray{FT}(rand(FT, 3, N, T))
-u_batch = CUDA.CuArray{FT}(rand(FT, 3, N, T))
-sums = zeros(FT, length(bins) - 1, T)
-counts = zeros(UInt32, length(bins) - 1, T)
-SFC.gpu_calculate_structure_function_batch!(
-    sums, counts, sft, backend, x_batch, u_batch, bins; workspace = ws,
-)
-```
-
-### Performance
-
-Committed timings: `gpu/benchmark_results/assets_latest.json` and README GPU figures.
-Regenerate on a GPU allocation with `julia --project=gpu gpu/collect_benchmark_assets.jl`.
-Doc assets measure **problem-size scaling** (1 GPU vs **serial CPU**, sweep N) and
-**slice-batch scaling** (sweep T) — same bins/SF as
-[`benchmark/scaling_config.jl`](../benchmark/scaling_config.jl). This is not multi-GPU
-strong/weak scaling; see [`gpu/collect_multi_gpu_scaling.jl`](../gpu/collect_multi_gpu_scaling.jl).
-
-### Testing
-
-| Tier | Command |
-|------|---------|
-| Default CI | `Pkg.test()` — `KA.CPU()` parity only |
-| CUDA smoke | `julia --project=gpu gpu/runtests.jl` — on GPU allocation |
-
-See [gpu.md — Testing tiers](gpu.md#testing-tiers).
-
-### Kernel Details
-
-GPU kernels use tiled upper-triangle pair loops with block-local UInt32 histograms,
-then merge to global bins. See [`docs/gpu.md`](gpu.md) for supported routes and
-CUDA validation commands.
-
----
-
-## AutoBackend
-
-### Definition
-Automatically selects the best backend based on available resources:
-1. If `Distributed.nworkers() > 1` → DistributedBackend
-2. Else if `Threads.nthreads() > 1` → ThreadedBackend
-3. Else → SerialBackend
-
-### When to Use
-- ✅ **Generic libraries**: Let code adapt to environment
-- ✅ **Unknown deployment**: Works on laptop, cluster, or cloud
-- ✅ **Single shared script**: No backend changes needed
-- ✅ **Production pipelines**: Automatic resource utilization
-
-### Example
-
-```julia
-using StructureFunctions
-
-# Same code runs on laptop (serial), workstation (threaded),
-# or cluster (distributed) without changes!
-
-x = randn(50_000_000, 2)
-u = randn(50_000_000, 2)
-bins = 10:10:500
-
-result = calculate_structure_function(
-    SecondOrderStructureFunctionType(),
-    x, u, bins;
-    backend=AutoBackend(),  # Default—chooses best option
-    show_progress=true
-)
-```
-
-### Algorithm
-
-```julia
-function select_backend()
-    if nworkers() > 1
-        return DistributedBackend()
-    elseif Threads.nthreads() > 1
-        return ThreadedBackend()
-    else
-        return SerialBackend()
-    end
-end
-```
-
-### Notes
-- Default behavior (no `backend` kwarg) also uses AutoBackend
-- Detection is fast (~1 ms)
-- Users can override with explicit backend if needed
-
----
-
-## Performance Tuning
-
-### CPU performance tips (important)
-
-- **Use `LinearBinEdges`/`LogBinEdges`, not a plain `Vector` of edges.** Digitizing each of the
-  O(N²) pairs is on the hot path; the wrapped edge types use an O(1) FMA lookup while a plain
-  `Vector` falls back to binary search. For point-field 1D this is ~**3.8×** end-to-end. Pass a
-  `range` (auto-wrapped to `LinearBinEdges`) or wrap explicitly — never `collect(range(...))`.
-- **Batched inputs are fastest by far.** The batch paths (velocity `u` with trailing
-  axes; positions fixed `(D,N)` or batched) are `Val{D}`-specialized and SIMD-vectorized over
-  the batch axis — multiple Gpair/s. For repeated calls on huge batches you can pass
-  `BatchLeading(u)` (data already stored `(B, D, N)`) to skip the internal transpose.
-- **Threaded throughput saturates near one socket.** On a 2-socket box the batch threaded path
-  is memory-bandwidth-bound and plateaus around the per-socket core count (more threads don't
-  help). Set **`JULIA_EXCLUSIVE=1`** (built-in thread pinning) for ~**+25%**. To scale *past* one
-  socket, use the hybrid backend below (one process per socket).
-- **Hybrid distributed + threaded** via `DistributedBackend(ThreadedBackend())`: each worker
-  threads over its share. With one worker pinned per NUMA node
-  (`addprocs(2; exeflags="-t 24"); numactl --membind`), each process keeps its data socket-local,
-  beating the single-socket bandwidth ceiling of pure threading.
-
-### Choice Decision Tree
-
-```
-Data size?
-├─ < 10M       → SerialBackend (or ThreadedBackend if multi-core)
-├─ 10M–500M    → ThreadedBackend (or AutoBackend to auto-select)
-├─ 500M–1B     → DistributedBackend (or GPUBackend if GPU available)
-└─ > 1B        → GPUBackend (or DistributedBackend if no GPU)
-```
-
-### Memory Considerations
-
-| Backend | Memory per Point (approx) | Total for 1B |
-|---------|--------------------------|-------------|
-| Serial | 20 bytes (buffers only) | 20 GB |
-| Threaded | 20 bytes (shared data) | 20 GB |
-| Distributed | 20 bytes (per node) | 20 GB / N_nodes |
-| GPU | 8 bytes (Float32) | 8 GB |
-
-### Thread/Process Count Tuning
-
-**ThreadedBackend**: Use `Threads.nthreads() = CPU_count - 1` to leave resources for OS
-
-```bash
-# Start Julia with specific thread count
-JULIA_NUM_THREADS=7 julia script.jl  # On 8-core machine
-```
-
-**DistributedBackend**: Tune `addprocs(N)` based on cluster resources
-
-```julia
-# Rule of thumb: N ~= (total_cores / 2) for interactive work
-# N ~= total_cores for batch jobs
-addprocs(32)  # On 64-core system for batch
-```
-
-### Optimizing Bin Edges (AbstractBinEdges)
-
-For datasets with $N \ge 2000$ points, lookups inside the distance bins become the primary CPU bottleneck, often taking over 50% of the total runtime. This is because a standard sorted array uses $O(\log B)$ binary search logic (`searchsortedfirst`) which triggers branch mispredictions and L1/L2 cache misses under millions of pairwise evaluations.
-
-You can bypass this bottleneck by wrapping your bin definitions in custom `AbstractBinEdges` types:
-
-1. **`LinearBinEdges`** (for uniformly-spaced bins): Uses Fused Multiply-Add (FMA) math to compute indexes directly in $O(1)$ time, yielding a **15x+ lookup speedup** (~3 ns vs ~46 ns).
-2. **`LogBinEdges`** (for log-spaced bins): Extracts floating-point exponents directly from the IEEE 754 representation (bitwise shifts/masks) and runs a precomputed lookup table, bypassing the expensive `log(x)` CPU instruction to achieve a **5x+ lookup speedup** (~5-8 ns vs ~39 ns).
-
-#### Usage Example
-To leverage this optimization in single-pass calculations, wrap your raw bin vector before invoking the calculation:
-
-```julia
-using StructureFunctions: Calculations as SFC
-using StructureFunctions: LogBinEdges
-
-# Raw geometric boundaries
-raw_bins = collect(exp.(range(log(0.01), log(10.0), length=51)))
-
-# Wrap log bins for O(1) exponent extraction lookup table search
-distance_bins = LogBinEdges(raw_bins)
-
-# Bypasses binary search bottleneck completely
-results = SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.ThreadedBackend())
-```
-
-### Profiling
-
-Use `@time` or `@profile` to measure:
-
-```julia
-@time result = calculate_structure_function(...)
-
-# For detailed timing:
-using ProfilingTools
-@profile calculate_structure_function(...)
-
-# Generate flame graph
-ProfileCanvas.show()
-```
-
----
-
-## Related Topics
-
-- [Theory](theory.md): What structure functions represent
-- [Architecture](architecture.md): Internal design and dispatch
-- [Examples](../examples/README.md): Complete worked examples
+The mutating entries add into the buffers they are given; zero them first. The count element type
+must hold the worst-case pair count `N(N−1)/2` (`UInt32` up to `N = 92 682`), and weighted results
+take a floating-point count type.
+
+## What each backend does
+
+**Serial.** Flat two- and three-dimensional point lists take a SIMD compute/scatter kernel over
+blocked pair tiles: the pair distances and operator values of a block are computed in a vectorised
+loop and scattered into the histogram in a scalar one. When the last bin edge bounds the separations
+of interest, cells beyond it are never enumerated (`AutoCulling()`, the default; `AlwaysCulling()`
+insists and errors where culling is not implemented; `NoCulling()` sweeps every pair). Curved geometry
+takes the scalar per-point kernel through the pair frame; one-dimensional lists take the sorted line
+route.
+
+**Threaded.** The outer index is split round-robin over tasks — work for index `i` is `N − i`, so a
+contiguous split would skew the load by the thread count — each task accumulates into private
+histograms, and the partials are added. Gridded sweeps and transforms split slab pairs (or the lags of
+a single slab) across tasks the same way. Throughput saturates near one socket's memory bandwidth on
+the batched paths; `JULIA_EXCLUSIVE=1` pins threads.
+
+**Distributed.** Each worker receives a balanced share of the outer index (`w:k:N`) and computes its
+partial sums and counts with the serial kernel — or the threaded one under
+`DistributedBackend(ThreadedBackend())`, one process per NUMA node being the way past a single
+socket's bandwidth. The partials are reduced on the caller.
+
+**GPU.** See [GPU acceleration](gpu.md). One thread per point walks its partners with block-local
+histograms; the gridded transform engine takes its forward transforms through the device's
+`AbstractFFTs` implementation and bins every lag of every slab pair in one kernel.
+
+## Choosing
+
+- Under a few thousand points, or for a check, the serial backend.
+- Otherwise the threaded backend on one node, which is what `AutoBackend()` picks with
+  `julia -t N` and `using OhMyThreads`.
+- A GPU from a few thousand points up when the data fit in device memory; the gridded transform on a
+  device from about a million cells.
+- Several nodes: the distributed backend, threaded inside each worker.
+- On a grid, prefer the transform (`FastFourierTransformSpectralBackend()`) to any pair loop: it is
+  exact and its cost does not grow with the number of pairs. `AutoSpectralBackend()` costs the two
+  gridded algorithms and takes the cheaper.
+
+## Bin edges on the hot path
+
+Digitizing each of the `O(N²)` pairs is the inner loop. Pass a `range` (wrapped as `LinearBinEdges`)
+or `LogBinEdges(edges)` for `O(1)` digitizing by a fused multiply-add or an exponent lookup; a plain
+`Vector` of edges falls back to binary search. See [Binning Internals](uniform_bin_digitize.md).
+
+## Related pages
+
+- [Architecture](architecture.md) — how a call becomes a kernel.
+- [Extensions](extensions.md) — which package each backend needs.

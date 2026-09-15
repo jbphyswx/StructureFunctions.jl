@@ -9,38 +9,47 @@ function serial_calculate_structure_function!(
     distance_bins::AbstractVector;
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     culling::CullingPolicy = AutoCulling(),
+    weights = nothing,
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {OT, CT, T1, T2}
     distance_bins = BinEdges(distance_bins)
+    w = _pair_weights(weights, length(x_vecs[1]), OT)
+    _check_weighted_counts(w, CT)
 
     if verbose
         @info("calculating structure function (serial reduction)")
     end
 
+    D = length(u_vecs)
+    # A polynomial operator on a line: sorted once, every bin is an index range (sorted_line.jl).
+    if _on_a_line(geometry, structure_function_type)
+        _cull_reject_unsupported(culling, "the sorted line route")
+        return sorted_line_sweep!(output, counts, structure_function_type, x_vecs[1],
+            reshape(collect(u_vecs[1]), 1, :), distance_bins, Val(1), Val(1), Val(0); weights = w)
+    end
     # Fast path: flat D ∈ (2,3) uses the SIMD compute/scatter-split kernel (vectorizes the per-pair
     # compute over j; only the histogram scatter is scalar). Curved geometries take the scalar
     # per-i kernel, which forms the frame through `pair_frame`.
-    D = length(u_vecs)
     if geometry isa SFH.FlatGeometry && D == 2
         return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs,
-            distance_bins, Val(2); culling = culling)
+            distance_bins, Val(2); culling = culling, weights = w)
     elseif geometry isa SFH.FlatGeometry && D == 3
         return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs,
-            distance_bins, Val(3); culling = culling)
+            distance_bins, Val(3); culling = culling, weights = w)
     end
     _cull_reject_unsupported(culling, "the scalar per-point kernel that this geometry uses")
 
     PM.@showprogress enabled = show_progress for i in eachindex(x_vecs[1])
         calculate_structure_function_i!(
-            output, counts, geometry, structure_function_type, i, x_vecs, u_vecs, distance_bins,
+            output, counts, geometry, structure_function_type, i, x_vecs, u_vecs, distance_bins, w,
         )
     end
     return nothing
 end
 
 """
-    _pf_simd_run!(output, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}) -> mutates buffers
+    _pf_simd_run!(output, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}; culling, weights) -> mutates buffers
 
 Point-field 1D (Euclidean) via the SIMD compute/scatter split. Materializes contiguous
 per-component vectors (so consecutive `j` are unit-stride → packed loads), then for each `i`:
@@ -51,11 +60,15 @@ function _pf_simd_run!(
     output::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D};
-    culling::CullingPolicy = AutoCulling(),
+    culling::CullingPolicy = AutoCulling(), weights = NoWeights(),
 ) where {OT, CT, D}
     N = length(x_vecs[1])
-    return _pf_simd_partial!(output, counts, sf, x_vecs, u_vecs, dist_be, Val(D), 1:(N - 1), culling)
+    return _pf_simd_partial!(output, counts, sf, x_vecs, u_vecs, dist_be, Val(D), 1:(N - 1), culling; weights)
 end
+
+"""The weight a point carries into its pairs; `true` for an unweighted sweep, which the compiler folds away."""
+@inline _point_weight(::NoWeights, i::Int) = true
+@inline _point_weight(w::AbstractVector, i::Int) = @inbounds w[i]
 
 """
 Points per `j` block in the CPU pair loop. Sized so one block's coordinates, fields and the three
@@ -64,9 +77,10 @@ per-`j` buffers stay resident in a core's private cache while every `i` sweeps i
 const SF_CPU_PAIR_TILE = 65536
 
 """
-    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, blocks)
+    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, blocks, weights)
 
-Accumulate the pairs `(i, j>i)` covered by `blocks` into `output`/`counts`.
+Accumulate the pairs `(i, j>i)` covered by `blocks` into `output`/`counts`, each pair carrying
+`weights[i] * weights[j]` in both.
 
 `blocks` yields `(i-block, j-block)` index ranges (see [`block_pairs`](@ref)); each is worked to
 completion, so the `j` block stays cache-resident across its whole `i` sweep. Under multi-core load
@@ -87,7 +101,7 @@ function _pf_simd_pairs!(
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, ::Val{D},
     r2buf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32},
-    blocks,
+    blocks, weights,
 ) where {OT, CT, D}
     nb = n_histogram_bins(plan)
     FTx = eltype(xc[1])
@@ -109,11 +123,13 @@ function _pf_simd_pairs!(
                     idxbuf[j] = squared_approx_index(plan, r2)
                 end
             end
+            wi = _point_weight(weights, i)
             for j in jlo:j_last
                 b = squared_bin(plan, r2buf[j], idxbuf[j])
                 if 1 <= b <= nb
-                    output[b] += valbuf[j]
-                    counts[b] += one(CT)
+                    w = wi * _point_weight(weights, j)
+                    output[b] += w * valbuf[j]
+                    counts[b] += CT(w)
                 end
             end
         end
@@ -177,7 +193,7 @@ end
 """
     _tensor_bin_average(sums, counts, ::Val{P})
 
-Tensor analogue of [`_bin_average`](@ref): `counts` (indexed by `(bin, aux...)`) broadcasts over
+Tensor analogue of `_bin_average`: `counts` (indexed by `(bin, aux...)`) broadcasts over
 the `P` leading component axes of `sums` (shape `(D×P..., n_bins, aux...)`). Same empty-bin guard
 (`count == 0 → NaN`) and `eltype` preservation. Used by `_finalize` to average a tensor result.
 """
@@ -201,8 +217,14 @@ function _tensor_bin_average(sums::AbstractArray, counts::AbstractArray, ::Val{P
     return out
 end
 
-# Non-mutating backends always return the raw accumulator (`StructureFunctionSumsAndCounts`);
-# the public boundary picks the representation via `_finalize(raw, output_type)`.
+"""
+    serial_calculate_structure_function(sf, x, u, distance_bins[, value_bins][, count_eltype]; kwargs...)
+
+The point-list structure function on the serial CPU backend, returning the raw
+[`StructureFunctionSumsAndCounts`](@ref StructureFunctions.StructureFunctionObjects.StructureFunctionSumsAndCounts)
+(or the joint `StructureFunction2DSumsAndCounts` with `value_bins`). Takes the arguments of
+[`calculate_structure_function`](@ref) without `backend`; the public entry picks the output type.
+"""
 function serial_calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple{T1, Vararg{T1}},
@@ -296,6 +318,7 @@ function calculate_structure_function_i!(
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector,
+    weights = NoWeights(),
 ) where {OT, T1, T2}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
@@ -307,6 +330,7 @@ function calculate_structure_function_i!(
     F = _val_int(vF)
     X1 = SA.SVector{W, FT1}(ntuple(k -> @inbounds(x_vecs[k][i]), vW))
     U1 = SA.SVector{F, FT2}(ntuple(k -> @inbounds(u_vecs[k][i]), vF))
+    wi = _point_weight(weights, i)
 
     iter_inds = eachindex(x_vecs[1])
     # @inbounds: x_vecs[k] are strided views; the bounds checks on every component access
@@ -319,8 +343,9 @@ function calculate_structure_function_i!(
         if ok && 1 <= bin < N3
             U2 = SA.SVector{F, FT2}(ntuple(k -> u_vecs[k][j], vF))
             δu, rh = SFH.pair_increments(geom, frame, distance, X1, X2, U1, U2)
-            output[bin] += structure_function_type(δu, rh)
-            counts[bin] += 1
+            w = wi * _point_weight(weights, j)
+            output[bin] += w * structure_function_type(δu, rh)
+            counts[bin] += w
         end
     end
     return nothing
@@ -398,21 +423,21 @@ function _partial_sums_counts(
 end
 
 """
-    _pf_run_blocks!(sums, counts, sf, xc, uc, plan, ::Val{D}, bufs..., ilist, N, grid)
+    _pf_run_blocks!(sums, counts, sf, xc, uc, plan, ::Val{D}, bufs..., ilist, N, grid, weights)
 
 Run the pair kernel with the schedule `grid` selects. Whether a grid exists is decided from the
 data, so it arrives here as a `Union`; dispatching on it resolves that into one concretely typed
 schedule per method, which is what keeps the kernel statically specialized.
 """
 @inline _pf_run_blocks!(
-    sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, ilist, N, ::Nothing,
+    sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, ilist, N, ::Nothing, weights,
 ) where {D} = _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf,
-    pair_blocks(N, ilist))
+    pair_blocks(N, ilist), weights)
 
 @inline _pf_run_blocks!(
-    sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, ilist, N, grid::CellGrid,
+    sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, ilist, N, grid::CellGrid, weights,
 ) where {D} = _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf,
-    pair_blocks(N, ilist; grid = grid))
+    pair_blocks(N, ilist; grid = grid), weights)
 
 """
     _pf_simd_partial!(sums, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}, ilist; kwargs...)
@@ -422,16 +447,18 @@ component vectors and scratch buffers this worker needs. Shared by the distribut
 hybrid drivers, whose inputs arrive as strided views.
 
 When `culling` yields a cull grid the points are sorted into it first; `ilist` then selects
-positions in the sorted order, which leaves the union over workers unchanged.
+positions in the sorted order, which leaves the union over workers unchanged. `weights`, one per
+point, are sorted with them.
 """
 function _pf_simd_partial!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D}, ilist, culling::CullingPolicy = AutoCulling();
-    geometry = SFH.FlatGeometry{D}(),
+    geometry = SFH.FlatGeometry{D}(), weights = NoWeights(),
 ) where {OT, CT, D}
     xc = ntuple(d -> collect(x_vecs[d]), Val(D))   # contiguous component vectors
     uc = ntuple(d -> collect(u_vecs[d]), Val(D))
+    wc = weights isa NoWeights ? weights : collect(weights)
     N = length(xc[1])
     plan = squared_digitize_plan(dist_be)
     r2buf = Vector{eltype(xc[1])}(undef, N)
@@ -441,9 +468,10 @@ function _pf_simd_partial!(
     if !isnothing(grid)
         xc = apply_perm(xc, grid.perm)
         uc = apply_perm(uc, grid.perm)
+        wc = wc isa NoWeights ? wc : wc[grid.perm]
     end
     _pf_run_blocks!(sums, counts, sf, xc, uc, plan, Val(D),
-        r2buf, valbuf, idxbuf, ilist, N, grid)
+        r2buf, valbuf, idxbuf, ilist, N, grid, wc)
     return nothing
 end
 

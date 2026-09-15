@@ -45,6 +45,43 @@ end
 field_validity(f::CH.Fields, cell_mask = nothing) = field_validity(CH.packed(f), cell_mask)
 
 """
+    NoWeights()
+
+Every pair counts once, as an indexable value rather than an absent one: the unweighted sweep is the
+same kernel with the weight folded away, as [`AllValid`](@ref) folds the mask away.
+"""
+struct NoWeights end
+
+"""
+    _pair_weights(weights, n, FT) -> NoWeights or Vector{FT}
+
+The per-cell pair weights a sweep multiplies by: `nothing` means none; a vector must hold one finite
+weight per cell and is converted to the field's float type.
+"""
+_pair_weights(::Nothing, ::Int, ::Type) = NoWeights()
+_pair_weights(w::NoWeights, ::Int, ::Type) = w
+function _pair_weights(w::AbstractVector, n::Int, ::Type{FT}) where {FT}
+    length(w) == n || throw(DimensionMismatch("$(length(w)) weights for $n cells"))
+    all(isfinite, w) || throw(ArgumentError("every pair weight must be finite"))
+    return convert(Vector{FT}, w)
+end
+
+"""Weighted pairs make the counts a weighted pair mass, which needs a floating-point count type."""
+_check_weighted_counts(::NoWeights, ::Type) = nothing
+_check_weighted_counts(::AbstractVector, ::Type{CT}) where {CT} = CT <: AbstractFloat ? nothing : throw(ArgumentError(
+    "pair weights make the counts a weighted pair mass, which the count type $CT cannot hold; pass count_eltype = Float64, or Float64 counts",
+))
+
+"""
+    cell_measure(grid) -> Vector
+
+The measure — length, area or volume — of every cell of `grid`, in the cell order the gridded entries
+use. As `weights = cell_measure(grid)` it makes a structure function an area average. Supplied by the
+FlowGeometries extension.
+"""
+function cell_measure end
+
+"""
     _packed(u) -> (data, Val(D), Val(V), Val(K))
 
 The one form every gridded kernel indexes: the `(V·D + K, cells)` matrix of a field with its channel
@@ -129,11 +166,13 @@ end
 # Entry points
 # ---------------------------------------------------------------------------------------------------
 
+
 """
-    gridded_sweep!(sums, counts, sf, u, schedule, distance_bins[, axis_bins], ::Val{D}, spectral_backend; valid, backend)
-    gridded_sweep!(sums, counts, sf, fields, schedule, distance_bins[, axis_bins], spectral_backend; valid, backend)
+    gridded_sweep!(sums, counts, sf, u, schedule, distance_bins[, axis_bins], ::Val{D}, spectral_backend; valid, weights, backend)
+    gridded_sweep!(sums, counts, sf, fields, schedule, distance_bins[, axis_bins], spectral_backend; valid, weights, backend)
 
 Accumulate the histogram of every pair `schedule` names, by the algorithm `spectral_backend` selects.
+`valid` and `weights` are as on [`gridded_lag_sweep!`](@ref).
 
 Which algorithm sums the pairs is an axis of its own, orthogonal to which hardware runs it: the lag
 sweep visits each lag and is exact for any pairwise operator, while a transform produces the increment
@@ -145,24 +184,30 @@ only it knows what a transform would cost. `backend` names the hardware, as on t
 With `axis_bins` the histogram is joint in separation and the angle a [`SeparationAngleAxis`](@ref)
 reads from each lag; `sums` and `counts` are then `(n_distance, n_angle)`.
 """
-function gridded_sweep!(sums::AbstractVector, counts::AbstractVector, sf, data::AbstractMatrix, schedule,
-                        distance_bins, ::Val{D}, ::Val{V}, ::Val{K}, spectral_backend;
-                        valid = AllValid(), backend = CB.SerialBackend()) where {D, V, K}
-    _no_spectral_backend(spectral_backend)
-end
+gridded_sweep!(sums::AbstractVector, counts::AbstractVector, sf, data::AbstractMatrix, schedule, distance_bins,
+               ::Val{D}, ::Val{V}, ::Val{K}, ::Union{SB.AbstractDirectSumSpectralBackend, SB.AbstractAutoSpectralBackend}; kwargs...) where {D, V, K} =
+    gridded_lag_sweep!(sums, counts, sf, data, schedule, distance_bins, Val(D), Val(V), Val(K); kwargs...)
 
-function gridded_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, data::AbstractMatrix, schedule,
-                        distance_bins, axis_bins, ::Val{D}, ::Val{V}, ::Val{K}, spectral_backend;
-                        valid = AllValid(), backend = CB.SerialBackend(),
-                        second_axis::SeparationAngleAxis) where {D, V, K}
-    _no_spectral_backend(spectral_backend)
-end
+gridded_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, data::AbstractMatrix, schedule, distance_bins,
+               axis_bins, ::Val{D}, ::Val{V}, ::Val{K}, ::Union{SB.AbstractDirectSumSpectralBackend, SB.AbstractAutoSpectralBackend}; kwargs...) where {D, V, K} =
+    gridded_lag_sweep!(sums, counts, sf, data, schedule, distance_bins, axis_bins, Val(D), Val(V), Val(K); kwargs...)
 
-_no_spectral_backend(spectral_backend) = throw(ArgumentError(
-    "no method sums a gridded calculation with $(typeof(spectral_backend)). Load the package " *
-    "that supplies it — `using SpectralBackends` for the direct sum, and additionally an " *
-    "AbstractFFTs implementation (`using FFTW` on CPU) for a transform. Omitting the argument " *
-    "sweeps the lags, which needs neither.",
+gridded_sweep!(::AbstractVector, ::AbstractVector, sf, ::AbstractMatrix, schedule, distance_bins, ::Val{D}, ::Val{V},
+               ::Val{K}, tag::SB.AbstractSpectralBackend; kwargs...) where {D, V, K} = _no_transform_loaded(tag, schedule)
+
+gridded_sweep!(::AbstractMatrix, ::AbstractMatrix, sf, ::AbstractMatrix, schedule, distance_bins, axis_bins, ::Val{D},
+               ::Val{V}, ::Val{K}, tag::SB.AbstractSpectralBackend; kwargs...) where {D, V, K} =
+    _no_transform_loaded(tag, schedule)
+
+gridded_sweep!(::AbstractVector, ::AbstractVector, sf, ::AbstractMatrix, schedule, distance_bins, ::Val{D}, ::Val{V},
+               ::Val{K}, spectral_backend; kwargs...) where {D, V, K} = _not_a_spectral_tag(spectral_backend)
+
+gridded_sweep!(::AbstractMatrix, ::AbstractMatrix, sf, ::AbstractMatrix, schedule, distance_bins, axis_bins, ::Val{D},
+               ::Val{V}, ::Val{K}, spectral_backend; kwargs...) where {D, V, K} = _not_a_spectral_tag(spectral_backend)
+
+_not_a_spectral_tag(x) = throw(ArgumentError(
+    "spectral_backend must be a SpectralBackends tag — AutoSpectralBackend(), DirectSumSpectralBackend(), " *
+    "FastFourierTransformSpectralBackend() or a non-uniform FFT tag; got $(typeof(x)). Omitting it sweeps the lags.",
 ))
 
 # The array and `Fields` forms of both sweeps route through `_packed`, so every kernel sees one layout.
@@ -226,10 +271,23 @@ on the remaining directions, and within a pair of slabs every pair of cells is n
 lag along the uniform directions. Both sweeps run over `(slab, slab, lag)`: the direct one reduces
 the field over each lag, the transform produces every lag of a slab pair at once.
 
-A schedule provides [`uniform_axes`](@ref), [`n_slabs`](@ref), [`enumerated_pairs`](@ref),
-[`separable_layout`](@ref), [`lag_limits`](@ref), [`lag_transport`](@ref) and [`lag_frame`](@ref).
+A schedule provides [`uniform_axes`](@ref), [`n_slabs`](@ref), `enumerated_pairs`,
+[`separable_layout`](@ref), `lag_limits`, [`lag_transport`](@ref) and `lag_frame`.
 """
 abstract type AbstractSeparableSchedule end
+
+# A transform's tag with no transform loaded: a separable schedule wants the AbstractFFTs extension; any
+# other schedule has no lag to transform along.
+_no_transform_loaded(tag, ::AbstractSeparableSchedule) = throw(ArgumentError(
+    "$(typeof(tag)) needs a transform this session has not loaded: `using FFTW: FFTW` on CPU, or another AbstractFFTs " *
+    "implementation, supplies it for every grid with a uniform direction. DirectSumSpectralBackend and " *
+    "AutoSpectralBackend need none.",
+))
+
+_no_transform_loaded(tag, schedule) = throw(ArgumentError(
+    "$(typeof(tag)) transforms along a uniform direction, and a $(nameof(typeof(schedule))) has none: its pairs " *
+    "share no lag. Omit the tag, or pass DirectSumSpectralBackend or AutoSpectralBackend, to enumerate the pairs.",
+))
 
 """
     IdentityTransport()
@@ -241,7 +299,11 @@ each end is first expressed in the pair's own frame, `B·u(J, i+h) - A·u(I, i)`
 fixed by the lag, and the longitudinal direction is `ê₁`.
 """
 abstract type AbstractLagTransport end
+
+"""The transport of a flat schedule: the increment is the plain difference and the lag's displacement its direction; see [`AbstractLagTransport`](@ref)."""
 struct IdentityTransport <: AbstractLagTransport end
+
+"""The transport of a curved schedule: each end is expressed in the pair's own frame before differencing; see [`AbstractLagTransport`](@ref)."""
 struct FrameTransport <: AbstractLagTransport end
 
 """
@@ -266,10 +328,11 @@ The slab pairs `(I, J)`, `I ≤ J`, whose cells can come within `r_max` of each 
 function enumerated_pairs end
 
 """
-    separable_layout(schedule, data, valid) -> (data, valid)
+    separable_layout(schedule, data, valid, weights) -> (data, valid, weights)
 
-The packed field and its validity with slab `I` occupying columns `(I-1)·N_u + 1 : I·N_u`, `N_u` the
-cells of a slab, and the uniform directions running column-major within it.
+The packed field, its validity and its pair weights with slab `I` occupying columns
+`(I-1)·N_u + 1 : I·N_u`, `N_u` the cells of a slab, and the uniform directions running column-major
+within it.
 """
 function separable_layout end
 
@@ -385,7 +448,7 @@ end
 @inline uniform_axes(s::UniformLagSchedule) = s
 @inline n_slabs(::UniformLagSchedule) = 1
 @inline enumerated_pairs(::UniformLagSchedule, r_max) = ((1, 1),)
-@inline separable_layout(::UniformLagSchedule, data, valid) = (data, valid)
+@inline separable_layout(::UniformLagSchedule, data, valid, weights) = (data, valid, weights)
 @inline lag_limits(s::UniformLagSchedule{Dg}, r_max) where {Dg} =
     ntuple(d -> _lag_limit(s, d, r_max), Val(Dg))
 @inline lag_limits(s::UniformLagSchedule, I, J, r_max) = lag_limits(s, r_max)
@@ -531,14 +594,15 @@ end
     end
 end
 
-function separable_layout(s::RectilinearLagSchedule{Du, De, N}, data::AbstractMatrix, valid) where {Du, De, N}
-    s.axis_order == ntuple(identity, Val(N)) && return data, valid
+function separable_layout(s::RectilinearLagSchedule{Du, De, N}, data::AbstractMatrix, valid, weights) where {Du, De, N}
+    s.axis_order == ntuple(identity, Val(N)) && return data, valid, weights
     dims = _field_dims(s)
     W = size(data, 1)
     perm = (1, (s.axis_order .+ 1)...)
     dp = reshape(permutedims(reshape(data, W, dims...), perm), W, :)
     vp = valid isa AllValid ? valid : vec(permutedims(reshape(valid, dims), s.axis_order))
-    return dp, vp
+    wp = weights isa NoWeights ? weights : vec(permutedims(reshape(weights, dims), s.axis_order))
+    return dp, vp, wp
 end
 
 # Squared distance between two slabs' enumerated coordinates; no pair of theirs is closer.
@@ -640,16 +704,17 @@ threaded_sweep_reduce!(sums, counts, items, make_scratch, body!) = throw(Argumen
 ))
 
 """
-    transform_engine(sf, data, schedule, distance_bins, ::Val{D}, ::Val{V}, ::Val{K}, valid; to = identity)
+    transform_engine(sf, data, schedule, distance_bins, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag; to = identity)
 
-The transform engine's prepared state for a field: the forward transforms of every masked monomial
-of every slab, the inverse columns and the lag bookkeeping, every array moved by `to`. Supplied by the
-AbstractFFTs extension.
+The transform engine's prepared state for a field: the forward transforms of every masked, weighted
+monomial of every slab — by FFT for a grid's slabs, by non-uniform FFT for a
+[`ScatteredModesSchedule`](@ref), as the spectral `tag` names — the inverse columns and the lag
+bookkeeping, every array moved by `to`. Supplied by the AbstractFFTs extension.
 """
 function transform_engine end
 
 """
-    device_transform_sweep!(sums, counts, backend, sf, data, schedule, distance_bins, plan, nb, ::Val{D}, ::Val{V}, ::Val{K}, valid, axis)
+    device_transform_sweep!(sums, counts, backend, sf, data, schedule, distance_bins, plan, nb, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag, axis)
 
 The transform engine on a device backend, supplied by the KernelAbstractions extension together with
 an AbstractFFTs implementation for the device's arrays. `axis` is `nothing` for the distance
@@ -726,11 +791,12 @@ end
 end
 
 """
-    _lag_reduce(transport, sf, data, valid, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{Dg}, uniform, strides, h,
+    _lag_reduce(transport, sf, data, valid, weights, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{Dg}, uniform, strides, h,
                 frames, r2, half_dim, baseI, baseJ) -> (totals, n_pairs)
 
 Sum the operator over every pair one lag names between the slabs starting at columns `baseI` and
-`baseJ`, once per frame in `frames`, with the squared separation `r2` already fixed.
+`baseJ`, once per frame in `frames`, with the squared separation `r2` already fixed. With `weights`
+each pair carries `w_k · w_kp` in the totals and in the pair count.
 
 The lag's cells are swept as boxes of constant flat offset, so the innermost loop is unit-stride and
 the whole lag contributes one number per frame. A wrapped direction contributes a second box rather
@@ -738,13 +804,13 @@ than a per-cell branch.
 """
 @inline function _lag_reduce(
     transport::AbstractLagTransport, sf::SFT.AbstractPairwiseStructureFunctionType,
-    data::AbstractMatrix{UT}, valid, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{Dg}, su::UniformLagSchedule,
+    data::AbstractMatrix{UT}, valid, weights, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{Dg}, su::UniformLagSchedule,
     strides::NTuple{Dg, Int}, h::NTuple{Dg, Int}, frames::NTuple{M, <:NamedTuple}, r2, half_dim::Int,
     baseI::Int, baseJ::Int,
 ) where {UT, D, V, K, Dg, M}
     T = float(promote_type(UT, eltype(frames[1].dir)))
     totals = ntuple(_ -> zero(T), Val(M))
-    n_pairs = 0
+    n_pairs = _zero_count(weights)
     @inbounds for combo in 0:((1 << Dg) - 1)
         segs = ntuple(Val(Dg)) do d
             _lag_segments(su, d, h[d], d == half_dim)[1 + ((combo >> (d - 1)) & 1)]
@@ -766,9 +832,10 @@ than a per-cell branch.
                 k = baseI + base + i1
                 kp = baseJ + base + i1 + off
                 ok = valid[k] & valid[kp]
+                w = _pair_weight(weights, k, kp)
                 vals = _lag_values(transport, sf, frames, data, k, kp, r2, Val(D), Val(V), Val(K), T)
-                totals = _accumulate(totals, vals, ok)
-                n_pairs += ok
+                totals = _accumulate(totals, vals, ok, w)
+                n_pairs = _count_pair(n_pairs, ok, w)
             end
         end
     end
@@ -777,12 +844,22 @@ end
 
 # Selected, never multiplied by `ok`: an empty cell may hold NaN, and NaN * 0 is NaN. A function of its
 # own so the running totals are never a captured variable that is reassigned, which Julia would box.
-@inline _accumulate(totals::NTuple{M}, vals::NTuple{M}, ok::Bool) where {M} =
+# An unweighted pair carries the weight `true`, which the compiler folds away.
+@inline _accumulate(totals::NTuple{M}, vals::NTuple{M}, ok::Bool, ::Bool) where {M} =
     ntuple(m -> @inbounds(totals[m] + (ok ? vals[m] : zero(vals[m]))), Val(M))
+@inline _accumulate(totals::NTuple{M}, vals::NTuple{M}, ok::Bool, w) where {M} =
+    ntuple(m -> @inbounds(totals[m] + (ok ? w * vals[m] : zero(vals[m]))), Val(M))
+
+@inline _pair_weight(::NoWeights, k::Int, kp::Int) = true
+@inline _pair_weight(w::AbstractVector, k::Int, kp::Int) = @inbounds w[k] * w[kp]
+@inline _zero_count(::NoWeights) = 0
+@inline _zero_count(w::AbstractVector) = zero(eltype(w))
+@inline _count_pair(n::Int, ok::Bool, ::Bool) = n + ok
+@inline _count_pair(n, ok::Bool, w) = n + (ok ? w : zero(w))
 
 """
-    gridded_lag_sweep!(sums, counts, sf, u, schedule, distance_bins[, axis_bins], ::Val{D}; valid, backend, second_axis)
-    gridded_lag_sweep!(sums, counts, sf, fields, schedule, distance_bins[, axis_bins]; valid, backend, second_axis)
+    gridded_lag_sweep!(sums, counts, sf, u, schedule, distance_bins[, axis_bins], ::Val{D}; valid, weights, backend, second_axis)
+    gridded_lag_sweep!(sums, counts, sf, fields, schedule, distance_bins[, axis_bins]; valid, weights, backend, second_axis)
 
 Accumulate every pair `schedule` names into the distance histogram `sums`/`counts`, or with
 `axis_bins` into the joint histogram over separation and the angle `second_axis` reads from each
@@ -792,7 +869,10 @@ lag's direction, `sums` and `counts` then being `(n_distance, n_angle)`.
 component count, which may exceed the grid's dimension — a lag then lies in the grid's directions
 and is zero along the rest. A `Fields` bundle carries several channels the same way. `valid` says
 which cells hold a datum; a pair counts only when both of its ends do (see [`field_validity`](@ref)).
-`backend` is the hardware, as on the unstructured entry; a threaded backend splits the slab pairs
+`weights`, one finite weight per cell (`nothing` for none), multiplies each pair by `w_k · w_kp` in both
+`sums` and `counts`, so the bin average is `Σ w w v / Σ w w` and `counts` must then be floating point;
+[`cell_measure`](@ref) supplies a grid's cell areas. `backend` is the hardware, as on the unstructured
+entry; a threaded backend splits the slab pairs
 across tasks, and the lags of a schedule with a single slab.
 
 Exact, not approximate: each unordered pair is counted once, because lags are enumerated one per
@@ -811,9 +891,11 @@ function gridded_lag_sweep!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
-    valid = AllValid(), backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
 ) where {OT, CT, D, V, K}
     _check_grid_field(sf, data, s, Val(D), Val(V), Val(K))
+    w = _pair_weights(weights, size(data, 2), float(eltype(data)))
+    _check_weighted_counts(w, CT)
     plan = squared_digitize_plan(dist_be)
     nb = n_histogram_bins(plan)
     length(sums) == nb && length(counts) == nb || throw(DimensionMismatch(
@@ -822,17 +904,17 @@ function gridded_lag_sweep!(
     su = uniform_axes(s)
     T = eltype(su.spacing)
     r_max = _cull_is_unbounded(dist_be) ? T(Inf) : T(float(last(dist_be)))
-    dp, vp = separable_layout(s, data, valid)
+    dp, vp, wp = separable_layout(s, data, valid, w)
     transport = lag_transport(s)
     items = sweep_items(s, r_max, sweep_tasks(backend), true)
-    body! = (ls, lc, it, _) -> _sweep_item!(ls, lc, sf, s, su, dp, vp, it, plan, nb, r_max, transport,
+    body! = (ls, lc, it, _) -> _sweep_item!(ls, lc, sf, s, su, dp, vp, wp, it, plan, nb, r_max, transport,
                                              Val(D), Val(V), Val(K))
     sweep_reduce!(sums, counts, backend, items, () -> nothing, body!)
     return sums, counts
 end
 
 function _sweep_item!(
-    sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, s, su::UniformLagSchedule{Dg}, data, valid,
+    sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, s, su::UniformLagSchedule{Dg}, data, valid, weights,
     item::NTuple{4, Int}, plan, nb, r_max, transport, ::Val{D}, ::Val{V}, ::Val{K},
 ) where {OT, CT, Dg, D, V, K}
     I, J, part, n_parts = item
@@ -847,7 +929,7 @@ function _sweep_item!(
         b, r2, factor, geometry, self_reverse = v
         half_dim = self_reverse ? findfirst(!iszero, h)::Int : 0
         totals, n_pairs = with_frames(transport, geometry) do frames
-            _lag_reduce(transport, sf, data, valid, Val(D), Val(V), Val(K), Val(Dg), su, strides, h,
+            _lag_reduce(transport, sf, data, valid, weights, Val(D), Val(V), Val(K), Val(Dg), su, strides, h,
                         frames, r2, half_dim, baseI, baseJ)
         end
         sums[b] += OT(factor * sum(totals) / length(totals))
@@ -860,11 +942,13 @@ function gridded_lag_sweep!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K};
-    valid = AllValid(), backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
     second_axis::SeparationAngleAxis,
 ) where {OT, CT, D, V, K}
     _check_grid_field(sf, data, s, Val(D), Val(V), Val(K))
     _require_directional(s)
+    w = _pair_weights(weights, size(data, 2), float(eltype(data)))
+    _check_weighted_counts(w, CT)
     plan = squared_digitize_plan(dist_be)
     nb = n_histogram_bins(plan)
     axis_edges = BinEdges(axis_be)
@@ -875,17 +959,17 @@ function gridded_lag_sweep!(
     su = uniform_axes(s)
     T = eltype(su.spacing)
     r_max = _cull_is_unbounded(dist_be) ? T(Inf) : T(float(last(dist_be)))
-    dp, vp = separable_layout(s, data, valid)
+    dp, vp, wp = separable_layout(s, data, valid, w)
     transport = lag_transport(s)
     items = sweep_items(s, r_max, sweep_tasks(backend), true)
-    body! = (ls, lc, it, _) -> _sweep_item!(ls, lc, sf, s, su, dp, vp, it, plan, nb, r_max, transport,
+    body! = (ls, lc, it, _) -> _sweep_item!(ls, lc, sf, s, su, dp, vp, wp, it, plan, nb, r_max, transport,
                                              axis_edges, na, second_axis, Val(D), Val(V), Val(K))
     sweep_reduce!(sums, counts, backend, items, () -> nothing, body!)
     return sums, counts
 end
 
 function _sweep_item!(
-    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, s, su::UniformLagSchedule{Dg}, data, valid,
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, s, su::UniformLagSchedule{Dg}, data, valid, weights,
     item::NTuple{4, Int}, plan, nb, r_max, transport, axis_edges, na, second_axis,
     ::Val{D}, ::Val{V}, ::Val{K},
 ) where {OT, CT, Dg, D, V, K}
@@ -901,7 +985,7 @@ function _sweep_item!(
         b, r2, factor, geometry, self_reverse = v
         half_dim = self_reverse ? findfirst(!iszero, h)::Int : 0
         with_frames(transport, geometry) do frames
-            totals, n_pairs = _lag_reduce(transport, sf, data, valid, Val(D), Val(V), Val(K), Val(Dg), su,
+            totals, n_pairs = _lag_reduce(transport, sf, data, valid, weights, Val(D), Val(V), Val(K), Val(Dg), su,
                                           strides, h, frames, r2, half_dim, baseI, baseJ)
             _scatter_joint!(sums, counts, b, factor, totals, n_pairs, map(f -> f.dir, frames), r2,
                             axis_edges, na, second_axis)

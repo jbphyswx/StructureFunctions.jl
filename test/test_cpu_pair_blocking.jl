@@ -12,7 +12,7 @@ function _run_blocks(sf, xc, uc, bins, ::Val{D}, blocks, N, ::Type{FT}) where {D
     nb = SFC.n_histogram_bins(plan)
     s = zeros(FT, nb); c = zeros(UInt32, nb)
     SFC._pf_simd_pairs!(s, c, sf, xc, uc, plan, Val(D),
-        Vector{FT}(undef, N), Vector{FT}(undef, N), Vector{Int32}(undef, N), blocks)
+        Vector{FT}(undef, N), Vector{FT}(undef, N), Vector{Int32}(undef, N), blocks, SFC.NoWeights())
     return s, c
 end
 

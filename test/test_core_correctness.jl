@@ -3,6 +3,9 @@ using StructureFunctions:
 using Test: Test
 using Random: Random
 using StaticArrays: StaticArrays as SA
+using LinearAlgebra: LinearAlgebra as LA
+using ComputationalBackends: ComputationalBackends as CB
+using OhMyThreads: OhMyThreads
 
 Test.@testset "Core Correctness - Block A" begin
     Test.@testset "Blocked path regression" begin
@@ -174,6 +177,42 @@ Test.@testset "Core Correctness - Block A" begin
         Test.@test SFT.L2T1SF(Flip * δu, Flip * r̂) ≈ -SFT.L2T1SF(δu, r̂)
         Test.@test SFT.T3SF(Flip * δu, Flip * r̂) ≈ -SFT.T3SF(δu, r̂)
         Test.@test SFT.T2SF(Flip * δu, Flip * r̂) ≈ SFT.T2SF(δu, r̂)
+    end
+end
+
+Test.@testset "a projected operator's convention decides its signed transverse component through the entry" begin
+    Random.seed!(1103)
+    N = 60
+    x = randn(3, N)
+    u = randn(3, N)
+    bins = [0.0, 100.0]
+    conventions = (SF.CanonicalTransverseBasis(),
+                   SF.ReferenceAxisTransverseBasis(LA.normalize(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))))
+    for (NL, NT) in ((0, 3), (2, 1))
+        by_basis = Float64[]
+        for basis in conventions
+            sf = SFT.ProjectedStructureFunctionType{NL, NT}(basis)
+            expected = 0.0
+            for i in 1:(N - 1), j in (i + 1):N
+                dx = SA.SVector{3}(x[1, j] - x[1, i], x[2, j] - x[2, i], x[3, j] - x[3, i])
+                r̂ = dx / LA.norm(dx)
+                δu = SA.SVector{3}(u[1, j] - u[1, i], u[2, j] - u[2, i], u[3, j] - u[3, i])
+                e = SF.transverse_basis(basis, r̂)[1]
+                expected += LA.dot(δu, r̂)^NL * LA.dot(δu, e)^NT
+            end
+            for backend in (CB.SerialBackend(), CB.ThreadedBackend())
+                res = SFC.calculate_structure_function(
+                    sf, x, u, bins;
+                    backend, verbose = false, show_progress = false,
+                    output_type = SF.StructureFunctionSumsAndCounts,
+                )
+                Test.@test res.counts == [N * (N - 1) ÷ 2]
+                Test.@test res.sums[1] ≈ expected rtol = 1e-12
+                Test.@test res.operator.basis === basis
+            end
+            push!(by_basis, expected)
+        end
+        Test.@test !(by_basis[1] ≈ by_basis[2])
     end
 end
 

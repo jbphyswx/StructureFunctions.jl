@@ -1,19 +1,21 @@
 [deps]
-Bessels = "0e736298-9ec6-45e8-9647-e4fc86a2fe38"
-FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
 AbstractFFTs = "621f4979-c628-5d54-868e-fcf4e3e8185c"
-ComputationalBackends = "5c6e2104-4040-447f-8fc0-66ec2223b019"
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+Bessels = "0e736298-9ec6-45e8-9647-e4fc86a2fe38"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+ComputationalBackends = "5c6e2104-4040-447f-8fc0-66ec2223b019"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 Distances = "b4f34e82-e78d-54a5-968a-f98e89d6e8f7"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
+FINUFFT = "d8beea63-0952-562e-9c6a-8e8ef7364055"
 FlowGeometries = "0ccd6995-f618-4175-b01e-f437d0cb4974"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+LsqFit = "2fda8390-95c7-5789-9bda-21331edee243"
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
 NUFSHT = "e99b67a3-9706-455a-90e2-85b195a33206"
 NonuniformFFTs = "cd96f58b-6017-4a02-bb9e-f4d81626177f"
@@ -29,6 +31,6 @@ StructureFunctions = "e93fee26-4d5e-49c1-899d-490508cfd19b"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
-FlowGeometries = { url = "https://github.com/jbphyswx/FlowGeometries.jl" }
-NUFSHT = { url = "https://github.com/jbphyswx/NUFSHT.jl" }
-SpectralBackends = { url = "https://github.com/jbphyswx/SpectralBackends.jl" }
+FlowGeometries = {url = "https://github.com/jbphyswx/FlowGeometries.jl"}
+NUFSHT = {url = "https://github.com/jbphyswx/NUFSHT.jl"}
+SpectralBackends = {url = "https://github.com/jbphyswx/SpectralBackends.jl"}

@@ -6,14 +6,14 @@
 Supertype for all custom, high-performance bin edge collections in `StructureFunctions.jl`.
 
 ### Why AbstractBinEdges Exists
-In structure function calculations over large datasets, the spatial separation distance \$r\$ for each of
-the \$O(N^2)\$ point pairs must be mapped to its corresponding distance bin (index). Using a standard sorted 
-vector of bin edges requires a binary search (`searchsortedfirst`), which has \$O(\\log B)\$ complexity 
-where \$B\$ is the number of bins. 
+In structure function calculations over large datasets, the spatial separation distance ``r`` for each of
+the ``O(N^2)`` point pairs must be mapped to its corresponding distance bin (index). Using a standard sorted
+vector of bin edges requires a binary search (`searchsortedfirst`), which has ``O(\\log B)`` complexity
+where ``B`` is the number of bins.
 
-For large \$N\$, this binary search becomes the dominant CPU bottleneck, causing high branch mispredictions and 
-cache misses. Subtypes of `AbstractBinEdges` bypass the standard binary search by implementing custom 
-`Base.searchsortedfirst` overrides that execute in \$O(1)\$ time:
+For large ``N``, this binary search becomes the dominant CPU bottleneck, causing high branch mispredictions and
+cache misses. Subtypes of `AbstractBinEdges` bypass the standard binary search by implementing custom
+`Base.searchsortedfirst` overrides that execute in ``O(1)`` time:
 - `LinearBinEdges` utilizes Fused Multiply-Add (FMA) arithmetic for uniformly-spaced bins.
 - `LogBinEdges` maps physical queries via `log(q)` then the same FMA path on the log-space grid.
 
@@ -44,7 +44,7 @@ Bypasses range-specific optimizations but conforms to the `AbstractBinEdges` int
 ### Behavior
 - If constructed with an `AbstractRange` (e.g. `StepRange` or `StepRangeLen`), it automatically promotes
   and returns a `LinearBinEdges` wrapper to enable O(1) FMA indexing.
-- Otherwise, it wraps the vector and delegates to standard \$O(\\log N)\$ binary search methods.
+- Otherwise, it wraps the vector and delegates to standard ``O(\\log N)`` binary search methods.
 """
 struct BinEdges{T, ET <: AbstractVector{T}} <: AbstractBinEdges{T}
     edges::ET
@@ -70,13 +70,13 @@ Base.getindex(v::BinEdges, i::Int) = v.edges[i]
 High-performance wrapper for uniformly-spaced ranges (linear spacing).
 
 ### Mathematical Theory
-A standard binary search takes \$O(\\log B)\$ steps. With a uniformly spaced range of bin edges \$v_i = v_1 + (i-1)\\delta\$,
-`searchsortedfirst(v, x)` is the smallest index \$i\$ with \$v_i \\ge x\$:
-\$\$
+A standard binary search takes ``O(\\log B)`` steps. With a uniformly spaced range of bin edges ``v_i = v_1 + (i-1)\\delta``,
+`searchsortedfirst(v, x)` is the smallest index ``i`` with ``v_i \\ge x``:
+```math
 i^*(x) = \\min\\{ i : v_1 + (i-1)\\delta \\ge x \\}
      = \\left\\lfloor \\frac{x - v_1}{\\delta} \\right\\rfloor + 1
      = \\lceil \\frac{x - v_1}{\\delta} + 1 \\rceil .
-\$\$
+```
 The discrete operator is **ceiling / floor+1**, not `round` (which answers a different question).
 
 Precompute `inv_step = 1/δ` and at query time one FMA gives \$t = (x-v_1)/\\delta\$:
@@ -158,7 +158,7 @@ Log-spaced (geometric) bin edges: uniform grid in log-space.
 
 `log_edges` is the authoritative grid. A physical query `q > 0` maps to
 `searchsortedfirst(LinearBinEdges(log_edges), log(q))`. See
-[`docs/UNIFORM_BIN_DIGITIZE.md`](@ref) and `benchmark/LOG_BIN_EDGES_BENCHMARK.md`.
+the documentation's "Binning Internals" page and `benchmark/LOG_BIN_EDGES_BENCHMARK.md`.
 
 [`LogBinEdges`](@ref) from a physical vector builds the same log grid from
 `range(log(first), log(last); length)`. [`LogBinEdges_from_log_edges`](@ref) accepts
@@ -345,6 +345,30 @@ end
 @inline Base.searchsorted(v::InfPaddedBinEdges, x, o::Base.Order.Ordering) = searchsortedfirst(v, x, o):searchsortedlast(v, x, o)
 
 """
+    ModeBinEdges(edges, schedule)
+
+Distance bins applied to the lags of a mode grid. The edges are ordinary bin edges, but every pair
+reaches them through the periodic kernel of the mode set `schedule` describes, so a bin's sum and
+count are kernel-weighted and the histogram is soft-binned. Carried by the results of the
+non-uniform FFT route, so they cannot be mistaken for pair counts.
+"""
+struct ModeBinEdges{T, ET <: AbstractBinEdges{T}, S} <: AbstractBinEdges{T}
+    edges::ET
+    schedule::S
+end
+
+ModeBinEdges(edges::AbstractVector, schedule) = ModeBinEdges(BinEdges(edges), schedule)
+
+Base.size(v::ModeBinEdges) = size(v.edges)
+Base.getindex(v::ModeBinEdges, i::Int) = v.edges[i]
+@inline Base.searchsortedfirst(v::ModeBinEdges, x) = searchsortedfirst(v.edges, x)
+@inline Base.searchsortedfirst(v::ModeBinEdges, x, o::Base.Order.Ordering) = searchsortedfirst(v.edges, x, o)
+@inline Base.searchsortedlast(v::ModeBinEdges, x) = searchsortedlast(v.edges, x)
+@inline Base.searchsortedlast(v::ModeBinEdges, x, o::Base.Order.Ordering) = searchsortedlast(v.edges, x, o)
+@inline Base.searchsorted(v::ModeBinEdges, x) = searchsorted(v.edges, x)
+@inline Base.searchsorted(v::ModeBinEdges, x, o::Base.Order.Ordering) = searchsorted(v.edges, x, o)
+
+"""
     midpoints(edges) -> per-bin representative separations
     midpoints!(out, edges) -> out
 
@@ -404,6 +428,8 @@ midpoints(::InfPaddedBinEdges) = throw(
         "call midpoints on the bounded interior, `edges.edges`",
     ),
 )
+
+midpoints(v::ModeBinEdges) = midpoints(v.edges)
 
 
 
@@ -530,6 +556,8 @@ end
 # the generic binary-search plan.
 squared_digitize_plan(v::InfPaddedBinEdges) = SquaredInfPaddedPlan(squared_digitize_plan(v.edges))
 
+squared_digitize_plan(v::ModeBinEdges) = squared_digitize_plan(v.edges)
+
 squared_digitize_plan(edges::AbstractVector) = squared_digitize_plan(BinEdges(edges))
 
 """Bins covered by the plan (`digitize` results in `1:n_bins` are in range)."""
@@ -636,8 +664,19 @@ lag of length `r` by `exp(-r²/2σ²)` and a degree `l` by `exp(-l(l+1)σ²/2)`,
 the sphere's own unit. A taper trades resolution for variance, or a hard bin for a positive kernel.
 """
 abstract type AbstractTaper end
+
+"""The taper that leaves every term as it is; see [`AbstractTaper`](@ref)."""
 struct NoTaper <: AbstractTaper end
+
+"""The taper falling linearly to zero at the largest lag or degree; see [`AbstractTaper`](@ref)."""
 struct Bartlett <: AbstractTaper end
+
+"""
+    GaussianTaper(σ)
+
+The Gaussian taper `exp(-r²/2σ²)` on a lag of length `r`, `exp(-l(l+1)σ²/2)` on a degree `l`, or
+`exp(-k²σ²/2)` on a mode of wavenumber `k`, with `σ` a length; see [`AbstractTaper`](@ref).
+"""
 struct GaussianTaper{T <: Real} <: AbstractTaper
     σ::T
 end
@@ -651,6 +690,13 @@ end
 @inline harmonic_taper(::NoTaper, l::Integer, lmax::Integer) = 1.0
 @inline harmonic_taper(::Bartlett, l::Integer, lmax::Integer) = max(0.0, 1.0 - l / (lmax + 1))
 @inline harmonic_taper(t::GaussianTaper, l::Integer, lmax::Integer) = exp(-l * (l + 1) * t.σ^2 / 2)
+
+"""
+Weight of a Fourier mode of squared angular wavenumber `k2`, `σ` a length: the mode set's periodic
+kernel becomes the inverse transform of the squared weights.
+"""
+@inline mode_taper(::NoTaper, k2) = one(k2)
+@inline mode_taper(t::GaussianTaper, k2) = exp(-k2 * t.σ^2 / 2)
 
 """
     HarmonicNodes(separations, lmax; taper = NoTaper())

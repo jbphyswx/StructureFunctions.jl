@@ -709,7 +709,7 @@ Compute the six native invariant structure functions (S2, L2, T2, S3, L3, L1T2) 
 pass, returned as a `NamedTuple` keyed by invariant. Each entry is a single-operator result of
 the requested `output_type` (default the averaged `StructureFunction`; pass
 `StructureFunctionSumsAndCounts` for the raw sums+counts). For point-field input a `:helmholtz`
-entry (a [`HelmholtzDecomposition2D`](@ref)) is included.
+entry (a [`HelmholtzDecomposition2D`](@ref StructureFunctions.StructureFunctionObjects.HelmholtzDecomposition2D)) is included.
 
 !!! note "Why only six invariants (no L2T1 / T3)"
     The single-pass set is the six **isotropic** invariants. The directional third-order
@@ -752,6 +752,13 @@ end
 
 # --- 2D Single Pass Functions ---
 
+"""
+    serial_calculate_structure_functions_single_pass_2d(x, u, distance_bins, value_bins, sums_3d, counts_3d; kwargs...)
+
+Zero `sums_3d` and `counts_3d`, `(6, n_bins, n_val)` each, and accumulate the six invariants' joint
+distance × value histograms into them through
+[`calculate_structure_functions_single_pass_2d!`](@ref).
+"""
 function serial_calculate_structure_functions_single_pass_2d(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
@@ -768,6 +775,14 @@ function serial_calculate_structure_functions_single_pass_2d(
     )
 end
 
+"""
+    calculate_structure_functions_single_pass_2d!(sums_3d, counts_3d, x, u, distance_bins, value_bins; backend, distance_metric, kwargs...)
+
+Accumulate the six invariants' joint distance × value histograms of a point list into `sums_3d`
+and `counts_3d`, `(6, n_bins, n_val)` each, on `backend`; the in-place form of
+[`calculate_structure_functions_single_pass_2d`](@ref). `value_bins` is one edge vector for every
+invariant or a tuple of six.
+"""
 function calculate_structure_functions_single_pass_2d!(
     sums_3d::AbstractArray{OT, 3},
     counts_3d::AbstractArray{CT, 3},
@@ -1272,7 +1287,7 @@ end
 
 Compute the six invariant 2D joint structure-function histograms in one pass, returned as a
 `NamedTuple` keyed by invariant (`S2, L2, T2, S3, L3, L1T2`). Each entry is a
-[`StructureFunction2DSumsAndCounts`](@ref) view into the stacked accumulator (the 2D joint
+[`StructureFunction2DSumsAndCounts`](@ref StructureFunctions.StructureFunctionObjects.StructureFunction2DSumsAndCounts) view into the stacked accumulator (the 2D joint
 histogram has no averaged form, so `output_type` must be `StructureFunction2DSumsAndCounts`).
 """
 function calculate_structure_functions_single_pass_2d(

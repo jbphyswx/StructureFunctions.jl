@@ -95,6 +95,7 @@ function serial_calculate_structure_function!(
     x::AbstractMatrix, f::CH.Fields{D, V, K}, distance_bins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
+    weights = nothing,
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {OT, CT, D, V, K}
@@ -102,24 +103,44 @@ function serial_calculate_structure_function!(
     size(x, 2) == N || throw(DimensionMismatch(
         "x covers $(size(x, 2)) points and the field $N",
     ))
-    geom, xk, data, vF, plan, grid = channel_setup(f, x, distance_bins, distance_metric, culling)
+    w = _pair_weights(weights, N, float(eltype(CH.packed(f))))
+    _check_weighted_counts(w, CT)
+    if _on_a_line(_channel_geometry(distance_metric, Val(D), Val(V), x), sf)
+        _cull_reject_unsupported(culling, "the sorted line route")
+        return sorted_line_sweep!(sums, counts, sf, _line_coordinates(x), CH.packed(f), distance_bins,
+                                  Val(D), Val(V), Val(K); weights = w)
+    end
+    geom, xk, data, vF, plan, grid, wk = channel_setup(f, x, distance_bins, distance_metric, culling, w)
     _channel_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan,
                          n_histogram_bins(plan), Val(SFC_val_int(SFH.coordinate_width(geom))),
-                         1:(N - 1), N, grid)
+                         1:(N - 1), N, grid, wk)
     return nothing
 end
 
+"""Whether the pairs lie along a line and the operator is a polynomial the sorted route sums."""
+@inline _on_a_line(geom, sf) = geom isa SFH.FlatGeometry{1} && SFT.is_polynomial_operator(sf)
+
+"""The one coordinate per point of a `(1, N)` position matrix."""
+function _line_coordinates(x::AbstractMatrix)
+    size(x, 1) == 1 || throw(DimensionMismatch(
+        "points on a line carry one coordinate each; got $(size(x, 1)) rows of coordinates",
+    ))
+    return vec(x)
+end
+
 """
-    channel_setup(fields, x, distance_bins, metric, culling) -> (geom, xk, data, vF, plan, grid)
+    channel_setup(fields, x, distance_bins, metric, culling, weights = NoWeights())
+        -> (geom, xk, data, vF, plan, grid, weights)
 
 Everything a multi-channel sweep needs before its first pair: the geometry, the widened coordinates
-and channels, the digitize plan, and the cull grid with both arrays already permuted into it.
+and channels, the digitize plan, and the cull grid with both arrays and the weights already permuted
+into it.
 
 Shared by the serial and threaded drivers so the sort and the widening happen **once**, above any
 task loop — doing them inside one would pay them per task.
 """
 function channel_setup(f::CH.Fields{D, V, K}, x::AbstractMatrix, distance_bins,
-                       distance_metric, culling::CullingPolicy) where {D, V, K}
+                       distance_metric, culling::CullingPolicy, weights = NoWeights()) where {D, V, K}
     geom = _channel_geometry(distance_metric, Val(D), Val(V), x)
     xk, data, vF = _kernel_channels(f, geom, x)
     W = SFC_val_int(SFH.coordinate_width(geom))
@@ -129,8 +150,9 @@ function channel_setup(f::CH.Fields{D, V, K}, x::AbstractMatrix, distance_bins,
     if grid !== nothing
         xk = xk[:, grid.perm]
         data = data[:, grid.perm]
+        weights = weights isa NoWeights ? weights : weights[grid.perm]
     end
-    return geom, xk, data, vF, plan, grid
+    return geom, xk, data, vF, plan, grid, weights
 end
 
 # The geometry's dimension is the velocity dimension where there is one; a field of scalars alone has
@@ -142,19 +164,20 @@ end
 # Dispatch on the grid so the kernel receives one concretely typed schedule, as the single-channel
 # path does.
 @inline _channel_run_blocks!(sums, counts, sf, xk, data, geom, vF, vV, vK, plan, nb, vW, ilist, N,
-                             ::Nothing) =
+                             ::Nothing, weights) =
     _channel_pairs!(sums, counts, sf, xk, data, geom, vF, vV, vK, plan, nb, vW,
-                    pair_blocks(N, ilist))
+                    pair_blocks(N, ilist), weights)
 
 @inline _channel_run_blocks!(sums, counts, sf, xk, data, geom, vF, vV, vK, plan, nb, vW, ilist, N,
-                             grid::CellGrid) =
+                             grid::CellGrid, weights) =
     _channel_pairs!(sums, counts, sf, xk, data, geom, vF, vV, vK, plan, nb, vW,
-                    pair_blocks(N, ilist; grid = grid))
+                    pair_blocks(N, ilist; grid = grid), weights)
 
 """
-    _channel_pairs!(sums, counts, sf, xk, data, geom, ...) -> nothing
+    _channel_pairs!(sums, counts, sf, xk, data, geom, ..., blocks, weights) -> nothing
 
-Accumulate the pairs `blocks` covers for a multi-channel field.
+Accumulate the pairs `blocks` covers for a multi-channel field, each pair carrying
+`weights[i] * weights[j]` in both sums and counts.
 
 Each block pair is worked to completion, so its columns stay cache-resident across the `i` sweep —
 the reason the single-channel kernel is blocked, and it applies here for the same reason.
@@ -166,7 +189,7 @@ function _channel_pairs!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xk::AbstractMatrix, data::AbstractMatrix, geom::SFH.FlatGeometry, ::Val{F}, ::Val{V}, ::Val{K},
-    plan::AbstractSquaredDigitizePlan, nb::Int, ::Val{W}, blocks,
+    plan::AbstractSquaredDigitizePlan, nb::Int, ::Val{W}, blocks, weights,
 ) where {OT, CT, F, V, K, W}
     FTx = eltype(xk)
     T = eltype(data)
@@ -197,11 +220,13 @@ function _channel_pairs!(
                     idxbuf[j] = squared_approx_index(plan, r2)
                 end
             end
+            wi = _point_weight(weights, i)
             for j in jlo:j_last
                 b = squared_bin(plan, keybuf[j], idxbuf[j])
                 if 1 <= b <= nb
-                    sums[b] += valbuf[j]
-                    counts[b] += one(CT)
+                    w = wi * _point_weight(weights, j)
+                    sums[b] += w * valbuf[j]
+                    counts[b] += CT(w)
                 end
             end
         end
@@ -213,7 +238,7 @@ function _channel_pairs!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xk::AbstractMatrix, data::AbstractMatrix, geom, ::Val{F}, ::Val{V}, ::Val{K},
-    plan::AbstractSquaredDigitizePlan, nb::Int, ::Val{W}, blocks,
+    plan::AbstractSquaredDigitizePlan, nb::Int, ::Val{W}, blocks, weights,
 ) where {OT, CT, F, V, K, W}
     FTx = eltype(xk)
     @inbounds for (ir, jr) in blocks
@@ -222,14 +247,16 @@ function _channel_pairs!(
             jlo = max(i + 1, j_first)
             jlo > j_last && continue
             Xi = SA.SVector{W, FTx}(ntuple(d -> xk[d, i], Val(W)))
+            wi = _point_weight(weights, i)
             for j in jlo:j_last
                 Xj = SA.SVector{W, FTx}(ntuple(d -> xk[d, j], Val(W)))
                 ok, r, frame = SFH.pair_frame(geom, Xi, Xj)
                 ok || continue
                 b = squared_digitize(plan, r * r)
                 1 <= b <= nb || continue
-                sums[b] += OT(_channel_value(sf, Val(F), Val(V), Val(K), data, geom, frame, r, i, j))
-                counts[b] += one(CT)
+                w = wi * _point_weight(weights, j)
+                sums[b] += w * OT(_channel_value(sf, Val(F), Val(V), Val(K), data, geom, frame, r, i, j))
+                counts[b] += CT(w)
             end
         end
     end
@@ -298,10 +325,10 @@ function channel_partial(
     nb = n_histogram_bins(squared_digitize_plan(distance_bins))
     sums = zeros(float(eltype(CH.packed(f))), nb)
     counts = zeros(CT, nb)
-    geom, xk, data, vF, plan, grid = channel_setup(f, x, distance_bins, distance_metric, culling)
+    geom, xk, data, vF, plan, grid, wk = channel_setup(f, x, distance_bins, distance_metric, culling)
     _channel_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan,
                          n_histogram_bins(plan), Val(SFC_val_int(SFH.coordinate_width(geom))),
-                         outer, N, grid)
+                         outer, N, grid, wk)
     return sums, counts
 end
 
@@ -340,12 +367,16 @@ end
 @inline _channel_dispatch!(::CB.AbstractThreadedBackend, sums, counts, sf, x, f, bins; kwargs...) =
     threaded_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
 
-@inline _channel_dispatch!(::CB.AbstractDistributedBackend, sums, counts, sf, x, f, bins;
-                           kwargs...) =
-    distributed_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
+@inline function _channel_dispatch!(::CB.AbstractDistributedBackend, sums, counts, sf, x, f, bins;
+                                    kwargs...)
+    _refuse_weights(kwargs, "the distributed multi-channel sweep")
+    return distributed_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
+end
 
-@inline _channel_dispatch!(be::CB.AbstractGPUBackend, sums, counts, sf, x, f, bins; kwargs...) =
-    gpu_calculate_structure_function_channels!(be, sums, counts, sf, x, f, bins; kwargs...)
+@inline function _channel_dispatch!(be::CB.AbstractGPUBackend, sums, counts, sf, x, f, bins; kwargs...)
+    _refuse_weights(kwargs, "the GPU multi-channel sweep")
+    return gpu_calculate_structure_function_channels!(be, sums, counts, sf, x, f, bins; kwargs...)
+end
 
 function _channel_dispatch!(::CB.AbstractAutoBackend, sums, counts, sf, x, f, bins; kwargs...)
     if Threads.nthreads() > 1 && _ohmythreads_loaded()
