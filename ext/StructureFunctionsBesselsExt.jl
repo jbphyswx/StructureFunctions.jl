@@ -3,8 +3,7 @@ module StructureFunctionsBesselsExt
 using Bessels: Bessels
 using StructureFunctions: Calculations as SFC
 
-# Each order is its own method, so every one is strictly more specific than the core fallback and
-# adds to it rather than replacing it.
+# Each order is its own method, strictly more specific than the core fallback, so it adds to it.
 @inline SFC.bessel_kernel(::Val{0}, x) = Bessels.besselj0(x)
 @inline SFC.bessel_kernel(::Val{1}, x) = Bessels.besselj1(x)
 @inline SFC.bessel_kernel(::Val{2}, x) = Bessels.besselj(2, x)

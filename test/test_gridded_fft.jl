@@ -70,13 +70,19 @@ Test.@testset "the transform refuses what it cannot express" begin
     periodic = (false, false)
     u = randn(T, 2, dims...)
     bins = collect(range(0.0, 1.0; length = 5))
-    # a third-order operator is not a contraction of the second-order tensor
-    for sf in (SFT.L3SFType(), SFT.S3SFType())
-        Test.@test_throws ArgumentError _run(sf, u, dims, spacing, periodic, bins, 2,
-                                             SB.FastFourierTransformSpectralBackend())
-        # ...and the lag sweep still does it
-        _, c = _run(sf, u, dims, spacing, periodic, bins, 2, nothing)
-        Test.@test sum(c) > 0
+    # an odd power of a norm is not a polynomial in the increment, so no moment tensor produces it
+    sf = SFT.FullVectorStructureFunctionType{3}()
+    Test.@test_throws ArgumentError _run(sf, u, dims, spacing, periodic, bins, 2,
+                                         SB.FastFourierTransformSpectralBackend())
+    # ...and the lag sweep still does it
+    _, c = _run(sf, u, dims, spacing, periodic, bins, 2, nothing)
+    Test.@test sum(c) > 0
+    # the third-order operators are polynomials and the transform computes them
+    for sf3 in (SFT.L3SFType(), SFT.S3SFType())
+        ref_s, ref_c = _run(sf3, u, dims, spacing, periodic, bins, 2, nothing)
+        got_s, got_c = _run(sf3, u, dims, spacing, periodic, bins, 2, SB.FastFourierTransformSpectralBackend())
+        Test.@test got_c == ref_c
+        Test.@test isapprox(got_s, ref_s; rtol = 1e-9, atol = 1e-10)
     end
 end
 
@@ -101,11 +107,18 @@ Test.@testset "the algorithm tags select as documented" begin
     Test.@test au_c == ref_c
     Test.@test isapprox(au_s, ref_s; rtol = 1e-8, atol = 1e-10)
 
-    # auto on an operator no transform expresses still works, by sweeping
-    l3_s, l3_c = _run(SFT.L3SFType(), u, dims, spacing, periodic, bins, 2, SB.AutoSpectralBackend())
-    ref3_s, ref3_c = _run(SFT.L3SFType(), u, dims, spacing, periodic, bins, 2, nothing)
+    # auto on an operator no transform expresses still works, by sweeping — bit-identically
+    l3_s, l3_c = _run(SFT.FullVectorStructureFunctionType{3}(), u, dims, spacing, periodic, bins, 2,
+                      SB.AutoSpectralBackend())
+    ref3_s, ref3_c = _run(SFT.FullVectorStructureFunctionType{3}(), u, dims, spacing, periodic, bins,
+                          2, nothing)
     Test.@test l3_c == ref3_c
     Test.@test l3_s == ref3_s
+    # auto on a third-order polynomial picks one of two exact algorithms
+    a3_s, a3_c = _run(SFT.L3SFType(), u, dims, spacing, periodic, bins, 2, SB.AutoSpectralBackend())
+    r3_s, r3_c = _run(SFT.L3SFType(), u, dims, spacing, periodic, bins, 2, nothing)
+    Test.@test a3_c == r3_c
+    Test.@test isapprox(a3_s, r3_s; rtol = 1e-9, atol = 1e-10)
 end
 
 Test.@testset "the grid entry takes the tag positionally" begin

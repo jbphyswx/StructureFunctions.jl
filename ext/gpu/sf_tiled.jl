@@ -1,6 +1,5 @@
 # =============================================================================
-# Unified parametric tiled kernels (replace the per-variant 1D/2D kernels).
-# See gpu/OPTIMAL_KERNEL_DESIGN.md. Building blocks in sf_core.jl.
+# Unified parametric tiled kernels. Building blocks in sf_core.jl.
 #
 # sf_tiled_1d_varying!  — non-batch (B=1) and varying-x batch (B>1). One
 #   workgroup per (tile-pair, batch element). Privatized + R-replicated shared
@@ -195,12 +194,10 @@ and silently corrupt the histogram. Must be called by every launcher of those ke
     return nothing
 end
 
-"""Replication factor R for the 1D varying-x shared histogram, from the A100 R/W
-sweep (gpu/benchmark_results/tune_*.md). Regime-dependent:
-- Individual SF (NMOM=1): tiny histogram, extreme per-bin contention → R=2 helps
-  small NB (NB16: R2≈77 vs R1≈70); larger NB are flat. Beyond R=2 hurts (occupancy).
-- Single-pass (NMOM=6): 6× bigger histogram → R=1 (R≥2 blows occupancy: R1≈35,
-  R4≈22, R8≈11). So R=1."""
+"""Replication factor R for the 1D varying-x shared histogram, by regime:
+- individual (NMOM = 1): the histogram is small and per-bin contention high, so a second replica
+  pays for itself at small bin counts and a third costs more occupancy than it returns;
+- single-pass (NMOM = 6): the histogram is six times larger, so any replication costs occupancy."""
 @inline _sf_tiled_1d_replication(::Type{FT}, D::Int, NMOM::Int) where {FT} = NMOM == 1 ? 2 : 1
 
 """Launch sf_tiled_1d_varying! for non-batch (B=1) or varying-x (B>1).
@@ -241,11 +238,11 @@ end
 # of W fields (W is the privatization axis). Sums use lane = field (scatter to B
 # at flush, NOT summed). Counts are field-independent, so the W lanes are used as
 # contention replicas (one atomic/pair) and summed → broadcast to the strip's B.
-# Host launches ⌈B/W⌉ strips (cheap, async, single sync); geometry is recomputed
-# per strip (W-fold reuse — moments dominate, so this is near-optimal).
-# W-strip shared index for field w, dim d, local point k: laid out
-# `((w-1)*D + (d-1))*SF_GPU_TILE + k` (written inline at the use sites to match
-# the proven inline-index staging pattern that compiles on CUDA).
+# The host launches ⌈B/W⌉ strips asynchronously and synchronizes once; geometry is recomputed per
+# strip, so each computation is reused W-fold.
+# W-strip shared index for field w, dim d, local point k:
+# `((w-1)*D + (d-1))*SF_GPU_TILE + k`, written inline at the use sites, as every looped `@localmem`
+# index must be.
 # =============================================================================
 
 KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
@@ -430,12 +427,9 @@ end
 @inline _sf_load_field(::Val{3}, buf, w::Int, k::Int) =
     @inbounds SA.SVector{3}(buf[(w - 1) * 3 * SF_GPU_TILE + k], buf[((w - 1) * 3 + 1) * SF_GPU_TILE + k], buf[((w - 1) * 3 + 2) * SF_GPU_TILE + k])
 
-"""Strip width W for fixed-x 1D, from the A100 R/W sweep. Regime-dependent:
-- Individual SF (NMOM=1): a 4-wide strip amortizes the (relatively expensive)
-  geometry over 4 fields → W=4 is the clear peak (~99–107 Gpairs/s vs 64 at W=1,
-  across NB=16/50/128); this also makes fixed-x beat varying-x as it should.
-- Single-pass (NMOM=6): 6× histogram → striping blows occupancy → W=1 (W1≈40,
-  W2≈34, W4≈22). See gpu/benchmark_results/tune_*.md."""
+"""Strip width W for fixed-x 1D, by regime:
+- individual (NMOM = 1): a 4-wide strip amortizes one pair's geometry over four fields;
+- single-pass (NMOM = 6): the histogram is six times larger and striping costs occupancy, so W = 1."""
 @inline _sf_tiled_1d_fixed_strip(::Type{FT}, D::Int, NMOM::Int) where {FT} = NMOM == 1 ? 4 : 1
 
 """Launch fixed-x batch 1D over ⌈B/W⌉ strips. x_dev=(D,N), u_dev=(D,N,B),
@@ -762,9 +756,8 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
     end
 end
 
-"""Does a shared NMOM×n_dist×n_val histogram (sums+counts) fit in ~44 KB
-alongside the 4 staged coordinate tiles? If so the shared kernel is much faster
-than direct global atomics."""
+"""Whether a shared NMOM×n_dist×n_val histogram (sums + counts) fits in 44 KiB alongside the four
+staged coordinate tiles, which is the condition for taking the shared kernel."""
 @inline function _sf_2d_shared_fits(::Type{FT}, D::Int, NMOM::Int, n_dist::Int, n_val::Int) where {FT}
     hist = NMOM * n_dist * n_val * (sizeof(FT) + sizeof(UInt32))
     staging = 4 * D * SF_GPU_TILE * sizeof(FT)
@@ -982,9 +975,8 @@ function _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, 
     # TILE=1024) when StructureFunctionsCUDAExt is active and it fits the device.
     SFC.gpu_fast_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
                                   N, n_dist, n_val, B, D, NMOM, fixed_x, geom, nothing) && return nothing
-    # Prefer the shared-histogram kernel (fixed or varying) when the histogram
-    # fits (~7× faster than direct global atomics); fall back to global for large
-    # bin counts that don't fit in shared memory.
+    # The shared-histogram kernel (fixed or varying) whenever the histogram fits; a bin count too
+    # large for shared memory goes to global atomics.
     use_shared = _sf_2d_shared_fits(eltype(out_dev), D, NMOM, n_dist, n_val)
     go(Dv) =
         use_shared ?

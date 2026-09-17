@@ -27,10 +27,8 @@ Reusable CPU scratch for the batch drivers: the batch-leading working copies of 
 accumulator per task, and the full-width reduction accumulator. Pass to a batch entry point as
 `workspace = ...` to make repeated calls allocation-free.
 
-Without it a batch call allocates one accumulator per task — tens of MiB at large `B` — on every
-call. That does not slow the fastest call, but the resulting GC pauses land on *some* calls, so the
-typical call is far slower than the best one and the spread is wide. Reusing the buffers removes
-the pauses, not the peak.
+Without it a batch call allocates one accumulator per task, tens of MiB at large `B`, on every
+call; the GC pauses that follow land on some calls and widen the spread of call times.
 
 `kind` matches [`GPUSFWorkspace`](@ref): `:sf1d`, `:joint2d`, `:single_pass` or `:single_pass_2d`.
 It is a type parameter, so the accumulator rank is fixed at construction and every field is
@@ -140,13 +138,12 @@ function reset_histogram!(ws::CPUSFWorkspace)
     return ws
 end
 
-# --- Buffer providers for the batch drivers (the `::Nothing` fallbacks live in batch_leading.jl,
-# which loads before this type exists) ---
+# --- Buffer providers for the batch drivers ---
 
 @inline _ws_ub(ws::CPUSFWorkspace) = ws.ub
 @inline _ws_xb(ws::CPUSFWorkspace) = ws.xb
 
-function _bl_accum_pool(ws::CPUSFWorkspace, ::F, widths::Vector{Int}) where {F}
+function _bl_accum_pool(ws::CPUSFWorkspace, ::F, widths::AbstractVector{Int}) where {F}
     ws.widths == widths || throw(ArgumentError(
         "CPUSFWorkspace holds accumulators of batch widths $(ws.widths); this call needs $widths. \
          Rebuild it with the same inputs, backend and n_tasks as the call."))
@@ -183,7 +180,6 @@ per-call `KA.zeros` allocation and repeated edge uploads.
 concretely typed — matching [`CPUSFWorkspace`](@ref). Use the matching constructor overload;
 `reset_histogram!(ws)` zeroes device outputs before each launch. The constructors live in
 `StructureFunctionsKernelAbstractionsExt` and need `using KernelAbstractions`.
-See [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md).
 """
 struct GPUSFWorkspace{kind, FT, BE, DB, VB, S, C, VE, DE, VP, ST, K, L}
     backend::BE
@@ -238,7 +234,7 @@ end
 The tile-pair schedule a kernel with `tile`-point tiles enumerates: the full upper triangle when
 `cull` is `nothing`, otherwise the memo's device work list for that tile size, built and uploaded on
 first use and kept for later calls. Each kernel family picks its own tile, so the list is derived
-from the grid at the size asked for rather than fixed when the memo is built.
+from the grid at the size asked for, not fixed when the memo is built.
 """
 schedule_for(::Nothing, n_points::Int, tile::Int) = FullUpperTriangle(cld(n_points, tile))
 

@@ -189,6 +189,7 @@ function _serial_calculate_structure_function_point(
     ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
+    weights = nothing,
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {FT1, FT2, D, CT}
@@ -210,6 +211,7 @@ function _serial_calculate_structure_function_point(
         distance_bins;
         geometry = geom,
         culling = culling,
+        weights = weights,
         verbose = verbose,
         show_progress = show_progress,
     )
@@ -242,13 +244,19 @@ function serial_calculate_structure_function(
     end
     # Point-field route:
     D = size(u, 1)
+    D == 1 && return _serial_calculate_structure_function_point(
+        structure_function_type, x, u, distance_bins, Val(1), count_eltype; kwargs...,
+    )
     D == 2 && return _serial_calculate_structure_function_point(
         structure_function_type, x, u, distance_bins, Val(2), count_eltype; kwargs...,
     )
     D == 3 && return _serial_calculate_structure_function_point(
         structure_function_type, x, u, distance_bins, Val(3), count_eltype; kwargs...,
     )
-    return _validate_spatial_dimension(D)
+    _validate_spatial_dimension(D)
+    return _serial_calculate_structure_function_point(
+        structure_function_type, x, u, distance_bins, Val(D), count_eltype; kwargs...,
+    )
 end
 
 function threaded_calculate_structure_function(

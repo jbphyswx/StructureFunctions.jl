@@ -8,8 +8,7 @@
 # kernels run on CPU/AMD/whenever CUDA is not loaded. When both
 # KernelAbstractions and CUDA are loaded, StructureFunctionsCUDAExt adds
 # methods specialized on `CUDA.CUDABackend` that launch the N-body broadcast +
-# (for 2D) dynamic-shared kernels and return `true`. See
-# gpu/OPTIMAL_KERNEL_DESIGN.md for the settled design.
+# (for 2D) dynamic-shared kernels and return `true`.
 
 """Try the CUDA fast 2D launch (N-body broadcast + privatized histogram, dynamic
 shared for large single-pass). Returns `true` if handled, `false` to fall back to
@@ -29,8 +28,8 @@ gpu_fast_launch_1d_batch!(backend, out, cnt, x, u, sf_type, dist_dig,
 """
     GPUDeviceCaps
 
-What a GPU backend can actually offer, queried rather than assumed, so shared-memory strategy is
-chosen per device instead of per hardcoded constant. Shared memory per block differs by an order of
+What a GPU backend offers, queried at run time, so the shared-memory strategy is chosen per device.
+Shared memory per block differs by an order of
 magnitude across parts a user may run on (V100 96 KiB, L40S 100 KiB, A100 163 KiB, later parts
 more), and the right accumulation strategy differs with it.
 
@@ -53,10 +52,9 @@ struct GPUDeviceCaps
 end
 
 """
-Largest *static* shared allocation a block may declare. Measured, not assumed: on an A100 a static
-`@localmem` of 48 KiB compiles and 64 KiB fails `ptxas`, while dynamic shared reaches the full
-163 KiB opt-in. This is an architectural limit rather than a per-device one, so exceeding a device's
-opt-in maximum is a separate check.
+Largest *static* shared allocation a block may declare: on CUDA-class hardware a static `@localmem`
+of 48 KiB compiles and 64 KiB fails `ptxas`, while dynamic shared reaches the full opt-in maximum.
+The limit is architectural, not per-device, so a device's own opt-in maximum is a separate check.
 """
 const GPU_SMEM_STATIC_MAX = 48 * 1024
 
@@ -77,7 +75,7 @@ if the device offers less than it.
 
 Bytes a dynamic-shared kernel should use per block. Expressed in device-relative terms — the opt-in
 ceiling, and the per-SM pool divided by an occupancy target — so the same rule sizes correctly on any
-part rather than encoding one device's byte count. `target_blocks_per_sm` is the only free parameter
+part, with no device's byte count written down. `target_blocks_per_sm` is the only free parameter
 and is dimensionless.
 """
 @inline function gpu_dynamic_smem_budget(caps::GPUDeviceCaps; target_blocks_per_sm::Int = 2)
@@ -88,10 +86,9 @@ end
 """
     gpu_device_caps(backend) -> GPUDeviceCaps
 
-Capabilities of `backend`. The default is deliberately the universal floor: a backend with no
-override behaves exactly as the package did before device querying existed, so an unknown or future
-backend degrades to "correct and portable" rather than to "assumes an A100". `StructureFunctionsCUDAExt`
-overrides this with the real device attributes.
+Capabilities of `backend`. The default is the universal floor, so a backend that overrides nothing
+stays correct and portable. `StructureFunctionsCUDAExt` overrides it with the real device
+attributes.
 """
 gpu_device_caps(::Any) = GPUDeviceCaps(GPU_SMEM_UNIVERSAL_FLOOR, GPU_SMEM_UNIVERSAL_FLOOR, 1, 32)
 
@@ -195,6 +192,12 @@ function gpu_calculate_structure_function_batch(args...; kwargs...)
     )
 end
 
+"""
+    gpu_calculate_structure_function_2d_batch(sf, backend, x, u, distance_bins, value_bins; kwargs...)
+
+The value-binned joint histogram of a field with auxiliary axes on a device, one histogram per
+auxiliary slice; supplied by the KernelAbstractions extension.
+"""
 function gpu_calculate_structure_function_2d_batch(args...; kwargs...)
     throw(
         ArgumentError(

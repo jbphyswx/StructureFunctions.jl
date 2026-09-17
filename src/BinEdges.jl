@@ -6,19 +6,18 @@
 Supertype for all custom, high-performance bin edge collections in `StructureFunctions.jl`.
 
 ### Why AbstractBinEdges Exists
-In structure function calculations over large datasets, the spatial separation distance \$r\$ for each of
-the \$O(N^2)\$ point pairs must be mapped to its corresponding distance bin (index). Using a standard sorted 
-vector of bin edges requires a binary search (`searchsortedfirst`), which has \$O(\\log B)\$ complexity 
-where \$B\$ is the number of bins. 
+In structure function calculations over large datasets, the spatial separation distance ``r`` for each of
+the ``O(N^2)`` point pairs must be mapped to its corresponding distance bin (index). Using a standard sorted
+vector of bin edges requires a binary search (`searchsortedfirst`), which has ``O(\\log B)`` complexity
+where ``B`` is the number of bins.
 
-For large \$N\$, this binary search becomes the dominant CPU bottleneck, causing high branch mispredictions and 
-cache misses. Subtypes of `AbstractBinEdges` bypass the standard binary search by implementing custom 
-`Base.searchsortedfirst` overrides that execute in \$O(1)\$ time:
+For large ``N``, this binary search becomes the dominant CPU bottleneck, causing high branch mispredictions and
+cache misses. Subtypes of `AbstractBinEdges` bypass the standard binary search by implementing custom
+`Base.searchsortedfirst` overrides that execute in ``O(1)`` time:
 - `LinearBinEdges` utilizes Fused Multiply-Add (FMA) arithmetic for uniformly-spaced bins.
 - `LogBinEdges` maps physical queries via `log(q)` then the same FMA path on the log-space grid.
 
-Wrapping standard arrays in these subtypes allows `digitize` to execute 5x to 15x faster, resolving the 
-primary computational bottleneck in the package.
+Wrapping standard arrays in these subtypes makes `digitize` a constant-time lookup.
 
 ## Bin edges and backends
 
@@ -44,7 +43,7 @@ Bypasses range-specific optimizations but conforms to the `AbstractBinEdges` int
 ### Behavior
 - If constructed with an `AbstractRange` (e.g. `StepRange` or `StepRangeLen`), it automatically promotes
   and returns a `LinearBinEdges` wrapper to enable O(1) FMA indexing.
-- Otherwise, it wraps the vector and delegates to standard \$O(\\log N)\$ binary search methods.
+- Otherwise, it wraps the vector and delegates to standard ``O(\\log N)`` binary search methods.
 """
 struct BinEdges{T, ET <: AbstractVector{T}} <: AbstractBinEdges{T}
     edges::ET
@@ -70,13 +69,13 @@ Base.getindex(v::BinEdges, i::Int) = v.edges[i]
 High-performance wrapper for uniformly-spaced ranges (linear spacing).
 
 ### Mathematical Theory
-A standard binary search takes \$O(\\log B)\$ steps. With a uniformly spaced range of bin edges \$v_i = v_1 + (i-1)\\delta\$,
-`searchsortedfirst(v, x)` is the smallest index \$i\$ with \$v_i \\ge x\$:
-\$\$
+A standard binary search takes ``O(\\log B)`` steps. With a uniformly spaced range of bin edges ``v_i = v_1 + (i-1)\\delta``,
+`searchsortedfirst(v, x)` is the smallest index ``i`` with ``v_i \\ge x``:
+```math
 i^*(x) = \\min\\{ i : v_1 + (i-1)\\delta \\ge x \\}
      = \\left\\lfloor \\frac{x - v_1}{\\delta} \\right\\rfloor + 1
      = \\lceil \\frac{x - v_1}{\\delta} + 1 \\rceil .
-\$\$
+```
 The discrete operator is **ceiling / floor+1**, not `round` (which answers a different question).
 
 Precompute `inv_step = 1/δ` and at query time one FMA gives \$t = (x-v_1)/\\delta\$:
@@ -88,8 +87,8 @@ Precompute `inv_step = 1/δ` and at query time one FMA gives \$t = (x-v_1)/\\del
 error without a second downward correction.
 
 ### Performance
-Bypasses the Twice-Precision arithmetic of Julia's standard `StepRangeLen` search. 
-Reduces lookup time from **~46 ns** to **~3 ns** (a 15x speedup), completely eliminating the linear binning bottleneck.
+Bypasses the twice-precision arithmetic of Julia's `StepRangeLen` search, so a lookup is one FMA and
+one comparison.
 """
 struct LinearBinEdges{T, RT <: AbstractRange{T}} <: AbstractBinEdges{T}
     edges::RT
@@ -157,8 +156,8 @@ Log-spaced (geometric) bin edges: uniform grid in log-space.
 ### Digitize semantics
 
 `log_edges` is the authoritative grid. A physical query `q > 0` maps to
-`searchsortedfirst(LinearBinEdges(log_edges), log(q))`. See
-[`docs/UNIFORM_BIN_DIGITIZE.md`](@ref) and `benchmark/LOG_BIN_EDGES_BENCHMARK.md`.
+`searchsortedfirst(LinearBinEdges(log_edges), log(q))`. See the documentation's "Binning Internals"
+page.
 
 [`LogBinEdges`](@ref) from a physical vector builds the same log grid from
 `range(log(first), log(last); length)`. [`LogBinEdges_from_log_edges`](@ref) accepts
@@ -166,7 +165,7 @@ the log grid directly.
 
 ### Performance
 
-One `log(q)` (~6 ns) plus O(1) FMA digitize (~2.5 ns) on the log grid. See benchmark log.
+One `log(q)` plus the constant-time FMA digitize on the log grid.
 """
 struct LogBinEdges{T, LRT <: AbstractRange{T}, LBET <: LinearBinEdges{T}} <: AbstractBinEdges{T}
     log_edges::LRT
@@ -255,8 +254,7 @@ an existing bin edge collection.
 ### Why InfPaddedBinEdges Exists
 Structure function distance bins are defined as half-open intervals \$(r_i, r_{i+1}]\$. When mapping a distance 
 \$r\$ to a bin, any query value \$r < \\text{first}(edges)\$ or \$r > \\text{last}(edges)\$ is out-of-bounds.
-Instead of checking for these out-of-bound cases manually using branches in inner loops, `InfPaddedBinEdges`
-embeds the infinite endpoints implicitly:
+`InfPaddedBinEdges` embeds the infinite endpoints, so an inner loop needs no out-of-bounds branch:
 - The first element is treated as `typemin(T)` (\$-\\infty\$).
 - The last element is treated as `typemax(T)` (\$+\\infty\$).
 
@@ -345,6 +343,30 @@ end
 @inline Base.searchsorted(v::InfPaddedBinEdges, x, o::Base.Order.Ordering) = searchsortedfirst(v, x, o):searchsortedlast(v, x, o)
 
 """
+    ModeBinEdges(edges, schedule)
+
+Distance bins applied to the lags of a mode grid. The edges are ordinary bin edges, but every pair
+reaches them through the periodic kernel of the mode set `schedule` describes, so a bin's sum and
+count are kernel-weighted and the histogram is soft-binned. Carried by the results of the
+non-uniform FFT route, so they cannot be mistaken for pair counts.
+"""
+struct ModeBinEdges{T, ET <: AbstractBinEdges{T}, S} <: AbstractBinEdges{T}
+    edges::ET
+    schedule::S
+end
+
+ModeBinEdges(edges::AbstractVector, schedule) = ModeBinEdges(BinEdges(edges), schedule)
+
+Base.size(v::ModeBinEdges) = size(v.edges)
+Base.getindex(v::ModeBinEdges, i::Int) = v.edges[i]
+@inline Base.searchsortedfirst(v::ModeBinEdges, x) = searchsortedfirst(v.edges, x)
+@inline Base.searchsortedfirst(v::ModeBinEdges, x, o::Base.Order.Ordering) = searchsortedfirst(v.edges, x, o)
+@inline Base.searchsortedlast(v::ModeBinEdges, x) = searchsortedlast(v.edges, x)
+@inline Base.searchsortedlast(v::ModeBinEdges, x, o::Base.Order.Ordering) = searchsortedlast(v.edges, x, o)
+@inline Base.searchsorted(v::ModeBinEdges, x) = searchsorted(v.edges, x)
+@inline Base.searchsorted(v::ModeBinEdges, x, o::Base.Order.Ordering) = searchsorted(v.edges, x, o)
+
+"""
     midpoints(edges) -> per-bin representative separations
     midpoints!(out, edges) -> out
 
@@ -405,6 +427,8 @@ midpoints(::InfPaddedBinEdges) = throw(
     ),
 )
 
+midpoints(v::ModeBinEdges) = midpoints(v.edges)
+
 
 
 
@@ -434,8 +458,8 @@ BinEdges(edges::AbstractRange) = LinearBinEdges(edges)
     _fast_log2(x)
 
 `log2(x)` for finite `x > 0`, max error ~4e-8 (Float64). Exponent extract plus an odd series on a
-mantissa recentred to `[1/√2, √2)`; vectorizes, unlike the scalar `libm log`. Approximate — the bin
-is decided by [`squared_digitize`](@ref)'s correction, not by this.
+mantissa recentred to `[1/√2, √2)`, so it vectorizes where the scalar `libm log` does not.
+Approximate: the bin is decided by [`squared_digitize`](@ref)'s correction.
 """
 @inline function _fast_log2(x::Float64)
     ix = reinterpret(UInt64, x)
@@ -530,6 +554,8 @@ end
 # the generic binary-search plan.
 squared_digitize_plan(v::InfPaddedBinEdges) = SquaredInfPaddedPlan(squared_digitize_plan(v.edges))
 
+squared_digitize_plan(v::ModeBinEdges) = squared_digitize_plan(v.edges)
+
 squared_digitize_plan(edges::AbstractVector) = squared_digitize_plan(BinEdges(edges))
 
 """Bins covered by the plan (`digitize` results in `1:n_bins` are in range)."""
@@ -586,8 +612,8 @@ the precomputed approximate index and this only corrects it; otherwise `i` is ig
 """
     squared_correct(plan, r2, i) -> Int
 
-Walk `i` to the exact `searchsortedfirst(sqedges, r²)`. 0 or 1 step for random separations; a loop
-rather than a fixed step because within a few ulps of an edge more can be needed.
+Walk `i` to the exact `searchsortedfirst(sqedges, r²)`. 0 or 1 step for a random separation; within a
+few ulps of an edge it can take more, so it loops.
 """
 @inline function squared_correct(p::AbstractSquaredDigitizePlan, r2, i::Integer)
     sq = p.sqedges
@@ -608,7 +634,7 @@ end
     squared_digitize(plan, r2) -> Int
 
 Exact `digitize(r, edges)` computed from `r²` alone. Out-of-range gives `0` (below) or `n_bins + 1`
-(above), matching [`digitize`](@ref).
+(above), matching [`HelperFunctions.digitize`](@ref).
 """
 @inline squared_digitize(p::AbstractSquaredDigitizePlan, r2) =
     squared_bin(p, digitize_key(p, r2), squared_approx_index(p, r2))
@@ -621,3 +647,139 @@ Exact `digitize(r, edges)` computed from `r²` alone. Out-of-range gives `0` (be
     return squared_correct(inner, r2, i) + 1
 end
 
+
+# ========================================================================================= #
+# 6. Tapers and the harmonic nodes of a kernel-binned statistic
+# ========================================================================================= #
+
+"""
+    AbstractTaper
+
+A weight applied before a transform: on a lag-space autocovariance, as a function of the lag's
+length; on a spherical harmonic series, as a function of the degree. `NoTaper()` leaves every term as
+it is, `Bartlett()` falls linearly to zero at the largest lag or degree, `GaussianTaper(σ)` weights a
+lag of length `r` by `exp(-r²/2σ²)` and a degree `l` by `exp(-l(l+1)σ²/2)`, with `σ` in the lag's or
+the sphere's own unit. A taper trades resolution for variance, or a hard bin for a positive kernel.
+"""
+abstract type AbstractTaper end
+
+"""The taper that leaves every term as it is; see [`AbstractTaper`](@ref)."""
+struct NoTaper <: AbstractTaper end
+
+"""The taper falling linearly to zero at the largest lag or degree; see [`AbstractTaper`](@ref)."""
+struct Bartlett <: AbstractTaper end
+
+"""
+    GaussianTaper(σ)
+
+The Gaussian taper `exp(-r²/2σ²)` on a lag of length `r`, `exp(-l(l+1)σ²/2)` on a degree `l`, or
+`exp(-k²σ²/2)` on a mode of wavenumber `k`, with `σ` a length; see [`AbstractTaper`](@ref).
+"""
+struct GaussianTaper{T <: Real} <: AbstractTaper
+    σ::T
+end
+
+"""Weight of a lag of length `r` when the largest lag has length `r_max`."""
+@inline taper_weight(::NoTaper, r, r_max) = one(r)
+@inline taper_weight(::Bartlett, r, r_max) = max(zero(r), one(r) - r / r_max)
+@inline taper_weight(t::GaussianTaper, r, r_max) = exp(-r * r / (2 * t.σ * t.σ))
+
+"""Weight of degree `l` in a series truncated at `lmax`."""
+@inline harmonic_taper(::NoTaper, l::Integer, lmax::Integer) = 1.0
+@inline harmonic_taper(::Bartlett, l::Integer, lmax::Integer) = max(0.0, 1.0 - l / (lmax + 1))
+@inline harmonic_taper(t::GaussianTaper, l::Integer, lmax::Integer) = exp(-l * (l + 1) * t.σ^2 / 2)
+
+"""
+Weight of a Fourier mode of squared angular wavenumber `k2`, `σ` a length: the mode set's periodic
+kernel becomes the inverse transform of the squared weights.
+"""
+@inline mode_taper(::NoTaper, k2) = one(k2)
+@inline mode_taper(t::GaussianTaper, k2) = exp(-k2 * t.σ^2 / 2)
+
+"""
+    HarmonicNodes(separations, lmax; taper = NoTaper())
+    HarmonicNodes(n::Integer, lmax; taper = NoTaper())
+
+The "bins" of a kernel-binned pair statistic on a sphere: the central angles `separations` (radians)
+at which it is reported, the degree `lmax` its harmonic series is truncated at, and the `taper` on
+that series. Together they are the kernel, `K(γ, β) = (1/16π²) Σ_{l ≤ lmax} (2l+1) b_l d^l(cos γ) d^l(cos β)`,
+which replaces a hard bin around `β`; it narrows as `π/lmax` and tends to a delta in `cos γ`.
+
+`weights` are quadrature weights in `μ = cos β`, `∫_{-1}^{1} f dμ ≈ Σ_k w_k f(μ_k)`: Gauss–Legendre for
+the `n`-node form, whose nodes are the Gauss–Legendre points of `μ`, and the midpoint rule on the
+nodes' own cells for given separations. They are what inverts the statistic back to a spectrum.
+
+Not a vector of edges: one value is reported per node, so a result built on these has as many values
+as nodes.
+"""
+struct HarmonicNodes{T <: Real, SV <: AbstractVector{T}, WV <: AbstractVector{T}, B <: AbstractTaper}
+    separations::SV
+    weights::WV
+    lmax::Int
+    taper::B
+    function HarmonicNodes(separations::AbstractVector{T}, weights::AbstractVector{T}, lmax::Integer,
+                           taper::B) where {T <: Real, B <: AbstractTaper}
+        length(separations) == length(weights) || throw(DimensionMismatch(
+            "$(length(separations)) separations and $(length(weights)) weights",
+        ))
+        issorted(separations) || throw(ArgumentError("separations must be sorted"))
+        (isempty(separations) || (first(separations) >= 0 && last(separations) <= π)) ||
+            throw(ArgumentError("separations are central angles in radians, in [0, π]"))
+        lmax >= 0 || throw(ArgumentError("lmax must be non-negative"))
+        return new{T, typeof(separations), typeof(weights), B}(separations, weights, Int(lmax), taper)
+    end
+end
+
+function HarmonicNodes(separations::AbstractVector{<:Real}, lmax::Integer; taper::AbstractTaper = NoTaper())
+    T = float(eltype(separations))
+    sep = convert(AbstractVector{T}, separations)
+    μ = cos.(sep)
+    n = length(μ)
+    w = Vector{T}(undef, n)
+    @inbounds for k in 1:n
+        hi = k == 1 ? one(T) : (μ[k - 1] + μ[k]) / 2
+        lo = k == n ? -one(T) : (μ[k] + μ[k + 1]) / 2
+        w[k] = hi - lo
+    end
+    return HarmonicNodes(sep, w, lmax, taper)
+end
+
+function HarmonicNodes(n::Integer, lmax::Integer; taper::AbstractTaper = NoTaper())
+    μ, w = gauss_legendre(Int(n))
+    return HarmonicNodes(acos.(reverse(μ)), reverse(w), lmax, taper)
+end
+
+"""
+    gauss_legendre(n) -> (nodes, weights)
+
+The `n` Gauss–Legendre nodes on `(-1, 1)`, ascending, and their weights, by Newton's method on `P_n`
+from the Tricomi estimate.
+"""
+function gauss_legendre(n::Integer)
+    n >= 1 || throw(ArgumentError("need at least one node"))
+    x = Vector{Float64}(undef, n)
+    w = Vector{Float64}(undef, n)
+    for k in 1:n
+        z = cos(π * (k - 0.25) / (n + 0.5))
+        dp = 0.0
+        for _ in 1:100
+            p0, p1 = 1.0, z
+            for l in 1:(n - 1)
+                p0, p1 = p1, ((2l + 1) * z * p1 - l * p0) / (l + 1)
+            end
+            dp = n * (z * p1 - p0) / (z * z - 1)
+            dz = p1 / dp
+            z -= dz
+            abs(dz) < 1e-15 && break
+        end
+        x[n + 1 - k] = z
+        w[n + 1 - k] = 2 / ((1 - z * z) * dp * dp)
+    end
+    return x, w
+end
+
+@inline midpoints(nodes::HarmonicNodes) = nodes.separations
+@inline n_histogram_bins(nodes::HarmonicNodes) = length(nodes.separations)
+@inline Base.length(nodes::HarmonicNodes) = length(nodes.separations)
+Base.:(==)(a::HarmonicNodes, b::HarmonicNodes) =
+    a.separations == b.separations && a.weights == b.weights && a.lmax == b.lmax && a.taper == b.taper

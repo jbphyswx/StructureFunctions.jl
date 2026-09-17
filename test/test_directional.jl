@@ -62,7 +62,7 @@ Test.@testset "marginalizing the angle recovers the plain structure function" be
         nb = length(dist_bins) - 1
         ref_s = zeros(Float64, nb)
         ref_c = zeros(UInt32, nb)
-        SF.calculate_structure_function!(ref_s, ref_c, SF2, x, u, dist_bins;
+        SFC.calculate_structure_function!(ref_s, ref_c, SF2, x, u, dist_bins;
                                          backend = CB.SerialBackend())
         Test.@test vec(sum(joint.counts; dims = 2)) == ref_c
         Test.@test isapprox(vec(sum(joint.sums; dims = 2)), ref_s; rtol = 1e-10, atol = 1e-12)
@@ -119,7 +119,7 @@ end
 
 Test.@testset "an angle axis is refused where the direction is not shared" begin
     # On a sphere each pair's direction lives in its own frame, so an angle to one fixed reference
-    # axis is not a property of the pair. Refused by name rather than approximated.
+    # axis is not a property of the pair, so it is refused by name.
     Random.seed!(7500)
     x = [0.1 0.2 0.35; -0.2 0.05 0.3]
     u = randn(2, 3)

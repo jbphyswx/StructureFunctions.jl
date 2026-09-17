@@ -5,11 +5,11 @@
     cull_cutoff(geometry, r_max)
 
 Euclidean cutoff, in the coordinate space the kernels see, that bounds a true separation of
-`r_max`. Culling compares squared Euclidean distances against this, so it must never be smaller
-than the true bound or in-range pairs would be dropped.
+`r_max`. Culling compares squared Euclidean distances against this, so it must be at least the true
+bound; a smaller one drops in-range pairs.
 
-`nothing` means the geometry has declared no such bound, and culling then declines rather than
-risk dropping pairs. A user-defined geometry is therefore correct by default and opts in by adding
+`nothing` means the geometry has declared no such bound, and culling declines. A user-defined
+geometry is therefore correct by default and opts in by adding
 a method — it is never required to have one.
 """
 @inline cull_cutoff(::Any, r_max) = nothing
@@ -32,10 +32,10 @@ Uniform cell decomposition of a point set, with points sorted by cell id, so eve
 contiguous run: `cell_run(grid, c)` in the permuted order.
 
 Only **occupied** cells are stored, as the sorted ids `cell_ids` and their run boundaries
-`run_starts`. A dense array indexed by cell id would be `prod(dims)+1` long, which is unbounded:
-`dims` grows as `(extent/cutoff)^D`, so a flat 3-D set at `r_max/L = 0.003` wants 2.3 GB and a
-64 km cutoff on a shell wants 0.5 GB — while occupancy never exceeds the point count. Storing the
-occupied cells makes both the memory and the block enumeration `O(N)` at any resolution.
+`run_starts`. The cell-id space is unbounded — `dims` grows as `(extent/cutoff)^D`, reaching 2.3 GB
+of ids for a flat 3-D set at `r_max/L = 0.003` — while occupancy never exceeds the point count, so
+storing the occupied cells keeps both the memory and the block enumeration `O(N)` at any
+resolution.
 
 The index and offset arrays are type parameters, not `Vector`s, so one type serves a host build and
 a device-resident copy.
@@ -107,8 +107,8 @@ end
     cull_row_offsets(span, ::Val{D})
 
 Each surviving stencil row as `(offset over dimensions 2:D, half-extent along dimension 1)`.
-Dimension 1 is carried as an extent rather than an offset because cells adjacent along it are
-contiguous in the sorted order, so a whole row is swept as one run; the extent is the widest that
+Dimension 1 is carried as an extent: cells adjacent along it are contiguous in the sorted order, so
+a whole row is swept as one run. The extent is the widest that
 still satisfies the corner test, so the row is no larger than the true stencil.
 """
 function cull_row_offsets(span::Int, ::Val{D}) where {D}
@@ -139,7 +139,7 @@ A counting sort is faster but needs scratch proportional to the **cell-id space*
 unbounded in the cutoff. So it is used only while that space stays within a small multiple of the
 point count; `sortperm` covers the rest, where the cells are mostly empty anyway.
 """
-function _cull_sortperm(cell_raw::Vector{Int}, n_cells::Int, N::Int)
+function _cull_sortperm(cell_raw::AbstractVector{Int}, n_cells::Int, N::Int)
     n_cells <= SF_CULL_COUNTING_SORT_CELLS_PER_POINT * N || return sortperm(cell_raw)
     cursor = zeros(Int, n_cells + 1)
     @inbounds for i in 1:N
@@ -291,7 +291,7 @@ _cull_reject_unsupported(::AlwaysCulling, what::AbstractString) = throw(Argument
 """
     cull_cutoff_for(geometry, distance_bins, policy) -> cutoff or nothing
 
-The Euclidean cutoff a cull grid would be built with, or `nothing` when culling does not apply:
+The Euclidean cutoff for a cull grid, or `nothing` when culling does not apply:
 the policy is [`NoCulling`](@ref), the last bin is unbounded, or the geometry declares no bound.
 """
 function cull_cutoff_for(geometry, distance_bins, policy::CullingPolicy)

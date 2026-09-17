@@ -1,20 +1,18 @@
 # =============================================================================
 # CUDA-specialized 2D structure-function kernel (distance × value histogram).
 #
-# N-body broadcast structure + privatized DYNAMIC-shared histogram. This is the
-# settled-optimal design (gpu/OPTIMAL_KERNEL_DESIGN.md):
-#   - each thread owns its point i (registers); loops j over the staged tile so
-#     all lanes read the SAME shared[j] each step (broadcast, no bank conflict,
-#     no per-pair pair-decode sqrt);
-#   - per-block histogram (sums + counts) lives in dynamic shared memory (A100
-#     163 KB opt-in) and is atomic-merged to the global output at block end;
-#   - TILE = block size = 1024 (50% occupancy beats 25% on the heavy 50×50 case,
-#     measured job 238806: 8.36 vs 6.39 bapps). Device-aware: the launcher drops
-#     TILE (1024→512→256) until staging + dynamic histogram fit the device
-#     opt-in max, and returns `false` (KA fallback) if even TILE=256 won't fit.
+# N-body broadcast structure with a privatized dynamic-shared histogram:
+#   - each thread owns its point i in registers and loops j over the staged tile,
+#     so all lanes read the same shared[j] at each step: a broadcast, with no bank
+#     conflict and no per-pair pair-decode sqrt;
+#   - the per-block histogram (sums + counts) lives in dynamic shared memory and is
+#     atomic-merged into the global output at block end;
+#   - TILE = block size = 1024. The launcher drops TILE (1024→512→256) until the
+#     staging plus the dynamic histogram fit the device's opt-in maximum, and
+#     returns `false` for the KA fallback when even 256 will not fit.
 #
 # Covers joint 2D (NMOM=1) and single-pass 2D (NMOM=6), fixed-x and varying-x,
-# D ∈ {2,3} — all via Val type params. Validated in proto_nbody2d / proto_settle.
+# D ∈ {2,3}, all through Val type parameters.
 # =============================================================================
 
 """
@@ -25,8 +23,7 @@ Row stride of the value axis in the privatized histogram, forced odd.
 Shared memory has 32 banks. With a power-of-two `n_val`, the flat index `(dbin-1)*n_val + vbin` puts
 every value-axis row into the same couple of banks, so lanes differing only in `dbin` serialize on
 bank conflicts even though they target different cells. An odd stride is coprime with 32 and spreads
-them across banks, at the cost of one unused column per row. Measured 2.0–2.3× on the sibling
-single-pass 2D kernel, which had identical indexing.
+them across banks, at the cost of one unused column per row.
 """
 @inline _cuda_val_stride(n_val::Int) = isodd(n_val) ? n_val : n_val + 1
 
@@ -152,15 +149,12 @@ end
 """Largest TILE ∈ (1024,512,256) whose staging + the full `NMOM`-plane dynamic histogram fit the
 device opt-in shared max; 0 if even 256 won't fit.
 
-Returning 0 hands the call to the naive global-atomic kernel, which is the measured winner whenever
-the histogram does not fit on chip: contention spreads over many cells, and it beats every on-chip
-variant there (128×128 Float64: 5.95 vs 0.75 bapps). Splitting the histogram into moment planes to
-force it on chip was implemented and measured — it is ~2× *slower* than going global, so the
-all-or-nothing test below is deliberate. See `gpu/SPEED_OF_LIGHT.md`."""
+Returning 0 hands the call to the global-atomic kernel, which wins whenever the histogram does not
+fit on chip: a histogram that large spreads its contention over many cells. The test is
+all-or-nothing, so a histogram is either privatized whole or left in global memory."""
 function _cuda_2d_pick_tile(::Type{FT}, D::Int, NMOM::Int, n_dist::Int, n_val::Int) where {FT}
-    # Queried, never assumed: this is only reached via the CUDABackend hook, so a device is present
-    # by construction and a failure here is a real driver fault. Defaulting to the 48 KB static cap
-    # instead would silently forfeit ~3.4× the shared budget on an A100 (163 KB opt-in).
+    # Queried, never assumed: this is reached only through the CUDABackend hook, so a device is
+    # present by construction and a failure here is a driver fault.
     optin = Int(CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN))
     dynb = NMOM * n_dist * _cuda_val_stride(n_val) * (sizeof(FT) + sizeof(UInt32))
     for TILE in (1024, 512, 256)

@@ -1,211 +1,160 @@
-# GPU acceleration guide
+# GPU acceleration
 
-StructureFunctions.jl provides GPU structure-function kernels via
-[`StructureFunctionsKernelAbstractionsExt`](@ref) (loaded when `KernelAbstractions.jl` is available).
-This guide covers production APIs: single snapshots, workspace reuse, and time-slice batches.
+The device kernels live in the `StructureFunctionsKernelAbstractionsExt` extension (loaded with
+`using KernelAbstractions`); `using CUDA` adds the CUDA launch configuration. Every device route is
+also run on `KernelAbstractions.CPU()`, which executes the same kernel source on the host and is how
+the default test suite covers the kernels without a device. CUDA is the tested hardware.
 
-For backend selection across serial / threaded / distributed / GPU, see [backends.md](backends.md).
-For CUDA validation and SLURM benchmark scripts, see [`gpu/README.md`](../gpu/README.md).
+For backend selection across serial / threaded / distributed / GPU see [Backends](backends.md); the
+CUDA validation and benchmark scripts are in the repository's
+[`gpu/`](https://github.com/jbphyswx/StructureFunctions.jl/tree/main/gpu) directory.
 
 ## When to use the GPU
 
-- **Problem size:** GPU pair histograms pay off when `N` is roughly **few×10³ and up**
-  (exact crossover depends on hardware; see [benchmark figures](#benchmarks--figures)).
-- **Memory:** Device arrays use layout `(N_dims, N_points)` or `(N_dims, N_points, T)` for batches.
-  Prefer **Float32** on GPU for bandwidth; Float64 is supported but often much slower.
-- **Not a drop-in speedup on CPU:** Without a GPU, `KA.CPU()` runs the same kernels on CPU and is
-  slower than `ThreadedBackend()`.
+- **Problem size.** Pair histograms pay off from a few thousand points up; the crossover depends on
+  the hardware. Below it the threaded CPU backend wins.
+- **Memory.** Device arrays use the layout `(D, N)` or `(D, N, T)` for batches. `Float32` is faster on
+  the device; `Float64` is supported and is what the parity tests compare.
+- **Not a drop-in speedup on the CPU.** Without a GPU, `KA.CPU()` runs the same kernels on the host
+  and is slower than `ThreadedBackend()`.
 
-## Single snapshot
+## Point lists
 
 ```julia
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC
-using KernelAbstractions: KernelAbstractions as KA
-using CUDA: CUDA
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+using ComputationalBackends: ComputationalBackends as CB
+using KernelAbstractions, CUDA
 
-backend = CUDA.functional() ? CUDA.CUDABackend() : KA.CPU()
-N = 20_000
-FT = Float32
-x = CUDA.functional() ? CUDA.CuArray{FT}(rand(FT, 3, N)) : rand(FT, 3, N)
-u = CUDA.functional() ? CUDA.CuArray{FT}(rand(FT, 3, N)) : rand(FT, 3, N)
-bins = collect(FT, range(0.0f0, 1.5f0; length = 21))
-sft = SF.LongitudinalSecondOrderStructureFunctionType()
+x = CUDA.CuArray{Float32}(rand(Float32, 3, 20_000))
+u = CUDA.CuArray{Float32}(rand(Float32, 3, 20_000))
+bins = collect(Float32, range(0.0f0, 1.5f0; length = 21))
 
-result = SFC.gpu_calculate_structure_function(
-    sft, backend, x, u, bins,
-)  # returns a StructureFunctionSumsAndCounts (raw sums + counts)
+res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.GPUBackend(CUDA.CUDABackend()))
 ```
 
-`distance_bins` must have the **same element type** as `x` and `u` (e.g. `Float32` fields →
-`collect(Float32, edges)`). The GPU API does not cast bin edges silently.
+`distance_bins` must have the element type of `x` and `u`; the device API casts nothing silently.
+The joint value-binned histogram (`value_bins`), the six single-pass invariants and the batches over
+auxiliary axes take the same `backend` keyword.
 
 ### `GPUSFWorkspace` — reuse device histogram buffers
 
-Repeated calls with the same bin layout should reuse a workspace to avoid reallocating
-device histogram buffers each launch (~10–15% end-to-end win at `N=20k` on A100):
+Repeated calls with one bin layout reuse a workspace, which avoids reallocating the device histogram
+buffers on every launch:
 
 ```julia
-ws = SFC.GPUSFWorkspace(backend, bins)
+ws = SFC.GPUSFWorkspace(CUDA.CUDABackend(), bins)
 for _ in 1:10
-    SFC.gpu_calculate_structure_function(
-        sft, backend, x, u, bins; workspace = ws,
-    )
+    SFC.gpu_calculate_structure_function(SFT.L2SFType(), CUDA.CUDABackend(), x, u, bins; workspace = ws)
 end
-SFC.release!(ws)  # optional explicit free
+SFC.release!(ws)
 ```
 
-## Time series — slice batch API
+### Time series — the batch drivers
 
-For `T` snapshots, stack data as **`(N_dims, N_points, T)`**, upload once, and call the slice driver:
+For `T` snapshots stack the data as `(D, N, T)`, upload once and call the batch driver, which keeps the
+batch on the device and synchronises once:
 
 ```julia
-T = 100
-x_batch = rand(FT, 3, N, T)   # host or CuArray
-u_batch = rand(FT, 3, N, T)
-
-sums = zeros(FT, length(bins) - 1, T)
+x_batch = rand(Float32, 3, N, T)
+u_batch = rand(Float32, 3, N, T)
+sums = zeros(Float32, length(bins) - 1, T)
 counts = zeros(UInt32, length(bins) - 1, T)
-ws = SFC.GPUSFWorkspace(backend, bins)
-
-SFC.gpu_calculate_structure_function_batch!(
-    sums, counts, sft, backend, x_batch, u_batch, bins; workspace = ws,
-)
+SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), x_batch, u_batch, bins;
+                                        backend = CB.GPUBackend(CUDA.CUDABackend()))
 ```
 
-**Avoid** a naive loop that uploads a host slice each `t` — that pays H2D + allocation every step.
-The slice driver keeps the batch on device, reuses the workspace, and performs one final sync.
+The batch entries — `calculate_structure_function_batch!`, `calculate_structure_function_2d_batch!`,
+`calculate_structure_functions_single_pass_batch!`, `calculate_structure_functions_single_pass_2d_batch!` —
+dispatch on the backend; the CPU backends run them too.
 
-Public stubs with backend dispatch:
+### Route table for point lists
 
-- `calculate_structure_function_batch!`
-- `calculate_structure_function_2d_batch!`
-- `calculate_structure_functions_single_pass_batch!` (GPU-only for now)
-- `calculate_structure_functions_single_pass_2d!` — six `(dist × value)` histograms; GPU HTP-EJ when eligible
+| call | shapes | `D` | bins | device route |
+|---|---|---|---|---|
+| `calculate_structure_function(sf, x, u, bins; backend)` | `(D, N)` | 2, 3 | linear, log, general | tiled pair blocks with a block-local histogram |
+| shared positions | `x::(D, N)`, `u::(D, N, aux...)` | 2 (fused), any | linear for the fused route | fixed-position batch kernels |
+| varying positions | `x, u::(D, N, aux...)` | 2 (fused), any | linear for the fused route | varying-position batch kernels |
+| `calculate_structure_function(sf, x, u, bins, value_bins; backend)` | `(2, N)` or batches | 2 | typed or vector value bins | shared-memory joint histogram when it fits, global atomics otherwise |
+| `calculate_structure_functions_single_pass(x, u, bins; backend)` | `(D, N)` or batches | 2, 3 | linear, log, general | tiled six-row histogram |
+| `calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend)` | `(D, N)` or batches | 2, 3 | typed or vector value bins | shared, type-plane or direct strategy, frozen when the workspace is built |
+| `calculate_structure_function_tensor(order, x, u, bins; backend)` | `(D, N)` or shared positions | flat and spherical | any | one thread per point, global atomics per tensor component (orders 2 and 3) |
 
-## Production route table
+`D = size(u, 1)` is the velocity width and `N = size(x, 2) = size(u, 2)`; trailing axes are
+independent auxiliary calculations.
 
-| Public call | Shapes | Dimensions | Bin support | GPU route |
-|-------------|--------|------------|-------------|-----------|
-| `calculate_structure_function(sf, x, u, bins; backend=GPUBackend(...))` | `(D,N)` | `D=2,3` | linear, log, general vectors | tiled128 1D histogram route; explicit error for unsupported `D` |
-| same with shared positions | `x::(D,N)`, `u::(D,N, auxiliary...)` | currently production optimized for `D=2` auxiliary batch kernels | linear distance bins for fused batch route | fixed-position auxiliary batch route |
-| same with varying positions | `x,u::(D,N, auxiliary...)` | currently production optimized for `D=2` auxiliary batch kernels | linear distance bins for fused batch route | varying-position auxiliary batch route |
-| `calculate_structure_function(sf, x, u, bins, value_bins; backend=GPUBackend(...))` | `(2,N)` or auxiliary variants | `D=2` | typed and vector value-bin plans | joint 2D shared-memory route when eligible, otherwise global route |
-| `calculate_structure_functions_single_pass(x, u, bins; backend=GPUBackend(...))` | `(D,N)` or auxiliary variants | `D=2,3` point fields; `D=2` optimized auxiliary batch kernels | linear/log/general point fields; linear fused batch route | tiled 2D fast path for eligible `D=2`, global fallback otherwise |
-| `calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend=GPUBackend(...))` | `(D,N)` or auxiliary variants | `D=2,3` point fields; `D=2` optimized auxiliary batch kernels | linear/log/general point fields; typed or vector value bins | HTP-EJ shared/typeplane/direct strategy for eligible `D=2`; global fallback otherwise |
+## Grids: the transform engine on a device
 
-The public shape contract is always `D = size(x, 1) = size(u, 1)`, `N = size(x, 2) = size(u, 2)`.
-Trailing axes are independent auxiliary calculations; `ndims(x) == 3` is not interpreted as 3D space.
+The gridded transform takes the hardware from the same `backend` keyword. With `using FFTW: FFTW` (or
+another `AbstractFFTs` implementation) and `using KernelAbstractions: KernelAbstractions`, a
+`GPUBackend` moves the masked, weighted monomials to the device, takes their transforms there through
+the device's own `AbstractFFTs` implementation, forms every inverse column of a batch of slab pairs in
+one kernel, and bins every lag of every slab pair in a second kernel with a privatized histogram.
+Uniform, stretched and lat-lon grids, masks, weights, multi-fields, every polynomial order, the
+joint histogram over angle and the soft-binned non-uniform FFT route run through it; the counts are
+exactly the CPU engine's.
 
-## Single-type joint 2D smem
+```julia
+using FFTW, FlowGeometries
+using SpectralBackends: SpectralBackends as SB
+sf = calculate_structure_function(SFT.L3SFType(), grid, u, bins, SB.FastFourierTransformSpectralBackend();
+                                  backend = CB.GPUBackend(CUDA.CUDABackend()))
+```
 
-[`GPUSFWorkspace`](@ref) for `kind=:joint2d` defaults to exact compile-time shared histogram width
-`n_dist × n_val`. Optional override: `joint2d_compile_cells=joint2d_smem_max()` or
-`joint2d_smem_align256(n_dist, n_val)`. See [`gpu/GPU_2d_joint_sf_plan.md`](../gpu/GPU_2d_joint_sf_plan.md).
+`AutoSpectralBackend()` on a device always takes the transform, since the direct lag sweep has no
+device method. On an A100 the 720×360 lat-lon `L2` transform runs 28× faster than the 8-thread CPU
+(`0.045 s` against `1.28 s`), and a stretched 256×128 grid 3.6× (`0.0027 s` against `0.0098 s`).
 
-## Six-invariant-type single-pass 2D (SP2D)
+A schedule with many slabs transforms many short monomials, so the *number* of operations rather than
+their size sets the cost. Each monomial is built for every slab in one broadcast, the slabs are
+transformed in one batch, and the spectra are laid out in the order the spectral kernel reads them, so
+assembling its input is a reshape rather than a copy per spectrum.
 
-Production GPU path for `calculate_structure_functions_single_pass_2d!` with typed distance bins
-(`LinearBinEdges` / `LogBinEdges`) and `GPUSFWorkspace(...; kind=:single_pass_2d)`. Histogram strategy
-(`:shared` / `:typeplane` / `:direct`) is frozen at workspace build from a 48 KiB shared-memory budget.
+The binning kernel launches each slab pair over the lags that pair can reach, the same box the host
+loop takes. On a lat-lon grid a parallel spans less distance the nearer it lies to a pole, so the box
+over all row pairs stays as wide as the equator's however small the largest bin edge is; a schedule
+that reports `uniform_lag_box` instead shares one box across every pair and is indexed by division.
 
-Rows are fixed to the six invariant/default quantities:
+## Single-type joint 2D shared memory
 
-1. `S2 = |delta u|^2`
-2. `L2 = delta u_L^2`
-3. `T2 = |delta u_T|^2`
-4. `S3 = delta u_L |delta u|^2`
-5. `L3 = delta u_L^3`
-6. `LT2 = delta u_L |delta u_T|^2`
+[`GPUSFWorkspace`](@ref StructureFunctions.Calculations.GPUSFWorkspace) for `kind = :joint2d` defaults to the exact compile-time shared histogram
+width `n_dist × n_val`; `joint2d_compile_cells = joint2d_smem_max()` or `joint2d_smem_align256(n_dist,
+n_val)` override it.
 
-Basis-dependent component diagnostics such as `T3SF` and `L2T1SF` are not included in default
-single-pass outputs. Those require an explicit transverse-basis convention rather than the invariant
-bulk six-row contract.
+## Six-invariant single-pass 2D
 
-- **On-chip** (`:shared`, `:typeplane`): shared histogram + joint-style flush to output (no merge).
-- **Direct** (`:direct`): partitioned global accumulation + merge when even one value plane does not fit in smem.
-
-**Benchmark on GPU:** `julia --project=gpu gpu/benchmark_2d_grid_scaling.jl`  
-**Design, gate, perf gaps:** [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md)
-
-The production gate is e2e SP2D **&lt; 6 × joint_2d**. A naive “~2× digitize vs 1D” bound is too optimistic:
-SP2D performs six value digitizations per pair and may replay the full tile schedule
-`n_type_passes` times (typeplane). See the doc for a per-pair work table and future optimizations.
-
+The device path for `calculate_structure_functions_single_pass_2d!` with typed distance bins
+(`LinearBinEdges` / `LogBinEdges`) and `GPUSFWorkspace(...; kind = :single_pass_2d)` picks its histogram
+strategy — `:shared`, `:typeplane` or `:direct` — when the workspace is built, from a 48 KiB
+shared-memory budget. The six rows are `S2`, `L2`, `T2`, `S3`, `L3`, `L1T2`; the basis-dependent
+`T3` and `L2T1` are not part of the single-pass contract and take the general entries with their
+transverse convention.
 
 ## Testing tiers
 
-| Tier | Command | What it proves |
-|------|---------|----------------|
-| **1 — default CI** | `Pkg.test()` | Kernel math, binning, workspace reset, slice logic via **`KA.CPU()`** (same `@kernel` source, no CUDA) |
-| **2 — CUDA smoke** | `julia --project=gpu gpu/runtests.jl` | Device alloc, H2D/D2H, sync, Float32 on real GPU (**skipped** if `!CUDA.functional()`) |
-| **3 — benchmarks** | `julia --project=gpu gpu/benchmark_suite.jl` | Release-performance gates and timing JSON (run on GPU allocation) |
+| tier | command | what it proves |
+|---|---|---|
+| default suite | `julia --project=test test/runtests.jl` | kernel arithmetic, binning, workspaces and slices on `KA.CPU()`, the same kernel source without CUDA |
+| CUDA | `julia --project=gpu gpu/runtests.jl` | every CUDA suite: point kernels, workspaces, 1-D and 2-D parity, end-to-end 2-D, slices, and the gridded engine's parity table (skipped when `!CUDA.functional()`) |
+| gridded parity table | `sbatch gpu/run_cuda_gridded_parity.sh` | counts exact and sums to round-off against the 8-thread CPU on every schedule, the non-uniform FFT route and the tensor kernel, with timings |
+| benchmarks | `julia --project=gpu gpu/benchmark_suite.jl` | release-performance gates and timing JSON |
 
-**Important:** Tier 1 does **not** prove CUDA correctness. Always run tier 2 on a GPU node before trusting production CUDA runs.
+`KA.CPU()` does not prove CUDA correctness: five device-only compile faults (a runtime-length tuple, a
+boxed capture, a runtime-value branch, an `@index` inside a branch, a formatted throw message) and two
+CUDA library accuracy issues were found only on the device, which is why the CUDA tier exists.
 
-Tier 2 tests live in [`gpu/runtests.jl`](../gpu/runtests.jl) and are **not** included in [`test/runtests.jl`](../test/runtests.jl).
+## Benchmarks and figures
 
-## Benchmarks & figures
+The GPU figures in the README are problem-size scaling — one device against the serial CPU, sweeping
+`N`, and one device sweeping the slice count `T` — not strong or weak scaling. They are regenerated on a
+GPU allocation with `gpu/collect_benchmark_assets.jl` followed by
+`docs/generate_assets/generate_gpu_figures.jl`; the parity figure (`KA.CPU()` against serial) with
+`docs/generate_assets/generate_assets.jl`. CPU thread scaling is in `benchmark/benchmark_scaling.jl`.
 
-Shared bin layout and SF type with CPU benchmarks ([`benchmark/scaling_config.jl`](../benchmark/scaling_config.jl)).
+![GPU problem-size scaling](assets/gpu_problem_size_scaling.png)
 
-| Study | Script | What varies | What is fixed |
-|-------|--------|-------------|---------------|
-| **CPU strong scaling** | [`benchmark/benchmark_scaling.jl`](../benchmark/benchmark_scaling.jl) | threads | N |
-| **CPU weak scaling** | same | threads + N | work/thread |
-| **GPU problem-size scaling** | [`gpu/collect_benchmark_assets.jl`](../gpu/collect_benchmark_assets.jl) | N | 1 GPU, **serial CPU** |
-| **GPU slice-batch scaling** | same | T (slices) | N_SLICE, 1 GPU |
-| **GPU release gates** | [`gpu/benchmark_suite.jl`](../gpu/benchmark_suite.jl) | route | 1 GPU, shared bins |
-| **GPU strong/weak (multi-GPU)** | [`gpu/collect_multi_gpu_scaling.jl`](../gpu/collect_multi_gpu_scaling.jl) | — | **not implemented** |
-
-Problem-size scaling is the usual name for “one device, sweep input size.” It is **not** HPC strong or weak scaling.
-
-The GPU collector always uses **`SerialBackend`** for the CPU reference (1 logical worker), independent of `julia -t`. That keeps doc assets reproducible on any GPU allocation. **CPU thread scaling** is only in [`benchmark/benchmark_scaling.jl`](../benchmark/benchmark_scaling.jl) (strong/weak figures); readers combine those plots with the GPU problem-size figure as needed.
-
-The release benchmark suite is separate from docs asset generation:
-
-```bash
-julia --project=gpu gpu/benchmark_suite.jl
-```
-
-It writes `gpu/benchmark_results/benchmark_suite_latest.json` and a timestamped copy.
-The key ratios are workspace reuse, `6 * joint2D` vs SP2D, shared-position auxiliary
-fusion vs explicit loops, and varying-position auxiliary fusion vs explicit loops.
-`BENCH_BACKEND=kacpu` is useful only as a smoke test; CUDA runs with representative
-`N` and `BATCH` are the performance signal.
-
-### Regenerate GPU doc assets (on GPU allocation)
-
-```bash
-julia --project=gpu gpu/collect_benchmark_assets.jl
-julia --project=docs/generate_assets docs/generate_assets/generate_gpu_figures.jl
-```
-
-Outputs:
-
-- `gpu/benchmark_results/assets_latest.json`
-- `docs/src/assets/gpu_problem_size_scaling.png`
-- `docs/src/assets/gpu_slice_batch_scaling.png`
-
-Parity figure (KA.CPU vs serial, no GPU):
-
-```bash
-julia --project=docs/generate_assets docs/generate_assets/generate_assets.jl
-```
-
-Produces `docs/src/assets/sf_gpu_parity.png`.
-
-### Figures (from latest collector run)
-
-![GPU problem-size scaling](src/assets/gpu_problem_size_scaling.png)
-
-![GPU slice-batch scaling](src/assets/gpu_slice_batch_scaling.png)
+![GPU slice-batch scaling](assets/gpu_slice_batch_scaling.png)
 
 ## Examples
 
-- [`examples/gpu_acceleration.jl`](../examples/gpu_acceleration.jl) — single snapshot + workspace
-- [`examples/gpu_time_slices.jl`](../examples/gpu_time_slices.jl) — slice batch vs naive loop (small N/T, KA.CPU route)
-
-## See also
-
-- [backends.md — GPUBackend](backends.md#gpubackend)
-- [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md) — six-invariant-type single-pass 2D (HTP-EJ)
+- [`examples/gpu_acceleration.jl`](https://github.com/jbphyswx/StructureFunctions.jl/blob/main/examples/gpu_acceleration.jl) — a single snapshot with a workspace
+- [`examples/gpu_time_slices.jl`](https://github.com/jbphyswx/StructureFunctions.jl/blob/main/examples/gpu_time_slices.jl) — the slice batch against a naive loop

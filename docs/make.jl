@@ -13,6 +13,9 @@ const MODULES = [
     StructureFunctions.StructureFunctionTypes,
     StructureFunctions.StructureFunctionObjects,
     StructureFunctions.Calculations,
+    StructureFunctions.HelperFunctions,
+    StructureFunctions.MultiFields,
+    StructureFunctions.KHM,
 ]
 
 makedocs(;
@@ -23,7 +26,8 @@ makedocs(;
         canonical = "https://jbphyswx.github.io/StructureFunctions.jl",
         prettyurls = get(ENV, "CI", "false") == "true",
         assets = String[],
-        size_threshold = 400 * 1024,
+        size_threshold_warn = 400 * 1024,
+        size_threshold = 800 * 1024,
     ),
     pages = [
         "Home" => "index.md",
@@ -34,18 +38,25 @@ makedocs(;
         "Extensions" => "extensions.md",
         "Examples" => "examples.md",
         "Walkthrough" => "walkthrough.md",
+        "Exact Laws (KHM)" => "khm.md",
         "Validation" => "validation.md",
         "Binning Internals" => "uniform_bin_digitize.md",
-        "API Reference" => "api.md",
+        "API Reference" => [
+            "api/operators.md",
+            "api/calculations.md",
+            "api/results.md",
+            "api/helpers.md",
+            "api/internals.md",
+        ],
     ],
-    # Loose hand-written pages contain links to source files outside docs/src/ and a few
-    # not-yet-cross-referenced names; keep the build green and tighten incrementally.
-    warnonly = true,
-    checkdocs = :none,
+    warnonly = false,
+    checkdocs = :exports,
 )
 
-deploydocs(;
-    repo = "github.com/jbphyswx/StructureFunctions.jl",
-    devbranch = "main",
-    push_preview = true,
-)
+if get(ENV, "CI", "false") == "true"
+    deploydocs(;
+        repo = "github.com/jbphyswx/StructureFunctions.jl",
+        devbranch = "main",
+        push_preview = true,
+    )
+end

@@ -15,8 +15,6 @@ Compare single-type joint 2D vs six-type single-pass 2D on GPU.
 
 Gate: e2e SP2D < `6 × joint_2d`. Logs `output=on-chip-flush` vs `partition+merge`.
 
-Full design: `gpu/SP2D_HTP_EJ.md`
-
 Run on GPU:
 
     julia --project=gpu gpu/benchmark_2d_grid_scaling.jl
@@ -33,7 +31,7 @@ using Random: Random
 using StructureFunctions: StructureFunctions as SF
 using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges
-using StructureFunctions: joint2d_smem_max
+using StructureFunctions.Calculations: joint2d_smem_max
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
 
 function _bench(f, warmup::Int, repeat_::Int)

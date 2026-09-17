@@ -98,6 +98,21 @@ end
 const SINGLE_PASS_N = 6
 const SINGLE_PASS_WITH_HELMHOLTZ_N = 8
 
+"""
+    single_pass_invariants(δu_L, δu_norm2) -> NTuple{SINGLE_PASS_N}
+
+The six single-pass invariants of one pair — `(S2, L2, T2, S3, L3, L1T2)`, the stacked-row order — from the
+longitudinal increment and the squared norm, which is what every geometry returns
+([`HelperFunctions.pair_invariants`](@ref)).
+
+`S2` is the norm as measured and `S3` is `δu_L` times it, so every backend sums one expression.
+"""
+@inline function single_pass_invariants(du_L, du_norm2)
+    du_L2 = du_L * du_L
+    du_T2 = du_norm2 - du_L2
+    return (du_norm2, du_L2, du_T2, du_L * du_norm2, du_L * du_L2, du_L * du_T2)
+end
+
 const SinglePass2DValueBins = Union{AbstractVector, Tuple{Vararg{AbstractVector, SINGLE_PASS_N}}}
 
 @inline _sp2d_value_bin_at(value_bins, t::Int) =
@@ -113,8 +128,7 @@ distinct binding per invariant.
 `value_bins` may be a heterogeneous `NTuple{6}` (log bins for the non-negative invariants, linear
 for the signed ones is the natural choice). Indexing it with a *runtime* `t` makes `vb` a `Union`,
 which turns the `digitize` call into a dynamic dispatch on every pair × invariant in the hot loop.
-A macro rather than a higher-order function: passing `body` as a closure measured 45 ns/pair slower
-in the single-pass 2D scatter than emitting it inline.
+A macro, so `body` is emitted inline at each of the six literal indices.
 """
 macro sp2d_each_invariant(value_bins, t, vb, body)
     blocks = map(1:SINGLE_PASS_N) do i

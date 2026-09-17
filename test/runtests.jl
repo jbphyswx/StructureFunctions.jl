@@ -32,14 +32,37 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Gridded Masked Test ---")
     include("test_gridded_masked.jl")
 
+    println("--- Running Gridded Moments Test ---")
+    include("test_gridded_moments.jl")
+
     println("--- Running Gridded Lat-Lon Test ---")
     include("test_gridded_zonal.jl")
+
+    println("--- Running Gridded Separable Schedules Test ---")
+    include("test_gridded_separable.jl")
+    println("--- Running Gridded Device Engine Test ---")
+    include("test_gridded_device.jl")
+    println("--- Running Pair Weights Test ---")
+    include("test_gridded_weights.jl")
+    println("--- Running Scattered Modes (NUFFT) Test ---")
+    include("test_scattered_modes.jl")
+    println("--- Running Sorted Line Route Test ---")
+    include("test_sorted_line.jl")
+
+    println("--- Running Lag-Space Spectra Test ---")
+    include("test_spectra_lagspace.jl")
+
+    println("--- Running Spherical Harmonic Route Test ---")
+    include("test_harmonic_sphere.jl")
 
     println("--- Running Directional Test ---")
     include("test_directional.jl")
 
-    println("--- Running Multi-Channel Fields Test ---")
-    include("test_channels.jl")
+    println("--- Running Multi-Field Fields Test ---")
+    include("test_multifields.jl")
+
+    println("--- Running Operator Polynomial Contract Test ---")
+    include("test_operator_contract.jl")
 
     println("--- Running Single-Pass & Helmholtz Test ---")
     include("test_single_pass.jl")
@@ -77,15 +100,15 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Transforms Test ---")
     include("test_transforms.jl")
 
+    println("--- Running Regularised Fits Test ---")
+    include("test_fits.jl")
+
     println("--- Running Triangle Outer Chunks Test ---")
     include("test_triangle_outer_chunks.jl")
 
     println("--- Running CPU Workspace Test ---")
     include("test_cpu_workspace.jl")
 
-
-    # println("--- Running Performance Benchmark Test ---") # This need not run all the time, but it's here for reference
-    # include("benchmark_performance.jl")
 
     # Enable Parallel/Distributed Test
     println("--- Running Parallel Equivalence Test ---")

@@ -138,7 +138,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         # 1D Public AutoBackend (resolves to threaded or serial)
         sums_pub = zeros(Float64, n_dist)
         counts_pub = zeros(UInt32, n_dist)
-        SF.calculate_structure_function!(sums_pub, counts_pub, SFT.L2SF, x_mat, u_mat, distance_bins; backend=CB.AutoBackend(), verbose=false, show_progress=false)
+        SFC.calculate_structure_function!(sums_pub, counts_pub, SFT.L2SF, x_mat, u_mat, distance_bins; backend=CB.AutoBackend(), verbose=false, show_progress=false)
 
         sums_bas = zeros(Float64, n_dist)
         counts_bas = zeros(UInt32, n_dist)
@@ -150,7 +150,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         # 2D Public AutoBackend
         sums_2d_pub = zeros(Float64, n_dist, n_vals)
         counts_2d_pub = zeros(UInt32, n_dist, n_vals)
-        SF.calculate_structure_function!(sums_2d_pub, counts_2d_pub, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; backend=CB.AutoBackend(), verbose=false, show_progress=false)
+        SFC.calculate_structure_function!(sums_2d_pub, counts_2d_pub, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; backend=CB.AutoBackend(), verbose=false, show_progress=false)
 
         sums_2d_bas = zeros(Float64, n_dist, n_vals)
         counts_2d_bas = zeros(UInt32, n_dist, n_vals)
@@ -162,8 +162,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 end
 
 # Every `!` entry ACCUMULATES into the caller's buffers; zeroing belongs to the non-mutating
-# wrappers. Batch-leading drivers used to overwrite (via `permutedims!`) and the tensor driver used
-# to `fill!` the caller's arrays, so which contract you got depended only on the rank of the input.
+# wrappers. One contract for every rank of input, checked here rank by rank.
 @testset "Mutating API accumulates for every input shape" begin
     Random.seed!(4242)
     FT = Float64
@@ -182,7 +181,7 @@ end
     @test s2 ≈ 2 .* s1
     @test c2 == 2 .* c1
 
-    # (b) batch / auxiliary axes: previously overwrote.
+    # (b) batch / auxiliary axes
     bs1, bc1 = zeros(FT, nb, B), zeros(UInt32, nb, B)
     SFC.calculate_structure_function!(bs1, bc1, sft, x2, u3, bins; verbose = false, show_progress = false)
     bs2, bc2 = copy(bs1), copy(bc1)
@@ -190,7 +189,7 @@ end
     @test bs2 ≈ 2 .* bs1
     @test bc2 == 2 .* bc1
 
-    # (c) tensor: previously `fill!`ed the caller's arrays, so it could never accumulate.
+    # (c) tensor
     ts1, tc1 = zeros(FT, 2, 2, nb), zeros(UInt32, nb)
     SFC.calculate_structure_function_tensor!(ts1, tc1, Val(2), x2, u2, bins; verbose = false, show_progress = false)
     ts2, tc2 = copy(ts1), copy(tc1)

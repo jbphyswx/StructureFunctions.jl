@@ -271,11 +271,16 @@ Test.@testset "the gridded transform survives missing data" begin
     end
 end
 
-Test.@testset "the gridded transform refuses a bounded direction" begin
-    # A bounded direction has no natural Fourier basis, and picking one is a windowing choice.
-    Test.@test_throws ArgumentError SFC.gridded_spectrum(
-        zeros(1, 8), SFC.UniformLagSchedule((8,), (0.1,), (false,)), Val(1),
-        SB.FastFourierTransformSpectralBackend())
+Test.@testset "the gridded transform of a bounded direction is the windowed estimate" begin
+    # A bounded direction has no Fourier basis of its own, so its spectrum is the transform of the
+    # unbiased autocovariance on a padded lag grid: every lag |h| < n, and the variance conserved.
+    n, dx = 24, 0.1
+    Random.seed!(2400)
+    u = randn(1, n)
+    kax, dens = SFC.gridded_spectrum(u, SFC.UniformLagSchedule((n,), (dx,), (false,)), Val(1),
+                                     SB.FastFourierTransformSpectralBackend())
+    Test.@test length(kax[1]) == length(dens) >= 2n - 1
+    Test.@test sum(dens) * (kax[1][2] - kax[1][1]) ≈ sum(abs2, u .- sum(u) / n) / n rtol = 1e-10
 end
 
 Test.@testset "shell averaging conserves the spectrum" begin
@@ -318,21 +323,84 @@ Test.@testset "the flux quadrature matches a closed-form integral" begin
     Test.@test all(<(0), got)
 end
 
-Test.@testset "a flux needs a cross-channel moment" begin
-    # ⟨δφ δ𝓐_φ⟩ is a moment across two channels; the diagonal is a variance and carries no flux.
+Test.@testset "a flux needs a cross-field moment" begin
+    # ⟨δφ δ𝓐_φ⟩ is a moment across two fields; the diagonal is a variance and carries no flux.
     for op in (SFT.VectorDotSFType(1, 1), SFT.ScalarDotSFType(2, 2))
         err = Test.@test_throws ArgumentError SFC.assert_advective(op)
         Test.@test occursin("diagonal", err.value.msg)
     end
     for op in (SFT.S2SFType(), SFT.L2SFType(), SFT.L3SFType())
         err = Test.@test_throws ArgumentError SFC.assert_advective(op)
-        Test.@test occursin("cross-channel", err.value.msg)
+        Test.@test occursin("cross-field", err.value.msg)
     end
     Test.@test SFC.assert_advective(SFT.VectorDotSFType(1, 2)) === nothing
     Test.@test SFC.assert_advective(SFT.ScalarDotSFType(1, 2)) === nothing
 
     r = collect(range(0.0, 5.0; length = 100))
     Test.@test_throws ArgumentError SFC.spectral_flux(SFT.S2SFType(), r, fill(1.0, 100), [1.0])
+end
+
+Test.@testset "third-order flux routes" begin
+    J0(x) = Bessels.besselj0(x)
+    J1(x) = Bessels.besselj1(x)
+    J2(x) = Bessels.besselj(2, x)
+    R = 3.0
+    r = collect(range(0.0, R; length = 300_001))
+    Ks = [0.7, 2.0, 5.0]
+    trapz(f) = sum((f[1:(end - 1)] .+ f[2:end]) ./ 2 .* diff(r))
+    # the power-law family closes in Bessel functions: S3 = c·r gives −(c/2)(1 − J₀(KR)) on every route
+    c, c3, a = 1.3, 0.8, 0.6
+    S3 = c .* r
+    expected = [-(c / 2) * (1 - J0(K * R)) for K in Ks]
+    Test.@test SFC.spectral_flux(SFT.S3SFType(), r, S3, Ks) ≈ expected rtol = 1e-6
+    Test.@test SFC.spectral_flux(SFT.MixedSFType{1, 0, 2}(), r, S3, Ks) ≈ expected rtol = 1e-6
+    L3 = c3 .* r                                            # S3 = (1/3r²) d(r³ L3)/dr = (4/3) c3 r
+    Test.@test SFC.spectral_flux(SFT.L3SFType(), r, L3, (4c3 / 3) .* r, Ks) ≈
+               [-(2c3 / 3) * (1 - J0(K * R)) for K in Ks] rtol = 1e-6
+    Au = a .* r .^ 2                                        # SF_Aω = −∇² SF_Au = −4a
+    Test.@test SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), r, Au, Ks) ≈ [2a * (1 - J0(K * R)) for K in Ks] rtol = 1e-5
+    Test.@test SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), r, Au, Ks) ≈
+               SFC.spectral_flux(SFT.ScalarDotSFType(1, 2), r, fill(-4a, length(r)), Ks) rtol = 1e-5
+    # the boundary terms carry the answer: the integrals alone are not within tolerance
+    for (i, K) in pairs(Ks)
+        Test.@test !isapprox(-(K^2 / 4) * trapz(S3 .* J2.(K .* r)), expected[i]; rtol = 1e-2)
+        Test.@test !isapprox(-(K^3 / 12) * trapz(L3 .* Bessels.besselj.(3, K .* r) .* r), -(2c3 / 3) * (1 - J0(K * R)); rtol = 1e-2)
+        Test.@test !isapprox((K^3 / 2) * trapz(Au .* (Bessels.besselj.(3, K .* r) .- J1.(K .* r)) ./ 2), 2a * (1 - J0(K * R)); rtol = 1e-2)
+    end
+    # a smooth isotropic family with nothing decayed at R: the three routes of each flux agree
+    ℓ = 1.5
+    L(r) = c3 * r * exp(-r^2 / ℓ^2)
+    S(r) = (c3 / 3) * exp(-r^2 / ℓ^2) * (4r - 2r^3 / ℓ^2)                    # (1/3r²) d(r³ L)/dr
+    A(r) = (c3 / 6) * exp(-r^2 / ℓ^2) * (8 - 16r^2 / ℓ^2 + 4r^4 / ℓ^4)        # (1/2r) d(r S)/dr
+    f14 = SFC.spectral_flux(SFT.VectorDotSFType(1, 2), r, A.(r), Ks)
+    Test.@test maximum(abs, f14) > 0.1
+    Test.@test SFC.spectral_flux(SFT.S3SFType(), r, S.(r), Ks) ≈ f14 rtol = 1e-6
+    Test.@test SFC.spectral_flux(SFT.L3SFType(), r, L.(r), S.(r), Ks) ≈ f14 rtol = 1e-6
+    Auf(r) = a * r^2 * exp(-r^2 / ℓ^2)
+    Aω(r) = -a * exp(-r^2 / ℓ^2) * (4 - 12r^2 / ℓ^2 + 4r^4 / ℓ^4)             # −(1/r) d(r Au')/dr
+    Lωω(r) = -2a * exp(-r^2 / ℓ^2) * (2r - 2r^3 / ℓ^2)                       # (2/r) ∫₀^r s Aω ds = −2 Au'
+    g17 = SFC.spectral_flux(SFT.ScalarDotSFType(1, 2), r, Aω.(r), Ks)
+    Test.@test maximum(abs, g17) > 0.1
+    Test.@test SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), r, Auf.(r), Ks) ≈ g17 rtol = 1e-5
+    Test.@test SFC.spectral_flux(SFT.MixedSFType{1, 0, 2}(), r, Lωω.(r), Ks) ≈ g17 rtol = 1e-6
+    # result objects: bins both hold, in the operator order the relation needs
+    edges = collect(range(0.0, R; length = 41))
+    mids = SF.midpoints(edges)
+    cnt = fill(UInt32(3), 40)
+    cnt[7] = 0
+    keep = findall(>(0), cnt)
+    L3o = SF.StructureFunctionSumsAndCounts(SFT.L3SFType(), edges, 3 .* L.(mids) .* (cnt .> 0), cnt)
+    S3o = SF.StructureFunctionSumsAndCounts(SFT.S3SFType(), edges, 3 .* S.(mids) .* (cnt .> 0), cnt)
+    Test.@test SFC.spectral_flux(L3o, S3o, Ks) ≈ SFC.spectral_flux(SFT.L3SFType(), mids[keep], L.(mids[keep]), S.(mids[keep]), Ks)
+    Test.@test SFC.spectral_flux(S3o, Ks) ≈ SFC.spectral_flux(SFT.S3SFType(), mids[keep], S.(mids[keep]), Ks)
+    Test.@test_throws ArgumentError SFC.spectral_flux(S3o, L3o, Ks)
+    Auo = SF.StructureFunction(SFT.VectorDotSFType(1, 2), edges, Auf.(mids))
+    Test.@test SFC.enstrophy_flux(Auo, Ks) ≈ SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), collect(mids), Auf.(mids), Ks)
+    # refusals
+    Test.@test_throws ArgumentError SFC.enstrophy_flux(SFT.VectorDotSFType(1, 1), r, Auf.(r), Ks)
+    Test.@test_throws ArgumentError SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), [1.0], [1.0], Ks)
+    Test.@test_throws DimensionMismatch SFC.spectral_flux(SFT.L3SFType(), r, L.(r), S.(r[1:10]), Ks)
+    Test.@test_throws ArgumentError SFC.spectral_flux(SFT.S3SFType(), reverse(r), S.(r), Ks)
 end
 
 Test.@testset "a result object carries into the flux relation" begin

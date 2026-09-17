@@ -2,10 +2,9 @@
 CUDA-specialized fast structure-function kernels.
 
 Loaded automatically when **both** `KernelAbstractions` and `CUDA` are present.
-Provides the settled-optimal GPU kernels (N-body broadcast + privatized /
-dynamic-shared histograms) for NVIDIA GPUs, overriding the portable
-KernelAbstractions tiled kernels in `StructureFunctionsKernelAbstractionsExt` (which remain the
-CPU/AMD reference). See `gpu/OPTIMAL_KERNEL_DESIGN.md`.
+Provides N-body broadcast kernels with privatized or dynamic-shared histograms for NVIDIA GPUs,
+overriding the portable KernelAbstractions tiled kernels in
+`StructureFunctionsKernelAbstractionsExt`, which remain the CPU and GPU reference.
 
 These kernels use CUDA-only intrinsics not exposed by KernelAbstractions:
 `CuDynamicSharedArray` (>48 KB dynamic shared via the opt-in attribute),
@@ -63,8 +62,8 @@ function SFC.gpu_fast_launch_1d_batch!(
                             Int(N), Int(NB), Int(B), Int(D), Int(nmom), fixed_x, geom, cull)
 end
 
-# Real device numbers instead of the universal floor. Reached only through the CUDABackend hook, so
-# a device exists by construction and a query failure is a genuine driver fault, not a fallback.
+# The real device numbers. Reached only through the CUDABackend hook, so a device exists by
+# construction and a query failure is a driver fault.
 function SFC.gpu_device_caps(::CUDA.CUDABackend)
     dev = CUDA.device()
     return SFC.GPUDeviceCaps(

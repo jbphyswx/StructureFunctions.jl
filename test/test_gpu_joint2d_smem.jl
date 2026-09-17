@@ -3,8 +3,8 @@ using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    InfPaddedBinEdges, LinearBinEdges, LogBinEdges,
-    joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256
+    InfPaddedBinEdges, LinearBinEdges, LogBinEdges
+using StructureFunctions.Calculations: joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256
 using Random: Random
 
 const GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)

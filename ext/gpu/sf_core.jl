@@ -1,6 +1,5 @@
 # =============================================================================
 # Unified parametric GPU kernel core — building blocks
-# See gpu/OPTIMAL_KERNEL_DESIGN.md for the full design rationale.
 #
 # These are the compile-time-specialized primitives shared by the two unified
 # tiled kernels (`sf_tiled_1d!`, `sf_tiled_2d!`). Everything here is `@inline`,
@@ -18,11 +17,10 @@
 #   mirrors built host-side via `_sf_digitizer`.
 # * The shared histogram uses a "lane" axis of width `L` as its fastest index:
 #       hist[((m-1)*NB + (bin-1)) * L + lane]
-#   For the non-fixed-x path `L = R` (replication factor → contention spreading;
-#   replicas are summed at flush). For the fixed-x batch path `L = W` (batch
-#   strip → each lane is a distinct velocity field; NOT summed, scattered to the
-#   B axis at flush). Same accumulate primitive, different flush.
-#   IMPORTANT: we rotate the *lane* (replica) index, never the *bin* index.
+#   For the non-fixed-x path `L = R`, the replication factor that spreads contention, and the
+#   replicas are summed at flush. For the fixed-x batch path `L = W`, the batch strip: each lane is
+#   a distinct velocity field, not summed but scattered to the B axis at flush. One accumulate
+#   primitive, two flushes. The rotation is applied to the lane index, never to the bin index.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -73,6 +71,29 @@ KA.Adapt.adapt_structure(to, d::SFGeneralDigitizer) =
 KA.Adapt.adapt_structure(to, s::TilePairWorkList) =
     TilePairWorkList(KA.Adapt.adapt(to, s.pairs), s.n_tiles)
 
+# Bin edges, digitize plans and lag schedules reach a kernel with their vectors on the device.
+KA.Adapt.adapt_structure(to, b::SF.BinEdges) = SF.BinEdges(KA.Adapt.adapt(to, b.edges))
+KA.Adapt.adapt_structure(to, b::SF.InfPaddedBinEdges) = SF.InfPaddedBinEdges(KA.Adapt.adapt(to, b.edges))
+function KA.Adapt.adapt_structure(to, p::SF.SquaredLogPlan{T}) where {T}
+    sq = KA.Adapt.adapt(to, p.sqedges)
+    return SF.SquaredLogPlan{T, typeof(sq)}(p.a, p.b, p.n_bins, sq)
+end
+function KA.Adapt.adapt_structure(to, p::SF.SquaredLinearPlan{T}) where {T}
+    sq = KA.Adapt.adapt(to, p.sqedges)
+    return SF.SquaredLinearPlan{T, typeof(p.edges), typeof(sq)}(p.edges, p.n_bins, sq)
+end
+function KA.Adapt.adapt_structure(to, p::SF.SquaredGeneralPlan{T}) where {T}
+    sq = KA.Adapt.adapt(to, p.sqedges)
+    return SF.SquaredGeneralPlan{T, typeof(sq)}(p.n_bins, sq)
+end
+KA.Adapt.adapt_structure(to, p::SF.SquaredInfPaddedPlan) = SF.SquaredInfPaddedPlan(KA.Adapt.adapt(to, p.inner))
+KA.Adapt.adapt_structure(to, s::SFC.RectilinearLagSchedule) =
+    SFC.RectilinearLagSchedule(s.uniform, map(v -> KA.Adapt.adapt(to, v), s.enumerated), s.axis_order)
+KA.Adapt.adapt_structure(to, s::SFC.ZonalLagSchedule) =
+    SFC.ZonalLagSchedule(KA.Adapt.adapt(to, s.lats), s.n_lon, s.dlon, s.radius, s.lon_periodic)
+KA.Adapt.adapt_structure(to, s::SFC.ScatteredModesSchedule) =
+    SFC.ScatteredModesSchedule(KA.Adapt.adapt(to, s.points), s.origin, s.box, s.modes, s.taper)
+
 @inline (d::SFGeneralDigitizer)(r) = _gpu_digitize_general(r, d.edges, d.n_edges)
 
 # Number of bins (edges - 1) for a digitizer.
@@ -112,13 +133,8 @@ end
 """Six single-pass invariants from a velocity difference `dU` and unit vector
 `rhat`. Computes one dot product (`du_L`) and one norm (`du_norm2`); transverse
 follows as `du_norm2 - du_L²` (no second projection)."""
-@inline function _sf_moments6(dU::SA.SVector{D,T}, rhat::SA.SVector{D,T}) where {D,T}
-    du_L = _sf_dot(dU, rhat)
-    du_norm2 = _sf_dot(dU, dU)
-    du_L2 = du_L * du_L
-    du_T2 = du_norm2 - du_L2
-    return (du_norm2, du_L2, du_T2, du_L * du_norm2, du_L * du_L2, du_L * du_T2)
-end
+@inline _sf_moments6(dU::SA.SVector{D,T}, rhat::SA.SVector{D,T}) where {D,T} =
+    SFC.single_pass_invariants(_sf_dot(dU, rhat), _sf_dot(dU, dU))
 
 """Compute the moment tuple for a pair:
 - `Val{6}` → the six single-pass invariants (sf_type ignored).
@@ -132,8 +148,8 @@ end
 
 """
 Moments needing a per-pair atomic. `T2 = S2 - L2` and `L1T2 = S3 - L3` hold for every pair, and a
-histogram bin is a sum, so both are recovered exactly at flush by [`_sf_flush_moment`](@ref)
-rather than costing an atomic on each pair.
+histogram bin is a sum, so both are recovered exactly at flush by [`_sf_flush_moment`](@ref) and
+cost no atomic on any pair.
 """
 @inline _sf_accum_moments(::Val{6}) = (1, 2, 4, 5)
 @inline _sf_accum_moments(::Val{1}) = (1,)
@@ -155,10 +171,8 @@ end
 #     shared_sums[(m-1)*NB*L + (bin-1)*L + ℓ]      (L = R or W, compile-time)
 #     shared_cnts[(bin-1)*L + ℓ]
 #
-# All looped reads/writes/atomics on these `@localmem` buffers are written
-# INLINE in the kernel bodies, NOT via helper functions. On the CUDA backend a
-# `@localmem` array passed as a function argument and written in a loop fails to
-# compile (GPUCompiler MethodError); inlining matches the proven pattern used by
-# the existing tiled kernels. Single-element loads through a helper are fine
-# (see `_sf_load_pt` / `_sf_load_field`).
+# Every looped read, write and atomic on these `@localmem` buffers is written inline in the kernel
+# bodies: on the CUDA backend a `@localmem` array passed as a function argument and written in a
+# loop fails to compile with a GPUCompiler MethodError. Single-element loads through a helper
+# compile (`_sf_load_pt`, `_sf_load_field`).
 # -----------------------------------------------------------------------------

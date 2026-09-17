@@ -1,4 +1,4 @@
-# StructureFunctions.jl v0.4.0
+# StructureFunctions.jl
 
 [![Docs (stable)][docs-stable-img]][docs-stable-url] [![Docs (dev)][docs-dev-img]][docs-dev-url] [![DOI][zenodo-img]][zenodo-latest-url]
 
@@ -9,674 +9,284 @@
 [zenodo-img]: https://zenodo.org/badge/734119226.svg
 [zenodo-latest-url]: https://doi.org/10.5281/zenodo.14945669
 
-**High-performance structure function calculations for turbulence and spatial correlation analysis.**
+**Structure functions of turbulent and spatially varying fields, on point lists, multi-fields, grids
+and the sphere, with the spectra, fluxes and fits derived from them.**
 
-StructureFunctions.jl computes structure functions (SFs) from scattered data, characterizing spatial correlations and scaling properties of turbulent/spatially-varying fields. Optimized for multi-dimensional data with typed backends supporting serial, threaded, distributed, and GPU execution.
+A structure function is the pair average of a polynomial in the increment `δu = u(x + r) − u(x)`,
+binned in the separation `|r|`. This package computes them at any order, for longitudinal and
+transverse projections, scalars, mixed and cross-field moments, and the moment tensor.
 
-## Table of Contents
+- [Documentation](https://jbphyswx.github.io/StructureFunctions.jl/dev/) — theory, walkthrough,
+  architecture, backends, GPU, extensions, validation, API.
+- Julia 1.12 or later.
 
-- [Features](#features)
-- [Quick Start](#quick-start)
-- [Architecture](#architecture)
-- [Backends](#backends)
-- [API Reference](#api-reference)
-- [Theory & References](#theory--references)
-- [Performance](#performance)
-- [Extensions](#extensions)
-- [Migration from v0.2](#migration-from-v02)
-- [Examples](#examples)
-
-## Features
-
-- **Structure Functions**: 1st, 2nd, 3rd order; longitudinal & transverse projections in 1D, 2D, 3D
-- **In-place Mutating API**: Pre-allocated mutating functions (`calculate_structure_function!`) for zero-allocation loops (O(n_threads) multi-threaded chunked allocations)
-- **2D Joint-Probability Binning**: Natively accumulates both exact sums and contribution counts across distance and structure function value increment bins (`StructureFunction2DSumsAndCounts`)
-- **Typed Backend System**: Serial, Threaded, Distributed, GPU, Auto — choose your parallelization strategy
-- **Type-Stable Dispatch**: No runtime overhead from symbolic dispatch; all paths validated with JET
-- **Extensible Architecture**: Optional extensions for parallelization and GPU acceleration
-- **Production Ready**: Comprehensive test coverage, numerical validation, performance benchmarking
-- **Modern Julia**: Julia 1.12+ with qualified imports and explicit type annotations
-
-## Quick Start
+## Quick start
 
 ```julia
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+using Pkg; Pkg.add(url = "https://github.com/jbphyswx/StructureFunctions.jl.git")
 
-# 2D data: 3 points
-x = ([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
-u = ([1.0, 1.1, 1.2], [0.0, 0.05, 0.1])
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, LogBinEdges
+using ComputationalBackends: ComputationalBackends as CB
 
-# Distance bins (physical units)
-bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
+x = rand(2, 4096) .* 1.0e4          # (D, N) coordinates
+u = randn(2, 4096)                  # (D, N) velocity components
+bins = LogBinEdges(collect(exp10.(range(log10(50.0), log10(5.0e3); length = 41))))
 
-# Calculate 2nd-order longitudinal SF
-sf_type = SFT.LongitudinalSecondOrderStructureFunctionType()
-result = SFC.calculate_structure_function(sf_type, x, u, bins)
+sf = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins)     # ⟨δu_L²⟩ per bin, AutoBackend
+sf.values                                                             # NaN where a bin holds no pair
+raw = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; output_type = SFC.StructureFunctionObjects.StructureFunctionSumsAndCounts)
+raw.sums, raw.counts                                                  # the accumulator, adds across processes and time
 
-# result.values contains the SF values for each bin
-println("SF values: ", result.values)
-
-# Speed it up with threading (if available)
-using Base.Threads
-if nthreads() > 1
-    result_threaded = SFC.calculate_structure_function(
-        sf_type, x, u, bins;
-        backend=CB.ThreadedBackend()
-    )
-end
+res = SFC.calculate_structure_functions_single_pass(x, u, bins)       # S2, L2, T2, S3, L3, L1T2 and the Helmholtz split in one pass
+joint = SFC.calculate_structure_function(SFT.L3SFType(), x, u, bins, range(-3.0, 3.0; length = 61))   # distance × value histogram
 ```
 
-### Pre-allocated In-place Calculation
+Threads: start Julia with `-t N` and `using OhMyThreads`. A GPU: `using KernelAbstractions, CUDA` and
+`backend = CB.GPUBackend(CUDA.CUDABackend())`. A grid: `using FlowGeometries, FFTW` and pass the grid
+and a spectral tag (below). The optional routes live in package extensions, listed under
+[Extensions](#extensions).
 
-For high-performance loops (e.g. over timesteps), you can pre-allocate memory buffers and run mutating calculations with zero heap allocation:
+## What it computes
+
+**Operators.** Each is callable on a pair as `sf(δu, r̂)` and is accumulated by every route:
+
+| operator | value on a pair | shorthand |
+|---|---|---|
+| `SecondOrderStructureFunctionType` | `‖δu‖²` | `S2SFType` |
+| `ProjectedStructureFunctionType{NL, NT}(basis)` | `δu_L^NL · δu_T^NT` — `δu_L = δu·r̂`; `NT = 2` the transverse energy `‖δu‖² − δu_L²`, any other `NT` the signed component along the convention's transverse direction | `L2SFType` `{2,0}`, `T2SFType` `{0,2}`, `L3SFType` `{3,0}`, `L1T2SFType` `{1,2}`, `L2T1SFType` `{2,1}`, `T3SFType` `{0,3}` |
+| `ThirdOrderStructureFunctionType` | `δu_L ‖δu‖²` | `S3SFType` |
+| `FullVectorStructureFunctionType{NF}` | `‖δu‖^NF` | |
+| `ScalarStructureFunctionType{P}(field)` | `(δθ)^P` | `ScalarSFType` |
+| `MixedStructureFunctionType{NL, NT, P}` | `δu_L^NL ‖δu_T‖^NT (δθ)^P` — `{1,0,2}` is Yaglom's moment | `MixedSFType` |
+| `VectorDotStructureFunctionType(a, b)`, `ScalarDotStructureFunctionType(a, b)` | `δu⁽ᵃ⁾·δu⁽ᵇ⁾`, `δθ⁽ᵃ⁾ δθ⁽ᵇ⁾` — the advective moments the flux relations take | `VectorDotSFType`, `ScalarDotSFType` |
+| `MomentTensorOperator{P}` | the tensor `δu_{i₁} ⋯ δu_{i_P}` | |
+
+The transverse convention travels with the operator (`CanonicalTransverseBasis()` by default,
+`ReferenceAxisTransverseBasis(a)` about an axis), and operators odd in a scalar increment read every
+pair in its canonical orientation, so nothing depends on the order of the input.
+
+**Inputs**
+
+- Point lists `x::(D, N)`, `u::(D, N)`; batches `u::(D, N, aux...)` with shared or varying positions.
+- Multi-fields `MultiFields.Fields(vectors = (u, 𝓐u), scalars = (θ,))`, swept together in one pass.
+- Grids from [FlowGeometries.jl](https://github.com/jbphyswx/FlowGeometries.jl): uniform, stretched
+  (any number of uniform axes) and lat-lon grids, with masks (`NaN`s or a `Bool` mask) at every order.
+- The sphere: `SphericalDistance(R)` (or `Distances.Haversine`, `Distances.SphericalAngle`) puts each
+  pair in its geodesic frame; `x` is `(lon, lat)` and `u` may carry a radial component.
+- Pair weights, one per point or cell (`cell_measure(grid)` for areas).
+
+**Routes**
+
+| data | route | exact? |
+|---|---|---|
+| point list, any geometry | blocked pair loop with cell culling, on every backend | yes |
+| one-dimensional point list | sorted route, prefix sums of monomials, `O(N log N + N n_bins)` | yes |
+| grid with ≥ 1 uniform axis | direct lag sweep, or the transform engine: each polynomial operator at each lag as cross-correlations of masked monomials, on the CPU or a device | yes |
+| lat-lon grid | the same, with the geodesic frame per lag (pole-invariant) | yes |
+| sphere, any point set | the harmonic route: pseudo-spectral series with Legendre / Wigner-d kernels (`HarmonicNodes`) | kernel-binned, exact for a band-limited field on a quadrature grid |
+| scattered points, large | non-uniform FFT onto a mode grid (`ScatteredModesSchedule`) | no: soft-binned, converges with the mode count |
+
+**Outputs beyond the histogram**
+
+- Joint histograms in (distance × value) and (distance × angle); moment tensors of any rank on points
+  and grids; the six isotropic invariants and the Helmholtz rotational/divergent split in one pass.
+- Spectra: `isotropic_spectrum` in 1-, 2- and 3-D; `gridded_spectrum` exactly through the lag space
+  (and an unbiased estimate with cells missing); `helmholtz_spectra` (`E`/`B`) by `J₀`/`J₂`; on the
+  sphere `C_l`, `C^E_l`, `C^B_l`.
+- Fluxes: `spectral_flux` from the advective moment (`J₁`) and from `S3`, `L3` with their boundary
+  terms; `enstrophy_flux`.
+- Fits (issue #37): `fit_spectrum`, `fit_helmholtz_spectra`, `fit_flux` through
+  `SpectrumForwardModel`, `HelmholtzForwardModel`, `FluxForwardModel` with `RegularizedLeastSquares`
+  (posterior covariance), `NonNegativeLeastSquares` or a `SegmentedPowerLaw`; `tradeoff_curve`,
+  `select_segments`, `independent_pair_variance`.
+- Exact laws: `KHM.epsilon_from_four_fifths`, `epsilon_from_four_thirds`, `epsilon_theta_from_yaglom`.
+
+## A grid, by transform
 
 ```julia
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+using FlowGeometries: FlowGeometries as FG
+using SpectralBackends: SpectralBackends as SB
+using FFTW
 
-x = ([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
-u = ([1.0, 1.1, 1.2], [0.0, 0.05, 0.1])
-bins = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]
-sf_type = SFT.L2SFType()
+n_lon, n_lat = 1440, 720
+grid = FG.Grids.StructuredGrid(FG.Geometry.SphericalGeometry(6.371e6),
+                               range(0.0, step = 2π / n_lon, length = n_lon),
+                               range(-π / 2 + π / (2n_lat), π / 2 - π / (2n_lat); length = n_lat))
+u = randn(2, n_lon, n_lat)                                  # (east, north) at every cell
+bins = 6.371e6 .* collect(range(0.0, π; length = 41))       # metres, like the radius
 
-# Pre-allocate output arrays
-n_bins = length(bins)
-sums = zeros(Float64, n_bins)
-counts = zeros(Float64, n_bins)
-
-# Compute in-place (accumulates into provided buffers)
-SFC.calculate_structure_function!(sums, counts, sf_type, x, u, bins; backend=CB.ThreadedBackend())
-
-# Obtain structure function values via division
-sf_values = sums ./ counts
+sf = calculate_structure_function(SFT.L3SFType(), grid, u, bins, UInt64,
+                                  SB.FastFourierTransformSpectralBackend(); backend = CB.ThreadedBackend())
 ```
 
-
-## Architecture
-
-### Operator Types ✕ Result Container Pattern
-
-The v0.3.0 API separates **operators** (structure function definitions) from **result containers** (computed outcomes):
-
-```
-AbstractStructureFunctionType (operators)
-  ├── LongitudinalSecondOrderStructureFunctionType
-  ├── TransverseSecondOrderStructureFunctionType
-  ├── LongitudinalThirdOrderStructureFunctionType
-  └── ... (3+ other variants)
-
-StructureFunction (result container)
-  ├── operator::AbstractStructureFunctionType
-  ├── distance_bins::AbstractVector
-  ├── values::AbstractVector
-  └── order::Int
-```
-
-This split ensures:
-- Clear semantics: operators are **inputs**, containers are **outputs**
-- Type stability: dispatch happens at compilation time
-- Extensibility: custom operators and containers are easy to add
-
-### Backend Dispatch System
-
-```
-calculate_structure_function(sf_type, x, u, bins; backend=AutoBackend())
-    ↓
-_dispatch_execution_backend(backend, ...)
-    ├── SerialBackend       → serial_calculate_structure_function
-    ├── ThreadedBackend     → threaded_calculate_structure_function (from OhMyThreadsExt)
-    ├── DistributedBackend  → parallel_calculate_structure_function (from DistributedExt)
-    ├── GPUBackend(b)       → gpu_calculate_structure_function (from GPUExt)
-    └── AutoBackend         → (tries distributed → threaded → serial)
-```
-
-All code paths produce **numerically identical results** (validated by intensive test suite).
-
-## Backends
-
-### SerialBackend (Default Reference)
-
-Single-threaded CPU execution. Use when:
-- Debugging or validating calculations
-- Data is small
-- Deterministic execution is required
-
-```julia
-result = SFC.calculate_structure_function(sf_type, x, u, bins)  # Defaults to Serial
-result = SFC.calculate_structure_function(sf_type, x, u, bins; 
-                                        backend=CB.SerialBackend())
-```
-
-**Performance**: O(N²) pairwise distance/SF evaluations.  
-**Memory**: O(N + B) where N = points, B = distance bins.
-
-### ThreadedBackend (Multi-CPU)
-
-Multi-threaded execution using [OhMyThreads.jl](https://github.com/JuliaFolds2/OhMyThreads.jl).
-
-```julia
-using Base.Threads
-
-result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=CB.ThreadedBackend())
-```
-
-- **Prerequisites**: `Threads.nthreads() > 1`, OhMyThreads.jl loaded (extension auto-loads)
-- **Thread-local reductions**: No locks or atomic operations; no `threadid()` buffer indexing
-- **Outer-loop scheduling**: Round-robin partition of index `i` for O(N²) pair loops (balanced
-  when inner work per `i` is `(N - i)`; contiguous chunks would skew load ~× number of threads)
-- **Speedup**: Near-linear at low thread count for large N; memory bandwidth limits scaling beyond
-
-### DistributedBackend (Multi-Process/Cluster)
-
-Multi-worker execution using [Distributed.jl](https://docs.julialang.org/en/v1/stdlib/Distributed/).
-
-```julia
-using Distributed: addprocs
-
-addprocs(4)  # Or specify SSH workers, etc.
-
-result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=CB.DistributedBackend())
-```
-
-- **Prerequisites**: Workers launched via `addprocs()` or similar
-- **Communication overhead**: One `@distributed` reduction loop
-- **Ideal for**: Large datasets, compute clusters
-
-### GPUBackend (GPU Acceleration)
-
-GPU execution via [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl).
-
-```julia
-using KernelAbstractions as KA
-
-# NVIDIA GPU (after loading CUDA.jl)
-using CUDA
-result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=CB.GPUBackend(CUDA.CUDABackend()))
-
-# AMD GPU (after loading AMDGPU.jl)
-using AMDGPU
-result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=CB.GPUBackend(AMDGPU.ROCBackend()))
-
-# CPU backend for testing (no GPU required)
-result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=CB.GPUBackend(KA.CPU()))
-```
-
-- **Ideal for**: Large datasets (few×10³+ points) where GPU memory is sufficient
-- **Docs**: [`docs/src/gpu.md`](docs/src/gpu.md) — workspace, batch driver, testing tiers
-
-### AutoBackend (Recommended Default)
-
-Automatic selection based on environment:
-
-```julia
-result = SFC.calculate_structure_function(sf_type, x, u, bins;
-                                        backend=CB.AutoBackend())
-
-# Selection order:
-# 1. Distributed  (if nworkers() > 1)
-# 2. Threaded     (if nthreads() > 1)
-# 3. Serial       (fallback)
-```
-
-## API Reference
-
-### Main Entry Points
-
-**1. Standard Allocating API:**
-
-```julia
-calculate_structure_function(sf_type::AbstractStructureFunctionType,
-                            x::Union{Tuple, Matrix},
-                            u::Union{Tuple, Matrix},
-                            distance_bins::AbstractVector{<:Tuple};
-                            backend=SerialBackend(),
-                            output_type=StructureFunction,   # or StructureFunctionSumsAndCounts for raw
-                            distance_metric=Euclidean(),
-                            verbose=true,
-                            show_progress=true) → StructureFunction  # (or StructureFunctionSumsAndCounts)
-```
-
-**2. 2D Joint-Probability Allocating API:**
-
-```julia
-calculate_structure_function(sf_type::AbstractStructureFunctionType,
-                            x::Union{Tuple, Matrix},
-                            u::Union{Tuple, Matrix},
-                            distance_bins::AbstractVector{<:Tuple},
-                            value_bins::AbstractVector;
-                            backend=SerialBackend(),
-                            distance_metric=Euclidean(),
-                            verbose=true,
-                            show_progress=true) → StructureFunction2DSumsAndCounts
-```
-
-**3. In-place Mutating API (Zero-Allocation):**
-
-```julia
-calculate_structure_function!(sums::AbstractVector,
-                             counts::AbstractVector,
-                             sf_type::AbstractStructureFunctionType,
-                             x::Union{Tuple, Matrix},
-                             u::Union{Tuple, Matrix},
-                             distance_bins::AbstractVector;
-                             backend=SerialBackend(),
-                             distance_metric=Euclidean(),
-                             verbose=true,
-                             show_progress=true) → Nothing
-```
-
-**4. 2D Joint-Probability Mutating API (Zero-Allocation):**
-
-```julia
-calculate_structure_function!(sums_2d::AbstractMatrix,
-                             counts_2d::AbstractMatrix,
-                             sf_type::AbstractStructureFunctionType,
-                             x::Union{Tuple, Matrix},
-                             u::Union{Tuple, Matrix},
-                             distance_bins::AbstractVector,
-                             value_bins::AbstractVector;
-                             backend=SerialBackend(),
-                             distance_metric=Euclidean(),
-                             verbose=true,
-                             show_progress=true) → Nothing
-```
-
-*Note: The mutating APIs accumulate (`+=` and `.+=`) directly into the provided output buffers. The caller is responsible for pre-zeroing the arrays.*
-
-### Operator Types
-
-All inherit from `AbstractStructureFunctionType`. Instantiate with `()` or use shorthands:
-
-```julia
-SFT.LongitudinalSecondOrderStructureFunctionType()    # 2nd order, longitudinal
-SFT.TransverseSecondOrderStructureFunctionType()      # 2nd order, transverse
-SFT.LongitudinalThirdOrderStructureFunctionType()     # 3rd order, longitudinal
-# ... shorthands: L2SFType, T2SFType, L3SFType, T3SFType, S2SFType, S3SFType
-```
-
-Each operator is **callable** (functors):
-```julia
-sf_op = SFT.L2SFType()
-sf_op(du, rhat)  # Computes L2SF increment value
-```
-
-### Result Containers
-
-**1. 1D Structure Function Container (`StructureFunction`):**
-
-```julia
-struct StructureFunction{FT, OT, BT, VT} <: AbstractStructureFunction
-    operator::OT                   # AbstractStructureFunctionType
-    distance_bins::BT              # AbstractVector of (r_min, r_max)
-    values::VT                     # AbstractVector{FT} — computed SF
-    order::Int                     # 1, 2, 3, ...
-end
-```
-
-**2. 2D Joint-Probability Container (`StructureFunction2DSumsAndCounts`):**
-
-```julia
-struct StructureFunction2DSumsAndCounts{FT, OT, BT, VT, MT, CT} <: AbstractStructureFunction
-    operator::OT                   # AbstractStructureFunctionType
-    distance_bins::BT              # AbstractVector of distance bin edges
-    value_bins::VT                 # AbstractVector of value bin edges
-    sums::MT                       # AbstractMatrix{FT} (distance x value)
-    counts::CT                     # AbstractMatrix (distance x value)
-end
-```
-
-**Access results**:
-```julia
-# 1D
-result.values         # SF values, one per bin
-result.distance_bins  # Original input bins
-
-# 2D
-result_2d.sums        # Sum of SF values in each 2D cell
-result_2d.counts      # Count of point pairs in each 2D cell
-```
-
-### Fast Bin Edges (`AbstractBinEdges`)
-
-For large datasets ($N \ge 2000$), looking up the correct distance bin for each of the $O(N^2)$ point pairs can become a major CPU bottleneck (occupying over 50% of total runtime with standard arrays/ranges due to binary search overhead and cache misses). 
-
-StructureFunctions.jl provides optimized, zero-allocation custom collections subtyping `AbstractBinEdges{T}` to bypass binary search and achieve $O(1)$-like lookup speeds:
-
-* **`LinearBinEdges(edges::AbstractRange)`**: Wraps uniformly-spaced ranges. Bypasses the Twice-Precision calculations in standard ranges, performing searches in **~3 ns** (a **15x+ speedup**) using Fused Multiply-Add (FMA) instructions and ULP corrections.
-* **`LogBinEdges(edges::AbstractVector)`**: Wraps log-spaced (geometric) ranges. Bypasses hardware `log(x)` latency by extracting the binary float exponent to perform octal Lookup Table (LUT) queries in **~5-8 ns** (a **5x+ speedup**).
-* **`InfPaddedBinEdges(edges::AbstractBinEdges)`**: Wraps any custom bin edges collection to implicitly prepend $-\infty$ (or `typemin(T)`) and append $+\infty$ (or `typemax(T)`).
-* **`BinEdges(edges::AbstractVector)`**: General fallback wrapper that automatically routes to `LinearBinEdges` for ranges or wraps vectors.
-
-#### Usage Example
-
-To enable O(1) binning in single-pass calculations, wrap your raw bin vector before calling the calculation:
-
-```julia
-using StructureFunctions: Calculations as SFC
-using StructureFunctions: LogBinEdges
-
-# Generate log-spaced boundaries
-log_bins_raw = collect(exp.(range(log(0.01), log(10.0), length=51)))
-
-# Wrap them in LogBinEdges to activate O(1) Exponent LUT Hybrid Search
-distance_bins = LogBinEdges(log_bins_raw)
-
-# Run calculation (bypasses standard binary search bottleneck completely).
-# Returns a NamedTuple keyed by invariant: results.S2, results.L2, results.T2,
-# results.S3, results.L3, results.L1T2 (+ results.helmholtz for point-field input).
-# Each entry is a StructureFunction (pass output_type=StructureFunctionSumsAndCounts for raw).
-results = SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.SerialBackend())
-```
-
-## Theory & References
-
-Structure functions quantify spatial correlations of a field **u** at separation distance **r**:
-
-$$S_p(r) = \langle |u(\mathbf{x} + \mathbf{r}) - u(\mathbf{x})|^p \rangle$$
-
-where $\langle \cdot \rangle$ is ensemble/spatial average over all displacement vectors $\mathbf{r}$.
-
-### Dimensional Variants
-
-- **1D**: Single coordinate axis (e.g., time series)
-- **2D**: Horizontal plane (e.g., satellite imagery)
-- **3D**: Full spatial field (e.g., atmospheric snapshots)
-
-### Order Variants
-
-- **1st order** ($p=1$): Absolute increment
-- **2nd order** ($p=2$): Energy-like; related to kinetic energy spectrum by Wiener-Khinchin
-- **3rd order** ($p=3$): Skewness; tests Kolmogorov refined similarity hypotheses
-
-### References
-
-1. **Kolmogorov (1941)**: _The Local Structure of Turbulence in Incompressible Viscous Fluid for Very Large Reynolds Numbers_  
-   - Foundational theory; predicts $S_2(r) \sim r^{2/3}$ in inertial range
-
-2. **Balwada et al. (2016)**: _Scale-aware analysis of satellite sea surface temperature variability_  
-   - Applied SF analysis to geophysical gridded data; demonstrates multi-scale recovery
-
-3. **Wikipedia**: [Turbulence](https://en.wikipedia.org/wiki/Turbulence#Kolmogorov's_theory_of_1941)  
-   - Accessible overview of Kolmogorov theory
-
-**See also**: [`docs/src/theory.md`](docs/src/theory.md) for detailed mathematical formulations and dimensional projections.
-
-## Example Figures
-
-### 2nd-Order Structure Function — Kolmogorov Scaling
-
-![Structure Function S2](docs/src/assets/sf_kolmogorov.png)
-
-*2nd-order longitudinal structure function on a 2D turbulent field. Dashed line: K41 prediction S₂(r) ~ r^(2/3).*
-
-### Longitudinal vs Transverse Structure Functions
-
-![Longitudinal vs Transverse](docs/src/assets/sf_long_vs_trans.png)
-
-*Comparison of longitudinal (L2SF) and transverse (T2SF) 2nd-order structure functions on the same field.*
-
-### Single-Pass Invariants + Helmholtz Decomposition
-
-![Single-pass invariants and Helmholtz](docs/src/assets/sf_single_pass.png)
-
-*All six isotropic invariants (S2, L2, T2, S3, L3, L1T2) plus the rotational/divergent Helmholtz decomposition — computed in **one** O(N²) pair pass via `calculate_structure_functions_single_pass`.*
-
-### 2D Joint-Probability Binning — all invariants, with vs without a cascade
-
-![2D joint-probability binning](docs/src/assets/sf_2d_binning.png)
-
-*Conditional PDFs `P(value | r)` for all six single-pass invariants (one `calculate_structure_functions_single_pass_2d` call per field), comparing a symmetric random field (top) with a shock/forward-cascade field (bottom). 2nd-order PDFs broaden with separation in both; the **signed 3rd-order** panels (zero line + orange conditional-mean `⟨value|r⟩`) are symmetric for the random field but **skew negative for the cascade field** — the 4/5-law / energy-flux sign. White = low, gray = empty bins.*
-
-### Backend Parity Validation
-
-![Backend Parity](docs/src/assets/sf_backend_parity.png)
-
-*Serial vs Threaded backend results on identical data — differences are at floating-point rounding level.*
-
-### Canonical Spectra — from a structure function to E(k)
-
-![Spectra from structure functions](docs/src/assets/sf_spectra.png)
-
-*Left: a field built with a prescribed `E(k) ~ k^(-5/3)` spectrum, binned into `S₂` and transformed back with `gridded_spectrum` + `shell_average` — the recovered spectrum carries the slope it was built with across 1.5 decades. Right: the isotropic transform against a closed form. A Gaussian correlation has an analytic spectral density in every dimension, and the transform reproduces it to `6.6e-05`, `2.3e-09` and `9.9e-14` in 1-D, 2-D and 3-D — one comparison that pins the kernel, the solid angle, the `(2π)^D` normalisation and the sign together. The rise at large `k` is the quadrature noise floor, ten or more orders below the peak.*
-
-### Spectra Survive Missing Data — the reason to go through a structure function
-
-![Spectrum with missing data](docs/src/assets/sf_missing_data.png)
-
-*With cells absent, a field's own transform is meaningless while the structure function is still an unbiased average over surviving pairs. At **half the grid missing**, the spectrum recovered through `S₂` is within a few percent of the complete-field answer; zero-filling the gaps and transforming directly is off by ~80%.*
-
-### Directional Output — S(r, θ)
-
-![Directional structure functions](docs/src/assets/sf_directional.png)
-
-*The second histogram axis can bin the angle between the separation and a reference direction instead of the operator's value, turning `S(r)` into `S(r, θ)` through the same kernel family. Here a field varying along `x` only: separations perpendicular to the variation carry an identically zero increment, and the angular profile touches zero at exactly `θ = π/2`.*
-
-### Helmholtz Split, in Separation and in Wavenumber
-
-![Helmholtz spectra](docs/src/assets/sf_helmholtz_spectra.png)
-
-*Left: the rotational/divergent decomposition of a solenoidal field, whose divergent part is zero by construction. Right: the same components transformed to `E_rot(k)` and `E_div(k)` via `helmholtz_spectra`, for a solenoidal and an irrotational field. Because `D_rot + D_div = D_LL + D_TT` exactly and the transform is linear, the two spectra sum to the spectrum of the trace whatever the field is.*
-
-### Scalars and Multi-Channel Fields
-
-![Scalar and mixed structure functions](docs/src/assets/sf_channels.png)
-
-*A `Fields(vectors = (u,), scalars = (θ,))` bundle computes velocity, tracer and mixed moments in one pair pass. Right: `⟨δu_L (δθ)²⟩`, the mixed moment Yaglom's law inverts for the scalar-variance dissipation.*
-
-### Gridded Fast Paths — the transform against the lag sweep
-
-![Transform vs lag sweep](docs/src/assets/sf_gridded_algorithms.png)
-
-*Two exact algorithms for one definition. Left: they agree to double-precision round-off on the same data — the lag sweep visits each lag and reduces over cells, while the transform never forms a lag until after the inverse transform, so a defect in either shows up immediately. Right: what each costs. The sweep is `O(n_lags · cells)` and the transform `O(cells log cells)` however many lags are wanted, so the gap widens with grid size; `AutoSpectralBackend()` costs both and picks the cheaper, which at small cutoffs is the sweep.*
-
-### Advective Structure Functions and Spectral Flux (Bessel methods)
-
-![Advective structure function and flux](docs/src/assets/sf_advective_flux.png)
-
-*Left: `⟨δu · δ𝓐ᵤ⟩` for a 2-D field, with the spectral flux `Π(K) = −(K/2)∫ SF_A J₁(Kr) dr` overlaid — the relation holds **without assuming isotropy**, which is what these estimators are for. Right: the flux kernel against a closed form. Since `∫₀^R J₁(Kr)dr = (1 − J₀(KR))/K`, a constant advective structure function must give exactly `−(c/2)(1 − J₀(KR))`, settling on `−c/2`. That pins the kernel and the prefactor with nothing fitted — which matters, because a flux wrong by a constant or a sign still looks like a cascade.*
-
-### The Third-Order Exact Laws
-
-![Exact laws](docs/src/assets/sf_exact_laws.png)
-
-*Left: each law inverts the moment it is stated for — 4/5 from `⟨δu_L³⟩`, 4/3 from `⟨δu_L‖δu‖²⟩`, Yaglom from `⟨δu_L(δθ)²⟩` — each recovering its prescribed constant flat in `r`. The red line is the trap the API guards against: applying the four-fifths law to the scalar moment is wrong by exactly 5/3. Right: third-order moments carry the cascade's sign. A random-phase field has vanishing odd moments; a ramp-cliff (shock) field is strongly negatively skewed at small separations — the forward-cascade sign the 4/5 law encodes.*
-
-### Spherical Geometry — parallel transport, and the lat-lon fast path
-
-![Spherical geometry](docs/src/assets/sf_spherical.png)
-
-*Left: solid-body rotation on a sphere has an identically zero longitudinal increment at every separation and latitude. Computed in the geodesic frame the ratio sits at machine zero (floored at 1e-30 for the log axis); treating lon/lat as a plane instead puts ~90 % of the energy into a quantity whose true value is zero — a **30-order** separation, and the reason the package transports increments rather than differencing raw coordinates. Right: on a lat-lon grid the geodesic frame is zonally invariant, so the geometry is computed once per (latitude pair, longitude offset) instead of once per pair — **147× faster** than the unstructured pair loop here, with **pair counts exactly equal**.*
-
-### Culling — cost falls with the cutoff, the answer never moves
-
-![Culling](docs/src/assets/sf_culling.png)
-
-*When the largest bin edge bounds the separations of interest, pairs beyond it need never be enumerated. Speedups from 1.4× to **55×** as `r_max` tightens, at N = 20 000 — and the pair counts are **identical to the uncalled sweep at every cutoff**, because culling changes which pairs are visited, not which pairs count. `AutoCulling()` is the default and declines where it cannot be exact.*
-
-### Covariance from a Structure Function
-
-![Covariance](docs/src/assets/sf_covariance.png)
-
-*Left: a structure function is twice a variogram, so `C(r) = C(0) − D(r)/2` recovers the covariance exactly — given the variance, which `D(r)` is blind to and which must be supplied. Right: a covariance matrix must be positive semi-definite, and **interpolating a positive-definite kernel does not preserve that**. The error falls as the square of the sampling spacing, so an under-resolved covariance cannot support a valid matrix; `covariance_matrix` checks rather than assumes, and its message distinguishes "sampled too coarsely" from "not a kernel at all".*
-
-*Regenerate the eleven figures above: `julia --project=docs/generate_assets docs/generate_assets/generate_feature_figures.jl`.*
-
----
-
-## Performance
-
-### Scaling Characteristics
-
-| Dimension | Metric | Value |
-|-----------|--------|-------|
-| N points  | Algorithm | O(N²) |
-| B bins    | Space | O(N + B) |
-| D dim's   | CPU ops | ~D² per pair |
-| Threads   | Speedup | ~0.8–0.9× per thread (dims ≤ 3) |
-
-### Benchmark Figures (v0.3.0, Julia 1.12)
-
-> **Hardware:** 2× Intel Xeon Gold 6426Y (16 cores / 32 threads each, 64 logical CPUs total).
-> Benchmarks were run on this machine. Results on other hardware will differ.
-> To regenerate with your own hardware, see [`benchmark/benchmark_scaling.jl`](benchmark/benchmark_scaling.jl).
-> Output figures land in `benchmark/benchmark_results/` (gitignored).
-
-#### CPU strong scaling — fixed N, increasing threads
-
-![CPU strong scaling](docs/src/assets/strong_scaling.png)
-
-*Fixed problem size (N = 4000 points, 3D, longitudinal 2nd-order SF). Speedup approaches linear up to ~4 threads; NUMA effects reduce efficiency beyond 8 threads on a dual-socket system. Generated by [`benchmark/benchmark_scaling.jl`](benchmark/benchmark_scaling.jl).*
-
-#### CPU weak scaling — N ∝ √p, constant work per thread
-
-![CPU weak scaling](docs/src/assets/weak_scaling.png)
-
-*Problem size grows as N = N_base × √p so each thread has constant O(N²/p) pair work. Ideal wall-clock time is flat; observed rise reflects inter-socket memory traffic.*
-
-#### GPU problem-size scaling — 1 GPU vs CPU (vary N)
-
-![GPU problem-size scaling](docs/src/assets/gpu_problem_size_scaling.png)
-
-*Fixed hardware (**1 GPU + serial CPU**, always 1 worker), sweep N. **Not** HPC strong/weak scaling. CPU threading is in the strong/weak figures above. Regenerate: [`gpu/collect_benchmark_assets.jl`](gpu/collect_benchmark_assets.jl), then [`generate_gpu_figures.jl`](docs/generate_assets/generate_gpu_figures.jl).*
-
-#### GPU batch scaling — fixed N, vary T (time slices)
-
-![GPU batch scaling](docs/src/assets/gpu_slice_batch_scaling.png)
-
-*Fixed `N_SLICE` (default 1000), sweep T. CPU per-slice loop vs GPU naive loop vs GPU batch driver (`*_batch!`) on **1 GPU**. Not HPC weak scaling.*
-
-#### GPU kernel parity (KA.CPU vs serial)
-
-![GPU Parity](docs/src/assets/sf_gpu_parity.png)
-
-*Serial CPU reference vs `gpu_calculate_structure_function` on `KA.CPU()` — proves kernel logic in default CI; does not test CUDA.*
-
-### Optimization Tips
-
-1. **Use AutoBackend** for deployment (automatic tuning)
-2. **Prefer larger datasets** for threading overhead to amortize
-3. **Pre-sort bins** by distance to improve cache locality
-4. **Use Float32** if precision allows (faster GPU transfers)
-5. **Batch multiple SFs** by reusing distance calculations
+That bins `5.4 × 10¹¹` pairs in about ten seconds on eight cores; the direct sweep of the same grid
+takes 60× longer and returns the same counts. The same call with `backend = CB.GPUBackend(...)` runs
+the engine on a device.
 
 ## Extensions
 
-Optional packages extend StructureFunctions with additional functionality:
+| load | adds |
+|---|---|
+| `OhMyThreads` | `ThreadedBackend()` |
+| `Distributed`, `MPI` | `DistributedBackend()`, the MPI backend |
+| `KernelAbstractions` (+ `CUDA`) | `GPUBackend(device)` on every device route |
+| an `AbstractFFTs` package (`FFTW`) | the transform engine; + `KernelAbstractions` for the device engine |
+| `FlowGeometries` | the grid entries and `cell_measure` |
+| `Bessels` | the 2-D kernel, the flux relations, the Helmholtz spectra and forward models |
+| `NUFSHT` | the fast harmonic route on the sphere |
+| `NonuniformFFTs`, `FINUFFT` | the soft-binned scattered-points route, one provider tag each (`NonuniformFFTsSpectralBackend`, `FINUFFTSpectralBackend`) |
+| `LsqFit` | the segmented power-law fit |
 
-### OhMyThreadsExt (ThreadedBackend)
+The algorithm tags (`AutoSpectralBackend()`, `FastFourierTransformSpectralBackend()`, …) come from
+`SpectralBackends`, a dependency.
 
-Loaded automatically when `OhMyThreads.jl` is in `Project.toml`:
+## Figures
 
-```toml
-[extras]
-OhMyThreads = "67456a42-ebe4-4781-8ad1-67f7eda8d8f7"
+![Structure Function S2](docs/src/assets/sf_kolmogorov.png)
 
-[extensions]
-StructureFunctionsOhMyThreadsExt = "OhMyThreads"
-```
+*2nd-order longitudinal structure function on a 2-D turbulent field; dashed: K41 `S₂ ~ r^(2/3)`.*
 
-### DistributedExt (DistributedBackend)
+![Longitudinal vs Transverse](docs/src/assets/sf_long_vs_trans.png)
 
-Requires `Distributed.jl` (stdlib):
+*Longitudinal (`L2SF`) and transverse (`T2SF`) second-order structure functions of one field.*
 
-```julia
-using Distributed: addprocs
-addprocs(4)
-backend = StructureFunctions.DistributedBackend()
-```
+![Single-pass invariants and Helmholtz](docs/src/assets/sf_single_pass.png)
 
-### GPUExt (GPUBackend)
+*The six isotropic invariants and the Helmholtz decomposition, from one pair pass.*
 
-Requires `KernelAbstractions.jl` + GPU package (CUDA.jl, AMDGPU.jl, etc.):
+![2D joint-probability binning](docs/src/assets/sf_2d_binning.png)
 
-```toml
-[extras]
-KernelAbstractions = "63c18a36-062a-441e-b365-b594b6ce51b1"
+*Conditional PDFs `P(value | r)` of the six invariants, for a symmetric random field (top) and a
+forward-cascade field (bottom). The signed third-order panels skew negative only for the cascade.*
 
-[extensions]
-StructureFunctionsKernelAbstractionsExt = "KernelAbstractions"
-```
+![Backend Parity](docs/src/assets/sf_backend_parity.png)
 
-## Migration from v0.2
+*Serial against threaded on identical data: differences at floating-point rounding.*
 
-### Breaking Changes
+![Spectra from structure functions](docs/src/assets/sf_spectra.png)
 
-| v0.2 | v0.3 |
-|------|------|
-| Symbol-based backend selection | Typed backend objects |
-| `backend=:serial` | `backend=SerialBackend()` |
-| `backend=:threaded` | `backend=ThreadedBackend()` |
-| `backend=:distributed` | `backend=DistributedBackend()` |
-| No GPU support | `backend=GPUBackend(...)` |
+*Left: a field built with `E(k) ~ k^(-5/3)`, binned into `S₂` and transformed back with
+`gridded_spectrum` + `shell_average`. Right: the isotropic transform against a closed-form Gaussian
+density in 1-, 2- and 3-D, to `6.6e-05`, `2.3e-09` and `9.9e-14`.*
 
-### Recommended Updates
+![Spectrum with missing data](docs/src/assets/sf_missing_data.png)
 
-```julia
-# OLD (v0.2)
-result = calculate_structure_function(sf, x, u, bins; backend=:threaded)
+*With half the grid missing, the spectrum recovered through `S₂` is within a few percent of the
+complete-field answer. Zero-filling the gaps and transforming directly is off by about 80 %.*
 
-# NEW (v0.3)
-result = calculate_structure_function(sf, x, u, bins; backend=ThreadedBackend())
+![Directional structure functions](docs/src/assets/sf_directional.png)
 
-# Or use AutoBackend for automatic selection:
-result = calculate_structure_function(sf, x, u, bins)  # Defaults to AutoBackend()
-```
+*The second histogram axis can bin the angle to a reference direction: `S(r, θ)` from the same kernel.*
 
-### Compatibility
+![Helmholtz spectra](docs/src/assets/sf_helmholtz_spectra.png)
 
-- v0.3 is **not** backward-compatible with v0.2 scripts
-- Update scripts by replacing symbol backends with typed backends
-- See `CHANGELOG.md` for full change log
+*The rotational and divergent split, in separation and in wavenumber. The two spectra sum to the
+trace's exactly, because `D_rot + D_div = D_LL + D_TT` and the transform is linear.*
 
-## Examples
+![Scalar and mixed structure functions](docs/src/assets/sf_fields.png)
 
-Detailed worked examples are in `examples/` directory:
+*A `Fields(vectors = (u,), scalars = (θ,))` multi-field: velocity, tracer and mixed moments in one pass;
+right, Yaglom's `⟨δu_L (δθ)²⟩`.*
 
-- `simple_2d.jl`: Basic 2D structure function calculation
-- `threaded_calculation.jl`: Multi-threaded execution
-- `gpu_acceleration.jl`: GPU acceleration with KernelAbstractions  
-- `distributed_parallel.jl`: Multi-process execution
-- `custom_operator.jl`: Defining custom SF operators
+![Transform vs lag sweep](docs/src/assets/sf_gridded_algorithms.png)
 
-Clone and run:
+*Two exact algorithms for one definition agree to round-off. The transform's cost does not grow with
+the number of lags.*
+
+![Advective structure function and flux](docs/src/assets/sf_advective_flux.png)
+
+*`⟨δu · δ𝓐ᵤ⟩` with the flux `Π(K) = −(K/2)∫ SF_A J₁(Kr) dr`, and the kernel against its closed form:
+a constant advective structure function gives exactly `−(c/2)(1 − J₀(KR))`.*
+
+![Exact laws](docs/src/assets/sf_exact_laws.png)
+
+*Left: each law recovers the constant it prescribes, flat in `r`, from the moment it is stated for.
+The red line applies the four-fifths law to `S3SF`, which overstates `ε` by 5/3. Right: a
+random-phase field has vanishing odd moments, a ramp-cliff field is negatively skewed at small
+separations.*
+
+![Spherical geometry](docs/src/assets/sf_spherical.png)
+
+*Solid-body rotation has no strain, so the geodesic frame gives `D_LL` at machine zero while a flat
+lon/lat frame puts most of the energy into it. Right: the zonal route on a lat-lon grid.*
+
+![Culling](docs/src/assets/sf_culling.png)
+
+*The cost falls with the cutoff; the pair counts are identical at every cutoff.*
+
+![Covariance](docs/src/assets/sf_covariance.png)
+
+*`C(r) = C(0) − D(r)/2` given the variance. The covariance matrix is tested for positive
+semi-definiteness; an under-resolved sampling cannot support a valid one.*
+
+![Pair weights](docs/src/assets/sf_weights.png)
+
+*A lat-lon cell shrinks toward the poles, so `weights = cell_measure(grid)` turns the pair average
+into an area average; every lag route and point entry takes the keyword.*
+
+![Exact sorted route on a line](docs/src/assets/sf_sorted_line.png)
+
+*One-dimensional point lists take an exact route built on prefix sums of the monomials, so the cost
+stops scaling with the pair count. It returns the pair loop's answer. A norm power is not a
+polynomial and keeps the loop.*
+
+![Moment tensors](docs/src/assets/sf_tensor.png)
+
+*The transform already forms each lag's symmetric moment store, so the tensor costs no more than the
+scalar. Its components hold the anisotropy the trace averages away, and that trace is the scalar
+second-order entry.*
+
+![Scattered points through a non-uniform FFT](docs/src/assets/sf_scattered_modes.png)
+
+*`ScatteredModesSchedule` puts scattered points on a mode grid, so the pair statistic comes back with
+the truncated kernel in place of a hard bin. The result carries `ModeBinEdges`. It is not exact at any
+finite mode count and converges as the mode count grows; it is selected only by passing the tag.*
+
+![Fitting instead of inverting](docs/src/assets/sf_fits.png)
+
+*A spectrum from `S₂` by a bounded segmented power law, and a spectral flux from `S₃`. These are
+estimators with stated priors, beside the exact transforms they approximate: without a prior the
+inversion is singular below `π/r_max`, which is what the regularisation is for.*
+
+*Regenerate the sixteen feature figures with `julia --project=docs/generate_assets
+docs/generate_assets/generate_feature_figures.jl`, and the six above them with
+`generate_assets.jl` in the same environment.*
+
+### Scaling
+
+![CPU strong scaling](docs/src/assets/strong_scaling.png)
+![CPU weak scaling](docs/src/assets/weak_scaling.png)
+![GPU problem-size scaling](docs/src/assets/gpu_problem_size_scaling.png)
+![GPU batch scaling](docs/src/assets/gpu_slice_batch_scaling.png)
+![GPU Parity](docs/src/assets/sf_gpu_parity.png)
+
+*Strong and weak scaling of the threaded point kernel (`benchmark/benchmark_scaling.jl`); one GPU
+against the serial CPU over the problem size and over the slice count (`gpu/collect_benchmark_assets.jl`);
+and the device kernel on `KernelAbstractions.CPU()` against the serial reference.*
+
+## Validation
+
+Routes are cross-checked against independent references: closed-form Fourier modes, the transform
+against the direct sweep and the pair loop, analytic spectra and fluxes, the rotation average on the
+sphere, and the backends against each other, CUDA included. The
+[validation page](https://jbphyswx.github.io/StructureFunctions.jl/dev/validation/) lists the oracles
+and the tolerance policy.
 
 ```bash
-cd examples/
-julia simple_2d.jl
-julia threaded_calculation.jl
+julia --project=test test/runtests.jl          # the suite (Aqua and JET included)
+julia --project=gpu gpu/runtests.jl            # every CUDA suite, on a GPU node
+julia --project=docs docs/make.jl              # the documentation, with every export checked
 ```
-
-## Contributing
-
-Contributions welcome! Please:
-
-1. Fork and create a feature branch
-2. Add tests for new functionality
-3. Ensure full test suite passes: `julia test/runtests.jl`
-4. Document changes in docstrings and `CHANGELOG.md`
-
-## License
-
-See `LICENSE` file.
 
 ## Citation
 
-If you use StructureFunctions.jl in research, please cite:
-
 ```bibtex
-@software{structurefunctions_jl_2024,
-  author = {Benjamin, Jordan and Contributors},
-  title = {StructureFunctions.jl: High-performance structure function calculations},
-  year = {2024},
-  doi = {10.5281/zenodo.14945669},
-  url = {https://zenodo.org/records/14945669}
+@software{structurefunctions_jl,
+  author = {Benjamin, Jordan},
+  title  = {StructureFunctions.jl: structure functions, spectra and fluxes of turbulent fields},
+  doi    = {10.5281/zenodo.14945669},
+  url    = {https://github.com/jbphyswx/StructureFunctions.jl}
 }
 ```
 
----
-
-**Last Updated**: March 2026 | **Version**: 0.3.0 | **Julia**: 1.12+
+See `CHANGELOG.md` for what each version added and `LICENSE` for the terms.

@@ -9,6 +9,7 @@ using StructureFunctions
 import KernelAbstractions as KA
 using CUDA, StaticArrays, Printf
 using Statistics: median
+using Random: Random
 const SF = StructureFunctions
 const SFC = SF.Calculations
 const GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
@@ -36,6 +37,9 @@ end
 println("CUDA 1D fast-kernel parity vs KA.CPU() — N=$N B=$B D=$D\n")
 println("| NMOM | fixed_x | NB | handled | max relΔ | max |Δcount| |")
 for NMOM in (1, 6), fixed_x in (true, false), NB in (16, 50, 128)
+    # A fixed draw per case: the two devices round Float32 differently, so a separation within an ulp of
+    # a bin edge can land either side of it, and which pairs do is a property of the draw.
+    Random.seed!(20260916 + 1000 * NMOM + 100 * Int(fixed_x) + NB)
     x_h = fixed_x ? rand(FT, D, N) : rand(FT, D, N, B)
     u_h = randn(FT, D, N, B)
     dist_bins = collect(FT, range(0.05f0, 2.0f0, length = NB + 1))
@@ -51,6 +55,7 @@ end
 # ---- timing: SP1D NB=50 & individual NB=50, fixed-x, real N=20000 ----
 println("\n--- timing 1D fixed-x N=20000 (kernel, extrapolate to B=8064) ---")
 let Nt = 20000, Bt = 64, NB = 50
+    Random.seed!(20260916)
     x_h = rand(FT, D, Nt); u_h = randn(FT, D, Nt, Bt)
     dist_bins = collect(FT, range(0.05f0, 2.0f0, length = NB + 1))
     dig = GE._sf_batch_dist_digitizer(CUDA.CUDABackend(), dist_bins)
@@ -70,6 +75,7 @@ end
 println("\n--- joint2d-varying CUDA vs KA-CPU count diff (expect few pairs) ---")
 let Nj = 3000, Bj = 6, nd = 20, nv = 20
     for seed_shift in (0.0f0, 0.137f0)
+        Random.seed!(20260916)
         x_h = rand(FT, D, Nj, Bj) .+ seed_shift; u_h = randn(FT, D, Nj, Bj)
         db = collect(FT, range(0.05f0, 2.0f0, length = nd + 1))
         vb = collect(FT, range(-5f0, 5f0, length = nv + 1))

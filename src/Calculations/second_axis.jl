@@ -32,7 +32,9 @@ two ends flips the separation, and no structure function distinguishes the two. 
 signed azimuth is taken modulo `π`, giving `[0, π)`; in three or more the polar angle to the axis is
 taken from `|cos|`, giving `[0, π/2]`.
 
-`reference_axis` need not be normalized.
+`reference_axis` need not be normalized. A pair separated along the reference axis has angle exactly
+`0`, and bins are `(lo, hi]`, so bins over this axis start just below zero — [`axis_bounds`](@ref)
+does — or an axis-aligned pair falls in no bin.
 """
 struct SeparationAngleAxis{V} <: AbstractSecondAxisSource
     reference_axis::V
@@ -91,4 +93,4 @@ axis_bounds(::InvariantValueAxis) = throw(ArgumentError(
     "the operator's value has no range known ahead of the calculation; supply value bins, or scan " *
     "the data as the auto-binning entry does",
 ))
-axis_bounds(::SeparationAngleAxis{V}) where {V} = (0.0, Float64(π))
+axis_bounds(::SeparationAngleAxis{V}) where {V} = (prevfloat(0.0), Float64(π))

@@ -14,9 +14,8 @@ using StructureFunctions:
     BinEdges,
     n_histogram_bins
 
-# Signal to AutoBackend that threading is genuinely available (see backends.jl). Set in
-# __init__ (load time) via a Ref — overriding the method here would be an illegal
-# method-overwrite during this extension's precompilation.
+# Signal to AutoBackend that threading is available (see backends.jl). A Ref set in `__init__` at
+# load time, because overwriting a method during this extension's precompilation is illegal.
 function __init__()
     SFC._OHMYTHREADS_LOADED[] = true
     return nothing
@@ -53,46 +52,54 @@ already lie.
 """
     threaded_calculate_structure_function!(sums, counts, sf, x, fields, distance_bins; kwargs...)
 
-Multi-channel pair sweep across threads.
+Multi-field pair sweep across threads.
 
-The setup — widening the channels, sorting into the cull grid — happens **once**, above the task
+The setup — widening the fields, sorting into the cull grid — happens **once**, above the task
 loop; each task then sweeps its own share of outer indices into private histograms, which are
-reduced. A field of one vector channel forwards to the array path, so a bare `u` and a one-channel
-bundle stay the same calculation on this backend too.
+reduced. A field of one vector field forwards to the array path, so a bare `u` and a one-field
+multi-field stay the same calculation on this backend too.
 """
 function SFC.threaded_calculate_structure_function!(
     sums::AbstractVector, counts::AbstractVector,
     sf::SFT.AbstractPairwiseStructureFunctionType,
-    x::AbstractMatrix, f::SFC.CH.Fields{D, 1, 0}, distance_bins; kwargs...,
+    x::AbstractMatrix, f::SFC.MF.Fields{D, 1, 0}, distance_bins; kwargs...,
 ) where {D}
-    return SFC.threaded_calculate_structure_function!(sums, counts, sf, x, SFC.CH.packed(f),
+    return SFC.threaded_calculate_structure_function!(sums, counts, sf, x, SFC.MF.packed(f),
                                                       distance_bins; kwargs...)
 end
 
 function SFC.threaded_calculate_structure_function!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
-    x::AbstractMatrix, f::SFC.CH.Fields{D, V, K}, distance_bins;
+    x::AbstractMatrix, f::SFC.MF.Fields{D, V, K}, distance_bins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    weights = nothing,
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {OT, CT, D, V, K}
-    Np = size(SFC.CH.packed(f), 2)
+    Np = size(SFC.MF.packed(f), 2)
     size(x, 2) == Np || throw(DimensionMismatch(
         "x covers $(size(x, 2)) points and the field $Np",
     ))
     dist_be = BinEdges(distance_bins)
+    w = SFC._pair_weights(weights, Np, float(eltype(SFC.MF.packed(f))))
+    SFC._check_weighted_counts(w, CT)
+    if SFC._on_a_line(SFC._field_geometry(distance_metric, Val(D), Val(V), x), sf)
+        SFC._cull_reject_unsupported(culling, "the sorted line route")
+        return SFC.sorted_line_sweep!(sums, counts, sf, SFC._line_coordinates(x), SFC.MF.packed(f), dist_be,
+                                      Val(D), Val(V), Val(K); weights = w, backend = CB.ThreadedBackend())
+    end
     # Bound once and never reassigned: the tasks close over these, and reassigning a captured
     # variable boxes it, which OhMyThreads rejects outright.
-    geom, xk, data, vF, plan, grid = SFC.channel_setup(f, x, dist_be, distance_metric, culling)
+    geom, xk, data, vF, plan, grid, wk = SFC.field_setup(f, x, dist_be, distance_metric, culling, w)
     nb = n_histogram_bins(dist_be)
     vW = Val(SFC.SFC_val_int(SFH.coordinate_width(geom)))
     result = OMT.tmapreduce(+, _outer_chunks(grid, 1:(Np - 1), Threads.nthreads())) do chunk
         local_sums = zeros(OT, nb)
         local_counts = zeros(CT, nb)
-        SFC._channel_run_blocks!(local_sums, local_counts, sf, xk, data, geom, vF, Val(V), Val(K),
-                                 plan, nb, vW, chunk, Np, grid)
+        SFC._field_run_blocks!(local_sums, local_counts, sf, xk, data, geom, vF, Val(V), Val(K),
+                                 plan, nb, vW, chunk, Np, grid, wk)
         SFO.StructureFunctionSumsAndCounts(sf, dist_be, local_sums, local_counts)
     end
     sums .+= result.sums
@@ -109,6 +116,7 @@ function SFC.threaded_calculate_structure_function!(
     u_vecs::Tuple,
     distance_bins::AbstractVector;
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
+    weights = nothing,
     verbose = true,
     show_progress = true,
 ) where {OT, CT}
@@ -116,8 +124,15 @@ function SFC.threaded_calculate_structure_function!(
         @info("calculating structure function (threaded reduction via OhMyThreads)")
     end
     _ = show_progress
+    w = SFC._pair_weights(weights, length(x_vecs[1]), OT)
+    SFC._check_weighted_counts(w, CT)
+    if SFC._on_a_line(geometry, structure_function_type)
+        return SFC.sorted_line_sweep!(output_sums, output_counts, structure_function_type, x_vecs[1],
+                                      reshape(collect(u_vecs[1]), 1, :), distance_bins, Val(1), Val(1), Val(0);
+                                      weights = w, backend = CB.ThreadedBackend())
+    end
 
-    # Chunked tmapreduce: O(n_tasks) allocations instead of O(N_points)
+    # Chunked tmapreduce: O(n_tasks) allocations, not O(N_points)
     n_bins = n_histogram_bins(distance_bins)
     distance_bins = BinEdges(distance_bins)
     result = OMT.tmapreduce(+, _triangle_outer_chunks(eachindex(x_vecs[1]), Threads.nthreads())) do chunk
@@ -133,6 +148,7 @@ function SFC.threaded_calculate_structure_function!(
                 x_vecs,
                 u_vecs,
                 distance_bins,
+                w,
             )
         end
         SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, local_output, local_counts)
@@ -186,6 +202,7 @@ function SFC.threaded_calculate_structure_function!(
     distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    weights = nothing,
     verbose = true,
     show_progress = true,
 ) where {OT, CT, FT1 <: Number, FT2 <: Number}
@@ -193,6 +210,8 @@ function SFC.threaded_calculate_structure_function!(
         @info("calculating structure function (threaded reduction via OhMyThreads)")
     end
     _ = show_progress
+    w = SFC._pair_weights(weights, size(x_arr, 2), OT)
+    SFC._check_weighted_counts(w, CT)
 
     N3 = n_histogram_bins(distance_bins)
     distance_bins = BinEdges(distance_bins)
@@ -204,14 +223,20 @@ function SFC.threaded_calculate_structure_function!(
 
     geom = SFH.pair_geometry_for(distance_metric, Val(size(u_arr, 1)))
 
+    if SFC._on_a_line(geom, structure_function_type)
+        SFC._cull_reject_unsupported(culling, "the sorted line route")
+        return SFC.sorted_line_sweep!(output_sums, output_counts, structure_function_type,
+                                      SFC._line_coordinates(x_arr), u_arr, distance_bins, Val(1), Val(1), Val(0);
+                                      weights = w, backend = CB.ThreadedBackend())
+    end
     # Fast path: flat D ∈ (2,3) threads the SIMD compute/scatter-split kernel over round-robin
     # i-chunks (per-task buffers + local accumulators; contiguous components shared).
     if geom isa SFH.FlatGeometry && N == 2
         return _threaded_pf_simd!(output_sums, output_counts, structure_function_type, x_arr,
-            u_arr, distance_bins, Val(2); geometry = geom, culling = culling)
+            u_arr, distance_bins, Val(2); geometry = geom, culling = culling, weights = w)
     elseif geom isa SFH.FlatGeometry && N == 3
         return _threaded_pf_simd!(output_sums, output_counts, structure_function_type, x_arr,
-            u_arr, distance_bins, Val(3); geometry = geom, culling = culling)
+            u_arr, distance_bins, Val(3); geometry = geom, culling = culling, weights = w)
     end
     SFC._cull_reject_unsupported(culling, "the scalar per-point threaded kernel this geometry uses")
 
@@ -225,7 +250,7 @@ function SFC.threaded_calculate_structure_function!(
         for i in chunk
             SFC.calculate_structure_function_i!(
                 local_output, local_counts, geom, structure_function_type, i,
-                x_tuple, u_tuple, distance_bins,
+                x_tuple, u_tuple, distance_bins, w,
             )
         end
         SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, local_output, local_counts)
@@ -242,6 +267,7 @@ function _threaded_pf_simd!(
     output_sums::AbstractVector{OT}, output_counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType, x_arr, u_arr, dist_be, ::Val{D};
     geometry = SFH.FlatGeometry{D}(), culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    weights = SFC.NoWeights(),
 ) where {OT, CT, D}
     x_raw = ntuple(d -> collect(view(x_arr, d, :)), Val(D))
     u_raw = ntuple(d -> collect(view(u_arr, d, :)), Val(D))
@@ -249,12 +275,13 @@ function _threaded_pf_simd!(
     nb = n_histogram_bins(dist_be)
     FTx = eltype(x_raw[1])
     plan = SF.squared_digitize_plan(dist_be)     # built once; read-only, shared across tasks
-    # Sorted once and shared read-only, so every task sweeps the cells in the same order. `xc`/`uc`
+    # Sorted once and shared read-only, so every task sweeps the cells in the same order. `xc`/`uc`/`wc`
     # are bound once and never reassigned: the tasks close over them, and reassigning a captured
     # variable boxes it, which OhMyThreads rejects outright.
     grid = (culling isa SFC.NoCulling) ? nothing : SFC.cull_grid_for(x_raw, geometry, dist_be, culling)
     xc, uc = isnothing(grid) ? (x_raw, u_raw) :
              (SFC.apply_perm(x_raw, grid.perm), SFC.apply_perm(u_raw, grid.perm))
+    wc = (isnothing(grid) || weights isa SFC.NoWeights) ? weights : weights[grid.perm]
     result = OMT.tmapreduce(+, _outer_chunks(grid, 1:(Np - 1), Threads.nthreads())) do chunk
         local_output = zeros(OT, nb)
         local_counts = zeros(CT, nb)
@@ -262,7 +289,7 @@ function _threaded_pf_simd!(
         valbuf = Vector{OT}(undef, Np)
         idxbuf = Vector{Int32}(undef, Np)
         SFC._pf_run_blocks!(local_output, local_counts, sf, xc, uc, plan, Val(D),
-            r2buf, valbuf, idxbuf, chunk, Np, grid)
+            r2buf, valbuf, idxbuf, chunk, Np, grid, wc)
         SFO.StructureFunctionSumsAndCounts(sf, dist_be, local_output, local_counts)
     end
     output_sums .+= result.sums
@@ -333,7 +360,7 @@ function SFC.threaded_calculate_structure_function!(
         return nothing
     end
 
-    # Chunked tmapreduce: O(n_tasks) allocations instead of O(N_points)
+    # Chunked tmapreduce: O(n_tasks) allocations, not O(N_points)
     result = OMT.tmapreduce(+, _triangle_outer_chunks(eachindex(x_vecs[1]), Threads.nthreads())) do chunk
         local_sums = zeros(OT, N3, N4)
         local_counts = zeros(CT, N3, N4)
@@ -490,18 +517,14 @@ end
 
 # --- Threaded single-pass via OhMyThreads tmapreduce ---
 #
-# IMPORTANT: We use `OMT.tmapreduce` with task-local buffers instead of
-# `OMT.tforeach` + `Threads.threadid()` indexing.
+# `OMT.tmapreduce` with one task-local buffer per chunk, reduced by summation.
 #
-# Julia tasks are NON-STICKY: they can migrate between OS threads at any yield
-# point. This means `Threads.threadid()` is NOT guaranteed to remain constant
-# within a single task. Using it to index into shared per-thread buffers causes
-# data races → glibc heap corruption (malloc_consolidate / corrupted size).
+# Julia tasks are non-sticky: they may migrate between OS threads at any yield point, so
+# `Threads.threadid()` is not constant within a task and indexing shared per-thread buffers with it
+# is a data race.
 #
-# The correct OhMyThreads pattern (used by all other threaded methods above)
-# is to give each chunk its own task-local buffer, then reduce via summation.
-# Outer `i` chunks use `_triangle_outer_chunks` (RoundRobin split) because
-# contiguous equal-size blocks imbalance O(N²) triangle pair loops.
+# Outer `i` chunks come from `_triangle_outer_chunks`, a round-robin split: contiguous equal-size
+# blocks imbalance an O(N²) triangle pair loop.
 #
 # References:
 #   - OhMyThreads thread-safe storage docs:
@@ -846,22 +869,47 @@ function SFC._partial_sums_counts(
 end
 
 
+# --- Gridded sweeps ---
+
+# Each task takes a round-robin share of the sweep's items into private histograms and its own
+# scratch; the partials add because a histogram is order-independent.
+function SFC.threaded_sweep_reduce!(
+    sums::AbstractArray{OT}, counts::AbstractArray{CT}, items::AbstractVector, make_scratch, body!,
+) where {OT, CT}
+    isempty(items) && return nothing
+    n = min(Threads.nthreads(), length(items))
+    part = OMT.tmapreduce(_hist_add, OMT.chunks(items; n, split = OMT.RoundRobin())) do chunk
+        ls = zeros(OT, size(sums))
+        lc = zeros(CT, size(counts))
+        scratch = make_scratch()
+        for it in chunk
+            body!(ls, lc, it, scratch)
+        end
+        (ls, lc)
+    end
+    sums .+= part[1]
+    counts .+= part[2]
+    return nothing
+end
+
+@inline _hist_add(a, b) = (a[1] .+= b[1]; a[2] .+= b[2]; a)
+
 # --- Tensor structure functions ---
 
 # Each task takes a round-robin share of the outer index and accumulates into its own buffers; the
 # partials add because a histogram is order-independent. The setup (widening, bin edges) happens
-# once per task rather than once per pair, matching the 1-D threaded path.
+# once per task, as on the 1-D threaded path.
 function SFC.threaded_calculate_structure_function_tensor!(
     sums::AbstractArray, counts::AbstractArray, order::Val{P},
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
 ) where {P, D}
     N = size(u, 2)
     chunks = _triangle_outer_chunks(1:N, Threads.nthreads())
     part = OMT.tmapreduce(_tensor_add, chunks) do chunk
         SFC.tensor_partial(order, shape, x, u, distance_bins, chunk;
-                           distance_metric, count_eltype = eltype(counts))
+                           distance_metric, count_eltype = eltype(counts), axis)
     end
     sums .+= part[1]
     counts .+= part[2]

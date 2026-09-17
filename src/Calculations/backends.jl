@@ -29,6 +29,13 @@ function _dispatch_execution_backend(
     throw(ArgumentError("MPI backend is unavailable. Load MPI (`using MPI`) to enable StructureFunctionsMPIExt, or use a different backend."))
 end
 
+"""
+    threaded_calculate_structure_function(sf, x, u, distance_bins[, value_bins][, count_eltype]; kwargs...)
+
+The point-list structure function on the threaded CPU backend, returning the raw sums and counts.
+Takes the arguments of [`calculate_structure_function`](@ref) without `backend`; supplied by the
+OhMyThreads extension, so `using OhMyThreads` is required.
+"""
 function threaded_calculate_structure_function(args...; kwargs...)
     throw(
         ArgumentError(
@@ -37,6 +44,12 @@ function threaded_calculate_structure_function(args...; kwargs...)
     )
 end
 
+"""
+    threaded_calculate_structure_function!(sums, counts, sf, x, u, distance_bins[, value_bins]; kwargs...)
+
+The in-place form of [`threaded_calculate_structure_function`](@ref), accumulating into `sums` and
+`counts`; supplied by the OhMyThreads extension.
+"""
 function threaded_calculate_structure_function!(args...; kwargs...)
     throw(
         ArgumentError(
@@ -45,12 +58,9 @@ function threaded_calculate_structure_function!(args...; kwargs...)
     )
 end
 
-# Set to `true` by the OhMyThreads extension's `__init__` when it loads. AutoBackend gates its
-# threaded choice on this rather than `hasmethod`, because the throwing stub above makes
-# `hasmethod` always true — which previously fooled AutoBackend into the threaded path (then it
-# threw) when OhMyThreads was not loaded. With this flag, AutoBackend falls back to serial.
-# A `Ref` (set at load via `__init__`) is used instead of a method override, which would be an
-# illegal method-overwrite during the extension's precompilation.
+# Set to `true` by the OhMyThreads extension's `__init__`. This is what `AutoBackend` tests: the
+# throwing stub above makes `hasmethod` true whether or not the extension is loaded. A `Ref` set at
+# load time, because overwriting a method during the extension's precompilation is illegal.
 const _OHMYTHREADS_LOADED = Ref(false)
 _ohmythreads_loaded() = _OHMYTHREADS_LOADED[]
 

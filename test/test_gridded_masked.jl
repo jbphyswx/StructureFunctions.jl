@@ -47,18 +47,18 @@ end
 
 Test.@testset "field_validity reports what is usable" begin
     u = randn(2, 4, 3)
-    Test.@test SFC.field_validity(u, Val(2)) isa SFC.AllValid
+    Test.@test SFC.field_validity(u) isa SFC.AllValid
     u[1, 2, 2] = NaN
-    v = SFC.field_validity(u, Val(2))
+    v = SFC.field_validity(u)
     Test.@test !(v isa SFC.AllValid)
     Test.@test count(v) == 11                          # one cell of twelve lost
     Test.@test !v[2 + (2 - 1) * 4]
     # an infinite component is no more usable than a missing one
     u2 = randn(2, 3, 3); u2[2, 1, 1] = Inf
-    Test.@test count(SFC.field_validity(u2, Val(2))) == 8
+    Test.@test count(SFC.field_validity(u2)) == 8
     # a cell the grid says does not exist is excluded even where the field is finite
     cm = trues(12); cm[5] = false
-    Test.@test count(SFC.field_validity(randn(2, 4, 3), Val(2), cm)) == 11
+    Test.@test count(SFC.field_validity(randn(2, 4, 3), cm)) == 11
     # AllValid answers for any index, so a complete field needs no array
     Test.@test SFC.AllValid()[1] && SFC.AllValid()[10^9]
 end
@@ -76,7 +76,7 @@ Test.@testset "a masked sweep matches brute force" begin
         for k in 1:N
             rand() < frac && (uf[1, k] = NaN)
         end
-        valid = SFC.field_validity(u, Val(Dg))
+        valid = SFC.field_validity(u)
         Test.@test !(valid isa SFC.AllValid)
         bins = collect(range(0.0, 0.7 * maximum(d -> spacing[d] * dims[d], 1:Dg); length = 7))
         for sf in (SFT.L2SFType(), SFT.L3SFType())
@@ -104,7 +104,7 @@ Test.@testset "the masked transform matches the masked sweep" begin
         for k in 1:N
             rand() < 0.2 && (uf[2, k] = NaN)
         end
-        valid = SFC.field_validity(u, Val(Dg))
+        valid = SFC.field_validity(u)
         bins = collect(range(0.0, 1.2; length = 8))
         for sf in (SFT.S2SFType(), SFT.L2SFType(), SFT.T2SFType())
             ref_s, ref_c = _run(sf, u, dims, spacing, periodic, bins, Dg, valid, nothing)

@@ -1,17 +1,17 @@
 # =============================================================================
 # CUDA-specialized 1D structure-function kernel (distance histogram only).
 #
-# Same N-body broadcast structure as the 2D kernel, but the histogram is tiny
-# (NMOM·NB, NB ≤ 128) so it lives in STATIC shared memory (no dynamic-shared
-# opt-in needed) and TILE = 256 (1D is geometry-bound, not occupancy-limited by
-# the histogram — measured: N-body gives the ~2× win here, replication R=1).
+# Same N-body broadcast structure as the 2D kernel. The histogram is small
+# (NMOM·NB, NB ≤ 128), so it lives in STATIC shared memory, needing no
+# dynamic-shared opt-in, and TILE = 256: this kernel is geometry-bound, so the
+# histogram does not limit occupancy and the replication factor is 1.
 # Covers individual (NMOM=1) and single-pass (NMOM=6), fixed-x and varying-x,
 # D ∈ {2,3}. Output is (NMOM, NB, B); counts are per-bin (shared across moments).
 # =============================================================================
 
 """Compiled-in cap on distance bins for the static shared 1D histogram."""
 const CU_MAX_BINS = 128
-"""Block size for the 1D N-body kernel (settled design)."""
+"""Block size for the 1D N-body kernel."""
 const CU_TILE_1D = 256
 
 function _cuda_sf_1d_kernel!(

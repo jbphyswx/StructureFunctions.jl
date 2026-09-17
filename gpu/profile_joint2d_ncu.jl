@@ -22,7 +22,8 @@ using Printf: Printf
 using Random: Random
 using StructureFunctions: StructureFunctions as SF
 using StructureFunctions.Calculations: Calculations as SFC
-using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges, joint2d_smem_max
+using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges
+using StructureFunctions.Calculations: joint2d_smem_max
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
 
 const _GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)

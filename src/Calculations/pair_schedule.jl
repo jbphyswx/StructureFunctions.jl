@@ -185,8 +185,8 @@ CulledBlockPairs(grid::CellGrid{D}) where {D} = CulledBlockPairs{D, typeof(grid)
 Base.IteratorSize(::Type{<:CulledBlockPairs}) = Base.SizeUnknown()
 Base.eltype(::Type{<:CulledBlockPairs}) = PairBlock
 
-# Cells adjacent along dimension 1 are contiguous in the sorted order, so a whole stencil row is
-# one run: sweeping per row rather than per cell makes the inner loop `2*span+1` cells long.
+# Cells adjacent along dimension 1 are contiguous in the sorted order, so a whole stencil row is one
+# run and the inner loop is `2*span+1` cells long.
 # The outer walk is over OCCUPIED cells, so it never scales with the cell-id space.
 @inline function Base.iterate(
     b::CulledBlockPairs{D}, st::Tuple{Int, Int} = (1, 1),

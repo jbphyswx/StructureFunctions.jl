@@ -1,361 +1,155 @@
-# Architecture: Design & Implementation
+# Architecture
 
-This document explains how StructureFunctions.jl is organized internally and how computations are dispatched.
+How the package is organised and how a call becomes a kernel.
 
-## Table of Contents
-- [Module Organization](#module-organization)
-- [Type Hierarchy](#type-hierarchy)
-- [Backend Dispatch](#backend-dispatch)
-- [Extension System](#extension-system)
-- [Code Layout](#code-layout)
+## Three orthogonal choices
 
-## Module Organization
-
-### Core Module: StructureFunctions
-
-The main module (`src/StructureFunctions.jl`) defines:
-- **Type definitions**: `AbstractExecutionBackend`, `SerialBackend`, `ThreadedBackend`, etc.
-- **Core functions**: `calculate_structure_function`, dispatcher methods
-- **Result container**: `StructureFunction` type for storing results
-
-### Architecture Pattern: Operator × Container
-
-StructureFunctions.jl uses a **operator composition** pattern:
+Every calculation is a product of three independent choices, each a type:
 
 ```
-Data (x, u)
-    ↓
-[StructureFunction Operator] ← Type specifies WHICH calculation
-    ↓
-[Execution Backend] ← Type specifies HOW to compute
-    ↓
-Result Container ← Stores sums, counts, structure functions
+what to accumulate        an operator      L2SFType(), MixedSFType{1,0,2}(), MomentTensorOperator{3}(), …
+over which pairs          the input's shape and schedule: a point list, a multi-field, a grid's
+                          UniformLagSchedule / RectilinearLagSchedule / ZonalLagSchedule / ScatteredPairs,
+                          a ScatteredModesSchedule, HarmonicNodes
+how to execute            a backend        SerialBackend(), ThreadedBackend(), DistributedBackend(),
+                          GPUBackend(device), AutoBackend(); and on a grid a spectral tag,
+                          FastFourierTransformSpectralBackend() / AutoSpectralBackend()
 ```
 
-Example:
+The operator knows nothing about the data layout, the schedule nothing about the operator beyond its
+polynomial contract, and the backend nothing about either. A new operator is a subtype with one
+functor method (and a `moment_contract` method if the transforms are to compute it); a new
+convention for the transverse direction is a subtype with one `transverse_basis` method; a new
+execution backend is a set of methods on the backend type.
+
+## Modules
+
+| module | file(s) | holds |
+|---|---|---|
+| `StructureFunctions` | `src/StructureFunctions.jl`, `src/BinEdges.jl`, `src/AuxiliaryAxes.jl` | exports, the bin-edge wrappers and squared-distance digitize plans, tapers, `HarmonicNodes`, `ModeBinEdges` |
+| `MultiFields` | `src/MultiFields.jl` | `Fields` — several vector and scalar fields sampled at the same points, packed `(V·D + K, N)` |
+| `HelperFunctions` | `src/HelperFunctions.jl` | pair frames on flat and spherical geometry, transverse conventions, `SphericalDistance` |
+| `StructureFunctionTypes` | `src/StructureFunctionTypes.jl` | the operators, their functors, and the polynomial contract (`order`, `is_polynomial_operator`, `SymmetricMoments`, `moment_contract`) |
+| `StructureFunctionObjects` | `src/StructureFunctionObjects.jl` | the result containers |
+| `Calculations` | `src/Calculations.jl`, `src/Calculations/*.jl` | every entry point and kernel: dispatch, serial and single-pass point loops, culling, batches over auxiliary axes, gridded schedules and the direct sweep, the lag algebra of the transform, the sorted line route, the scattered-modes schedule, tensors, transforms and fits, the harmonic route, device stubs |
+| `KHM` | `src/KHM.jl` | the exact-law inversions |
+
+Extensions supply what needs another package: see [Extensions](extensions.md).
+
+## From a call to a kernel
+
+`calculate_structure_function(sf, x, u, bins; backend, distance_metric, weights, culling, …)`:
+
+1. **Shape.** `_validate_array_shape` reads the velocity width `D = size(u, 1)` and the coordinate
+   count the metric's geometry needs (`(D, N)` flat; `(2, N)` positions for a sphere whatever `D`), and
+   classifies the ranks into a `PointField`, `SharedPositionField` or `VaryingPositionField`. The width
+   is an array axis length, so the entry branches on it once and re-enters with a literal
+   `Val{D}`; below that point every type is concrete.
+2. **Backend.** `_dispatch_execution_backend(backend, shape, …)` selects the serial, threaded,
+   distributed, MPI or device implementation; `AutoBackend` takes the threaded one when Julia has
+   more than one thread and the OhMyThreads extension is loaded. Paths with no implementation for a
+   request (weights on the GPU point kernels, in-place auxiliary axes on a device) refuse by name.
+3. **Geometry.** `pair_geometry_for(metric, Val(D))` fixes a `FlatGeometry{D}` or
+   `SphericalGeometry{D}`; `prepare_pair_inputs` widens spherical input to ambient 3-vectors once.
+4. **Kernel.** Flat two- and three-dimensional point lists take the SIMD compute/scatter kernel over
+   blocked pair tiles, with a cell-culling grid when the last bin edge bounds the separations; curved
+   geometry takes the scalar per-point kernel through `pair_frame`; one-dimensional lists with a
+   polynomial operator take the sorted line route; multi-fields take the multi-field kernel with the same
+   blocking. Each pair's value is `sf(δu, r̂)` binned by a squared-distance plan, and an operator odd
+   in a scalar increment reads the pair in its canonical orientation.
+5. **Result.** The backends return the raw `StructureFunctionSumsAndCounts`; the public entry turns it
+   into the requested `output_type` — the averaged `StructureFunction` by default.
+
+A grid enters through the FlowGeometries extension: `calculate_structure_function(sf, grid, u, bins[,
+spectral_tag]; backend, …)` reads the grid's **axis types** (a range is uniform, a coordinate vector is
+not) and emits a schedule. Without a spectral tag the schedule runs the direct lag sweep, one
+implementation for every separable schedule; with `FastFourierTransformSpectralBackend()` it runs the
+transform engine; `AutoSpectralBackend()` costs both and takes the cheaper.
+
+## The transform engine
+
+For each pair of slabs (one slab on a uniform grid; the latitude rows of a lat-lon grid; the stretched
+coordinates of a rectilinear one) the engine takes the forward transforms of every masked, weighted
+monomial of degree up to the operator's order, forms the inverse columns of the increment moment
+tensor — the `2^p` signed terms of the binomial expansion folded in the transform domain under
+identity transport, or the raw cross-moments transformed by the pair frame per lag under frame
+transport — and, per lag, contracts the symmetric moment store with the operator
+(`moment_contract`) or accumulates it whole (the tensor entries). The host loop and the device kernel
+share the lag algebra in `src/Calculations/lag_moments.jl`; the device version batches slab pairs and
+runs two kernels per batch. The sorted line route and the harmonic route reuse the same contract: a
+range's moments are prefix-sum differences, a harmonic kernel's are spin-weighted pseudo-spectra.
+
+## Result containers
+
 ```julia
-# Operator: "Compute 2nd-order SF"
-operator = SecondOrderStructureFunctionType()
-
-# Backend: "Use 4 threads"
-backend = ThreadedBackend()
-
-# Call dispatcher with both
-SF_result = calculate_structure_function(operator, x, u, bins; backend)
+StructureFunction(operator, distance, values)                    # the averaged view, NaN where a bin is empty
+StructureFunctionSumsAndCounts(operator, distance, sums, counts)  # the raw accumulator; adds across processes and time steps
+StructureFunction2DSumsAndCounts(operator, distance_bins, value_bins, sums, counts)   # joint (distance × value) or (distance × angle)
+StructureFunctionTensor(order, distance_bins, values)            # (D, …, D, n_bins[, aux...])
+StructureFunctionTensorSumsAndCounts(order, distance_bins, sums, counts)
+StructureFunctionTensor2DSumsAndCounts(order, distance_bins, axis_bins, sums, counts)
+HelmholtzDecomposition2D(...)                                    # rotational and divergent second-order components
 ```
 
-The **operator type** determines *what calculation* to perform (which SF variant, which order). The **backend type** determines *how* to execute it (serial, threaded, GPU, etc.).
+`distance` is whatever binned the result: bin edges (a plain vector or an `AbstractBinEdges`),
+`HarmonicNodes` for a kernel-binned result on a sphere, `ModeBinEdges` for the soft-binned non-uniform
+FFT route. `midpoints(distance)` is the abscissa in every case, and the transforms and fits read a
+result through its operator and distance rather than through bare arrays.
 
----
+## Bin edges
 
-## Type Hierarchy
-
-### Execution Backends
-
-All backends inherit from `AbstractExecutionBackend`:
-
-```
-AbstractExecutionBackend (abstract)
-├── SerialBackend
-├── ThreadedBackend
-├── DistributedBackend
-├── GPUBackend{B}  [parametric in device backend]
-└── AutoBackend
-```
-
-**Key property**: Each backend type is **singleton-like** — zero memory overhead, pure dispatch. Example:
-```julia
-serial = SerialBackend()        # Type ≈ Singleton
-threaded = ThreadedBackend()    # Type ≈ Singleton
-```
-
-### Structure Function Operators
-
-Operators describe *which* calculation variant:
+`AbstractBinEdges{T} <: AbstractVector{T}` wrappers give `digitize` an `O(1)` path:
 
 ```
-AbstractStructureFunctionType (abstract)
-├── AbstractPairwiseStructureFunctionType
-│   ├── SecondOrderStructureFunctionType        # S2SF = ||δu||²
-│   ├── ThirdOrderStructureFunctionType         # S3SF = δu_L ||δu||²
-│   ├── FullVectorStructureFunctionType{NF}     # generic norm power ||δu||^NF
-│   └── ProjectedStructureFunctionType{NL,NT}   # L2SF, T2SF, L3SF, L1T2SF, ...
-└── AbstractDerivedStructureFunctionType
-    └── Helmholtz-derived 2D rotational/divergent quantities
+AbstractBinEdges
+├── BinEdges           a sorted vector, binary search
+├── LinearBinEdges     a range: floor((x − first)/step) + 1 by one fused multiply-add, then a one-ulp correction
+├── LogBinEdges        log-spaced edges: log(x) then the linear rule on the log grid
+├── InfPaddedBinEdges  ±∞ pads around another edge set, no copy
+└── ModeBinEdges       edges of a soft-binned result, carrying the mode schedule
 ```
 
-Each operator stores:
-- **Order** (n=2, 3, 4, ...) — which structure function order
-- **Projection** (if applicable) — which component to analyze
+The pair loops digitize the **squared** separation against a plan of squared edges
+(`squared_digitize_plan`), which skips the square root; see [Binning Internals](uniform_bin_digitize.md)
+for the derivation and why `round` is the wrong operator.
 
-### Bin Edges (AbstractBinEdges)
-
-To eliminate the $O(\log B)$ binary search overhead in distance binning, StructureFunctions.jl provides custom, fast, zero-allocation collections subtyping `AbstractBinEdges{T}`:
-
-```
-AbstractBinEdges (abstract)
-├── BinEdges           [generic wrapper for standard vectors]
-├── LinearBinEdges     [O(1) FMA-based search for uniform ranges]
-├── LogBinEdges        [O(1) Exponent LUT Hybrid search for log ranges]
-└── InfPaddedBinEdges  [wrapper to append/prepend ±∞ boundaries]
-```
-
-These types implement custom `Base.searchsortedfirst` overrides, enabling highly efficient $O(1)$-like bin lookups within core calculations.
-
-#### Algorithmic Design
-
-##### 1. Linear Binning via Fused Multiply-Add (FMA)
-When bin edges are uniformly spaced (a range), a standard binary search takes $O(\log B)$ steps. Instead, `LinearBinEdges` performs a constant-time $O(1)$ mapping from value to index:
-$$\text{index}(x) = \text{round}\left(\text{Int}, x \cdot \text{inv\_step} + \text{offset}\right)$$
-where $\text{inv\_step} = 1/\delta$ and $\text{offset} = 1 - v_1/\delta$. By evaluating this via a Fused Multiply-Add (`muladd`) instruction, the CPU executes it in a single cycle. A subsequent $O(1)$ floating-point boundary check corrects any potential 1-ULP precision mismatch at bin edges, ensuring 100% numerical parity with standard binary search in only **~3 ns** (a **15x+ speedup**).
-
-##### 2. Log Binning via Exponent Lookup Tables (LUT)
-Logarithmic binning normally requires evaluating $\ln(x)$ to map the value to linear space, but the hardware `log` instruction is highly latent (20-40 CPU cycles). To bypass this, `LogBinEdges` extracts the binary floating-point exponent of the query value using `exponent(x)`. This operation is an IEEE 754 bit-mask and shift, taking **< 0.5 ns**. 
-
-During construction, a Lookup Table (LUT) is created to map each binary exponent (octave) to the first index in the bin edges vector that intersects with that octave. When searching:
-1. Extract exponent $e = \text{exponent}(x)$.
-2. Query the precomputed LUT to retrieve bounds `idx_start` and `idx_end` for that octave, restricting the search range.
-3. Perform a hybrid search: if the restricted subrange contains $\le 8$ elements, use a fast cache-friendly linear scan; otherwise, run a binary search restricted to that subrange.
-This hybrid strategy bypasses `log(x)` completely, reducing lookups to **~5-8 ns** (a **5x+ speedup**).
-
-##### 3. Out-Of-Bounds Handling via Virtual Padding
-Calculations need to determine if a point pair's separation falls within the bounds of the bin edges. Rather than introducing branching code inside inner loops, `InfPaddedBinEdges` virtually prepends $-\infty$ (or `typemin(T)`) and appends $+\infty$ (or `typemax(T)`) to any existing `AbstractBinEdges` collection. Out-of-bounds inputs automatically fall into the boundary pads in $O(1)$ time without copying or allocating additional memory.
-
-### Result Containers
-
-StructureFunctions.jl decouples raw accumulation, processed 1D structure functions, and 2D joint-probability binning into separate parametric result types inheriting from `AbstractStructureFunction`:
-
-1. **`StructureFunction`**: Stores the final processed structure function values.
-```julia
-struct StructureFunction{FT, OT, BT, VT} <: AbstractStructureFunction
-    operator::OT                   # AbstractStructureFunctionType
-    distance_bins::BT              # AbstractVector of (r_min, r_max)
-    values::VT                     # AbstractVector{FT} — computed SF
-    order::Int                     # 1, 2, 3, ...
-end
-```
-
-2. **`StructureFunctionSumsAndCounts`**: Stores exact computed sums and point counts per bin. Ideal for distributed or chunked temporal aggregation.
-```julia
-struct StructureFunctionSumsAndCounts{FT, OT, BT, VT} <: AbstractStructureFunction
-    operator::OT
-    distance_bins::BT
-    sums::VT                       # Exact computed SF value sums
-    counts::VT                     # Integer counts of contributing pairs
-end
-```
-
-3. **`StructureFunction2DSumsAndCounts`**: Stores the 2D joint-probability binning grid (separation distance $r$ vs. SF value $v$).
-```julia
-struct StructureFunction2DSumsAndCounts{FT, OT, BT, VT, MT, CT} <: AbstractStructureFunction
-    operator::OT
-    distance_bins::BT
-    value_bins::VT                 # Value increment bin edges
-    sums::MT                       # 2D matrix of exact sums (distance x value)
-    counts::CT                     # 2D matrix of contribution counts
-end
-```
-
-All result containers support basic `Base` algebraic operations (like `+` and `+=`) to allow seamless aggregation across distributed processes or temporal timesteps.
-
----
-
-## Backend Dispatch
-
-### Dispatch Flow
-
-When you call `calculate_structure_function(operator, x, u, bins; backend)`:
-
-1. **Type signature selected** based on `backend` type
-2. **Preparation phase** (same for all backends):
-   - Validate inputs
-   - Allocate result container
-   - Set up spatial binning
-3. **Execution phase** (backend-specific):
-   - `SerialBackend`: Single loop over points
-   - `ThreadedBackend`: Multi-threaded loop via OhMyThreads
-   - `DistributedBackend`: Distribute over processes
-   - `GPUBackend`: Launch kernels
-   - `AutoBackend`: Detect available resources → select best backend
-4. **Reduction phase** (same for all backends):
-   - Finalize sums and normalize
-   - Store in result container
-
-### Code Structure
+## Code layout
 
 ```
 src/
-├── Calculations.jl          # Core calculation logic (backend-agnostic)
-├── StructureFunctionTypes.jl # Operator type definitions
-├── HelperFunctions.jl        # Utilities (binning, normalization)
-└── Backends.jl              # Backend type definitions
-
+├── StructureFunctions.jl         exports and includes
+├── MultiFields.jl  BinEdges.jl  HelperFunctions.jl  AuxiliaryAxes.jl
+├── StructureFunctionTypes.jl     operators and the polynomial contract
+├── StructureFunctionObjects.jl   result containers
+├── Calculations.jl               the compute module
+├── Calculations/
+│   ├── backends.jl shapes.jl dispatch.jl        shape → width literal → backend
+│   ├── serial.jl serial_2d.jl serial_single_pass.jl culling.jl pair_schedule.jl   point kernels
+│   ├── batch.jl batch_api.jl batch_leading.jl workspace.jl gpu_stubs.jl           auxiliary axes, device stubs
+│   ├── multifields.jl second_axis.jl                                                  multi-fields, the second histogram axis
+│   ├── gridded.jl gridded_zonal.jl lag_moments.jl scattered_modes.jl sorted_line.jl   schedules, sweeps, lag algebra
+│   ├── tensor.jl transforms.jl fits.jl harmonic.jl
+└── KHM.jl
 ext/
-├── StructureFunctionsOhMyThreadsExt.jl    # OhMyThreads integration
-├── StructureFunctionsDistributedExt.jl     # Distributed.jl integration
-├── StructureFunctionsKernelAbstractionsExt.jl             # KernelAbstractions integration
-├── StructureFunctionsCairoMakieExt.jl      # Plotting helpers
-└── gpu/                                    # GPU kernel organization
+├── StructureFunctionsOhMyThreadsExt.jl  StructureFunctionsDistributedExt.jl  StructureFunctionsMPIExt.jl
+├── StructureFunctionsKernelAbstractionsExt.jl  + gpu/  (device kernels)  StructureFunctionsCUDAExt.jl
+├── StructureFunctionsAbstractFFTsExt.jl  StructureFunctionsAbstractFFTsKernelAbstractionsExt.jl
+├── StructureFunctionsNonuniformFFTsExt.jl  StructureFunctionsNonuniformFFTsKernelAbstractionsExt.jl
+├── StructureFunctionsFINUFFTExt.jl  StructureFunctionsFINUFFTKernelAbstractionsExt.jl
+├── StructureFunctionsNUFSHTExt.jl  StructureFunctionsFlowGeometriesExt.jl
+└── StructureFunctionsBesselsExt.jl  StructureFunctionsLsqFitExt.jl
 ```
 
-### Example: ThreadedBackend Dispatch
+## Design rules
 
-When `backend=ThreadedBackend()` is passed:
-
-```julia
-# Simplified view of internal dispatcher
-calculate_structure_function(op::StructureFunctionType, 
-                             x, u, bins;
-                             backend::ThreadedBackend) = begin
-    # Setup (shared)
-    result = StructureFunction(...)
-    
-    # Execution (ThreadedBackend-specific)
-    # Uses OhMyThreads.tmapreduce to parallelize point-pair iteration
-    compute_threaded!(result, x, u, bins)
-    
-    # Finalize (shared)
-    normalize!(result)
-    
-    return result
-end
-```
-
-This **method specialization** ensures:
-- ✅ No runtime overhead choosing between backends
-- ✅ Each backend can use its best algorithm
-- ✅ Type-stable dispatch
-
----
-
-## Extension System
-
-### Lazy Loading via Extensions
-
-Optional dependencies are loaded **only when needed** via Julia's extension mechanism:
-
-```toml
-[weakdeps]
-OhMyThreads = "67456a42-ebe4-4781-8ad1-67f7eda8d8f7"
-Distributed = "8ba89e20-285c-5519-8a0c-887f00cd4b76"
-KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1f7f1"
-
-[extensions]
-OhMyThreadsExt = "OhMyThreads"
-DistributedExt = "Distributed"
-GPUExt = "KernelAbstractions"
-```
-
-**Benefits**:
-- Users who don't use ThreadedBackend pay zero cost (no OhMyThreads load time)
-- GPU users can optionally install KernelAbstractions
-- Fresh Julia session starts fast (no big dependency tree by default)
-
-### Adding a New Extension
-
-To add support for a new backend (e.g., `CUDABackend`):
-
-1. **Add weakdep** in Project.toml:
-   ```toml
-   CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
-   ```
-
-2. **Create extension** `ext/CUDAExt.jl`:
-   ```julia
-   module CUDAExt
-   
-   using StructureFunctions
-   using CUDA
-   
-   struct CUDABackend end
-   
-   function calculate_structure_function(op, x, u, bins;
-                                        backend::CUDABackend)
-       # CUDA-specific dispatch
-   end
-   
-   end  # module
-   ```
-
-3. **Publish** as part of release
-
-## Code Layout
-
-### Key Files
-
-| File | Purpose |
-|------|---------|
-| `src/Calculations.jl` | Main dispatcher; backend-agnostic logic |
-| `src/StructureFunctionTypes.jl` | Operator type definitions |
-| `src/HelperFunctions.jl` | Binning, distance metrics, utils |
-| `src/Backends.jl` | Backend type definitions |
-| `ext/StructureFunctionsOhMyThreadsExt.jl` | OhMyThreads integration |
-| `ext/StructureFunctionsDistributedExt.jl` | Distributed.jl integration |
-| `ext/StructureFunctionsKernelAbstractionsExt.jl` | KernelAbstractions + GPU kernels |
-| `ext/StructureFunctionsCairoMakieExt.jl` | Plotting helpers |
-| `src/__init__.jl` | Exports public types/functions |
-
-### Import Strategy
-
-```julia
-# src/StructureFunctions.jl (main module)
-
-# Public exports
-export SerialBackend, ThreadedBackend, DistributedBackend,
-       GPUBackend, AutoBackend,
-       calculate_structure_function,
-       StructureFunction
-
-# Dependencies
-using LinearAlgebra
-using Distances
-using ProgressMeter
-using StaticArrays
-
-# No imports of optional dependencies (those are extensions)
-```
-
-### Public vs Internal
-
-**Public API** (safe to use, won't change):
-- `calculate_structure_function` function
-- All `*Backend` types
-- `StructureFunction` container
-- Exported operator types
-
-**Internal** (subject to change):
-- Helper functions in `HelperFunctions.jl` marked `@doc hide`
-- Kernel implementations in extensions
-- Intermediate data structures
-
----
-
-## Design Principles
-
-1. **Type Dispatch**: Use Julia's type system, not string dispatch
-   - ✅ Static overhead elimination
-   - ✅ Runtime type safety
-   - ✅ IDE autocompletion
-
-2. **Zero-Cost Abstraction**: Backend dispatch adds no runtime cost
-   - Single method per backend type
-   - Compiler resolves at dispatch time
-   - No runtime branching
-
-3. **Extensibility**: Users can add custom backends
-   - Define new `Backend <: AbstractExecutionBackend` type
-   - Define `calculate_structure_function` method for it
-   - Works instantly (static dispatch)
-
-4. **Separation of Concerns**:
-   - Operators describe *what* to compute (decoupled from backend)
-   - Backends describe *how* to compute (decoupled from operator)
-   - Result container is pure data (independent of both)
-
----
-
-## Related Topics
-
-- [Theory](theory.md): Mathematical foundations
-- [Backends](backends.md): When to use each backend
-- [Examples](../examples/README.md): Worked code examples
+- **Decide by types, never by inspecting values.** A range axis is uniform and a coordinate vector is
+  not; a spectral tag is a type; validity is `AllValid()` or a mask; a taper, a culling policy and a
+  missing-lag policy are types. No `Symbol` options.
+- **Exactness is a property of a route, stated on it.** The direct sweep, the transform and the sorted
+  line are exact and are tested against each other; the harmonic route and the non-uniform FFT route
+  are kernel-binned and their results carry a distance object that says so; spectra from masked data
+  are estimators and their docstrings say so.
+- **A request that cannot be met errors and names why.** Nothing falls back silently to a different
+  quantity.
+- **Culling, transforms and backends never change an answer**, only its cost: counts equal exactly,
+  sums to round-off, and the tests hold every pair of routes to that.

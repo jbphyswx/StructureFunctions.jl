@@ -22,6 +22,7 @@ _finalize(r::SFO.StructureFunctionSumsAndCounts, ::Type{<:SFO.StructureFunction}
     SFO.StructureFunction(r.operator, r.distance, _bin_average(r.sums, r.counts))
 _finalize(r::SFO.StructureFunction2DSumsAndCounts, ::Type{<:SFO.StructureFunction2DSumsAndCounts}) = r
 _finalize(r::SFO.StructureFunctionTensorSumsAndCounts, ::Type{<:SFO.StructureFunctionTensorSumsAndCounts}) = r
+_finalize(r::SFO.StructureFunctionTensor2DSumsAndCounts, ::Type{<:SFO.StructureFunctionTensor2DSumsAndCounts}) = r
 _finalize(r::SFO.StructureFunctionTensorSumsAndCounts{P}, ::Type{<:SFO.StructureFunctionTensor}) where {P} =
     SFO.StructureFunctionTensor(r.order, r.distance_bins, _tensor_bin_average(r.sums, r.counts, Val(P)))
 _finalize(r, ::Type{R}) where {R} = throw(ArgumentError(
@@ -74,11 +75,12 @@ function calculate_structure_function(
     kwargs...,
 ) where {FT1, FT2, OT, CT}
     shape = _validate_array_shape(x, u, distance_metric)
+    has_auxiliary_axes(shape) && _refuse_weights(kwargs, "the batched entries over auxiliary axes")
     _assert_counts_representable(CT, size(x, 2))
     # The shape carries the velocity dimension as a type parameter, but that dimension is an array
-    # axis length, so the constructed type is not inferrable and every kernel below it would be
-    # typed `Any`. Re-entering through a concrete `Val` hands each branch a shape whose parameter is
-    # known: the branch is chosen at runtime, everything under it is not.
+    # axis length, so the constructed type is not inferrable and types every kernel below it `Any`.
+    # Re-entering through a concrete `Val` hands each branch a shape whose parameter is known: the
+    # branch is chosen at runtime, everything under it is not.
     D = size(u, 1)
     S = _shape_kind(x, u)
     kw = (; distance_metric, kwargs...)
@@ -94,8 +96,8 @@ function calculate_structure_function(
     return _finalize(raw, output_type)
 end
 
-"""Largest velocity width the entry specializes for. Beyond it the kernels would be dispatched
-dynamically per pair, so the boundary is stated rather than crossed silently."""
+"""Largest velocity width the entry specializes for. Past it a kernel dispatches once per pair, so the
+entry refuses the width by name."""
 const MAX_SPECIALIZED_WIDTH = 8
 
 """
@@ -104,17 +106,26 @@ const MAX_SPECIALIZED_WIDTH = 8
 Dispatch with a shape whose width parameter is a **literal**.
 
 An array's axis length is a value, not a type, so a shape built straight from it cannot be inferred
-and every kernel below would be typed `Any` — a dynamic dispatch per pair. The caller therefore
-branches on the width and passes a literal here. The keywords ride as a positional `NamedTuple`
+and types every kernel below `Any`, a dynamic dispatch per pair. The caller therefore branches on the
+width and passes a literal here. The keywords ride as a positional `NamedTuple`
 because a keyword call blocks the constant propagation this depends on.
 """
 @inline _dw(shape, backend, sf, x, u, distance_bins, count_eltype, kw::NamedTuple) =
     _dispatch_execution_backend(backend, shape, sf, x, u, distance_bins, count_eltype; kw...)
 
+"""
+Pair weights reach the serial and threaded point kernels and every gridded route; a path that has no
+weighted kernel refuses them by name.
+"""
+_refuse_weights(kwargs, path::AbstractString) = get(kwargs, :weights, nothing) === nothing ? nothing :
+    throw(ArgumentError(
+        "pair weights are not implemented on $path; use the serial or threaded backend, or a gridded entry",
+    ))
+
 @noinline _width_unsupported(D) = throw(ArgumentError(
     "velocity dimension D=$D exceeds the largest width the kernels are specialized for " *
-    "($MAX_SPECIALIZED_WIDTH). Widths are specialized rather than dispatched dynamically because " *
-    "the alternative costs a dynamic dispatch per pair.",
+    "($MAX_SPECIALIZED_WIDTH). Widths are specialized, because dispatching on the width costs one " *
+    "dynamic dispatch per pair.",
 ))
 
 """
@@ -158,6 +169,7 @@ function calculate_structure_function(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...,
 ) where {FT1, FT2, OT, CT}
+    _refuse_weights(kwargs, "the value-binned joint histogram of a point list")
     shape = _validate_array_shape(x, u, distance_metric)
     _assert_counts_representable(CT, size(x, 2))
     raw = _dispatch_execution_backend(
@@ -210,8 +222,7 @@ function calculate_structure_function(
     min_distance, max_distance = _minmax_for_autobins(shape, x, distance_metric, show_progress)
     actual_bins = _auto_distance_bins(min_distance, max_distance, distance_bins, bin_spacing)
 
-    # `bin_spacing` selected these edges and means nothing downstream, so it is consumed here
-    # rather than forwarded into a `kwargs...` sink that would silently swallow it.
+    # `bin_spacing` selected these edges and means nothing downstream, so it is consumed here.
     return calculate_structure_function(
         structure_function_type,
         x,
@@ -388,6 +399,7 @@ function calculate_structure_function!(
     backend=CB.SerialBackend(), distance_metric::DI.PreMetric = DI.Euclidean(), kwargs...
 )
     shape = _validate_array_shape(x, u, distance_metric)
+    has_auxiliary_axes(shape) && _refuse_weights(kwargs, "the batched entries over auxiliary axes")
     _assert_counts_representable(eltype(counts), size(x, 2))
     _dispatch_execution_backend!(backend, shape, sums, counts, sf_type, x, u, distance_bins;
         distance_metric, kwargs...)
@@ -405,6 +417,7 @@ function calculate_structure_function!(
     sums_2d, counts_2d, sf_type, x::AbstractArray, u::AbstractArray, distance_bins, value_bins;
     backend=CB.SerialBackend(), distance_metric::DI.PreMetric = DI.Euclidean(), kwargs...
 )
+    _refuse_weights(kwargs, "the value-binned joint histogram of a point list")
     shape = _validate_array_shape(x, u, distance_metric)
     _assert_counts_representable(eltype(counts_2d), size(x, 2))
     _dispatch_execution_backend!(backend, shape, sums_2d, counts_2d, sf_type, x, u, distance_bins, value_bins;
@@ -439,6 +452,7 @@ end
 function _dispatch_execution_backend!(
     backend::CB.AbstractGPUBackend, shape::PointField, sums::AbstractVector, counts::AbstractVector, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
+    _refuse_weights(kwargs, "the GPU point kernels")
     gpu_calculate_structure_function!(sums, counts, structure_function_type, backend.backend, x, u, distance_bins; kwargs...)
     return nothing
 end
@@ -571,12 +585,14 @@ end
 function _dispatch_execution_backend(
     backend::CB.AbstractDistributedBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, count_eltype::Type{CT} = UInt32; kwargs...
 ) where {CT}
+    _refuse_weights(kwargs, "the distributed point path")
     return _dispatch_execution_backend(backend, structure_function_type, x, u, distance_bins; count_eltype, kwargs...)
 end
 
 function _dispatch_execution_backend(
     backend::CB.AbstractGPUBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, count_eltype::Type{CT} = UInt32; kwargs...
 ) where {CT}
+    _refuse_weights(kwargs, "the GPU point kernels")
     if has_auxiliary_axes(shape)
         return gpu_calculate_structure_function_batch(structure_function_type, backend.backend, x, u, distance_bins; count_eltype, kwargs...)
     end

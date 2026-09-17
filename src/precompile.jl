@@ -6,16 +6,16 @@ PrecompileTools.@compile_workload begin
     for FT in FTs
         bins = [FT(0), FT(1), FT(2)]
         sfs = [
-            LongitudinalSecondOrderStructureFunction,
-            TransverseSecondOrderStructureFunction,
-            DiagonalConsistentThirdOrderStructureFunction,
+            StructureFunctionTypes.LongitudinalSecondOrderStructureFunction,
+            StructureFunctionTypes.TransverseSecondOrderStructureFunction,
+            StructureFunctionTypes.DiagonalConsistentThirdOrderStructureFunction,
         ]
 
         for N in dims
             x_mat = zeros(FT, N, 3)
             u_mat = zeros(FT, N, 3)
             for sf in sfs
-                calculate_structure_function(
+                Calculations.calculate_structure_function(
                     sf,
                     x_mat,
                     u_mat,

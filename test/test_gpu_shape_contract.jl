@@ -210,13 +210,13 @@ Test.@testset "GPU point-field families honour a spherical metric" begin
     )
     Test.@test raw(DI.Euclidean()).counts != raw(m).counts
 
-    # And a metric with NO geometry is refused outright on every backend rather than being assumed
-    # flat — a distance function does not define a separation direction or a transport rule.
+    # And a metric with NO geometry is refused outright on every backend: a distance function
+    # defines neither a separation direction nor a transport rule.
     Test.@test_throws ArgumentError raw(DI.Cityblock())
 end
 
 # The auxiliary-axis (batch) families carry the geometry into their kernels, so they honour a
-# spherical metric and must reproduce the CPU's transported answer rather than a flat one.
+# spherical metric and must reproduce the CPU's transported answer.
 Test.@testset "GPU batch families honour a spherical metric" begin
     FT = Float64
     N, B = 40, 3
@@ -254,7 +254,7 @@ Test.@testset "GPU batch families honour a spherical metric" begin
 end
 
 # The point-field single-pass 2D family carries the geometry into its kernels, so it honors a
-# non-Euclidean metric rather than refusing it, and must produce the CPU's transported answer.
+# non-Euclidean metric and must produce the CPU's transported answer.
 Test.@testset "GPU single-pass 2D honors a spherical metric" begin
     FT = Float64
     N = 96
@@ -284,8 +284,8 @@ Test.@testset "GPU single-pass 2D honors a spherical metric" begin
     Test.@test flat.L2.counts != got.L2.counts
 end
 
-# The single-pass 2D GPU boundary used to splat display-only kwargs into a core with no `kwargs...`
-# sink, so the package's own standard `verbose`/`show_progress` pair was a MethodError.
+# The single-pass 2D GPU boundary accepts the package's standard `verbose`/`show_progress` pair,
+# which its core takes no `kwargs...` sink for.
 Test.@testset "GPU single-pass 2D accepts the standard display kwargs" begin
     FT = Float64
     N = 16

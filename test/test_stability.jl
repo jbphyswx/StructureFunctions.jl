@@ -32,6 +32,4 @@ Test.@testset "Stability Verification" begin
     u_batched = rand(FT, 2, N, 2)
     @inferred SFC.calculate_structure_functions_single_pass(x, u_batched, bins; backend = CB.SerialBackend())
 
-    # 2. Distributed Stability Check (if DistributedExt is loaded)
-    # We'll just check if the method exists for now, or skip if not tested here.
 end

@@ -1,6 +1,11 @@
 module StructureFunctionObjects
 
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
+using ..StructureFunctions: HarmonicNodes
+
+# Values a result on this distance object carries: one per bin between flat edges, one per node.
+@inline _value_slots(distance) = length(distance) - 1
+@inline _value_slots(distance::HarmonicNodes) = length(distance)
 
 export AbstractStructureFunction,
     StructureFunction,
@@ -8,6 +13,7 @@ export AbstractStructureFunction,
     StructureFunction2DSumsAndCounts,
     StructureFunctionTensor,
     StructureFunctionTensorSumsAndCounts,
+    StructureFunctionTensor2DSumsAndCounts,
     HelmholtzDecomposition2D,
     marginalize
 
@@ -35,7 +41,7 @@ struct StructureFunction{FT, OT <: SFT.AbstractStructureFunctionType, BT, VT} <:
 
     function StructureFunction(operator::OT, distance::BT, values::VT) where {OT, BT, VT}
         n_values = values isa AbstractArray && ndims(values) > 1 ? size(values, 1) : length(values)
-        (length(distance) == n_values + 1) || throw(DimensionMismatch("Flat distance edges must have length one greater than the leading value-bin axis (got edges=$(length(distance)), value bins=$n_values)"))
+        (_value_slots(distance) == n_values) || throw(DimensionMismatch("Flat distance edges must have length one greater than the leading value-bin axis (got edges=$(length(distance)), value bins=$n_values)"))
         FT = eltype(VT)
         return new{FT, OT, BT, VT}(operator, distance, values)
     end
@@ -67,7 +73,7 @@ struct StructureFunctionSumsAndCounts{
     ) where {OT, BT, VT, CT}
         n_sums = sums isa AbstractArray && ndims(sums) > 1 ? size(sums, 1) : length(sums)
         n_counts = counts isa AbstractArray && ndims(counts) > 1 ? size(counts, 1) : length(counts)
-        ((length(distance) == n_sums + 1) && (n_sums == n_counts) && (size(sums) == size(counts))) || throw(DimensionMismatch("Flat distance edges must satisfy length(distance) == size(sums,1) + 1 and sums/counts must match shape (got edges=$(length(distance)), sums=$(size(sums)), counts=$(size(counts)))"))
+        ((_value_slots(distance) == n_sums) && (n_sums == n_counts) && (size(sums) == size(counts))) || throw(DimensionMismatch("Flat distance edges must satisfy length(distance) == size(sums,1) + 1 and sums/counts must match shape (got edges=$(length(distance)), sums=$(size(sums)), counts=$(size(counts)))"))
         FT = eltype(sums)
         return new{FT, OT, BT, VT, CT}(operator, distance, sums, counts)
     end
@@ -145,6 +151,38 @@ struct StructureFunctionTensorSumsAndCounts{P, FT, BT, VT, CT} <: AbstractStruct
             throw(DimensionMismatch("counts auxiliary axes must match tensor sums auxiliary axes"))
         FT = eltype(sums)
         return new{P, FT, BT, VT, CT}(order, distance_bins, sums, counts)
+    end
+end
+
+"""
+    StructureFunctionTensor2DSumsAndCounts(order, distance_bins, axis_bins, sums, counts)
+
+Raw tensor structure function joint in separation and a second axis: `sums` has shape
+`(D, …, D, n_bins, n_axis)` with `P` component axes, `counts` `(n_bins, n_axis)`, `axis_bins` the
+edges of the second axis.
+"""
+struct StructureFunctionTensor2DSumsAndCounts{P, FT, BT, AT, VT, CT} <: AbstractStructureFunction
+    order::Val{P}
+    distance_bins::BT
+    axis_bins::AT
+    sums::VT
+    counts::CT
+
+    function StructureFunctionTensor2DSumsAndCounts(
+        order::Val{P}, distance_bins::BT, axis_bins::AT, sums::VT, counts::CT,
+    ) where {P, BT, AT, VT, CT}
+        P >= 1 || throw(ArgumentError("tensor order must be positive"))
+        ndims(sums) == P + 2 || throw(DimensionMismatch(
+            "joint tensor sums must have $P component axes, a distance-bin axis and a second-axis axis",
+        ))
+        n_bins, n_axis = size(sums, P + 1), size(sums, P + 2)
+        length(distance_bins) == n_bins + 1 ||
+            throw(DimensionMismatch("distance_bins must have length size(sums, $(P + 1)) + 1"))
+        length(axis_bins) == n_axis + 1 ||
+            throw(DimensionMismatch("axis_bins must have length size(sums, $(P + 2)) + 1"))
+        size(counts) == (n_bins, n_axis) ||
+            throw(DimensionMismatch("counts must be ($n_bins, $n_axis); got $(size(counts))"))
+        return new{P, eltype(sums), BT, AT, VT, CT}(order, distance_bins, axis_bins, sums, counts)
     end
 end
 
@@ -283,10 +321,6 @@ Base.getindex(sf::StructureFunction, i...) = getindex(sf.values, i...)
 Base.firstindex(sf::StructureFunction) = firstindex(sf.values)
 Base.lastindex(sf::StructureFunction) = lastindex(sf.values)
 Base.iterate(sf::StructureFunction, args...) = iterate(sf.values, args...)
-
-# For SumsAndCounts, we don't necessarily want to treat it as a single array, 
-# but getindex could perhaps return (sum, count) tuple? No, let's keep it explicit for now.
-# Or better, just update the tests.
 
 function Base.show(io::IO, sf::StructureFunction{FT, OT}) where {FT, OT}
     print(io, "StructureFunction{", FT, "}")
