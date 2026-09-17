@@ -81,17 +81,17 @@ KA.@kernel unsafe_indices = true function _spec_kernel!(
 end
 
 # One work item per (lag, slab pair) over the pairs `first_pair:last_pair`, with the `nt` slices as
-# its innermost loop: each lag's geometry is read once and every slice's moment row is contracted
+# its innermost loop: the lag's geometry is read once and every slice's moment row is contracted
 # against it. A distance histogram accumulates in shared memory when it fits and is flushed once per
 # block; the joint histogram uses global atomics. Histogram cells are indexed linearly, so one lag's
-# slices are `nb` apart and its angles `nb` apart within a slice.
+# slices are `nb · na` apart and its angles `nb` apart within a slice.
 KA.@kernel unsafe_indices = true function _lag_kernel!(
     sums::AbstractArray{OT}, counts::AbstractArray{CT}, @Const(out), @Const(pairs), sf, s, su, plan, second_axis,
     axis_edges, @Const(pair_off), @Const(pair_lo), @Const(pair_len), @Const(pair_str), first_pair::Int,
     last_pair::Int, n_box::Int, box_lo, box_len, box_strides,
     P, strides, masked::Bool, weighted::Val{WEIGHTED}, ncols::Int,
-    nb::Int, na::Int, nt::Int, total::Int, workgroup_size::Int, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po},
-    ::Val{N}, ::Val{Dg}, ::Val{UB}, ::Val{NC}, ::Val{SHARED},
+    nb::Int, na::Int, nt::Int, total::Int, workgroup_size::Int, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W},
+    ::Val{Po}, ::Val{N}, ::Val{Dg}, ::Val{UB}, ::Val{NC}, ::Val{SHARED},
 ) where {OT, CT, WEIGHTED, D, V, K, W, Po, N, Dg, UB, NC, SHARED}
     shared_s = @localmem OT (NC,)
     shared_c = @localmem CT (NC,)
@@ -122,6 +122,8 @@ KA.@kernel unsafe_indices = true function _lag_kernel!(
             scale = self_reverse ? T(0.5) : one(T)
             inv_r = inv(sqrt(r2))
             tr = SFC.lag_transport(s)
+            # Every name the slice loops write is assigned only inside these closures, so each is
+            # local to its closure; one also assigned outside would be captured and reassigned.
             if second_axis === nothing
                 SFC.with_frames(tr, geometry) do frames
                     for t in 1:nt
@@ -149,10 +151,10 @@ KA.@kernel unsafe_indices = true function _lag_kernel!(
                         for f in frames
                             bθ = SFH.digitize(SFC.axis_quantity(second_axis, f.dir, r2), axis_edges)
                             if 1 <= bθ <= na
-                                cell = bin + (bθ - 1) * nb + (t - 1) * nb * na
+                                joint_cell = bin + (bθ - 1) * nb + (t - 1) * nb * na
                                 value = OT(factor * SFT.moment_contract(sf, Mo, f.dir * inv_r, Val(V), Val(K)) / Mi)
-                                @atomic sums[cell] += value
-                                @atomic counts[cell] += CT(n_pairs / Mi)
+                                @atomic sums[joint_cell] += value
+                                @atomic counts[joint_cell] += CT(n_pairs / Mi)
                             end
                         end
                     end
@@ -234,11 +236,19 @@ function SFC.device_transform_sweep_batch!(
     nlin = length(F1)
     nkeys = length(eng.fwd[1])
     nslabs = length(eng.fwd)
-    # The kernel reads every slice's spectra from one array, slab-fastest within a monomial, so the
-    # slices are gathered into that layout.
+    # The kernel reads every slice's spectra from one array, slab-fastest within a monomial. The FFT
+    # stage already writes a slab's spectra in that layout, so a slice is copied in one piece;
+    # transforms from a non-uniform FFT provider come separately and are gathered.
     F = similar(F1, nlin, nslabs, nkeys, nt)
-    for t in 1:nt, I in 1:nslabs, k in 1:nkeys
-        view(F, :, I, k, t) .= vec(engs[t].fwd[I][k])
+    for t in 1:nt
+        eng_t = engs[t]
+        if eng_t.flat === nothing
+            for I in 1:nslabs, k in 1:nkeys
+                view(F, :, I, k, t) .= vec(eng_t.fwd[I][k])
+            end
+        else
+            view(F, :, :, :, t) .= reshape(eng_t.flat, nlin, nslabs, nkeys)
+        end
     end
     terms, col_ptr = _term_table(eng.columns)
     d_terms, d_ptr = to(terms), to(col_ptr)
@@ -315,8 +325,8 @@ function SFC.device_transform_sweep_batch!(
         total_lag = UB ? n_box * Bb : pair_off[hi + 1] - pair_off[lo]
         lag_k(dsums, dcounts, out4, d_pairs, sf, s_dev, su, plan_dev, second_axis, d_axis_edges,
               d_off, d_plo, d_plen, d_pstr, lo, hi, n_box, box_lo, box_len, box_strides,
-              P, strides, eng.masked, eng.weighted, ncols, nb, na, nt, total_lag, WORKGROUP, Val(D),
-              Val(V), Val(K), eng.vW, eng.vP, eng.vN, Val(Dg), Val(UB), Val(NC), Val(shared);
+              P, strides, eng.masked, eng.weighted, ncols, nb, na, nt, total_lag, WORKGROUP,
+              Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN, Val(Dg), Val(UB), Val(NC), Val(shared);
               ndrange = cld(total_lag, WORKGROUP) * WORKGROUP)
         KA.synchronize(dev)
     end

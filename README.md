@@ -137,11 +137,13 @@ SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), grid, u, b
                                         SB.FastFourierTransformSpectralBackend())
 ```
 
-Column `t` is what the single-slice call returns for snapshot `t`. Each lag's separation, distance
-bin, pair reading and geodesic frame is computed once for the whole batch, and every snapshot's
-spectra of a slab pair are inverted in one transform with the snapshots laid out contiguously per
-lag. The same entry takes a point list as `(D, N, T)`, a `ScatteredModesSchedule` for a fixed set of
-stations, and `backend = CB.GPUBackend(...)` on any of them.
+Column `t` is what the single-snapshot call returns for snapshot `t`. What the batch saves is
+everything a pair knows without the field: the slab-pair enumeration, each lag's separation and
+distance bin, its pair reading, and on a sphere its geodesic frame and transport matrices. How much
+that is worth depends on the grid, and the schedule names the arrangement it takes through
+`batch_shares_lag_geometry`. The same entry takes a point list as `(D, N, T)`, a
+`ScatteredModesSchedule` for a fixed set of stations, and `backend = CB.GPUBackend(...)` on any of
+them.
 
 ## Extensions
 

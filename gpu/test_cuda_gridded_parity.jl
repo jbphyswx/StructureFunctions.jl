@@ -122,11 +122,23 @@ function compare_batch(name, sf, u, s, edges, D; valid = SFC.AllValid(), weights
     tc = @elapsed SFC.gridded_sweep_batch!(a, ca, sf, u, s, edges, Val(D), FFT; valid, weights, backend = CPU)
     tg = @elapsed (SFC.gridded_sweep_batch!(b, cb, sf, u, s, edges, Val(D), FFT; valid, weights, backend = GPU);
                    CUDA.synchronize())
+    # what the batch is worth on the device: the same slices through the single-slice entry, into
+    # buffers of its own so the reference above stays one accumulation
+    l, cl = zeros(nb, nt), zeros(CT, nb, nt)
+    tl = @elapsed begin
+        for t in 1:nt
+            vs = valid isa SFC.AllValid ? valid : view(valid, :, t)
+            SFC.gridded_sweep!(view(l, :, t), view(cl, :, t), sf, selectdim(u, ndims(u), t), s, edges,
+                               Val(D), FFT; valid = vs, weights, backend = GPU)
+        end
+        CUDA.synchronize()
+    end
     scale = max(maximum(abs, ref), 1e-12)
     cscale = CT <: Integer ? 1 : max(maximum(abs, cref), 1e-12)
     dc = max(maximum(abs, cb .- cref), maximum(abs, ca .- cref)) / cscale
     ds = max(maximum(abs, b .- ref), maximum(abs, a .- ref)) / scale
-    Printf.@printf("| %s (T = %d) | %s | %.1e | %.1e | %.3f | %.3f |\n", name, nt, nameof(typeof(sf)), dc, ds, tc, tg)
+    Printf.@printf("| %s (T = %d) | %s | %.1e | %.1e | %.3f | %.3f (looped %.3f) |\n",
+                   name, nt, nameof(typeof(sf)), dc, ds, tc, tg, tl)
     (dc <= (CT <: Integer ? 0 : 1e-12) && ds <= 1e-10) || (failures[] += 1)
     return nothing
 end

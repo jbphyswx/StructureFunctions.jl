@@ -16,6 +16,11 @@ const DEV = CB.GPUBackend(KA.CPU())
 _slice(v::SFC.AllValid, t) = v
 _slice(v::AbstractMatrix, t) = view(v, :, t)
 
+# Unweighted counts are whole pairs and must agree exactly; weighted ones are a pair mass summed in
+# whatever order the work is decomposed, so they agree to round-off.
+_counts_agree(got::AbstractArray{<:Integer}, ref::AbstractArray{<:Integer}) = got == ref
+_counts_agree(got, ref) = maximum(abs, got .- ref) <= 1e-12 * max(maximum(abs, ref), 1e-12)
+
 # The batch against the single-slice entry run once per slice: the same pairs, the same reading, so
 # the two agree exactly when the arithmetic is the same and to round-off when the order differs.
 function _batch_matches(sf, u, s, edges, D; valid = SFC.AllValid(), weights = nothing, tag = FFT,
@@ -32,7 +37,7 @@ function _batch_matches(sf, u, s, edges, D; valid = SFC.AllValid(), weights = no
     SFC.gridded_sweep_batch!(got_s, got_c, sf, u, s, edges, Val(D), Val(1), Val(0), tag;
                              valid, weights, backend)
     scale = max(maximum(abs, ref_s), 1e-12)
-    Test.@test got_c == ref_c
+    Test.@test _counts_agree(got_c, ref_c)
     Test.@test maximum(abs, got_s .- ref_s) <= atol * scale
     return nothing
 end
@@ -52,7 +57,7 @@ function _lag_batch_matches(sf, u, s, edges, D; valid = SFC.AllValid(), weights 
     SFC.gridded_lag_sweep_batch!(got_s, got_c, sf, u, s, edges, Val(D), Val(1), Val(0);
                                  valid, weights, backend)
     scale = max(maximum(abs, ref_s), 1e-12)
-    Test.@test got_c == ref_c
+    Test.@test _counts_agree(got_c, ref_c)
     Test.@test maximum(abs, got_s .- ref_s) <= atol * scale
     return nothing
 end
@@ -200,7 +205,7 @@ Test.@testset "a batch histogram joint in separation and angle" begin
         got_s, got_c = zeros(nb, na, nt), zeros(nb, na, nt)
         SFC.gridded_sweep_batch!(got_s, got_c, SFT.L2SFType(), u, s, edges, axis_be, Val(2), Val(1), Val(0), FFT;
                                  second_axis, kw...)
-        Test.@test got_c == ref_c
+        Test.@test _counts_agree(got_c, ref_c)
         Test.@test maximum(abs, got_s .- ref_s) <= 1e-11 * max(maximum(abs, ref_s), 1e-12)
     end
     # the angle marginal is the distance histogram of the same batch
