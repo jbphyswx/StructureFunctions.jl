@@ -55,9 +55,23 @@ route.
 
 **Threaded.** The outer index is split round-robin over tasks — work for index `i` is `N − i`, so a
 contiguous split would skew the load by the thread count — each task accumulates into private
-histograms, and the partials are added. Gridded sweeps and transforms split slab pairs (or the lags of
-a single slab) across tasks the same way. Throughput saturates near one socket's memory bandwidth on
+histograms, and the partials are added. Throughput saturates near one socket's memory bandwidth on
 the batched paths; `JULIA_EXCLUSIVE=1` pins threads.
+
+The gridded routes split **slab pairs** across tasks, and the direct lag sweep additionally splits a
+single slab's lags, so a one-slab schedule still threads. A transform splits slab pairs only: its
+unit of work is a pair, because the pair's inverse transform must finish before any of that pair's
+lags can be read. On a [`UniformLagSchedule`](@ref Calculations.UniformLagSchedule) or a
+[`ScatteredModesSchedule`](@ref Calculations.ScatteredModesSchedule), which have exactly one slab
+pair, a transform therefore sweeps its lags on one task whatever backend is asked for.
+
+Most of a one-slab transform is the transforms themselves rather than the lag sweep, and those are
+FFTW's to parallelise. FFTW keeps its own thread count, defaulting to one, and the package never sets
+it, because it is global to the session rather than a property of a call. `FFTW.set_num_threads(n)`
+is the caller's to set, and the two thread pools do not compose: raising it while the package is also
+threading over many slab pairs oversubscribes the cores and loses badly. Raise one or the other —
+FFTW's for a one-slab schedule, the package's for a many-slab one — and measure on your own grid,
+since which is larger depends on the grid, the operator and the FFTW build.
 
 **Distributed.** Each worker receives a balanced share of the outer index (`w:k:N`) and computes its
 partial sums and counts with the serial kernel — or the threaded one under

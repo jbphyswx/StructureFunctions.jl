@@ -90,3 +90,55 @@ Test.@testset "CPUSFWorkspace" begin
         @test all(iszero, ws.result[1])
     end
 end
+
+Test.@testset "an explicit threaded backend is refused without the OhMyThreads extension" begin
+    # The core defines the threaded batch drivers as the serial ones so results stay correct, which
+    # would hand a caller who asked for threading a single task in silence. The extension's load flag
+    # is a Ref, so the unloaded state is reachable here; every path is restored afterwards.
+    Random.seed!(99)
+    N, T, nb, nv = 40, 2, 6, 5
+    x = randn(3, N, T)
+    u = randn(3, N, T)
+    bins = collect(range(0.0, 4.0; length = nb + 1))
+    vbins = collect(range(-3.0, 3.0; length = nv + 1))
+    was = SFC._OHMYTHREADS_LOADED[]
+    serial_s, serial_c = zeros(nb, T), zeros(Int, nb, T)
+    try
+        SFC._OHMYTHREADS_LOADED[] = false
+        Test.@test !SFC._ohmythreads_loaded()
+        for (call, args) in (
+                (SFC.calculate_structure_function_batch!, (SFT.L2SFType(), x, u, bins)),
+                (SFC.calculate_structure_function_2d_batch!, (SFT.L2SFType(), x, u, bins, vbins)),
+            )
+            out = args[end] === vbins ? (zeros(nb, nv, T), zeros(Int, nb, nv, T)) :
+                  (zeros(nb, T), zeros(Int, nb, T))
+            err = try
+                call(out[1], out[2], args...; backend = CB.ThreadedBackend())
+                nothing
+            catch e
+                e
+            end
+            Test.@test err isa ArgumentError
+            Test.@test occursin("OhMyThreads", err.msg)
+        end
+        sp = zeros(6, nb, T); spc = zeros(Int, 6, nb, T)
+        Test.@test_throws ArgumentError SFC.calculate_structure_functions_single_pass_batch!(
+            sp, spc, x, u, bins; backend = CB.ThreadedBackend())
+        sp2 = zeros(6, nb, nv, T); sp2c = zeros(Int, 6, nb, nv, T)
+        Test.@test_throws ArgumentError SFC.calculate_structure_functions_single_pass_2d_batch!(
+            sp2, sp2c, x, u, bins, vbins; backend = CB.ThreadedBackend())
+        # the serial driver is what `AutoBackend` is for, and it still runs
+        SFC.calculate_structure_function_batch!(serial_s, serial_c, SFT.L2SFType(), x, u, bins;
+                                                backend = CB.SerialBackend())
+        Test.@test sum(serial_c) > 0
+    finally
+        SFC._OHMYTHREADS_LOADED[] = was
+    end
+    # and with the extension loaded the same call threads rather than throwing, on the same answer
+    Test.@test SFC._ohmythreads_loaded()
+    s, c = zeros(nb, T), zeros(Int, nb, T)
+    SFC.calculate_structure_function_batch!(s, c, SFT.L2SFType(), x, u, bins;
+                                            backend = CB.ThreadedBackend())
+    Test.@test c == serial_c
+    Test.@test maximum(abs, s .- serial_s) <= 1e-12 * max(maximum(abs, serial_s), 1e-12)
+end

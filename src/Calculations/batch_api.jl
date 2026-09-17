@@ -25,6 +25,20 @@ function calculate_structure_function_batch!(
     return nothing
 end
 
+"""
+    _require_threading(what)
+
+Refuse an explicit `ThreadedBackend()` when the OhMyThreads extension is not loaded. The threaded
+batch drivers are defined in core as the serial ones so that results stay correct, and a caller who
+asked for threading is told rather than quietly given one task; `AutoBackend()` reaches the serial
+driver directly and is unaffected.
+"""
+_require_threading(what::AbstractString) = _ohmythreads_loaded() ? nothing : throw(ArgumentError(
+    "backend = ThreadedBackend() needs the OhMyThreads extension for $what; `using OhMyThreads` " *
+    "enables it, or pass backend = SerialBackend() for the serial driver, or AutoBackend() to take " *
+    "whichever is available.",
+))
+
 function _dispatch_batch!(
     ::CB.AbstractSerialBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...
 )
@@ -35,6 +49,7 @@ end
 function _dispatch_batch!(
     ::CB.AbstractThreadedBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...
 )
+    _require_threading("the slice batch driver")
     auxiliary_structure_function_threaded!(sums, counts, sf_type, x, u, distance_bins; kwargs...)
     return nothing
 end
@@ -81,6 +96,7 @@ end
 function _dispatch_2d_batch!(
     ::CB.AbstractThreadedBackend, sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...
 )
+    _require_threading("the 2D joint slice batch driver")
     auxiliary_joint2d_threaded!(sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...)
     return nothing
 end
@@ -195,6 +211,7 @@ end
 function _dispatch_single_pass_batch!(
     ::CB.AbstractThreadedBackend, sums, counts, x, u, distance_bins; kwargs...
 )
+    _require_threading("the single-pass slice batch driver")
     threaded_calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins; kwargs...)
     return nothing
 end
@@ -241,6 +258,7 @@ end
 function _dispatch_single_pass_2d_batch!(
     ::CB.AbstractThreadedBackend, sums, counts, x, u, distance_bins, value_bins::SinglePass2DValueBins; kwargs...
 )
+    _require_threading("the single-pass 2D slice batch driver")
     threaded_calculate_structure_functions_single_pass_2d!(sums, counts, x, u, distance_bins, value_bins; kwargs...)
     return nothing
 end

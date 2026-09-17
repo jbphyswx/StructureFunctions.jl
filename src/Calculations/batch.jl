@@ -138,8 +138,9 @@ end
 # Threading lives in the OhMyThreads extension (StructureFunctionsOhMyThreadsExt), which
 # defines more-specialized `::AbstractArray` methods that win dispatch and parallelize over
 # the batch axis B (disjoint b-slices of one shared batch-leading accumulator — no threadid,
-# no per-thread replication). These generic core methods are the SERIAL FALLBACK used when
-# OhMyThreads is not loaded, so the threaded/auto backends stay correct (just not parallel).
+# no per-thread replication). These generic core methods run the serial driver, which is what
+# `AutoBackend()` reaches without the extension; an explicit `ThreadedBackend()` is refused before
+# it gets here by `_require_threading`.
 
 auxiliary_structure_function_threaded!(sums, counts, sf_type, x, u, distance_bins; kwargs...) =
     auxiliary_structure_function!(sums, counts, sf_type, x, u, distance_bins; kwargs...)

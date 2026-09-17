@@ -84,8 +84,18 @@ immediately as disagreement.
 
 Bounded directions are zero-padded to at least ``2n-1`` so that the circular correlation equals the
 linear one; periodic directions are not padded, because there the circular correlation is exactly
-the sum wanted. Counts are computed as exact integer arithmetic rather than by rounding an inverse
-transform.
+the sum wanted.
+
+Counts come from integer arithmetic on a complete, unweighted field: the pairs a lag names between
+two slabs are a product of the slabs' overlaps, computed as integers
+(`Calculations._lag_pair_count`). On a masked field the count is the two masks' cross-correlation,
+which the engine reads off the inverse transform and rounds to the nearest integer; with weights it
+is a pair mass and stays floating point. The mask correlation is a sum of `0`/`1` products, so its
+exact value is an integer that `Float64` represents exactly up to ``2^{53}``, and the transform's
+round-off is many orders below half a count at any grid size the engine can hold — but it is a
+rounded transform, not integer arithmetic, and what pins it is a test rather than the arithmetic:
+`test/test_gridded_masked.jl` requires the masked transform's counts to equal the masked lag sweep's
+**exactly**, on bounded, periodic and mixed topologies, and the sweep counts each pair as it goes.
 
 ### 3. Gridded against the unstructured pair loop
 

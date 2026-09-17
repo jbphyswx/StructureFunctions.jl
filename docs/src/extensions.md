@@ -5,7 +5,10 @@ and depends on nothing but `ComputationalBackends`, `Distances`, `LinearAlgebra`
 `SpectralBackends` and `StaticArrays`. Everything else — parallel execution, transforms, grids,
 spectral providers, fits — is a package extension that loads when its trigger packages are loaded. A
 method that needs an extension which is not loaded throws an `ArgumentError` naming the package to
-load; nothing falls back silently.
+load: an explicit request never falls back silently. The `Auto` choices are the exception, and only
+because choosing is what they are for — `AutoBackend()` runs serially when the OhMyThreads extension
+is absent and `AutoSpectralBackend()` sweeps the lags when no transform is loaded, both without
+complaint.
 
 The algorithm tags — `AutoSpectralBackend()`, `DirectSumSpectralBackend()`,
 `FastFourierTransformSpectralBackend()`, `NUFSHTSpectralBackend()` and the non-uniform FFT tags — come
