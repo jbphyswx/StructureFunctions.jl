@@ -2,11 +2,11 @@
 CurrentModule = StructureFunctions
 ```
 
-# Bins, tapers, channels and geometry
+# Bins, tapers, fields and geometry
 
 The bin-edge wrappers with `O(1)` digitizing, the tapers shared by the spectra and the harmonic
 route, the `HarmonicNodes` and `ModeBinEdges` objects a kernel-binned result carries, the `Fields`
-channel bundle, and the geometry helpers: pair frames, transverse conventions and the spherical
+multi-field, and the geometry helpers: pair frames, transverse conventions and the spherical
 metric.
 
 ```@index
@@ -21,10 +21,10 @@ Private = false
 Order   = [:type, :function, :constant]
 ```
 
-## Channels
+## MultiFields
 
 ```@autodocs
-Modules = [StructureFunctions.Channels]
+Modules = [StructureFunctions.MultiFields]
 Private = false
 ```
 

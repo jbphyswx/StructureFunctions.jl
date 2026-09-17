@@ -205,13 +205,13 @@ Fill the two derived invariant rows and replicate the shared count of a `(SINGLE
 accumulator.
 
 `T2 = S2 - L2` and `L1T2 = S3 - L3` hold for every pair, and a bin is a sum, so the pair loops store
-only rows 1, 2, 4, 5 — four stores per pair instead of six — and these two are differenced once per
-call. The count is identical across all six rows, so it is accumulated into row 1 and broadcast here.
+only rows 1, 2, 4, 5 — four stores per pair — and these two are differenced once per call. The count
+is identical across all six rows, so it is accumulated into row 1 and broadcast here.
 
 Uses `=`, never `+=`, so it is **idempotent**: correct whether a kernel runs once or many times over
 the same buffer, and correct under threaded/partial reduction because the derivation is linear
-(`Σ(S2-L2) = ΣS2 - ΣL2`). That is why it belongs at the end of each pair kernel rather than at the
-callers' assembly points, of which there are more than twenty.
+(`Σ(S2-L2) = ΣS2 - ΣL2`). So it runs in one place, the end of each pair kernel, where the callers'
+assembly points number more than twenty.
 """
 @inline function _sp1d_derive_rows!(sums::AbstractMatrix, counts::AbstractMatrix)
     @inbounds for b in axes(sums, 2)
@@ -537,8 +537,8 @@ function _dispatch_single_pass(
     x_mat = reshape(x, size(x, 1), size(x, 2))
     u_mat = reshape(u, size(u, 1), size(u, 2))
     # `serial_…single_pass` fills `ts`/`tc` in place; return those concretely-typed buffers
-    # (Matrix{OT}/Matrix{CT}) rather than the mutating chain's abstractly-typed return value, so
-    # the result type is concrete (the chain infers `counts::Matrix`, losing the element type).
+    # (Matrix{OT}/Matrix{CT}), so the result type is concrete: the mutating chain infers
+    # `counts::Matrix` and loses the element type.
     serial_calculate_structure_functions_single_pass(x_mat, u_mat, distance_bins, ts, tc; kwargs...)
     # Return the raw six-row accumulator; the public wrapper builds the Helmholtz entry once
     # (avoids the old double-compute and the 8-row copy, and matches the batched path's shape).
@@ -655,8 +655,8 @@ end
 """
     SINGLE_PASS_OPERATORS
 
-The six native single-pass invariants in stacked-row order, keyed by short name. Used to label
-each row of the single-pass `(sums, counts)` accumulator when building the result collection.
+The six native single-pass invariants in stacked-row order, keyed by short name. It labels each row
+of the single-pass `(sums, counts)` accumulator when the result collection is built.
 """
 const SINGLE_PASS_OPERATORS = (
     S2   = SFT.SecondOrderStructureFunctionType(),
@@ -877,8 +877,8 @@ The single-pass 2D accumulator, laid out `(sum|count, invariant, value_bin, dist
 
 Each pair writes all six invariants at ONE distance bin but six different value bins, so putting
 the value axis inside the distance axis keeps a pair's six updates inside one distance slab, and
-interleaving sum with count puts each invariant's two updates on one cache line: 6 lines touched
-per pair instead of 12, and the cost stops scaling with histogram size.
+interleaving sum with count puts each invariant's two updates on one cache line, so a pair touches
+6 lines and the cost stops scaling with histogram size.
 """
 @inline _sp2d_histogram(::Type{OT}, n_bins::Int, n_val::Int) where {OT} =
     zeros(OT, 2, SINGLE_PASS_N, n_val, n_bins)
@@ -925,10 +925,7 @@ function _sp2d_pairs!(
                 u_j = SA.SVector{D, FT2}(ntuple(d -> u[d, j], vD))
                 du, rh = SFH.pair_increments(geom, frame, r, x_i, x_j, u_i, u_j)
                 du_L = LA.dot(du, rh)
-                du_L2 = du_L * du_L
-                du_norm2 = LA.dot(du, du)
-                du_T2 = du_norm2 - du_L2
-                vals = (du_norm2, du_L2, du_T2, du_L * du_norm2, du_L * du_L2, du_L * du_T2)
+                vals = single_pass_invariants(du_L, LA.dot(du, du))
                 _sp2d_scatter!(h, bin_idx, vals, value_bins, n_val)
             end
         end
@@ -1264,8 +1261,8 @@ end
 
 Wrap the stacked 2D single-pass `(sums, counts)` (shape `(6, n_dist, n_val, aux...)`) into a
 `NamedTuple` keyed by invariant, each value a `StructureFunction2DSumsAndCounts` view into the
-stacked accumulator. Unlike 1D, the per-cell counts genuinely differ per invariant (each
-invariant's value lands in a different value-bin), so counts are taken per-invariant. The 2D joint
+stacked accumulator. In 2-D each invariant's value lands in a different value bin, so the per-cell
+counts differ per invariant and are taken per invariant. The 2D joint
 histogram has no averaged representation, so `OT` must be `StructureFunction2DSumsAndCounts`.
 """
 function _single_pass_collection_2d(

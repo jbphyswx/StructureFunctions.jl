@@ -49,7 +49,7 @@ Test.@testset "a uniform Cartesian grid gives the unstructured answer" begin
         )
         ref_s = zeros(Float64, nb)
         ref_c = zeros(UInt32, nb)
-        SF.calculate_structure_function!(ref_s, ref_c, SF1D, _points(grid),
+        SFC.calculate_structure_function!(ref_s, ref_c, SF1D, _points(grid),
                                          reshape(u, 2, nx * ny), bins)
         Test.@test got.counts == ref_c
         Test.@test isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)
@@ -147,7 +147,7 @@ Test.@testset "a stretched axis keeps the lags of the uniform one beside it; no 
         SF1D, stretched, u, bins, UInt32; output_type = SF.StructureFunctionSumsAndCounts,
         verbose = false, show_progress = false)
     ref_s = zeros(nb); ref_c = zeros(UInt32, nb)
-    SF.calculate_structure_function!(ref_s, ref_c, SF1D, x, reshape(u, 2, N), bins)
+    SFC.calculate_structure_function!(ref_s, ref_c, SF1D, x, reshape(u, 2, N), bins)
     Test.@test got.counts == ref_c
     Test.@test isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)
     Test.@test sum(got.counts) > 0
@@ -196,7 +196,7 @@ Test.@testset "a pixelized sphere is enumerated too" begin
     coords = FG.Grids.materialize(grid)
     x = permutedims(hcat(coords...))
     ref_s = zeros(5); ref_c = zeros(UInt32, 5)
-    SF.calculate_structure_function!(ref_s, ref_c, SF1D, x, u, bins;
+    SFC.calculate_structure_function!(ref_s, ref_c, SF1D, x, u, bins;
                                      distance_metric = SFC.DI.SphericalAngle())
     Test.@test got.counts == ref_c
     Test.@test isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)

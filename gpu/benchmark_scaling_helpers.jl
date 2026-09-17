@@ -9,6 +9,7 @@ Expects `CUDA` to be loaded by the including script when using `CUDA.CUDABackend
 
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: Calculations as SFC
+using StructureFunctions: StructureFunctionSumsAndCounts
 using Statistics: Statistics
 
 """
@@ -151,6 +152,7 @@ function bench_cpu_serial_slice_loop!(x_batch, u_batch, bins, sft, sums, counts;
             res = SFC.calculate_structure_function(
                 sft, @view(x_batch[:, :, t]), @view(u_batch[:, :, t]), bins;
                 backend = CB.SerialBackend(), verbose = false, show_progress = false,
+                output_type = StructureFunctionSumsAndCounts,
             )
             sums[:, t] .= res.sums
             counts[:, t] .= res.counts

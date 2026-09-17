@@ -1,7 +1,7 @@
 # Validation
 
-Every calculation in this package is checked against something that knows the answer independently.
-This page lists those oracles, strongest first, and says what each one can and cannot catch.
+Each calculation is cross-checked against an independent reference. This page lists those oracles,
+strongest first, with what each one can and cannot catch.
 
 The ordering matters. An oracle that is exact to round-off will catch a defect that a
 percent-level physical check never notices, and most of the defects found in this package's history
@@ -36,7 +36,7 @@ were of exactly that kind — a plausible number that was wrong by a constant fa
 | 22 | Transverse convention contract | round-off | every basis rule is unit, perpendicular and odd under `r̂ ↦ −r̂`; `op(−δu, −r̂) == op(δu, r̂)` for the odd transverse operators on every route | `test/test_helpers.jl`, `test/test_core_correctness.jl`, `test/test_gpu_tiled_parity.jl` |
 | 23 | Weighted pair loop | bit for bit, round-off | weights of one reproduce the unweighted results; random weights equal the weighted pair loop on sweep, transform, device and the point entries; `cell_measure` equals the point entry with the same weights | `test/test_gridded_weights.jl` |
 | 24 | Lattice identity of the NUFFT route | 10⁻⁹ | points on the mode grid reproduce the periodic gridded transform; the 1-D kernel identity written out; convergence to the hard bins with the mode count — on both providers, NonuniformFFTs and FINUFFT, which agree with each other to 10⁻¹⁰ | `test/test_scattered_modes.jl` |
-| 25 | Sorted line against the pair loop | counts exact, 10⁻¹² | every polynomial operator, channel bundles, weights, unsorted and coincident points; linear in the points | `test/test_sorted_line.jl` |
+| 25 | Sorted line against the pair loop | counts exact, 10⁻¹² | every polynomial operator, multi-fields, weights, unsorted and coincident points; linear in the points | `test/test_sorted_line.jl` |
 | 26 | Tensor from the transform against the point tensor | counts exact, 10⁻⁹ | flat and spherical grids, orders 2–4, the joint tensor over angle | `test/test_tensor_khm.jl` |
 | 27 | Forward models against closed forms | 10⁻⁸–10⁻¹² | the spectrum, Helmholtz and flux forward models; round trips through the inversions; the fitted flux is the flux the `J₂` transform recovers | `test/test_fits.jl` |
 
@@ -175,9 +175,8 @@ positive-definiteness**. The error falls as the square of the separation spacing
 
 So two quite different failures land in the same place, and the check distinguishes them: a
 covariance function that is invalid is off by the scale of the matrix itself, while one that is valid
-but under-resolved is off by a discretisation error. Tripping the check on a coarse covariance is
-useful output — it says the representation cannot support a valid matrix — not a nuisance to be
-tuned away.
+but under-resolved is off by a discretisation error. A coarse covariance that trips the check is
+reporting that the representation cannot support a valid matrix.
 
 ### 22–27. The later routes
 
@@ -188,7 +187,7 @@ cannot have drifted from the unweighted one.
 
 **The non-uniform FFT route.** Points placed exactly on the mode grid make the soft-binned route the
 periodic gridded transform, which is exact, and the two agree to `1e-9` in one, two and three
-dimensions with masks, weights and channel bundles. Off the grid the one-dimensional kernel identity
+dimensions with masks, weights and multi-fields. Off the grid the one-dimensional kernel identity
 is written out in the test — the pair sum with the Dirichlet or Gaussian-tapered kernel — and the
 route matches it to `1e-9`; against the hard-binned pair loop the error falls monotonically as the
 mode count grows. The route is soft-binned by construction and the tests say so: no finite mode
@@ -226,12 +225,21 @@ by round-off only. "Round-off" is stated as a relative bound on the largest sum,
 | transform vs sweep | `1e-10` (`1e-9` at third order and above) | the transform's inverse FFT accumulates `O(n log n)` operations |
 | weighted counts | `1e-12` relative | a weighted count is a floating sum, not an integer |
 | soft-binned NUFFT route, CPU vs device | `1e-9` | the non-uniform FFT's own accuracy, once its kernel is evaluated in double precision |
+| `Float32` joint histogram over a value axis, CPU vs device | `3e-5` of pairs in a different value bin | the second axis bins on the pair's own value, so a value within an ulp of a value-bin edge falls either side of it under the two devices' rounding. The count of one bin is therefore not an invariant of the pair set and equality of counts is not the criterion; what is invariant is that every pair is placed, so the measure is the misplaced share of the total. Measured at `NMOM = 1`: ≤ 2.3e-7; at `NMOM = 6`, six binned invariants per pair and cubic values: ≤ 3.2e-5 |
 
 A test that needs a looser bound than these is testing something other than parity, and says what.
-The one exception recorded: NonuniformFFTs' CUDA extension evaluates its default Kaiser–Bessel kernel
-through the CUDA math library's modified Bessel function, which is far from double precision
-(`2e-5`); the package's extension asks for the backwards Kaiser–Bessel kernel with the fast
-polynomial approximation on every backend, which brings the device transform to `1e-15`.
+
+Every parity script fixes its draw, so that a row is reproducible and a change in it is attributable to
+the code. A fixed draw is never what makes a row pass: each row's verdict is one of the bounds above,
+which hold for any draw. A boolean that happens to come out true on one draw is not a criterion — the
+`Float32` value-axis row above was such a boolean until 2026-09-16, and it could not distinguish a
+regression from luck.
+The one exception recorded: NonuniformFFTs chooses a different kernel evaluation on CUDA than it does
+on the host, and under it a `Float64` transform of ours came out near `1e-5` rather than `1e-15`. The
+package's extension therefore names the kernel and the evaluation explicitly on every backend rather
+than taking a backend's default, which brings the device transform to `1e-15`. Why the default
+evaluation loses that much is not established here, and the difference belongs to that library's
+choice of defaults, not to a claim about it.
 
 ## The printed boundary terms of Pearson et al. (2025)
 

@@ -1,7 +1,7 @@
 # Lat-lon enumeration. A lag in (λ, φ) is not a constant separation, so the uniform lag sweep does not
 # apply — but the geodesic frame, written in each endpoint's own east/north basis, depends only on
 # (φ₁, φ₂, Δλ) and not on absolute longitude. So the geometry is computed once per latitude pair and
-# longitude offset and reused around the whole circle, instead of once per pair.
+# longitude offset and reused around the whole circle.
 
 """
     ZonalLagSchedule(lats, n_lon, dlon, radius, lon_periodic)
@@ -58,6 +58,10 @@ function _zonal_lag_limit(s::ZonalLagSchedule{T}, phi1, phi2, r_max) where {T}
 end
 
 @inline lag_limits(s::ZonalLagSchedule, I, J, r_max) = (_zonal_lag_limit(s, s.lats[I], s.lats[J], r_max),)
+
+# One parallel spans less distance the nearer it lies to a pole, so a row pair's longitude limit
+# depends on the rows.
+uniform_lag_box(::ZonalLagSchedule) = false
 
 # Every cross-row offset within `r_max` is within the larger of the two rows' own limits.
 function lag_limits(s::ZonalLagSchedule, r_max)
@@ -117,8 +121,8 @@ end
 """
     zonal_transport(geometry, φ₁, φ₂, Δλ, ::Val{D}, ::Val{V}, ::Val{K}) -> (ok, r, A, B)
 
-The transport of a packed field: the `D×D` block on each of the `V` vector channels and the identity
-on the `K` scalar channels, as `W×W` matrices with `W = V·D + K`. A field with no vector channel
+The transport of a packed field: the `D×D` block on each of the `V` vector fields and the identity
+on the `K` scalar fields, as `W×W` matrices with `W = V·D + K`. A field with no vector field
 carries only the separation.
 """
 @inline function zonal_transport(
@@ -183,9 +187,8 @@ Pair enumeration for a grid with no structure to exploit: the points themselves,
 measures between them.
 
 A pixelized sphere, a curvilinear mesh, a node set, a grid with no uniform direction — none of these
-share a separation between many pairs, so there is nothing to hoist and the honest thing is to
-enumerate the pairs. That is what the unstructured path does, with culling, so this schedule routes
-to it rather than reimplementing it.
+share a separation between many pairs, so there is nothing to hoist and the pairs are enumerated.
+That is what the unstructured path does, with culling, and this schedule routes to it.
 """
 struct ScatteredPairs{X <: AbstractMatrix, M}
     points::X
@@ -202,8 +205,8 @@ end
 
 Accumulate every pair of a structureless grid, by enumerating them.
 
-Cells holding nothing are dropped before the sweep rather than tested inside it: the pair loop has no
-mask, and a point that takes part in no pair is simply not passed to it.
+Cells holding nothing are dropped before the sweep: the pair loop carries no mask, and a point that
+takes part in no pair is not passed to it.
 """
 function gridded_lag_sweep!(
     sums::AbstractVector, counts::AbstractVector,
@@ -226,7 +229,7 @@ function gridded_lag_sweep!(
         calculate_structure_function!(sums, counts, sf, x, uu, dist_be;
                                       distance_metric = s.metric, backend, weights = ww)
     else
-        f = CH.Fields{D, V, K, typeof(uu)}(uu)
+        f = MF.Fields{D, V, K, typeof(uu)}(uu)
         calculate_structure_function!(sums, counts, sf, x, f, dist_be;
                                       distance_metric = s.metric, backend, weights = ww)
     end

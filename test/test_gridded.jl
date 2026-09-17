@@ -109,7 +109,7 @@ Test.@testset "lag sweep on a bounded grid equals the unstructured path" begin
             got_s, got_c = _sweep(sf, u, dims, spacing, periodic, bins, Dg)
             ref_s = zeros(Float64, nb)
             ref_c = zeros(Int, nb)
-            SF.calculate_structure_function!(ref_s, ref_c, sf, x, reshape(u, Dg, N), bins)
+            SFC.calculate_structure_function!(ref_s, ref_c, sf, x, reshape(u, Dg, N), bins)
             Test.@test got_c == ref_c
             Test.@test isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12)
             Test.@test sum(got_c) > 0

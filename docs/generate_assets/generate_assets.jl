@@ -6,7 +6,7 @@ Run from the repo root:
 """
 
 using ComputationalBackends: ComputationalBackends as CB
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using OhMyThreads: OhMyThreads   # loads StructureFunctionsOhMyThreadsExt → enables ThreadedBackend
 using KernelAbstractions: KernelAbstractions as KA
 using CairoMakie: CairoMakie as CM
@@ -73,8 +73,8 @@ function generate_kolmogorov_figure()
     r_min, r_max = 5.0, 400.0
     bins = exp.(range(log(r_min), log(r_max); length=29))
 
-    op = SF.SecondOrderStructureFunctionType()
-    result = SF.calculate_structure_function(op, x, u, bins;
+    op = SFT.SecondOrderStructureFunctionType()
+    result = SFC.calculate_structure_function(op, x, u, bins;
         backend=CB.SerialBackend(), show_progress=false, verbose=false)
 
     sf2   = result.values
@@ -124,12 +124,12 @@ function generate_long_vs_trans_figure()
     r_min, r_max = 5.0, 400.0
     bins = exp.(range(log(r_min), log(r_max); length=29))
 
-    op_L = SF.LongitudinalSecondOrderStructureFunctionType()
-    op_T = SF.TransverseSecondOrderStructureFunctionType()
+    op_L = SFT.LongitudinalSecondOrderStructureFunctionType()
+    op_T = SFT.TransverseSecondOrderStructureFunctionType()
 
-    res_L = SF.calculate_structure_function(op_L, x, u, bins;
+    res_L = SFC.calculate_structure_function(op_L, x, u, bins;
         backend=CB.SerialBackend(), show_progress=false, verbose=false)
-    res_T = SF.calculate_structure_function(op_T, x, u, bins;
+    res_T = SFC.calculate_structure_function(op_T, x, u, bins;
         backend=CB.SerialBackend(), show_progress=false, verbose=false)
 
     sf_L = res_L.values
@@ -168,12 +168,12 @@ function generate_parity_figure()
     u = randn(2, N)
     bins = exp.(range(log(5.0), log(200.0); length=21))
 
-    op = SF.SecondOrderStructureFunctionType()
+    op = SFT.SecondOrderStructureFunctionType()
 
-    res_serial = SF.calculate_structure_function(op, x, u, bins;
+    res_serial = SFC.calculate_structure_function(op, x, u, bins;
         backend=CB.SerialBackend(), show_progress=false, verbose=false)
 
-    res_thread = SF.calculate_structure_function(op, x, u, bins;
+    res_thread = SFC.calculate_structure_function(op, x, u, bins;
         backend=CB.ThreadedBackend(), show_progress=false, verbose=false)
 
     sf_s = res_serial.values
@@ -219,7 +219,7 @@ function generate_gpu_parity_figure()
     x = rand(FT, 2, N)
     u = rand(FT, 2, N)
     bin_edges = collect(FT, range(0.0, 1.4; length = 11))
-    sft = SF.L2SFType()
+    sft = SFT.L2SFType()
 
     res_serial = SFC.calculate_structure_function(
         sft, x, u, bin_edges;
@@ -271,7 +271,7 @@ function generate_single_pass_figure()
 
     # One O(N²) pass → NamedTuple of the six isotropic invariants; point-field input also
     # yields a `:helmholtz` entry (rotational/divergent decomposition).
-    res = SF.calculate_structure_functions_single_pass(x, u, bins; backend=CB.SerialBackend())
+    res = SFC.calculate_structure_functions_single_pass(x, u, bins; backend=CB.SerialBackend())
 
     fig = CM.Figure(size=(900, 560), fontsize=14)
     CM.Label(fig[0, 1],
@@ -335,14 +335,14 @@ function generate_2d_binning_figure()
     for (row, (fname, mk)) in enumerate(fields)
         x, u = mk(N=2500)
         # Velocity-increment scale σ from L2(r); set per-order value ranges around it.
-        l2 = SF.calculate_structure_function(SF.LongitudinalSecondOrderStructureFunctionType(),
+        l2 = SFC.calculate_structure_function(SFT.LongitudinalSecondOrderStructureFunctionType(),
             x, u, dist_bins; backend=CB.SerialBackend(), show_progress=false, verbose=false)
         σ2 = maximum(filter(isfinite, l2.values)); σ = sqrt(σ2)
         seq(hi) = collect(range(0.0, hi; length=nval + 1))         # ≥0 (2nd order)
         sym(hi) = collect(range(-hi, hi; length=nval + 1))         # ± (3rd order)
         # One pass → all six joint histograms (per-invariant value bins, common bin count).
         value_bins = (seq(24σ2), seq(12σ2), seq(12σ2), sym(15σ^3), sym(15σ^3), sym(15σ^3))
-        res = SF.calculate_structure_functions_single_pass_2d(x, u, dist_bins, value_bins;
+        res = SFC.calculate_structure_functions_single_pass_2d(x, u, dist_bins, value_bins;
             backend=CB.SerialBackend())
 
         for (col, (key, signed, lab)) in enumerate(invs)

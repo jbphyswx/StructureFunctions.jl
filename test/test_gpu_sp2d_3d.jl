@@ -27,7 +27,7 @@ Test.@testset "GPU single-pass 2D, D = 3" begin
 
         # Total counts are conserved exactly — no pair may be dropped or double-counted. Individual
         # cells may differ by one where a pair sits within an ulp of a bin edge and GPU FMA rounds
-        # the other way; a systematic difference would be a real bug, a few boundary pairs are not.
+        # the other way, so the bound is one pair per cell and the total is exact.
         gcm, ccm = Array(gc), cc
         @test sum(Int.(gcm)) == sum(Int.(ccm))
         @test maximum(abs.(Int.(gcm) .- Int.(ccm))) <= 1

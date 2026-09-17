@@ -322,10 +322,6 @@ Base.firstindex(sf::StructureFunction) = firstindex(sf.values)
 Base.lastindex(sf::StructureFunction) = lastindex(sf.values)
 Base.iterate(sf::StructureFunction, args...) = iterate(sf.values, args...)
 
-# For SumsAndCounts, we don't necessarily want to treat it as a single array, 
-# but getindex could perhaps return (sum, count) tuple? No, let's keep it explicit for now.
-# Or better, just update the tests.
-
 function Base.show(io::IO, sf::StructureFunction{FT, OT}) where {FT, OT}
     print(io, "StructureFunction{", FT, "}")
     print(io, "(operator=", sf.operator, ", points=", length(sf), ")")

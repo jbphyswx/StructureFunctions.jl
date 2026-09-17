@@ -8,7 +8,7 @@ Every calculation is a product of three independent choices, each a type:
 
 ```
 what to accumulate        an operator      L2SFType(), MixedSFType{1,0,2}(), MomentTensorOperator{3}(), …
-over which pairs          the input's shape and schedule: a point list, a channel bundle, a grid's
+over which pairs          the input's shape and schedule: a point list, a multi-field, a grid's
                           UniformLagSchedule / RectilinearLagSchedule / ZonalLagSchedule / ScatteredPairs,
                           a ScatteredModesSchedule, HarmonicNodes
 how to execute            a backend        SerialBackend(), ThreadedBackend(), DistributedBackend(),
@@ -27,7 +27,7 @@ execution backend is a set of methods on the backend type.
 | module | file(s) | holds |
 |---|---|---|
 | `StructureFunctions` | `src/StructureFunctions.jl`, `src/BinEdges.jl`, `src/AuxiliaryAxes.jl` | exports, the bin-edge wrappers and squared-distance digitize plans, tapers, `HarmonicNodes`, `ModeBinEdges` |
-| `Channels` | `src/Channels.jl` | `Fields` — several vector and scalar channels sampled at the same points, packed `(V·D + K, N)` |
+| `MultiFields` | `src/MultiFields.jl` | `Fields` — several vector and scalar fields sampled at the same points, packed `(V·D + K, N)` |
 | `HelperFunctions` | `src/HelperFunctions.jl` | pair frames on flat and spherical geometry, transverse conventions, `SphericalDistance` |
 | `StructureFunctionTypes` | `src/StructureFunctionTypes.jl` | the operators, their functors, and the polynomial contract (`order`, `is_polynomial_operator`, `SymmetricMoments`, `moment_contract`) |
 | `StructureFunctionObjects` | `src/StructureFunctionObjects.jl` | the result containers |
@@ -54,7 +54,7 @@ Extensions supply what needs another package: see [Extensions](extensions.md).
 4. **Kernel.** Flat two- and three-dimensional point lists take the SIMD compute/scatter kernel over
    blocked pair tiles, with a cell-culling grid when the last bin edge bounds the separations; curved
    geometry takes the scalar per-point kernel through `pair_frame`; one-dimensional lists with a
-   polynomial operator take the sorted line route; channel bundles take the bundle kernel with the same
+   polynomial operator take the sorted line route; multi-fields take the multi-field kernel with the same
    blocking. Each pair's value is `sf(δu, r̂)` binned by a squared-distance plan, and an operator odd
    in a scalar increment reads the pair in its canonical orientation.
 5. **Result.** The backends return the raw `StructureFunctionSumsAndCounts`; the public entry turns it
@@ -118,7 +118,7 @@ for the derivation and why `round` is the wrong operator.
 ```
 src/
 ├── StructureFunctions.jl         exports and includes
-├── Channels.jl  BinEdges.jl  HelperFunctions.jl  AuxiliaryAxes.jl
+├── MultiFields.jl  BinEdges.jl  HelperFunctions.jl  AuxiliaryAxes.jl
 ├── StructureFunctionTypes.jl     operators and the polynomial contract
 ├── StructureFunctionObjects.jl   result containers
 ├── Calculations.jl               the compute module
@@ -126,16 +126,17 @@ src/
 │   ├── backends.jl shapes.jl dispatch.jl        shape → width literal → backend
 │   ├── serial.jl serial_2d.jl serial_single_pass.jl culling.jl pair_schedule.jl   point kernels
 │   ├── batch.jl batch_api.jl batch_leading.jl workspace.jl gpu_stubs.jl           auxiliary axes, device stubs
-│   ├── channels.jl second_axis.jl                                                  bundles, the second histogram axis
+│   ├── multifields.jl second_axis.jl                                                  multi-fields, the second histogram axis
 │   ├── gridded.jl gridded_zonal.jl lag_moments.jl scattered_modes.jl sorted_line.jl   schedules, sweeps, lag algebra
 │   ├── tensor.jl transforms.jl fits.jl harmonic.jl
 └── KHM.jl
 ext/
 ├── StructureFunctionsOhMyThreadsExt.jl  StructureFunctionsDistributedExt.jl  StructureFunctionsMPIExt.jl
 ├── StructureFunctionsKernelAbstractionsExt.jl  + gpu/  (device kernels)  StructureFunctionsCUDAExt.jl
-├── StructureFunctionsFFTExt.jl  StructureFunctionsFFTKernelAbstractionsExt.jl
-├── StructureFunctionsNonuniformFFTsExt.jl  StructureFunctionsFINUFFTExt.jl  StructureFunctionsNUFSHTExt.jl
-├── StructureFunctionsFlowGeometriesExt.jl
+├── StructureFunctionsAbstractFFTsExt.jl  StructureFunctionsAbstractFFTsKernelAbstractionsExt.jl
+├── StructureFunctionsNonuniformFFTsExt.jl  StructureFunctionsNonuniformFFTsKernelAbstractionsExt.jl
+├── StructureFunctionsFINUFFTExt.jl  StructureFunctionsFINUFFTKernelAbstractionsExt.jl
+├── StructureFunctionsNUFSHTExt.jl  StructureFunctionsFlowGeometriesExt.jl
 └── StructureFunctionsBesselsExt.jl  StructureFunctionsLsqFitExt.jl
 ```
 

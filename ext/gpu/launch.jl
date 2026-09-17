@@ -216,7 +216,6 @@ end
 #   _launch_sp2d_direct_partitioned! (private partition + merge)
 #
 # Kernel resolution cached on GPUSFWorkspace.sp2d_pair_kernel when using a workspace.
-# See gpu/SP2D_HTP_EJ.md
 
 function _sp2d_val_variant(::GPUValueLinearShared)
     return :linear_shared
@@ -1373,9 +1372,9 @@ function _launch_single_pass_2d_kernel!(
     value_edges_dev = workspace === nothing ? nothing : workspace.value_edges_dev
     if value_edges_dev === nothing
         # This kernel digitizes the value axis by binary search, so it needs the explicit edge
-        # vector. The linear plan carries `first`/`last`, so reconstruct it rather than demanding a
-        # workspace: this path is the only route when `n_dist > SF_GPU_MAX_BINS`, and requiring a
-        # workspace there made every large-bin call fail outright.
+        # vector, which is reconstructed from the linear plan's `first`/`last`. This path is the
+        # only route when `n_dist > SF_GPU_MAX_BINS`, so demanding a workspace here fails every
+        # large-bin call.
         VT = typeof(vp.first)
         value_edges_dev = KA.allocate(backend, VT, n_val_edges)
         copyto!(value_edges_dev, collect(range(vp.first, vp.last; length = n_val_edges)))
@@ -1509,7 +1508,6 @@ end
 """
 Offer a non-batch single-pass 2D launch to the batch dispatcher as `B=1`, reaching the CUDA N-body
 + dynamic-shared kernel; `false` means the hook declined and the caller continues unchanged.
-Measured on A100 (N=20000): 1.24× Float32, 2.58× Float64. See `gpu/SPEED_OF_LIGHT.md`.
 """
 @inline function _sp2d_try_fast_batch!(
     backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, dist_bins, val_plan,

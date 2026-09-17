@@ -453,9 +453,9 @@ end
 # which is why two defects lived here unnoticed: SP2D threw outright for any `n_dist > 128` (the
 # naive global-atomic route demanded a value-edge workspace that nothing supplies by default), and
 # the `:direct` strategy was chosen over plain global atomics well past the point where it loses
-# 2–4× (see `gpu/SPEED_OF_LIGHT.md`). Float64 because Float32 carries only ~7 digits and a histogram
-# this sparse (few pairs per cell, cancelling odd moments) disagrees with a Float64 reference by
-# percent even on the CPU — a Float32 assertion here would be testing arithmetic, not the kernel.
+# 2–4×. Float64 because Float32 carries only ~7 digits and a histogram this sparse (few pairs per
+# cell, cancelling odd moments) disagrees with a Float64 reference by percent even on the CPU, so a
+# Float32 assertion would be testing arithmetic and not the kernel.
 Test.@testset "GPU sp2d large bin counts (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float64
@@ -472,7 +472,7 @@ Test.@testset "GPU sp2d large bin counts (KA.CPU)" begin
         )
         sums_gpu = zeros(FT, 6, nd, nv)
         cnts_gpu = zeros(UInt32, 6, nd, nv)
-        # No workspace: the path that used to raise `ArgumentError` here.
+        # No workspace, which this path must accept.
         SFC.calculate_structure_functions_single_pass_2d!(
             sums_gpu, cnts_gpu, x, u, dist, val; backend = CB.GPUBackend(backend),
         )

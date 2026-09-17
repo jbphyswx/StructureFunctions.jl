@@ -4,7 +4,9 @@
 # round-off. Both engines run inside the same job, so the timings are comparable.
 #   julia --project=gpu gpu/test_cuda_gridded_parity.jl
 # =============================================================================
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, Fields
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    HelperFunctions as SFH
+using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using SpectralBackends: SpectralBackends as SB
 using KernelAbstractions: KernelAbstractions as KA
@@ -66,7 +68,7 @@ let dims = (48, 48, 40)
     u = randn(3, dims...)
     compare("uniform 48×48×40", SFT.L2SFType(), u, s, collect(range(0.0, 30.0; length = 31)), 3)
     compare("uniform 48×48×40", SFT.T3SFType(), u, s, collect(range(0.0, 30.0; length = 31)), 3)
-    about_a = SF.ReferenceAxisTransverseBasis(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))
+    about_a = SFH.ReferenceAxisTransverseBasis(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))
     compare("uniform 48×48×40 axis", SFT.ProjectedStructureFunctionType{0, 3}(about_a), u, s,
             collect(range(0.0, 30.0; length = 31)), 3)
 end
@@ -94,7 +96,7 @@ let n_lon = 720, n_lat = 360
     SFC.gridded_sweep!(b, cb, SFT.MixedSFType{1, 0, 2}(), f, s, edges, FFT; backend = GPU)
     dc = maximum(abs.(ca .- cb))
     ds = maximum(abs.(a .- b)) / maximum(abs, a)
-    Printf.@printf("| %s | %s | %d | %.1e | - | - |\n", "zonal 720×360 bundle", "Mixed{1,0,2}", dc, ds)
+    Printf.@printf("| %s | %s | %d | %.1e | - | - |\n", "zonal 720×360 multi-field", "Mixed{1,0,2}", dc, ds)
     (dc == 0 && ds <= 1e-10) || (failures[] += 1)
 end
 
@@ -107,7 +109,7 @@ let N = 20_000
     s = SFC.ScatteredModesSchedule(x, 30.0, (256, 192); taper = SF.GaussianTaper(0.3))
     edges = collect(range(0.0, 30.0; length = 31))
     nb = length(edges) - 1
-    providers = (SF.NonuniformFFTsSpectralBackend(), SF.FINUFFTSpectralBackend())
+    providers = (SFC.NonuniformFFTsSpectralBackend(), SFC.FINUFFTSpectralBackend())
     for sf in (SFT.L2SFType(), SFT.S3SFType())
         host = map(providers) do tag
             a, ca = zeros(nb), zeros(nb)
@@ -159,7 +161,7 @@ let N = 3000
     xs = Matrix(hcat(lam, phi)')
     us = randn(2, N)
     tensor_compare("points 3000 sphere", 3, xs, us, collect(range(0.0, π; length = 17)) .+ 1e-3;
-                   distance_metric = SF.SphericalDistance(1.0))
+                   distance_metric = SFH.SphericalDistance(1.0))
     dims, spacing = (64, 48), (0.5, 0.25)
     ug = randn(2, dims...)
     xg = Matrix(hcat([[(i - 1) * spacing[1], (j - 1) * spacing[2]] for i in 1:dims[1], j in 1:dims[2]]...))

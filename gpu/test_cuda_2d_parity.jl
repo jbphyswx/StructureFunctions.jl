@@ -9,6 +9,7 @@ using StructureFunctions
 import KernelAbstractions as KA
 using CUDA, StaticArrays, Printf
 using Statistics: median
+using Random: Random
 const SF = StructureFunctions
 const SFC = SF.Calculations
 const GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
@@ -41,10 +42,13 @@ function cuda_2d(xd, ud, ddig, vplan, N, n_dist, n_val, B, NMOM, fixed_x)
 end
 
 println("CUDA 2D fast-kernel parity vs KA.CPU() reference — N=$N B=$B D=$D\n")
-println("| NMOM | fixed_x | bins | handled | max relΔ sums | counts exact | TILE-fit |")
+println("| NMOM | fixed_x | bins | handled | max relΔ sums | pairs in a different value bin | TILE-fit |")
 for NMOM in (1, 6)
     for fixed_x in (true, false)
         for (n_dist, n_val) in ((16, 8), (20, 20), (50, 50))
+            # A fixed draw per case, so a row is reproducible and a change in it is attributable to the
+            # code. The criterion below is a bound that holds for any draw.
+            Random.seed!(20260916 + 1000 * NMOM + 100 * Int(fixed_x) + n_dist + n_val)
             x_h = fixed_x ? rand(FT, D, N) : rand(FT, D, N, B)
             u_h = randn(FT, D, N, B)
             dist_bins = collect(FT, range(0.05f0, 2.0f0, length = n_dist + 1))
@@ -60,9 +64,14 @@ for NMOM in (1, 6)
             o_cu, c_cu, handled = cuda_2d(xd, ud, ddig, vplan, N, n_dist, n_val, B, NMOM, fixed_x)
             oc = Array(o_cu); cc = Array(c_cu)
             rel = maximum(abs.(oc .- o_ref) ./ max.(abs.(o_ref), 1f-3))
-            cexact = cc == c_ref
-            @printf("| %d | %s | %dx%d | %s | %.2e | %s | %s |\n",
-                    NMOM, fixed_x, n_dist, n_val, handled, rel, cexact, handled)
+            # A pair is placed by its value, and in Float32 a value within an ulp of a value-bin edge
+            # digitizes differently under the two devices' rounding, so one bin's count is not an invariant
+            # of the pair set. The invariant is that every pair is placed: the measure is the misplaced
+            # share of the total.
+            moved = sum(abs.(Int.(cc) .- Int.(c_ref))) ÷ 2
+            total = sum(Int.(c_ref)) ÷ max(NMOM, 1)
+            @printf("| %d | %s | %dx%d | %s | %.2e | %d / %d = %.1e | %s |\n",
+                    NMOM, fixed_x, n_dist, n_val, handled, rel, moved, total, moved / max(total, 1), handled)
         end
     end
 end

@@ -1,11 +1,14 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT, HelperFunctions as SFH
+using StructureFunctions: MultiFields as MF
 using StaticArrays: StaticArrays as SA
 using Distances: Distances as DI
 using LinearAlgebra: dot
 using Random: Random
 using FlowGeometries: FlowGeometries as FG
+using SpectralBackends: SpectralBackends as SB
+using FFTW: FFTW
 
 # `Distances.SphericalAngle` reports the central angle itself, so the geometry it implies has
 # unit radius; the schedule must be built on the same sphere for the comparison to mean anything.
@@ -28,6 +31,19 @@ function _zonal_points(lats, n_lon, dlon, u)
         end
     end
     return x, uu
+end
+
+# The field carried by the equatorial reflection `φ ↦ −φ`, on a latitude axis symmetric about the
+# equator so the reflection maps the grid onto itself. The reflection's differential keeps east and
+# reverses north, so the components mirror as `(u_E, −u_N)` with the latitude index reversed.
+function _equator_mirror(u::AbstractArray{T, 3}) where {T}
+    n_lon, n_lat = size(u, 2), size(u, 3)
+    m = similar(u)
+    for j in 1:n_lat, i in 1:n_lon
+        m[1, i, j] = u[1, i, n_lat + 1 - j]
+        m[2, i, j] = -u[2, i, n_lat + 1 - j]
+    end
+    return m
 end
 
 Test.@testset "the geodesic frame does not depend on longitude" begin
@@ -71,7 +87,7 @@ Test.@testset "the zonal sweep equals the unstructured spherical path" begin
             got_s = zeros(nb); got_c = zeros(Int, nb)
             SFC.gridded_lag_sweep!(got_s, got_c, sf, u, sched, bins, Val(2))
             ref_s = zeros(nb); ref_c = zeros(Int, nb)
-            SF.calculate_structure_function!(ref_s, ref_c, sf, x, uu, bins;
+            SFC.calculate_structure_function!(ref_s, ref_c, sf, x, uu, bins;
                                              distance_metric = DI.SphericalAngle())
             Test.@test got_c == ref_c
             Test.@test isapprox(got_s, ref_s; rtol = 1e-9, atol = 1e-10)
@@ -82,7 +98,7 @@ end
 
 Test.@testset "odd scalar moments on a lat-lon grid read south to north, then west to east" begin
     # ⟨δu_L δθ⟩ changes sign when a pair is read from its other end; the zonal sweep and the
-    # unstructured spherical channel path must read every pair the same way. An odd longitude count:
+    # unstructured spherical field path must read every pair the same way. An odd longitude count:
     # two points exactly half a turn apart on one parallel have no first end, which the lattice knows
     # from the integer offset while a point path sees sin(π) as round-off.
     n_lon, lats = 11, collect(range(-0.6, 0.6; length = 5))
@@ -92,8 +108,8 @@ Test.@testset "odd scalar moments on a lat-lon grid read south to north, then we
     u = randn(2, n_lon, n_lat)
     th = randn(n_lon, n_lat)
     x, uu = _zonal_points(lats, n_lon, dlon, u)
-    f_grid = SF.Fields(vectors = (u,), scalars = (th,))
-    f_pts = SF.Fields(vectors = (uu,), scalars = (vec(th),))
+    f_grid = MF.Fields(vectors = (u,), scalars = (th,))
+    f_pts = MF.Fields(vectors = (uu,), scalars = (vec(th),))
     bins = collect(range(0.0, 0.45 * π; length = 7))
     nb = length(bins) - 1
     sched = SFC.ZonalLagSchedule(lats, n_lon, dlon, R_UNIT, true)
@@ -119,8 +135,8 @@ Test.@testset "a descending axis reads pairs the same way as an ascending one" b
         u = randn(2, n_lon, n_lat)
         th = randn(n_lon, n_lat)
         x, uu = _zonal_points(lats, n_lon, dlon, u)
-        f_grid = SF.Fields(vectors = (u,), scalars = (th,))
-        f_pts = SF.Fields(vectors = (uu,), scalars = (vec(th),))
+        f_grid = MF.Fields(vectors = (u,), scalars = (th,))
+        f_pts = MF.Fields(vectors = (uu,), scalars = (vec(th),))
         bins = collect(range(0.0, 0.45 * π; length = 7))
         nb = length(bins) - 1
         sched = SFC.ZonalLagSchedule(lats, n_lon, dlon, R_UNIT, true)
@@ -177,7 +193,7 @@ Test.@testset "latitude-pair culling changes nothing but the work" begin
     SFC.gridded_lag_sweep!(st, ct, SFT.L2SFType(), u, sched, tight, Val(2))
     x, uu = _zonal_points(lats, n_lon, dlon, u)
     rt_s = zeros(5); rt_c = zeros(Int, 5)
-    SF.calculate_structure_function!(rt_s, rt_c, SFT.L2SFType(), x, uu, tight;
+    SFC.calculate_structure_function!(rt_s, rt_c, SFT.L2SFType(), x, uu, tight;
                                      distance_metric = DI.SphericalAngle())
     Test.@test ct == rt_c
     Test.@test isapprox(st, rt_s; rtol = 1e-9, atol = 1e-10)
@@ -283,7 +299,7 @@ Test.@testset "a spherical grid reaches the zonal sweep through the public entry
         verbose = false, show_progress = false)
     x, uu = _zonal_points(collect(phi), n_lon, 2π / n_lon, u)
     ref_s = zeros(8); ref_c = zeros(UInt32, 8)
-    SF.calculate_structure_function!(ref_s, ref_c, SFT.L2SFType(), x, uu, bins;
+    SFC.calculate_structure_function!(ref_s, ref_c, SFT.L2SFType(), x, uu, bins;
                                      distance_metric = DI.SphericalAngle())
     Test.@test got.counts == ref_c
     Test.@test isapprox(got.sums, ref_s; rtol = 1e-9, atol = 1e-10)
@@ -313,9 +329,68 @@ Test.@testset "a spherical grid reaches the zonal sweep through the public entry
         xs[2, k] = phi[I[2]]
     end
     ref_str_s = zeros(8); ref_str_c = zeros(UInt32, 8)
-    SF.calculate_structure_function!(ref_str_s, ref_str_c, SFT.L2SFType(), xs,
+    SFC.calculate_structure_function!(ref_str_s, ref_str_c, SFT.L2SFType(), xs,
                                      reshape(us, 2, 4 * n_lat), bins;
                                      distance_metric = DI.SphericalAngle())
     Test.@test r_str.counts == ref_str_c
     Test.@test isapprox(r_str.sums, ref_str_s; rtol = 1e-9, atol = 1e-10)
+end
+
+Test.@testset "the equatorial reflection flips exactly the odd-transverse operators" begin
+    # The reflection `φ ↦ −φ` is an isometry of the sphere that reverses orientation. It carries each
+    # pair's geodesic to the mirrored pair's, so every longitudinal increment is preserved, while the
+    # transverse basis vector `p̂ × ê₁` picks up the reflection's determinant and every transverse
+    # increment is negated. An operator's parity under the reflection is therefore the parity of its
+    # transverse degree, and a latitude axis symmetric about the equator maps the grid onto itself,
+    # so the two sweeps fill the same bins with the same counts.
+    tag = SB.FastFourierTransformSpectralBackend()
+    ops = ((SFT.L2SFType(), 1), (SFT.T2SFType(), 1), (SFT.S2SFType(), 1), (SFT.L3SFType(), 1),
+           (SFT.S3SFType(), 1), (SFT.L1T2SFType(), 1), (SFT.T3SFType(), -1), (SFT.L2T1SFType(), -1))
+    for lats in ([-1.0, -0.6, -0.25, 0.25, 0.6, 1.0], [-0.8, -0.3, 0.0, 0.3, 0.8])
+        # An odd longitude count: on a latitude axis symmetric about the equator an even one puts
+        # exactly antipodal pairs on the grid, and those carry a separation but no direction, which
+        # the lattice reads off the integer lag while a point path sees as round-off. The reflection
+        # law holds either way; the three routes are only comparable without them.
+        n_lon = 11
+        dlon = 2π / n_lon
+        n_lat = length(lats)
+        Random.seed!(9400 + n_lat)
+        u = randn(2, n_lon, n_lat)
+        um = _equator_mirror(u)
+        x, uu = _zonal_points(lats, n_lon, dlon, u)
+        xm, uum = _zonal_points(lats, n_lon, dlon, um)
+        bins = collect(range(0.0, 0.8 * π; length = 9))
+        nb = length(bins) - 1
+        sched = SFC.ZonalLagSchedule(lats, n_lon, dlon, R_UNIT, true)
+        for (sf, parity) in ops
+            s0 = zeros(nb); c0 = zeros(Int, nb)
+            SFC.gridded_lag_sweep!(s0, c0, sf, u, sched, bins, Val(2))
+            s1 = zeros(nb); c1 = zeros(Int, nb)
+            SFC.gridded_lag_sweep!(s1, c1, sf, um, sched, bins, Val(2))
+            scale = maximum(abs, s0)
+            Test.@test c1 == c0
+            Test.@test any(!iszero, s0)
+            Test.@test isapprox(s1, parity .* s0; rtol = 1e-10, atol = 1e-11 * scale)
+
+            # the transform reads the same frames out of lag space
+            t0 = zeros(nb); tc0 = zeros(Int, nb)
+            SFC.gridded_sweep!(t0, tc0, sf, u, sched, bins, Val(2), tag)
+            t1 = zeros(nb); tc1 = zeros(Int, nb)
+            SFC.gridded_sweep!(t1, tc1, sf, um, sched, bins, Val(2), tag)
+            Test.@test tc1 == tc0 == c0
+            Test.@test isapprox(t1, parity .* t0; rtol = 1e-10, atol = 1e-11 * scale)
+            Test.@test isapprox(t0, s0; rtol = 1e-10, atol = 1e-11 * scale)
+
+            # the point path builds its frames from `pair_frame`, not from the zonal transport
+            p0 = zeros(nb); pc0 = zeros(Int, nb)
+            SFC.calculate_structure_function!(p0, pc0, sf, x, uu, bins;
+                                              distance_metric = DI.SphericalAngle())
+            p1 = zeros(nb); pc1 = zeros(Int, nb)
+            SFC.calculate_structure_function!(p1, pc1, sf, xm, uum, bins;
+                                              distance_metric = DI.SphericalAngle())
+            Test.@test pc1 == pc0 == c0
+            Test.@test isapprox(p1, parity .* p0; rtol = 1e-10, atol = 1e-11 * scale)
+            Test.@test isapprox(p0, s0; rtol = 1e-9, atol = 1e-10 * scale)
+        end
+    end
 end

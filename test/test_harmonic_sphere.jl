@@ -1,6 +1,7 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO, HelperFunctions as SFH, Fields, HarmonicNodes
+    StructureFunctionObjects as SFO, HelperFunctions as SFH, HarmonicNodes
+using StructureFunctions.MultiFields: Fields
 using SpectralBackends: SpectralBackends as SB
 using NUFSHT: NUFSHT
 using NonuniformFFTs: NonuniformFFTs
@@ -106,7 +107,7 @@ function _rotation_average(sf, β; nlat = 40, nlon = 81, nα = 64, field = _fiel
         m̂ = cross(p, tA)
         w = wμ[j]
         if scalar
-            inc = SF.Channels.ChannelIncrement{0, 0, 1, Float64}((), (_scalar_at(q) - _scalar_at(p),))
+            inc = SF.MultiFields.FieldIncrement{0, 0, 1, Float64}((), (_scalar_at(q) - _scalar_at(p),))
             acc += w * sf(inc, SA.SVector(1.0, 0.0))
         else
             uA, uB = field(p), field(q)
@@ -134,7 +135,7 @@ function _rotation_average(sf::SFT.MixedStructureFunctionType, β; nlat = 40, nl
         m̂ = cross(p, tA)
         uA, uB = _field_at(p), _field_at(q)
         δu = SA.SVector(dot(uB, tB) - dot(uA, tA), dot(uB - uA, m̂))
-        inc = SF.Channels.ChannelIncrement{2, 1, 1, Float64}((δu,), (_scalar_at(q) - _scalar_at(p),))
+        inc = SF.MultiFields.FieldIncrement{2, 1, 1, Float64}((δu,), (_scalar_at(q) - _scalar_at(p),))
         acc += wμ[j] * sf(inc, SA.SVector(1.0, 0.0))
         total += wμ[j]
     end
@@ -269,7 +270,7 @@ Test.@testset "second-order vector statistics equal the spin-1 closed forms on a
         r = SFC.calculate_structure_function(sf, x, uc, nodes, DS; weights = w, verbose = false)
         Test.@test maximum(abs, r.values .- ref) < 1e-12 * maximum(abs, ref)
     end
-    # the same numbers through a Fields bundle, and the scalar's own closed form 2⟨Φ²⟩(1 − P₂)
+    # the same numbers through a multi-field, and the scalar's own closed form 2⟨Φ²⟩(1 − P₂)
     fb = Fields(vectors = (ug,), scalars = (Φ,))
     rL = SFC.calculate_structure_function(SFT.L2SFType(), x, fb, nodes, DS; weights = w, verbose = false)
     Test.@test maximum(abs, rL.values .- DLL) < 1e-12 * maximum(abs, DLL)
@@ -303,7 +304,7 @@ Test.@testset "higher-order statistics on a band-limited field equal the exact r
         scale = max(maximum(abs, ref), 1e-3)
         Test.@test maximum(abs, r.sums .- ref) < 1e-9 * scale
     end
-    # a mixed bundle: the scalar with the vector, at third order
+    # a mixed multi-field: the scalar with the vector, at third order
     fb = Fields(vectors = (ug,), scalars = (Φ,))
     r = SFC.calculate_structure_function(SFT.MixedSFType{1, 0, 2}(), x, fb, nodes, DS; weights = w,
         output_type = SF.StructureFunctionSumsAndCounts, verbose = false)
@@ -367,7 +368,7 @@ Test.@testset "the harmonic route refuses what it cannot mean" begin
     # no provider without its package
     Test.@test_throws ArgumentError SFC.harmonic_sweep!(zeros(4), zeros(4), SFT.L2SFType(),
         SFH.SphericalGeometry{2}(DI.SphericalAngle(), 1.0), x, ones(60), u, nodes, Val(2), Val(1), Val(0), :none)
-    # a channel the bundle lacks
+    # a field the multi-field lacks
     Test.@test_throws ArgumentError SFC.calculate_structure_function(SFT.VectorDotSFType(1, 2), x, Fields(vectors = (u,)), nodes, DS; verbose = false)
 end
 

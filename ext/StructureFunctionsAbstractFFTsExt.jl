@@ -1,4 +1,4 @@
-module StructureFunctionsFFTExt
+module StructureFunctionsAbstractFFTsExt
 
 using AbstractFFTs: AbstractFFTs
 using LinearAlgebra: LinearAlgebra as LA
@@ -7,6 +7,9 @@ using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, He
 using SpectralBackends: SpectralBackends as SB
 
 const CB = SFC.CB
+
+"""Bytes of monomial scratch the forward stage holds while it transforms a batch of them."""
+const FORWARD_BATCH_BYTES = Ref(1 << 28)
 
 """
     _pad_dims(schedule, r_max) -> NTuple{Du, Int}
@@ -178,7 +181,7 @@ function _transform_prepare(
     dp = to(dp0)
     vp = vp0 isa SFC.AllValid ? vp0 : to(Vector{Bool}(vp0))
     wp = wp0 isa SFC.NoWeights ? wp0 : to(wp0)
-    fwd, keys = _slab_transforms(tag, s, dp, vp, wp, su, P, Val(W), Val(p); to)
+    fwd, keys, flat = _slab_transforms(tag, s, dp, vp, wp, su, P, Val(W), Val(p); to)
     key_index = Dict(k => i for (i, k) in enumerate(keys))
     transport = SFC.lag_transport(s)
     columns = SFC._columns(transport, Val(W), Val(p), key_index)
@@ -188,26 +191,56 @@ function _transform_prepare(
     masked && push!(columns, [(1, key_index[keys[1]], key_index[keys[1]])])
     N = SFC._inverse_count(transport, W, p)
     weighted = (wp isa SFC.NoWeights && !soft) ? Val(false) : Val(true)
-    return (; s, su, P, r_max, fwd, columns, masked, weighted, transport, vW = Val(W), vP = Val(p), vN = Val(N))
+    return (; s, su, P, r_max, fwd, flat, columns, masked, weighted, transport, vW = Val(W), vP = Val(p),
+            vN = Val(N))
 end
 
-# One transform set per slab, every monomial of degree ≤ Pm built up front so tasks only read; the
-# first key is the mask. A grid's slabs are transformed by FFT; a scattered schedule's single slab by
-# the non-uniform FFT provider.
+# Every monomial of degree ≤ Pm of every slab, transformed; the first key is the mask. Each monomial is
+# built for all slabs in one broadcast and all slabs are transformed in one batch, so the launch count
+# scales with the monomials alone. A scattered schedule's single slab is transformed by the non-uniform
+# FFT provider.
 function _slab_transforms(
     ::SB.AbstractFastFourierTransformSpectralBackend, s::SFC.AbstractSeparableSchedule, dp, vp, wp, su, P,
     ::Val{W}, ::Val{Pm}; to,
 ) where {W, Pm}
     keys = SFC._monomial_keys(Val(W), Val(Pm))
-    fplan = plan_rfft(_zeros_like(dp, P))
-    Nu = SFC.n_cells(su)
-    fwd = map(1:SFC.n_slabs(s)) do I
-        cols = ((I - 1) * Nu + 1):(I * Nu)
-        mt = MonomialTransforms(view(dp, :, cols), vp isa SFC.AllValid ? vp : view(vp, cols),
-                                wp isa SFC.NoWeights ? wp : view(wp, cols), su, P, fplan, Val(Pm))
-        [monomial_transform!(mt, k) for k in keys]
+    FT = float(eltype(dp))
+    Dg = length(P)
+    nslabs = SFC.n_slabs(s)
+    nkeys = length(keys)
+    half = (P[1] ÷ 2 + 1, Base.tail(P)...)
+    colons = ntuple(_ -> Colon(), Dg)
+    cells = map(n -> 1:n, su.dims)
+    # The sweep reads the spectra at every slab pair, so they are all kept; the monomials are scratch and
+    # are held one bounded batch of slabs at a time.
+    per_slab = prod(P) * sizeof(FT) + prod(half) * sizeof(Complex{FT})
+    chunk = clamp(FORWARD_BATCH_BYTES[] ÷ max(per_slab, 1), 1, nslabs)
+    spec = similar(parent(dp), Complex{FT}, half..., nkeys * nslabs)
+    held = similar(parent(dp), FT, P..., chunk)
+    plan = AbstractFFTs.plan_rfft(held, 1:Dg)
+    # Scratch for a last batch shorter than the plan, which transforms full width and is copied across;
+    # a whole batch writes its spectra in place. Empty when the batches divide the slabs.
+    short = similar(spec, half..., nslabs % chunk == 0 ? 0 : chunk)
+    for k in 1:nkeys
+        m = reshape(SFC._held_monomial_vector(dp, vp, wp, keys[k], FT), su.dims..., nslabs)
+        base = (k - 1) * nslabs
+        for lo in 1:chunk:nslabs
+            hi = min(lo + chunk - 1, nslabs)
+            nb = hi - lo + 1
+            fill!(held, zero(FT))   # the padding, and the unused slabs of a short last batch
+            view(held, cells..., 1:nb) .= view(m, colons..., lo:hi)
+            if nb == chunk
+                LA.mul!(view(spec, colons..., (base + lo):(base + hi)), plan, held)
+            else
+                LA.mul!(short, plan, held)
+                view(spec, colons..., (base + lo):(base + hi)) .= view(short, colons..., 1:nb)
+            end
+        end
     end
-    return fwd, keys
+    fwd = map(1:nslabs) do I
+        [view(spec, colons..., (k - 1) * nslabs + I) for k in 1:nkeys]
+    end
+    return fwd, keys, spec
 end
 
 function _slab_transforms(
@@ -215,7 +248,7 @@ function _slab_transforms(
     ::Val{W}, ::Val{Pm}; to,
 ) where {W, Pm}
     keys = SFC._monomial_keys(Val(W), Val(Pm))
-    return [SFC.nufft_monomial_transforms(tag, s, dp, vp, wp, keys, Val(Pm); to)], keys
+    return [SFC.nufft_monomial_transforms(tag, s, dp, vp, wp, keys, Val(Pm); to)], keys, nothing
 end
 
 # The batched inverse plan over `ncols` columns and the per-task scratch it fills, in the transforms'
@@ -391,8 +424,7 @@ end
 
 _scattered_needs_nufft(tag) = throw(ArgumentError(
     "a ScatteredModesSchedule sums its pairs by non-uniform FFT, which $(nameof(typeof(tag))) does not name; pass " *
-    "NonuniformFFTsSpectralBackend() or FINUFFTSpectralBackend() " *
-    "with one provider loaded. Auto never selects the soft-binned route.",
+    "NonuniformFFTsSpectralBackend() or FINUFFTSpectralBackend(). Auto never selects the soft-binned route.",
 ))
 _nufft_needs_scattered(s) = throw(ArgumentError(
     "a non-uniform FFT tag is for a ScatteredModesSchedule; a $(nameof(typeof(s))) transforms with " *
@@ -420,8 +452,8 @@ SFC.gridded_sweep!(::AbstractMatrix, ::AbstractMatrix, ::SFT.AbstractPairwiseStr
     _nufft_needs_scattered(s)
 
 # ---------------------------------------------------------------------------------------------------
-# Tensors on grids: the same engine, each lag's symmetric moment store binned instead of contracted,
-# and the dense tensor assembled once at the end.
+# Tensors on grids: the same engine, with each lag's symmetric moment store binned in place of the
+# contraction, and the dense tensor assembled once at the end.
 # ---------------------------------------------------------------------------------------------------
 
 # The transform a tensor sweep runs with: `Auto` is the FFT on a grid, and a tag must match its schedule.

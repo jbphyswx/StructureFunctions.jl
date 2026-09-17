@@ -1,4 +1,4 @@
-module StructureFunctionsAbsractFFTsKernelAbstractionsExt
+module StructureFunctionsAbstractFFTsKernelAbstractionsExt
 
 using KernelAbstractions: KernelAbstractions as KA, @index, @atomic, @Const, @localmem, @synchronize
 using AbstractFFTs: AbstractFFTs 
@@ -17,10 +17,25 @@ const WORKGROUP = 256
 @inline _decode_lag(lin::Int, lo::NTuple{Dg, Int}, len::NTuple{Dg, Int}, strides::NTuple{Dg, Int}) where {Dg} =
     ntuple(d -> @inbounds(lo[d] + ((lin - 1) ÷ strides[d]) % len[d]), Val(Dg))
 
-# Column `c` of slab pair `b`: the signed products of the two slabs' forward transforms its terms name.
+# The slab pair in `lo:hi` owning work item `item`, from `off`, the exclusive prefix sum of every
+# pair's lag-box volume: pair `b` owns `off[b] + 1 : off[b + 1]`.
+@inline function _pair_of_item(off, item::Int, lo::Int, hi::Int)
+    while lo < hi
+        mid = (lo + hi + 1) >>> 1
+        if @inbounds(off[mid]) < item
+            lo = mid
+        else
+            hi = mid - 1
+        end
+    end
+    return lo
+end
+
+# Column `c` of slab pair `base + b`: the signed products of the two slabs' forward transforms its
+# terms name, written to the batch-local column `b`.
 KA.@kernel unsafe_indices = true function _spec_kernel!(
-    specf::AbstractArray{CT}, @Const(F), @Const(terms), @Const(col_ptr), @Const(pairs), n::Int, ncols::Int,
-    total::Int, workgroup_size::Int,
+    specf::AbstractArray{CT}, @Const(F), @Const(terms), @Const(col_ptr), @Const(pairs), base::Int, n::Int,
+    ncols::Int, total::Int, workgroup_size::Int,
 ) where {CT}
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
@@ -31,27 +46,31 @@ KA.@kernel unsafe_indices = true function _spec_kernel!(
         c = rem ÷ n + 1
         lin = rem - (c - 1) * n + 1
         @inbounds begin
-            I = Int(pairs[b][1])
-            J = Int(pairs[b][2])
+            I = Int(pairs[base + b][1])
+            J = Int(pairs[base + b][2])
             acc = zero(CT)
             for t in Int(col_ptr[c]):(Int(col_ptr[c + 1]) - 1)
                 sign, ki, kj = terms[t]
-                acc += sign * conj(F[lin, Int(ki), I]) * F[lin, Int(kj), J]
+                acc += sign * conj(F[lin, I, Int(ki)]) * F[lin, J, Int(kj)]
             end
             specf[lin, c, b] = acc
         end
     end
 end
 
-# One work item per (lag, slab pair): the lag's moment row is read from the inverted columns, the
-# operator contracted in the lag's frames and the value binned. A distance histogram accumulates in
-# shared memory when it fits and is flushed once per block; the joint histogram uses global atomics.
+# One work item per (lag, slab pair) over the pairs `first_pair:last_pair`: the lag's moment row is
+# read from the inverted columns, the operator contracted in the lag's frames and the value binned. A
+# distance histogram accumulates in shared memory when it fits and is flushed once per block; the
+# joint histogram uses global atomics. Under `UB` every pair carries the same lag box and a work item
+# names its pair by division; otherwise the boxes are per pair and `pair_off` indexes them.
 KA.@kernel unsafe_indices = true function _lag_kernel!(
     sums::AbstractArray{OT}, counts::AbstractArray{CT}, @Const(out), @Const(pairs), sf, s, su, plan, second_axis,
-    axis_edges, n_box::Int, box_lo, box_len, box_strides, P, strides, masked::Bool, weighted::Val{WEIGHTED}, ncols::Int,
+    axis_edges, @Const(pair_off), @Const(pair_lo), @Const(pair_len), @Const(pair_str), first_pair::Int,
+    last_pair::Int, n_box::Int, box_lo, box_len, box_strides,
+    P, strides, masked::Bool, weighted::Val{WEIGHTED}, ncols::Int,
     nb::Int, na::Int, total::Int, workgroup_size::Int, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
-    ::Val{NC}, ::Val{SHARED},
-) where {OT, CT, WEIGHTED, D, V, K, W, Po, N, NC, SHARED}
+    ::Val{Dg}, ::Val{UB}, ::Val{NC}, ::Val{SHARED},
+) where {OT, CT, WEIGHTED, D, V, K, W, Po, N, Dg, UB, NC, SHARED}
     shared_s = @localmem OT (NC,)
     shared_c = @localmem CT (NC,)
     lid = @index(Local, Linear)
@@ -68,11 +87,23 @@ KA.@kernel unsafe_indices = true function _lag_kernel!(
     bid = @index(Group, Linear)
     gid = (bid - 1) * workgroup_size + lid
     if gid <= total
-        b = (gid - 1) ÷ n_box + 1
-        lin = gid - (b - 1) * n_box
-        h = _decode_lag(lin, box_lo, box_len, box_strides)
-        I = Int(@inbounds pairs[b][1])
-        J = Int(@inbounds pairs[b][2])
+        if UB
+            g = first_pair + (gid - 1) ÷ n_box
+            lin = gid - (g - first_pair) * n_box
+            h = _decode_lag(lin, box_lo, box_len, box_strides)
+        else
+            item = gid + @inbounds(pair_off[first_pair])
+            g = _pair_of_item(pair_off, item, first_pair, last_pair)
+            lin = item - @inbounds(pair_off[g])
+            blo = @inbounds pair_lo[g]
+            blen = @inbounds pair_len[g]
+            bstr = @inbounds pair_str[g]
+            h = _decode_lag(lin, ntuple(d -> Int(blo[d]), Val(Dg)), ntuple(d -> Int(blen[d]), Val(Dg)),
+                            ntuple(d -> Int(bstr[d]), Val(Dg)))
+        end
+        b = g - first_pair + 1
+        I = Int(@inbounds pairs[g][1])
+        J = Int(@inbounds pairs[g][2])
         v = SFC._lag_visit(sf, s, su, I, J, h, plan, nb, Val(D), Val(V), Val(K))
         if v !== nothing
             bin, r2, factor, geometry, self_reverse = v
@@ -168,9 +199,16 @@ function SFC.device_transform_sweep!(
     nlin = length(F1)
     nkeys = length(eng.fwd[1])
     nslabs = length(eng.fwd)
-    F = similar(F1, nlin, nkeys, nslabs)
-    for I in 1:nslabs, k in 1:nkeys
-        view(F, :, k, I) .= vec(eng.fwd[I][k])
+    # The forward stage holds every spectrum in one array, slab-fastest within a monomial, which is the
+    # layout this kernel reads, so it is reshaped. Separate transforms from a provider are gathered.
+    F = if eng.flat === nothing
+        G = similar(F1, nlin, nslabs, nkeys)
+        for I in 1:nslabs, k in 1:nkeys
+            view(G, :, I, k) .= vec(eng.fwd[I][k])
+        end
+        G
+    else
+        reshape(eng.flat, nlin, nslabs, nkeys)
     end
     terms, col_ptr = _term_table(eng.columns)
     d_terms, d_ptr = to(terms), to(col_ptr)
@@ -183,6 +221,26 @@ function SFC.device_transform_sweep!(
     box_len = ntuple(d -> length(SFC.lag_range(su, d, lims[d])), Dg)
     n_box = prod(box_len)
     box_strides = SFC._lag_strides(box_len)
+    # A schedule whose pairs do not share one lag box gets a box each, the same one the host loop
+    # takes from `_pair_lags`: a parallel spans less distance the nearer it lies to a pole, so the box
+    # over all row pairs stays as wide as the equator's however small `r_max` is. The tables are built
+    # and moved once per call and the kernel finds a work item's pair in the prefix sum of the volumes.
+    UB = SFC.uniform_lag_box(s)
+    pair_off, d_off, d_plo, d_plen, d_pstr = if UB
+        nothing, nothing, nothing, nothing, nothing
+    else
+        boxes = [SFC.lag_limits(s, it[1], it[2], r_max) for it in items]
+        lens = NTuple{Dg, Int}[ntuple(d -> length(SFC.lag_range(su, d, L[d])), Dg) for L in boxes]
+        los = NTuple{Dg, Int32}[ntuple(d -> Int32(first(SFC.lag_range(su, d, L[d]))), Dg) for L in boxes]
+        offs = Vector{Int}(undef, n_items + 1)
+        offs[1] = 0
+        for k in 1:n_items
+            offs[k + 1] = offs[k] + prod(lens[k])
+        end
+        offs, to(offs), to(los),
+        to(NTuple{Dg, Int32}[ntuple(d -> Int32(l[d]), Dg) for l in lens]),
+        to(NTuple{Dg, Int32}[ntuple(d -> Int32(st[d]), Dg) for st in map(SFC._lag_strides, lens)])
+    end
     strides = SFC._lag_strides(P)
     Pn = prod(P)
     axis_edges, second_axis, na = _axis_parts(axis)
@@ -202,28 +260,30 @@ function SFC.device_transform_sweep!(
     dsums = KA.zeros(dev, OT, size(sums)...)
     dcounts = KA.zeros(dev, CT, size(counts)...)
     per_pair = nlin * ncols * sizeof(CF) + Pn * ncols * sizeof(FT)
-    B = clamp(DEVICE_BATCH_BYTES ÷ per_pair, 1, n_items)
+    # Equal batches no larger than the budget, sharing one buffer set: both kernels are launched over the
+    # pairs their batch holds, so a short last batch leaves the trailing columns untouched.
+    n_batches = cld(n_items, clamp(DEVICE_BATCH_BYTES ÷ per_pair, 1, n_items))
+    B = cld(n_items, n_batches)
     spec_k = _spec_kernel!(dev, WORKGROUP)
     lag_k = _lag_kernel!(dev, WORKGROUP)
-    main = _batch_buffers(F1, P, ncols, B)
-    tail_size = n_items - (n_items ÷ B) * B
-    tail = tail_size == 0 ? main : _batch_buffers(F1, P, ncols, tail_size)
+    spec, out, iplan = _batch_buffers(F1, P, ncols, B)
+    specf = reshape(spec, nlin, ncols, B)
+    out3 = reshape(out, Pn, ncols, B)
+    d_pairs = to(pairs)
     for lo in 1:B:n_items
         hi = min(lo + B - 1, n_items)
         Bb = hi - lo + 1
-        spec, out, iplan = Bb == B ? main : tail
-        d_pairs = to(pairs[lo:hi])
-        specf = reshape(spec, nlin, ncols, Bb)
         total_spec = nlin * ncols * Bb
-        spec_k(specf, F, d_terms, d_ptr, d_pairs, nlin, ncols, total_spec, WORKGROUP;
+        spec_k(specf, F, d_terms, d_ptr, d_pairs, lo - 1, nlin, ncols, total_spec, WORKGROUP;
                ndrange = cld(total_spec, WORKGROUP) * WORKGROUP)
         KA.synchronize(dev)
         LA.mul!(out, iplan, spec)
-        out3 = reshape(out, Pn, ncols, Bb)
-        total_lag = n_box * Bb
-        lag_k(dsums, dcounts, out3, d_pairs, sf, s_dev, su, plan_dev, second_axis, d_axis_edges, n_box, box_lo,
-              box_len, box_strides, P, strides, eng.masked, eng.weighted, ncols, nb, na, total_lag, WORKGROUP, Val(D),
-              Val(V), Val(K), eng.vW, eng.vP, eng.vN, Val(NC), Val(shared); ndrange = cld(total_lag, WORKGROUP) * WORKGROUP)
+        total_lag = UB ? n_box * Bb : pair_off[hi + 1] - pair_off[lo]
+        lag_k(dsums, dcounts, out3, d_pairs, sf, s_dev, su, plan_dev, second_axis, d_axis_edges,
+              d_off, d_plo, d_plen, d_pstr, lo, hi, n_box, box_lo, box_len, box_strides,
+              P, strides, eng.masked, eng.weighted, ncols, nb, na, total_lag, WORKGROUP, Val(D),
+              Val(V), Val(K), eng.vW, eng.vP, eng.vN, Val(Dg), Val(UB), Val(NC), Val(shared);
+              ndrange = cld(total_lag, WORKGROUP) * WORKGROUP)
         KA.synchronize(dev)
     end
     sums .+= Array(dsums)

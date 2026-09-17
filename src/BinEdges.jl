@@ -17,8 +17,7 @@ cache misses. Subtypes of `AbstractBinEdges` bypass the standard binary search b
 - `LinearBinEdges` utilizes Fused Multiply-Add (FMA) arithmetic for uniformly-spaced bins.
 - `LogBinEdges` maps physical queries via `log(q)` then the same FMA path on the log-space grid.
 
-Wrapping standard arrays in these subtypes allows `digitize` to execute 5x to 15x faster, resolving the 
-primary computational bottleneck in the package.
+Wrapping standard arrays in these subtypes makes `digitize` a constant-time lookup.
 
 ## Bin edges and backends
 
@@ -88,8 +87,8 @@ Precompute `inv_step = 1/δ` and at query time one FMA gives \$t = (x-v_1)/\\del
 error without a second downward correction.
 
 ### Performance
-Bypasses the Twice-Precision arithmetic of Julia's standard `StepRangeLen` search. 
-Reduces lookup time from **~46 ns** to **~3 ns** (a 15x speedup), completely eliminating the linear binning bottleneck.
+Bypasses the twice-precision arithmetic of Julia's `StepRangeLen` search, so a lookup is one FMA and
+one comparison.
 """
 struct LinearBinEdges{T, RT <: AbstractRange{T}} <: AbstractBinEdges{T}
     edges::RT
@@ -157,8 +156,8 @@ Log-spaced (geometric) bin edges: uniform grid in log-space.
 ### Digitize semantics
 
 `log_edges` is the authoritative grid. A physical query `q > 0` maps to
-`searchsortedfirst(LinearBinEdges(log_edges), log(q))`. See
-the documentation's "Binning Internals" page and `benchmark/LOG_BIN_EDGES_BENCHMARK.md`.
+`searchsortedfirst(LinearBinEdges(log_edges), log(q))`. See the documentation's "Binning Internals"
+page.
 
 [`LogBinEdges`](@ref) from a physical vector builds the same log grid from
 `range(log(first), log(last); length)`. [`LogBinEdges_from_log_edges`](@ref) accepts
@@ -166,7 +165,7 @@ the log grid directly.
 
 ### Performance
 
-One `log(q)` (~6 ns) plus O(1) FMA digitize (~2.5 ns) on the log grid. See benchmark log.
+One `log(q)` plus the constant-time FMA digitize on the log grid.
 """
 struct LogBinEdges{T, LRT <: AbstractRange{T}, LBET <: LinearBinEdges{T}} <: AbstractBinEdges{T}
     log_edges::LRT
@@ -255,8 +254,7 @@ an existing bin edge collection.
 ### Why InfPaddedBinEdges Exists
 Structure function distance bins are defined as half-open intervals \$(r_i, r_{i+1}]\$. When mapping a distance 
 \$r\$ to a bin, any query value \$r < \\text{first}(edges)\$ or \$r > \\text{last}(edges)\$ is out-of-bounds.
-Instead of checking for these out-of-bound cases manually using branches in inner loops, `InfPaddedBinEdges`
-embeds the infinite endpoints implicitly:
+`InfPaddedBinEdges` embeds the infinite endpoints, so an inner loop needs no out-of-bounds branch:
 - The first element is treated as `typemin(T)` (\$-\\infty\$).
 - The last element is treated as `typemax(T)` (\$+\\infty\$).
 
@@ -460,8 +458,8 @@ BinEdges(edges::AbstractRange) = LinearBinEdges(edges)
     _fast_log2(x)
 
 `log2(x)` for finite `x > 0`, max error ~4e-8 (Float64). Exponent extract plus an odd series on a
-mantissa recentred to `[1/√2, √2)`; vectorizes, unlike the scalar `libm log`. Approximate — the bin
-is decided by [`squared_digitize`](@ref)'s correction, not by this.
+mantissa recentred to `[1/√2, √2)`, so it vectorizes where the scalar `libm log` does not.
+Approximate: the bin is decided by [`squared_digitize`](@ref)'s correction.
 """
 @inline function _fast_log2(x::Float64)
     ix = reinterpret(UInt64, x)
@@ -614,8 +612,8 @@ the precomputed approximate index and this only corrects it; otherwise `i` is ig
 """
     squared_correct(plan, r2, i) -> Int
 
-Walk `i` to the exact `searchsortedfirst(sqedges, r²)`. 0 or 1 step for random separations; a loop
-rather than a fixed step because within a few ulps of an edge more can be needed.
+Walk `i` to the exact `searchsortedfirst(sqedges, r²)`. 0 or 1 step for a random separation; within a
+few ulps of an edge it can take more, so it loops.
 """
 @inline function squared_correct(p::AbstractSquaredDigitizePlan, r2, i::Integer)
     sq = p.sqedges
@@ -636,7 +634,7 @@ end
     squared_digitize(plan, r2) -> Int
 
 Exact `digitize(r, edges)` computed from `r²` alone. Out-of-range gives `0` (below) or `n_bins + 1`
-(above), matching [`digitize`](@ref).
+(above), matching [`HelperFunctions.digitize`](@ref).
 """
 @inline squared_digitize(p::AbstractSquaredDigitizePlan, r2) =
     squared_bin(p, digitize_key(p, r2), squared_approx_index(p, r2))

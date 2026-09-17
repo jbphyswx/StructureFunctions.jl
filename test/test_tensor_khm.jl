@@ -1,6 +1,7 @@
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
-    StructureFunctionTypes as SFT
+    StructureFunctionTypes as SFT, HelperFunctions as SFH
+using StructureFunctions: StructureFunctionObjects as SFO, MultiFields as MF
 using OhMyThreads: OhMyThreads
 using KernelAbstractions: KernelAbstractions as KA
 using Distances: Distances as DI
@@ -158,7 +159,7 @@ end
 # --- Tensors from the transform, higher orders, and the joint tensor over angle ---
 
 const RAW_T = SF.StructureFunctionTensorSumsAndCounts
-const RAW_T2 = SF.StructureFunctionTensor2DSumsAndCounts
+const RAW_T2 = SFO.StructureFunctionTensor2DSumsAndCounts
 const FFT_TAG = SB.FastFourierTransformSpectralBackend()
 
 # Grid coordinates as a point list, in the cell order the packed field uses.
@@ -239,11 +240,11 @@ Test.@testset "the tensor from the transform equals the point tensor on a grid's
         Test.@test mean isa SF.StructureFunctionTensor{2}
         ref2 = SFC.calculate_structure_function_tensor(Val(2), x, reshape(u, Dg, N), bins; backend = CB.SerialBackend())
         Test.@test isapprox(mean.values, ref2.values; rtol = 1e-9, atol = 1e-10, nans = true)
-        # one algorithm: the direct sum is refused, a bundle of channels is refused
+        # one algorithm: the direct sum is refused, a multi-field of fields is refused
         Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(Val(2), grid, u, bins,
                                                                                 SB.DirectSumSpectralBackend(); verbose = false)
         Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(
-            Val(2), grid, SF.Fields(vectors = (u,), scalars = (randn(dims...),)), bins, FFT_TAG; verbose = false)
+            Val(2), grid, MF.Fields(vectors = (u,), scalars = (randn(dims...),)), bins, FFT_TAG; verbose = false)
     end
 end
 
@@ -259,7 +260,7 @@ Test.@testset "the tensor on a lat-lon grid is the point tensor in the geodesic 
     bins = collect(range(0.0, π; length = 7)) .+ 1e-3
     for P in (2, 3)
         ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, 2, :), bins; backend = CB.SerialBackend(),
-                                                      distance_metric = SF.SphericalDistance(1.0), output_type = RAW_T)
+                                                      distance_metric = SFH.SphericalDistance(1.0), output_type = RAW_T)
         got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG; verbose = false, output_type = RAW_T)
         Test.@test got.counts == ref.counts
         Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))

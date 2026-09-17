@@ -12,7 +12,7 @@ on axis 1 of `u`. Backends dispatch on this, so `D` reaches the kernels as a sta
 
 The coordinate count on axis 1 of `x` is deliberately **not** here: it is fixed by the metric's
 geometry (see `HelperFunctions.coordinate_width`), so it is read off that geometry once `D` is
-static rather than being restated as a shape parameter.
+static.
 """
 abstract type AbstractFieldShape{D} end
 struct PointField{D} <: AbstractFieldShape{D} end

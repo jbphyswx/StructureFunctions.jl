@@ -7,10 +7,10 @@ backends to that (see [Validation](validation.md) for the tolerance policy).
 | backend | needs | runs |
 |---|---|---|
 | `SerialBackend()` | nothing | every route, on one thread; the reference the others are checked against |
-| `ThreadedBackend()` | `using OhMyThreads`, `julia -t N` | point lists, channel bundles, tensors, the gridded sweeps and transforms, the sorted line route |
-| `DistributedBackend()` | `using Distributed`, `addprocs` | point lists, channel bundles and tensors, each worker taking a share of the outer index; `DistributedBackend(ThreadedBackend())` threads inside each worker |
+| `ThreadedBackend()` | `using OhMyThreads`, `julia -t N` | point lists, multi-fields, tensors, the gridded sweeps and transforms, the sorted line route |
+| `DistributedBackend()` | `using Distributed`, `addprocs` | point lists, multi-fields and tensors, each worker taking a share of the outer index; `DistributedBackend(ThreadedBackend())` threads inside each worker |
 | `MPIBackend()` | `using MPI` | point lists across ranks |
-| `GPUBackend(device)` | `using KernelAbstractions` and a device package | point lists, joint histograms, single-pass invariants, batches over auxiliary axes, tensors, channel bundles, and the gridded transform engine; `GPUBackend(KernelAbstractions.CPU())` runs the same kernels on the host |
+| `GPUBackend(device)` | `using KernelAbstractions` and a device package | point lists, joint histograms, single-pass invariants, batches over auxiliary axes, tensors, multi-fields, and the gridded transform engine; `GPUBackend(KernelAbstractions.CPU())` runs the same kernels on the host |
 | `AutoBackend()` | — | the default: the distributed backend when workers are present, the threaded one when Julia has more than one thread and its extension is loaded, the serial one otherwise |
 
 The backend types come from `ComputationalBackends`:

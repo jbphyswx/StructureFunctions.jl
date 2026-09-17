@@ -1,5 +1,5 @@
 """
-Generate figure assets for the gridded, directional, multi-channel and spectral-transform features.
+Generate figure assets for the gridded, directional, multi-field and spectral-transform features.
 
 Run from the repo root:
     julia --project=docs/generate_assets docs/generate_assets/generate_feature_figures.jl
@@ -7,7 +7,11 @@ Run from the repo root:
 
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT
+using StructureFunctions: MultiFields as MF
 using SpectralBackends: SpectralBackends as SB
+using FlowGeometries: FlowGeometries as FG
+using NonuniformFFTs: NonuniformFFTs
+using LsqFit: LsqFit
 using Bessels: Bessels
 using FFTW: FFTW
 using CairoMakie: CairoMakie as CM
@@ -222,9 +226,9 @@ function generate_helmholtz_spectra_figure()
     println("  wrote $out")
 end
 
-# ─── Figure: scalar and multi-channel structure functions ──────────────────
+# ─── Figure: scalar and multi-field structure functions ──────────────────
 
-function generate_channels_figure()
+function generate_fields_figure()
     Random.seed!(33)
     N = 4000
     x = 2π .* rand(2, N)
@@ -235,7 +239,7 @@ function generate_channels_figure()
         u[2, p] = -sin(3 * x[2, p])
         θ[1, p] = cos(4 * x[1, p] + 0.3) + 0.4sin(9 * x[2, p])
     end
-    fields = SF.Fields(vectors = (u,), scalars = (θ,))
+    fields = MF.Fields(vectors = (u,), scalars = (θ,))
     bins = collect(10 .^ range(log10(0.05), log10(2.5); length = 22))
     mids = SF.midpoints(bins)
 
@@ -249,7 +253,7 @@ function generate_channels_figure()
     fig = CM.Figure(size = (1100, 430))
     ax1 = CM.Axis(fig[1, 1]; xscale = log10, yscale = log10, xlabel = "separation r",
                   ylabel = "structure function",
-                  title = "One pass over a velocity + tracer bundle")
+                  title = "One pass over a velocity + tracer multi-field")
     CM.lines!(ax1, mids, vel.values; linewidth = 3, label = "⟨‖δu‖²⟩  (velocity)")
     CM.lines!(ax1, mids, scal.values; linewidth = 3, label = "⟨(δθ)²⟩  (tracer)")
     CM.axislegend(ax1; position = :lt)
@@ -259,7 +263,7 @@ function generate_channels_figure()
     CM.lines!(ax2, mids, yag.values; linewidth = 3, color = :seagreen)
     CM.hlines!(ax2, [0.0]; color = :black, linestyle = :dash)
 
-    out = joinpath(ASSETS_DIR, "sf_channels.png")
+    out = joinpath(ASSETS_DIR, "sf_fields.png")
     CM.save(out, fig)
     println("  wrote $out")
 end
@@ -365,7 +369,7 @@ function generate_advective_figure()
     mids = SF.midpoints(bins)
 
     asf = SFC.calculate_structure_function(
-        SFT.VectorDotSFType(1, 2), x, SF.Fields(vectors = (u, a)), bins;
+        SFT.VectorDotSFType(1, 2), x, MF.Fields(vectors = (u, a)), bins;
         output_type = SF.StructureFunctionSumsAndCounts)
     Ks = collect(range(1.5, 9.0; length = 60))
     flux = SFC.spectral_flux(asf, Ks)
@@ -658,16 +662,278 @@ function generate_covariance_figure()
     println("  wrote $out")
 end
 
+# ─── Figure: pair weights, and a grid's cell measure as the weight ────────
+
+function generate_weights_figure()
+    Random.seed!(41)
+    geo = FG.Geometry.SphericalGeometry(1.0)
+    n_lon, n_lat = 36, 24
+    lam = range(0.0, step = 2π / n_lon, length = n_lon)
+    phi = range(-π / 2 + π / (2n_lat), step = π / n_lat, length = n_lat)
+    grid = FG.Grids.StructuredGrid(geo, lam, phi)
+    w = SFC.cell_measure(grid)
+
+    u = zeros(2, n_lon, n_lat)
+    for j in 1:n_lat, i in 1:n_lon
+        u[1, i, j] = cos(3 * lam[i]) * cos(phi[j]) + 0.4sin(2 * phi[j])
+        u[2, i, j] = -sin(2 * lam[i]) * cos(phi[j])
+    end
+    bins = collect(range(0.0, π; length = 18)) .+ 1e-3
+    mids = SF.midpoints(bins)
+    plain = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, Float64;
+                                             output_type = SF.StructureFunction, verbose = false,
+                                             show_progress = false)
+    area = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, Float64; weights = w,
+                                            output_type = SF.StructureFunction, verbose = false,
+                                            show_progress = false)
+
+    fig = CM.Figure(size = (1100, 430))
+    ax1 = CM.Axis(fig[1, 1]; xlabel = "latitude φ", ylabel = "cell measure",
+                  title = "cell_measure(grid): a lat-lon cell shrinks toward the poles")
+    CM.lines!(ax1, collect(phi), w[1:n_lon:end]; linewidth = 3)
+
+    ax2 = CM.Axis(fig[1, 2]; xlabel = "separation r", ylabel = "⟨δu_L²⟩",
+                  title = "counting pairs equally vs weighting them by area")
+    CM.lines!(ax2, mids, plain.values; linewidth = 3, label = "every pair counts once")
+    CM.lines!(ax2, mids, area.values; linewidth = 3, linestyle = :dash,
+              label = "weights = cell_measure(grid)")
+    CM.axislegend(ax2; position = :rb)
+
+    out = joinpath(ASSETS_DIR, "sf_weights.png")
+    CM.save(out, fig)
+    println("  wrote $out")
+end
+
+# ─── Figure: the exact sorted route for one-dimensional point lists ───────
+
+function generate_sorted_line_figure()
+    Random.seed!(42)
+    line_field(N) = begin
+        x = reshape(sort(100 .* rand(N)), 1, N)
+        u = reshape(sin.(0.4 .* x[1, :]) .+ 0.2 .* randn(N), 1, N)
+        (x, u)
+    end
+    bins = collect(range(0.0, 5.0; length = 21))
+    mids = SF.midpoints(bins)
+
+    # the sorted route is taken automatically for a polynomial operator on a line;
+    # a norm power is not a polynomial, so it keeps the pair loop
+    Ns = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000]
+    t_sorted = Float64[]
+    t_pairs = Float64[]
+    for N in Ns
+        x, u = line_field(N)
+        f() = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64;
+                                               output_type = SF.StructureFunction, verbose = false,
+                                               show_progress = false)
+        f()
+        push!(t_sorted, minimum(@elapsed(f()) for _ in 1:3))
+        if N <= 8_000
+            g() = SFC.calculate_structure_function(SFT.FullVectorStructureFunctionType{3}(), x, u, bins,
+                                                   Int64; output_type = SF.StructureFunction,
+                                                   verbose = false, show_progress = false)
+            g()
+            push!(t_pairs, @elapsed g())
+        end
+    end
+
+    # exactness against a pair loop written here, at a size where both are quick
+    Nc = 1_500
+    x, u = line_field(Nc)
+    got = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64;
+                                           output_type = SF.StructureFunction, verbose = false,
+                                           show_progress = false)
+    ref_s = zeros(length(mids))
+    ref_c = zeros(Int, length(mids))
+    for i in 1:Nc, j in (i + 1):Nc
+        r = abs(x[1, j] - x[1, i])
+        b = searchsortedfirst(bins, r) - 1
+        if 1 <= b <= length(mids)
+            ref_s[b] += (u[1, j] - u[1, i])^2
+            ref_c[b] += 1
+        end
+    end
+    ref = ref_s ./ max.(ref_c, 1)
+
+    fig = CM.Figure(size = (1100, 430))
+    ax1 = CM.Axis(fig[1, 1]; xscale = log10, yscale = log10, xlabel = "points N",
+                  ylabel = "seconds", title = "Prefix sums of the monomials, not a pair loop")
+    CM.scatterlines!(ax1, Float64.(Ns), t_sorted; linewidth = 3, markersize = 11,
+                     label = "sorted route (polynomial operator)")
+    CM.scatterlines!(ax1, Float64.(Ns[1:length(t_pairs)]), t_pairs; linewidth = 3, markersize = 11,
+                     label = "pair loop (‖δu‖³, not a polynomial)")
+    CM.lines!(ax1, Float64.(Ns), t_sorted[1] .* (Ns ./ Ns[1]); linestyle = :dot, color = :gray,
+              label = "N")
+    CM.lines!(ax1, Float64.(Ns[1:length(t_pairs)]), t_pairs[1] .* (Ns[1:length(t_pairs)] ./ Ns[1]) .^ 2;
+              linestyle = :dash, color = :gray, label = "N²")
+    CM.axislegend(ax1; position = :lt)
+
+    ax2 = CM.Axis(fig[1, 2]; xlabel = "separation r", ylabel = "⟨δu_L²⟩",
+                  title = "and it is exact: every pair the loop counts, counted once")
+    CM.lines!(ax2, mids, ref; linewidth = 6, color = (:steelblue, 0.35), label = "pair loop")
+    CM.lines!(ax2, mids, got.values; linewidth = 2, color = :black, linestyle = :dash,
+              label = "sorted route")
+    CM.axislegend(ax2; position = :rb)
+
+    out = joinpath(ASSETS_DIR, "sf_sorted_line.png")
+    CM.save(out, fig)
+    println("  wrote $out")
+end
+
+# ─── Figure: the moment tensor, and its trace against the scalar entry ────
+
+function generate_tensor_figure()
+    Random.seed!(43)
+    N = 3000
+    x = 2π .* rand(2, N)
+    u = zeros(2, N)
+    for p in 1:N                      # anisotropic on purpose: the tensor is the point
+        u[1, p] = cos(3 * x[1, p]) + 0.3cos(5 * x[2, p])
+        u[2, p] = 0.35 * (-sin(2 * x[2, p]))
+    end
+    bins = collect(range(0.1, 2.6; length = 18))
+    mids = SF.midpoints(bins)
+    T = SFC.calculate_structure_function_tensor(Val(2), x, u, bins; verbose = false,
+                                                show_progress = false)
+    s2 = SFC.calculate_structure_function(SFT.S2SFType(), x, u, bins;
+                                          output_type = SF.StructureFunction, verbose = false,
+                                          show_progress = false)
+
+    fig = CM.Figure(size = (1100, 430))
+    ax1 = CM.Axis(fig[1, 1]; xlabel = "separation r", ylabel = "⟨δu_a δu_b⟩",
+                  title = "The second moment as a tensor, not a scalar")
+    CM.lines!(ax1, mids, T.values[1, 1, :]; linewidth = 3, label = "T₁₁")
+    CM.lines!(ax1, mids, T.values[2, 2, :]; linewidth = 3, label = "T₂₂")
+    CM.lines!(ax1, mids, T.values[1, 2, :]; linewidth = 3, label = "T₁₂")
+    CM.axislegend(ax1; position = :lt)
+
+    ax2 = CM.Axis(fig[1, 2]; xlabel = "separation r", ylabel = "trace",
+                  title = "its trace is the scalar second-order entry")
+    CM.lines!(ax2, mids, T.values[1, 1, :] .+ T.values[2, 2, :]; linewidth = 6,
+              color = (:seagreen, 0.35), label = "T₁₁ + T₂₂")
+    CM.lines!(ax2, mids, s2.values; linewidth = 2, color = :black, linestyle = :dash,
+              label = "⟨‖δu‖²⟩")
+    CM.axislegend(ax2; position = :rb)
+
+    out = joinpath(ASSETS_DIR, "sf_tensor.png")
+    CM.save(out, fig)
+    println("  wrote $out")
+end
+
+# ─── Figure: the soft-binned non-uniform FFT route for scattered points ───
+
+function generate_scattered_modes_figure()
+    Random.seed!(44)
+    N = 6000
+    x = 2π .* rand(2, N)
+    u = zeros(2, N)
+    for p in 1:N
+        u[1, p] = cos(2 * x[1, p]) + 0.4sin(3 * x[2, p])
+        u[2, p] = -sin(2 * x[2, p])
+    end
+    bins = collect(range(0.15, 2.0; length = 15))
+    mids = SF.midpoints(bins)
+    exact = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
+                                             output_type = SF.StructureFunction, verbose = false,
+                                             show_progress = false)
+    tag = SFC.NonuniformFFTsSpectralBackend()
+    Ms = [48, 64, 96, 128, 192]
+    curves = Dict{Int, Vector{Float64}}()
+    errs = Float64[]
+    for M in Ms
+        s = SFC.ScatteredModesSchedule(x, 2.0, (M, M); taper = SF.GaussianTaper(2π / M))
+        r = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag;
+                                             output_type = SF.StructureFunction, verbose = false)
+        curves[M] = collect(r.values)
+        push!(errs, maximum(abs.(r.values .- exact.values)) / maximum(abs, exact.values))
+    end
+
+    fig = CM.Figure(size = (1100, 430))
+    ax1 = CM.Axis(fig[1, 1]; xlabel = "separation r", ylabel = "⟨δu_L²⟩",
+                  title = "Scattered points through a non-uniform FFT: a soft bin")
+    CM.lines!(ax1, mids, exact.values; linewidth = 6, color = (:black, 0.3), label = "hard bins, pair loop")
+    for M in (48, 128, 192)
+        CM.lines!(ax1, mids, curves[M]; linewidth = 2, label = "$(M)² modes")
+    end
+    CM.axislegend(ax1; position = :rb)
+
+    ax2 = CM.Axis(fig[1, 2]; xscale = log10, yscale = log10, xlabel = "modes per direction",
+                  ylabel = "max relative difference",
+                  title = "not exact at any finite mode count, and convergent")
+    CM.scatterlines!(ax2, Float64.(Ms), errs; linewidth = 3, markersize = 12)
+
+    out = joinpath(ASSETS_DIR, "sf_scattered_modes.png")
+    CM.save(out, fig)
+    println("  wrote $out")
+end
+
+# ─── Figure: fitting a spectrum and a flux instead of inverting them ──────
+
+function generate_fits_figure()
+    D = 2
+    k_edges = collect(10 .^ range(log10(0.5), log10(20.0); length = 11))
+    kc = SF.midpoints(k_edges)
+    E_true = 0.7 .* kc .^ (-5 / 3)
+    r = collect(10 .^ range(log10(0.05), log10(4.0); length = 70))
+    edges = vcat(r, 2 * r[end] - r[end - 1])
+    S2 = SFC.SpectrumForwardModel(Val(D), r, k_edges).H * E_true
+    res2 = SF.StructureFunction(SFT.S2SFType(), edges, S2)
+    seg = SFC.fit_spectrum(res2, [first(k_edges), last(k_edges)], SFC.SegmentedPowerLaw(1), Val(D))
+
+    # a flux with one injection step, through the third-order forward model
+    ε_true = 0.35
+    ξ_true = zeros(length(kc))
+    ξ_true[4] = 1.2
+    fm = SFC.FluxForwardModel(r, k_edges)
+    S3 = fm.H * vcat(ε_true, ξ_true)
+    res3 = SF.StructureFunction(SFT.S3SFType(), edges, S3)
+    W = fill(1e-6, length(r))
+    plain = SFC.fit_flux(res3, k_edges, SFC.RegularizedLeastSquares(nothing); W)
+    nnls = SFC.fit_flux(res3, k_edges, SFC.NonNegativeLeastSquares(); W)
+    F_true = SFC.flux_matrix(fm) * vcat(ε_true, ξ_true)
+    k_resolved = π / maximum(r)      # a bin narrower than this is not resolved by the sampled range
+
+    fig = CM.Figure(size = (1100, 430))
+    ax1 = CM.Axis(fig[1, 1]; xscale = log10, yscale = log10, xlabel = "wavenumber k",
+                  ylabel = "E(k)", title = "A spectrum fitted from S₂, not inverted")
+    CM.lines!(ax1, kc, E_true; linewidth = 6, color = (:black, 0.3), label = "true k^(-5/3)")
+    CM.lines!(ax1, kc, SFC.segmented_spectrum(seg.parameters, kc, seg.breakpoints); linewidth = 2,
+              linestyle = :dash, label = "SegmentedPowerLaw(1)")
+    CM.text!(ax1, 1.0, 0.05; text = "fitted slope $(round(seg.parameters[2]; digits = 3))")
+    CM.axislegend(ax1; position = :lb)
+
+    ax2 = CM.Axis(fig[1, 2]; xscale = log10, xlabel = "wavenumber k", ylabel = "flux Π(k)",
+                  title = "and a spectral flux from S₃, where the prior does the work")
+    CM.lines!(ax2, nnls.k, F_true; linewidth = 6, color = (:black, 0.3), label = "true flux")
+    CM.lines!(ax2, plain.k, plain.F; linewidth = 2, linestyle = :dash, color = :firebrick,
+              label = "least squares, no prior")
+    CM.lines!(ax2, nnls.k, nnls.F; linewidth = 2, color = :seagreen,
+              label = "NonNegativeLeastSquares (ξ ≥ 0)")
+    CM.vlines!(ax2, [k_resolved]; color = :gray, linestyle = :dashdot)
+    CM.text!(ax2, k_resolved * 1.04, minimum(F_true); text = "π / r_max", color = :gray)
+    CM.hlines!(ax2, [0.0]; color = :gray, linestyle = :dot)
+    CM.axislegend(ax2; position = :rb)
+
+    out = joinpath(ASSETS_DIR, "sf_fits.png")
+    CM.save(out, fig)
+    println("  wrote $out")
+end
+
 println("Generating StructureFunctions.jl feature figures...")
 generate_spectra_figure()
 generate_missing_data_figure()
 generate_directional_figure()
 generate_helmholtz_spectra_figure()
-generate_channels_figure()
+generate_fields_figure()
 generate_gridded_algorithms_figure()
 generate_advective_figure()
 generate_exact_laws_figure()
 generate_spherical_figure()
 generate_culling_figure()
 generate_covariance_figure()
+generate_weights_figure()
+generate_sorted_line_figure()
+generate_tensor_figure()
+generate_scattered_modes_figure()
+generate_fits_figure()
 println("Done.")

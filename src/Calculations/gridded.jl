@@ -5,7 +5,7 @@
 """
     AllValid()
 
-Every cell holds a usable datum, as an indexable value rather than an absent one.
+Every cell holds a usable datum, as an indexable value.
 
 Distinct from a grid's own mask, which says which cells *exist*: a cell can exist and still hold
 nothing, and it is the field that decides. [`field_validity`](@ref) combines the two. Spelling the
@@ -42,13 +42,13 @@ function field_validity(u::AbstractArray, cell_mask = nothing)
     return any_invalid ? v : AllValid()
 end
 
-field_validity(f::CH.Fields, cell_mask = nothing) = field_validity(CH.packed(f), cell_mask)
+field_validity(f::MF.Fields, cell_mask = nothing) = field_validity(MF.packed(f), cell_mask)
 
 """
     NoWeights()
 
-Every pair counts once, as an indexable value rather than an absent one: the unweighted sweep is the
-same kernel with the weight folded away, as [`AllValid`](@ref) folds the mask away.
+Every pair counts once, as an indexable value: the unweighted sweep is the same kernel with the
+weight folded away, as [`AllValid`](@ref) folds the mask away.
 """
 struct NoWeights end
 
@@ -84,10 +84,10 @@ function cell_measure end
 """
     _packed(u) -> (data, Val(D), Val(V), Val(K))
 
-The one form every gridded kernel indexes: the `(V·D + K, cells)` matrix of a field with its channel
-layout as type parameters. A bare `(D, cells...)` array is one vector channel of width `D`.
+The one form every gridded kernel indexes: the `(V·D + K, cells)` matrix of a field with its field
+layout as type parameters. A bare `(D, cells...)` array is one vector field of width `D`.
 """
-@inline _packed(f::CH.Fields{D, V, K}) where {D, V, K} = (CH.packed(f), Val(D), Val(V), Val(K))
+@inline _packed(f::MF.Fields{D, V, K}) where {D, V, K} = (MF.packed(f), Val(D), Val(V), Val(K))
 
 function _packed(u::AbstractArray)
     D = size(u, 1)
@@ -97,20 +97,20 @@ end
 """
     _check_grid_field(sf, data, schedule, ::Val{D}, ::Val{V}, ::Val{K})
 
-The operator reads only channels the field carries; the packed field is `(V·D + K, n_cells)`; and a
-field carrying vector channels has at least one component per grid direction, so that a lag has a
+The operator reads only fields the field carries; the packed field is `(V·D + K, n_cells)`; and a
+field carrying vector fields has at least one component per grid direction, so that a lag has a
 component to lie along.
 """
 function _check_grid_field(sf, data::AbstractMatrix, s, ::Val{D}, ::Val{V}, ::Val{K}) where {D, V, K}
-    validate_channels(sf, Val(V), Val(K))
+    validate_fields(sf, Val(V), Val(K))
     Dg = grid_dimension(s)
     (V == 0 || D >= Dg) || throw(ArgumentError(
         "the field has $D components but the grid has $Dg directions; a lag needs a component per " *
         "direction",
     ))
     size(data, 1) == V * D + K || throw(DimensionMismatch(
-        "field has $(size(data, 1)) components, declared $V vector channel(s) of width $D and $K " *
-        "scalar channel(s), $(V * D + K) components",
+        "field has $(size(data, 1)) components, declared $V vector field(s) of width $D and $K " *
+        "scalar field(s), $(V * D + K) components",
     ))
     size(data, 2) == n_cells(s) || throw(DimensionMismatch(
         "field holds $(size(data, 2)) cells, the grid $(n_cells(s))",
@@ -118,10 +118,10 @@ function _check_grid_field(sf, data::AbstractMatrix, s, ::Val{D}, ::Val{V}, ::Va
     return nothing
 end
 
-"""The width a lag direction is expressed in: the vector channels' width, or the grid's without any."""
+"""The width a lag direction is expressed in: the vector fields' width, or the grid's without any."""
 @inline _direction_width(::Val{D}, ::Val{V}, ::Val{Dg}) where {D, V, Dg} = Val(V == 0 ? Dg : D)
 
-"""One pair's increment from the packed field: the plain vector for one vector channel, else a bundle."""
+"""One pair's increment from the packed field: the plain vector for one vector field, else a multi-field."""
 @inline _lag_increment(::Val{D}, ::Val{1}, ::Val{0}, data::AbstractMatrix{T}, k, kp) where {D, T} =
     SA.SVector{D, T}(ntuple(c -> @inbounds(data[c, kp] - data[c, k]), Val(D)))
 
@@ -133,7 +133,7 @@ end
         SA.SVector{D, T}(ntuple(d -> @inbounds(data[o + d, kp] - data[o + d, k]), Val(D)))
     end
     scalars = ntuple(c -> @inbounds(data[V * D + c, kp] - data[V * D + c, k]), Val(K))
-    return CH.ChannelIncrement{D, V, K, T}(vectors, scalars)
+    return MF.FieldIncrement{D, V, K, T}(vectors, scalars)
 end
 
 """Split a transported packed increment into what the operator reads."""
@@ -145,11 +145,11 @@ end
         SA.SVector{D, T}(ntuple(d -> @inbounds(δ[o + d]), Val(D)))
     end
     scalars = ntuple(c -> @inbounds(δ[V * D + c]), Val(K))
-    return CH.ChannelIncrement{D, V, K, T}(vectors, scalars)
+    return MF.FieldIncrement{D, V, K, T}(vectors, scalars)
 end
 
 @inline _pair_value(sf, δu::SA.SVector, dx, r2) = SFT._sf_raw(sf, δu, dx, r2)
-@inline _pair_value(sf, δu::CH.ChannelIncrement, dx, r2) = sf(δu, dx / sqrt(r2))
+@inline _pair_value(sf, δu::MF.FieldIncrement, dx, r2) = sf(δu, dx / sqrt(r2))
 
 # Which end of a lag's pairs is read first: the sign of the displacement along the first direction
 # that separates the ends — unless that direction half-turns, when neither end comes first (see
@@ -218,9 +218,9 @@ function gridded_sweep!(sums::AbstractVector, counts::AbstractVector, sf, u::Abs
                           Val(0), spectral_backend; kwargs...)
 end
 
-gridded_sweep!(sums::AbstractVector, counts::AbstractVector, sf, f::CH.Fields{D, V, K}, schedule,
+gridded_sweep!(sums::AbstractVector, counts::AbstractVector, sf, f::MF.Fields{D, V, K}, schedule,
                distance_bins, spectral_backend; kwargs...) where {D, V, K} =
-    gridded_sweep!(sums, counts, sf, CH.packed(f), schedule, distance_bins, Val(D), Val(V), Val(K),
+    gridded_sweep!(sums, counts, sf, MF.packed(f), schedule, distance_bins, Val(D), Val(V), Val(K),
                    spectral_backend; kwargs...)
 
 function gridded_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, u::AbstractArray, schedule,
@@ -230,9 +230,9 @@ function gridded_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, u::Abs
                           Val(D), Val(1), Val(0), spectral_backend; kwargs...)
 end
 
-gridded_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, f::CH.Fields{D, V, K}, schedule,
+gridded_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, f::MF.Fields{D, V, K}, schedule,
                distance_bins, axis_bins, spectral_backend; kwargs...) where {D, V, K} =
-    gridded_sweep!(sums, counts, sf, CH.packed(f), schedule, distance_bins, axis_bins, Val(D), Val(V),
+    gridded_sweep!(sums, counts, sf, MF.packed(f), schedule, distance_bins, axis_bins, Val(D), Val(V),
                    Val(K), spectral_backend; kwargs...)
 
 function gridded_lag_sweep!(sums::AbstractVector, counts::AbstractVector, sf, u::AbstractArray,
@@ -242,9 +242,9 @@ function gridded_lag_sweep!(sums::AbstractVector, counts::AbstractVector, sf, u:
                               Val(1), Val(0); kwargs...)
 end
 
-gridded_lag_sweep!(sums::AbstractVector, counts::AbstractVector, sf, f::CH.Fields{D, V, K}, schedule,
+gridded_lag_sweep!(sums::AbstractVector, counts::AbstractVector, sf, f::MF.Fields{D, V, K}, schedule,
                    distance_bins; kwargs...) where {D, V, K} =
-    gridded_lag_sweep!(sums, counts, sf, CH.packed(f), schedule, distance_bins, Val(D), Val(V), Val(K);
+    gridded_lag_sweep!(sums, counts, sf, MF.packed(f), schedule, distance_bins, Val(D), Val(V), Val(K);
                        kwargs...)
 
 function gridded_lag_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, u::AbstractArray,
@@ -254,9 +254,9 @@ function gridded_lag_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, u:
                               Val(D), Val(1), Val(0); kwargs...)
 end
 
-gridded_lag_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, f::CH.Fields{D, V, K}, schedule,
+gridded_lag_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, f::MF.Fields{D, V, K}, schedule,
                    distance_bins, axis_bins; kwargs...) where {D, V, K} =
-    gridded_lag_sweep!(sums, counts, sf, CH.packed(f), schedule, distance_bins, axis_bins, Val(D),
+    gridded_lag_sweep!(sums, counts, sf, MF.packed(f), schedule, distance_bins, axis_bins, Val(D),
                        Val(V), Val(K); kwargs...)
 
 # ---------------------------------------------------------------------------------------------------
@@ -344,6 +344,15 @@ The largest `|h_d|` along each uniform direction at which a pair of the two slab
 within `r_max`; the two-argument form bounds it over every slab pair.
 """
 function lag_limits end
+
+"""
+    uniform_lag_box(schedule) -> Bool
+
+Whether [`lag_limits`](@ref)`(schedule, I, J, r_max)` is the same box for every slab pair, so a device
+launch indexes its work items by division on one box. A schedule that answers `false` carries one box
+per pair, and the launch is indexed through the prefix sum of their volumes.
+"""
+uniform_lag_box(::AbstractSeparableSchedule) = true
 
 """
     lag_transport(schedule) -> AbstractLagTransport
@@ -867,7 +876,7 @@ lag's direction, `sums` and `counts` then being `(n_distance, n_angle)`.
 
 `u` is stored `(component, cells...)` with its trailing axes matching the schedule, and `D` is its
 component count, which may exceed the grid's dimension — a lag then lies in the grid's directions
-and is zero along the rest. A `Fields` bundle carries several channels the same way. `valid` says
+and is zero along the rest. A a multi-field carries several fields the same way. `valid` says
 which cells hold a datum; a pair counts only when both of its ends do (see [`field_validity`](@ref)).
 `weights`, one finite weight per cell (`nothing` for none), multiplies each pair by `w_k · w_kp` in both
 `sums` and `counts`, so the bin average is `Σ w w v / Σ w w` and `counts` must then be floating point;

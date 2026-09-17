@@ -1,10 +1,10 @@
-# Multi-channel (`Fields`) sweeps on a device.
+# Multi-field (`Fields`) sweeps on a device.
 #
-# The bundle is already one packed `(V*F + K, N)` array, which is exactly what the scalar kernels
-# stage, so the only new thing here is building the per-pair `ChannelIncrement` the operator reads.
+# The multi-field is already one packed `(V*F + K, N)` array, which is exactly what the scalar kernels
+# stage, so the only new thing here is building the per-pair `FieldIncrement` the operator reads.
 # One thread owns an `i` and walks every `j > i`, accumulating into a global histogram.
 
-KA.@kernel unsafe_indices = true function _channel_kernel!(
+KA.@kernel unsafe_indices = true function _field_kernel!(
     sums, counts, @Const(x_mat), @Const(data), sf, geom, plan,
     N_points::Int, N_bins::Int, ::Val{W}, ::Val{F}, ::Val{V}, ::Val{K},
 ) where {W, F, V, K}
@@ -18,7 +18,7 @@ KA.@kernel unsafe_indices = true function _channel_kernel!(
             if ok
                 bin = SFC.squared_digitize(plan, r * r)
                 if 1 <= bin <= N_bins
-                    val = SFC._channel_value(sf, Val(F), Val(V), Val(K), data, geom, frame, r, i, j)
+                    val = SFC._field_value(sf, Val(F), Val(V), Val(K), data, geom, frame, r, i, j)
                     @atomic sums[bin] += val
                     @atomic counts[bin] += one(eltype(counts))
                 end
@@ -27,11 +27,11 @@ KA.@kernel unsafe_indices = true function _channel_kernel!(
     end
 end
 
-function SFC.gpu_calculate_structure_function_channels!(
+function SFC.gpu_calculate_structure_function_fields!(
     backend::CB.AbstractGPUBackend,
     sums::AbstractVector, counts::AbstractVector,
     sf::SFT.AbstractPairwiseStructureFunctionType,
-    x::AbstractMatrix, f::SFC.CH.Fields{D, V, K}, distance_bins;
+    x::AbstractMatrix, f::SFC.MF.Fields{D, V, K}, distance_bins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling = SFC.AutoCulling(),
     verbose::Bool = true, show_progress::Bool = true,
@@ -39,10 +39,10 @@ function SFC.gpu_calculate_structure_function_channels!(
     _ = (verbose, show_progress)
     # Culling reorders the points on the host; the device sweep enumerates the full triangle, and
     # a permutation does not change a histogram, so the request is honoured by declining to permute.
-    geom, xk, data, vF, plan, _ = SFC.channel_setup(f, x, distance_bins, distance_metric,
+    geom, xk, data, vF, plan, _ = SFC.field_setup(f, x, distance_bins, distance_metric,
                                                     SFC.NoCulling())
     culling isa SFC.AlwaysCulling && throw(ArgumentError(
-        "GPU multi-channel sweeps do not build a cell grid on device; use AutoCulling (which " *
+        "GPU multi-field sweeps do not build a cell grid on device; use AutoCulling (which " *
         "declines here) or a CPU backend to cull.",
     ))
 
@@ -57,7 +57,7 @@ function SFC.gpu_calculate_structure_function_channels!(
     s_dev = KA.adapt(ka, zeros(eltype(sums), nb))
     c_dev = KA.adapt(ka, zeros(eltype(counts), nb))
 
-    kernel = _channel_kernel!(ka, 256)
+    kernel = _field_kernel!(ka, 256)
     kernel(s_dev, c_dev, x_dev, d_dev, sf, geom, plan, N, nb,
            Val(W), Val(F), Val(V), Val(K); ndrange = N)
     KA.synchronize(ka)

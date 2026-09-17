@@ -1,6 +1,7 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO, HelperFunctions as SFH, Fields
+    StructureFunctionObjects as SFO, HelperFunctions as SFH
+using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads: OhMyThreads
 using FFTW: FFTW
@@ -84,7 +85,7 @@ function _reference(sf, x, u, bins; metric = DI.Euclidean())
             verbose = false, show_progress = false)
         return ref.sums, Int.(ref.counts)
     end
-    SF.calculate_structure_function!(s, c, sf, x, u, bins; distance_metric = metric)
+    SFC.calculate_structure_function!(s, c, sf, x, u, bins; distance_metric = metric)
     return s, c
 end
 
@@ -134,7 +135,7 @@ Test.@testset "the zonal transform equals the zonal sweep and the spherical pair
     end
 end
 
-Test.@testset "a scalar channel rides the zonal transform" begin
+Test.@testset "a scalar field rides the zonal transform" begin
     n_lon, lats = 11, [-0.7, -0.4, 0.0, 0.3, 0.75]
     dlon = 2π / n_lon
     Random.seed!(7200)
@@ -205,7 +206,7 @@ Test.@testset "the rectilinear transform equals the sweep and the pair loop" beg
     end
     Test.@test sum(_run(SFT.L2SFType(), u, per, [0.0, 1e3])[2]) == 32 * 31 ÷ 2
 
-    # a scalar bundle on a stretched grid
+    # a scalar multi-field on a stretched grid
     th = randn(4, 8)
     f = Fields(vectors = (u,), scalars = (th,))
     for sf in (SFT.MixedSFType{1, 0, 1}(), SFT.MixedSFType{1, 0, 2}(), SFT.ScalarSFType{3}())
@@ -427,4 +428,30 @@ Test.@testset "the transform tag is served wherever there is a lag, and refused 
                                                        bins, ax, Val(2), FFT_TAG; second_axis = src)
     Test.@test_throws ArgumentError SFC.gridded_lag_sweep!(zeros(7, 3), zeros(7, 3), SFT.L2SFType(), u, sched,
                                                            bins, ax, Val(2); second_axis = src)
+end
+
+Test.@testset "uniform_lag_box agrees with the lag limits it describes" begin
+    # A device launch indexes its work items by division on one lag box when a schedule answers
+    # `true`, and through the prefix sum of the pairs' box volumes when it answers `false`. A `true`
+    # that is not the truth silently drops every lag outside the first pair's box, so the trait is
+    # checked against `lag_limits` itself, on every schedule and at several radii.
+    lats = collect(range(-1.2, 1.2; length = 9))
+    zonal = SFC.ZonalLagSchedule(lats, 16, 2π / 16, 1.0, true)
+    uniform = SFC.UniformLagSchedule((12, 10), (0.1, 0.2), (true, false))
+    rect = SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((9,), (0.1,), (false,)),
+                                      (collect(range(0.0, 1.0; length = 7)),), (2, 1))
+    for s in (uniform, rect, zonal), r_max in (0.05, 0.3, 1.0, 3.0)
+        items = SFC.sweep_items(s, r_max, 1, false)
+        isempty(items) && continue
+        limits = unique(SFC.lag_limits(s, it[1], it[2], r_max) for it in items)
+        # the direction the device depends on: `true` must mean one box for every pair
+        SFC.uniform_lag_box(s) && Test.@test length(limits) == 1
+    end
+    # and the sphere must answer `false`, because at a radius that saturates nothing a row pair near
+    # a pole reaches more longitude offsets than one at the equator
+    zonal_limits = unique(SFC.lag_limits(zonal, it[1], it[2], 0.3)
+                          for it in SFC.sweep_items(zonal, 0.3, 1, false))
+    Test.@test length(zonal_limits) > 1
+    Test.@test SFC.uniform_lag_box(zonal) == false
+    Test.@test SFC.uniform_lag_box(uniform) && SFC.uniform_lag_box(rect)
 end

@@ -1,14 +1,12 @@
 # =============================================================================
-# Head-to-head for the ONE 1D regime where the routing choice is still live:
-# fixed-x individual SF, where the warp-replica strip kernel beats the CUDA
-# N-body kernel (tiny-histogram, contention-bound). Verifies equal histograms.
+# Head-to-head for the one 1D regime where the routing choice is live: fixed-x
+# individual SF, where the warp-replica strip kernel beats the CUDA N-body
+# kernel, the histogram being small enough to be contention-bound. Checks that
+# the two fill equal histograms.
 #   julia --project=gpu gpu/bench_1d_old_vs_nbody.jl
 #
-# The other regimes were measured head-to-head and are no longer a choice — the
-# losing launchers were unreachable from production and have been deleted:
-#   ind varying  61 vs 115 bapps, SP1D fixed 30 vs 43, SP1D varying 28 vs 43,
-#   SP2D fixed 5 vs 25, SP2D varying 1 vs 25 (all: N-body/unified wins).
-# See gpu/OPTIMAL_KERNEL_DESIGN.md.
+# Every other 1D and 2D regime takes the N-body or unified kernel, so it has one
+# launcher and nothing to compare.
 # =============================================================================
 using StructureFunctions
 import KernelAbstractions as KA

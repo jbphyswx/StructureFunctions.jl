@@ -7,8 +7,8 @@
 Accumulate `Σ w_i w_j sf(δu, r̂)` and `Σ w_i w_j` over the pairs of a one-dimensional point list into
 the distance histogram `sums`/`counts`, exactly, in `O(N log N + N n_bins)`.
 
-`x` holds the coordinate of each point, `data` the packed channels `(V·D + K, N)` — `D = 1` for a
-vector channel — and `sf` a polynomial operator ([`SFT.is_polynomial_operator`](@ref)). Sorted by
+`x` holds the coordinate of each point, `data` the packed fields `(V·D + K, N)` — `D = 1` for a
+vector field — and `sf` a polynomial operator ([`SFT.is_polynomial_operator`](@ref)). Sorted by
 coordinate, the partners of a point in one bin form an index range, found by pointers that advance
 with the point and bin pairs with the `digitize` call and the `x_j − x_i` the pair loop uses, so the
 counts equal the pair loop's exactly. The increment moments over a range are prefix-sum differences
@@ -25,13 +25,13 @@ function sorted_line_sweep!(
         "$(typeof(sf)) is not a polynomial in the increment; the sorted line route sums increment moments " *
         "and the pair loop evaluates any operator",
     ))
-    validate_channels(sf, Val(V), Val(K))
+    validate_fields(sf, Val(V), Val(K))
     N = length(x)
     size(data, 2) == N || throw(DimensionMismatch("x holds $N points and the field $(size(data, 2))"))
     W = V * D + K
     size(data, 1) == W || throw(DimensionMismatch(
-        "field has $(size(data, 1)) components, declared $V vector channel(s) of width $D and $K scalar " *
-        "channel(s), $W components",
+        "field has $(size(data, 1)) components, declared $V vector field(s) of width $D and $K scalar " *
+        "field(s), $W components",
     ))
     w = _pair_weights(weights, N, OT)
     _check_weighted_counts(w, CT)
@@ -86,7 +86,7 @@ end
     SA.SVector{Dr, T}(ntuple(d -> d == 1 ? one(T) : zero(T), Val(Dr)))
 
 """
-Every monomial of degree `≤ P` of one point's channels, in the order of `_monomial_keys`; the first
+Every monomial of degree `≤ P` of one point's fields, in the order of `_monomial_keys`; the first
 entry is the degree-zero monomial `1`.
 """
 @generated function _line_monomials(u::SA.SVector{W, T}, ::Val{W}, ::Val{P}) where {W, T, P}

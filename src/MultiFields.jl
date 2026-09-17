@@ -1,16 +1,16 @@
 """
-Multi-channel fields: several quantities sampled at the same points, differenced together.
+Several fields at one set of points, differenced together.
 
 A structure function is a statement about one pair and any number of quantities carried at its two
-ends. Velocity is a **vector** channel, parallel-transported by the geometry before differencing; a
-tracer, a vorticity, a temperature is a **scalar** channel, differenced as it stands. Both are the
-same pair sweep, so they belong in one field rather than in separate calls.
+ends. Velocity is a **vector** field, parallel-transported by the geometry before differencing; a
+tracer, a vorticity, a temperature is a **scalar** field, differenced as it stands. Both are the
+same pair sweep, so they travel together in one [`Fields`](@ref).
 """
-module Channels
+module MultiFields
 
 using StaticArrays: StaticArrays as SA
 
-export Fields, ChannelIncrement, n_vector_channels, n_scalar_channels, channel_dimension
+export Fields, FieldIncrement, n_vector_fields, n_scalar_fields, field_dimension
 
 """
     Fields(; vectors = (), scalars = ())
@@ -28,24 +28,24 @@ Fields(scalars = (ω, 𝓐ω))                     # a scalar and its advection
 Each vector is `(D, N)` and each scalar is `(N,)` or `(1, N)`; on a grid, each vector is
 `(D, cells...)` and each scalar `(cells...)`, the cells flattened in the order the array stores them.
 They are packed once, at construction, into the single `(V·D + K, N)` array the kernels already load —
-so a pair costs one contiguous read whatever it carries, and the channel counts are type parameters,
+so a pair costs one contiguous read whatever it carries, and the field counts are type parameters,
 so the kernel specialises on them.
 
-The name says what it is: these are the fields; those ones are vector fields; those are scalar
-fields. Which is transported and which is not follows from that, and from nothing else.
+Which is transported and which is not follows from the name and from nothing else: a vector field
+carries a direction the geometry must rotate, a scalar field does not.
 """
 struct Fields{D, V, K, A <: AbstractMatrix}
     data::A
 end
 
-"""Velocity-like channels, each parallel-transported."""
-@inline n_vector_channels(::Fields{D, V, K}) where {D, V, K} = V
+"""Velocity-like fields, each parallel-transported."""
+@inline n_vector_fields(::Fields{D, V, K}) where {D, V, K} = V
 
-"""Tracer-like channels, each differenced without transport."""
-@inline n_scalar_channels(::Fields{D, V, K}) where {D, V, K} = K
+"""Tracer-like fields, each differenced without transport."""
+@inline n_scalar_fields(::Fields{D, V, K}) where {D, V, K} = K
 
-"""Components in each vector channel."""
-@inline channel_dimension(::Fields{D}) where {D} = D
+"""Components in each vector field."""
+@inline field_dimension(::Fields{D}) where {D} = D
 
 @inline packed(f::Fields) = f.data
 
@@ -55,30 +55,30 @@ end
 function Fields(; vectors = (), scalars = ())
     V = length(vectors)
     K = length(scalars)
-    V * K >= 0 || throw(ArgumentError("channel counts cannot be negative"))
+    V * K >= 0 || throw(ArgumentError("field counts cannot be negative"))
     V + K > 0 || throw(ArgumentError(
-        "a field needs at least one channel; got no vectors and no scalars",
+        "a field needs at least one field; got no vectors and no scalars",
     ))
     D = V == 0 ? 0 : size(first(vectors), 1)
     for (i, v) in enumerate(vectors)
         ndims(v) >= 2 || throw(ArgumentError(
-            "vector channel $i must be (D, N) or (D, cells...); got an array of $(ndims(v)) dimensions",
+            "vector field $i must be (D, N) or (D, cells...); got an array of $(ndims(v)) dimensions",
         ))
         size(v, 1) == D || throw(DimensionMismatch(
-            "vector channel $i has $(size(v, 1)) components, channel 1 has $D; every vector " *
-            "channel is transported by the same geometry and so must have the same dimension",
+            "vector field $i has $(size(v, 1)) components, field 1 has $D; every vector " *
+            "field is transported by the same geometry and so must have the same dimension",
         ))
     end
     cells = V > 0 ? size(first(vectors))[2:end] : size(first(scalars))
     N = prod(cells)
     for (i, v) in enumerate(vectors)
         size(v)[2:end] == cells || throw(DimensionMismatch(
-            "vector channel $i covers cells $(size(v)[2:end]), expected $cells",
+            "vector field $i covers cells $(size(v)[2:end]), expected $cells",
         ))
     end
     for (i, s) in enumerate(scalars)
         (size(s) == cells || length(s) == N) || throw(DimensionMismatch(
-            "scalar channel $i covers $(size(s)), expected $cells or $N points",
+            "scalar field $i covers $(size(s)), expected $cells or $N points",
         ))
     end
 
@@ -97,28 +97,28 @@ function Fields(; vectors = (), scalars = ())
 end
 
 """
-    ChannelIncrement(vectors, scalars)
+    FieldIncrement(vectors, scalars)
 
-One pair's increment across every channel: each vector channel already transported into the pair's
-common frame, each scalar channel already differenced.
+One pair's increment across every field: each vector field already transported into the pair's
+common frame, each scalar field already differenced.
 
-An operator reads the channels it names. A field of one vector channel and no scalars does **not**
+An operator reads the fields it names. A field of one vector field and no scalars does **not**
 produce one of these — its increment is the plain `SVector` every existing operator already takes, so
-the single-channel path is unchanged down to the instruction.
+the single-field path is unchanged down to the instruction.
 """
-struct ChannelIncrement{D, V, K, T}
+struct FieldIncrement{D, V, K, T}
     vectors::NTuple{V, SA.SVector{D, T}}
     scalars::NTuple{K, T}
 end
 
 """The `i`-th transported vector increment."""
-@inline vector_channel(c::ChannelIncrement, i::Integer) = @inbounds c.vectors[i]
+@inline vector_field(c::FieldIncrement, i::Integer) = @inbounds c.vectors[i]
 
 """The `i`-th scalar increment."""
-@inline scalar_channel(c::ChannelIncrement, i::Integer) = @inbounds c.scalars[i]
+@inline scalar_field(c::FieldIncrement, i::Integer) = @inbounds c.scalars[i]
 
-@inline n_vector_channels(::ChannelIncrement{D, V, K}) where {D, V, K} = V
-@inline n_scalar_channels(::ChannelIncrement{D, V, K}) where {D, V, K} = K
-@inline channel_dimension(::ChannelIncrement{D}) where {D} = D
+@inline n_vector_fields(::FieldIncrement{D, V, K}) where {D, V, K} = V
+@inline n_scalar_fields(::FieldIncrement{D, V, K}) where {D, V, K} = K
+@inline field_dimension(::FieldIncrement{D}) where {D} = D
 
-end # module Channels
+end # module MultiFields

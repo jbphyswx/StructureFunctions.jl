@@ -70,12 +70,10 @@ function _gpu_1d_unified_device(
     return Array(out_dev), Array(cnt_dev)
 end
 
-"""Individual (NMOM=1) 1D batch device launch, routed to the measured-optimal
-kernel per regime (job 239164, histograms verified equal):
-- fixed-x + linear/log FMA bins → OLD global warp-replica + W-strip kernel
-  (tiny-histogram contention-bound regime: 147 vs 115 bapps for N-body).
-- varying-x, or general (raw-vector) fixed-x bins → N-body broadcast (115 vs 61
-  bapps for the old kernel on varying-x; also handles general bins).
+"""Individual (NMOM=1) 1D batch device launch, routed per regime:
+- fixed-x with linear or log FMA bins → global warp-replica kernel over W-strips, which wins where
+  the histogram is small enough to be contention-bound.
+- varying-x, or general (raw-vector) bins → N-body broadcast.
 Returns host `(sums, counts)` of shape `(NB, B)`."""
 function _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins,
                                    NB::Int, B::Int, fixed_x::Bool, ::Type{OT}, geom) where {OT}

@@ -87,11 +87,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
                 bin = _gpu_digitize_linear(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_linear_val_cols!(
                         output_sums, output_counts, val_first, val_last, val_inv_step, val_step,
-                        bin, du_L, du_L2, du_T2, N_val_edges,
+                        bin, du_L, du_n2, N_val_edges,
                     )
                 end
                 p += workgroup_size
@@ -153,11 +151,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
                 bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_linear_val_cols!(
                         output_sums, output_counts, val_first, val_last, val_inv_step, val_step,
-                        bin, du_L, du_L2, du_T2, N_val_edges,
+                        bin, du_L, du_n2, N_val_edges,
                     )
                 end
                 p += workgroup_size
@@ -220,10 +216,8 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
                 bin = _gpu_digitize_linear(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_inflinear_val!(
-                        output_sums, output_counts, bin, du_L, du_L2, du_T2, N_val_edges,
+                        output_sums, output_counts, bin, du_L, du_n2, N_val_edges,
                         val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
                     )
                 end
@@ -287,10 +281,8 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
                 bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_inflinear_val!(
-                        output_sums, output_counts, bin, du_L, du_L2, du_T2, N_val_edges,
+                        output_sums, output_counts, bin, du_L, du_n2, N_val_edges,
                         val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
                     )
                 end
@@ -354,11 +346,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
                 bin = _gpu_digitize_linear(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_inflinear_val_cols!(
                         output_sums, output_counts, val_first, val_last, val_inv_step, val_step, inner_last,
-                        bin, du_L, du_L2, du_T2, n_inner_edges, N_val_edges,
+                        bin, du_L, du_n2, n_inner_edges, N_val_edges,
                     )
                 end
                 p += workgroup_size
@@ -421,11 +411,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
                 bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_inflinear_val_cols!(
                         output_sums, output_counts, val_first, val_last, val_inv_step, val_step, inner_last,
-                        bin, du_L, du_L2, du_T2, n_inner_edges, N_val_edges,
+                        bin, du_L, du_n2, n_inner_edges, N_val_edges,
                     )
                 end
                 p += workgroup_size
@@ -487,11 +475,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
                 bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_log_val!(
                         output_sums, output_counts, val_first, val_last, val_inv_step, val_step, bin,
-                        du_L, du_L2, du_T2, N_val_edges,
+                        du_L, du_n2, N_val_edges,
                     )
                 end
                 p += workgroup_size
@@ -553,11 +539,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
                 bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global!(
                         output_sums, output_counts, value_edges, bin,
-                        du_L, du_L2, du_T2, N_val_edges,
+                        du_L, du_n2, N_val_edges,
                     )
                 end
                 p += workgroup_size
@@ -619,11 +603,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
                 bin = _gpu_digitize_linear(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_log_val!(
                         output_sums, output_counts, val_first, val_last, val_inv_step, val_step, bin,
-                        du_L, du_L2, du_T2, N_val_edges,
+                        du_L, du_n2, N_val_edges,
                     )
                 end
                 p += workgroup_size
@@ -685,11 +667,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
                 bin = _gpu_digitize_linear(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_log_val_cols!(
                         output_sums, output_counts, val_first, val_last, val_inv_step, val_step,
-                        bin, du_L, du_L2, du_T2, N_val_edges,
+                        bin, du_L, du_n2, N_val_edges,
                     )
                 end
                 p += workgroup_size
@@ -751,11 +731,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
                 bin = _gpu_digitize_log_spaced(dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
-                    du_T2 = du_n2 - du_L2
                     _gpu_accumulate_single_pass_2d_pair_global_log_val_cols!(
                         output_sums, output_counts, val_first, val_last, val_inv_step, val_step,
-                        bin, du_L, du_L2, du_T2, N_val_edges,
+                        bin, du_L, du_n2, N_val_edges,
                     )
                 end
                 p += workgroup_size

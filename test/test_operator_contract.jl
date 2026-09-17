@@ -1,5 +1,5 @@
 using Test: Test
-using StructureFunctions: StructureFunctions as SF, StructureFunctionTypes as SFT, Channels as CH
+using StructureFunctions: StructureFunctions as SF, StructureFunctionTypes as SFT, MultiFields as MF
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: normalize
 using Random: Random
@@ -13,13 +13,13 @@ function _outer(δu::SA.SVector{W, T}, ::Val{P}) where {W, T, P}
     return SFT.SymmetricMoments{W, P}(data)
 end
 
-# The increment the operator itself consumes: the plain vector for one vector channel and no
-# scalars, a ChannelIncrement otherwise.
+# The increment the operator itself consumes: the plain vector for one vector field and no
+# scalars, a FieldIncrement for every other shape.
 function _increment(δu::SA.SVector{W, T}, ::Val{D}, ::Val{V}, ::Val{K}) where {W, T, D, V, K}
     V == 1 && K == 0 && return SA.SVector{D, T}(ntuple(d -> δu[d], Val(D)))
     vectors = ntuple(a -> SA.SVector{D, T}(ntuple(d -> δu[(a - 1) * D + d], Val(D))), Val(V))
     scalars = ntuple(k -> δu[V * D + k], Val(K))
-    return CH.ChannelIncrement{D, V, K, T}(vectors, scalars)
+    return MF.FieldIncrement{D, V, K, T}(vectors, scalars)
 end
 
 function _check_operator(sf, D, V, K; n = 40)
@@ -58,7 +58,7 @@ Test.@testset "order is defined for every polynomial operator" begin
     Test.@test SFT.order(SFT.ProjectedStructureFunctionType{0, 4}()) == 4
 end
 
-Test.@testset "single vector channel: contraction equals the operator, D = $D" for D in (2, 3)
+Test.@testset "single vector field: contraction equals the operator, D = $D" for D in (2, 3)
     for sf in (
         SFT.S2SFType(), SFT.L2SFType(), SFT.T2SFType(), SFT.T2ComponentSFType(),
         SFT.L3SFType(), SFT.S3SFType(), SFT.L1T2SFType(), SFT.L1T2ComponentSFType(),
@@ -72,7 +72,7 @@ Test.@testset "single vector channel: contraction equals the operator, D = $D" f
     end
 end
 
-Test.@testset "vector and scalar channels" begin
+Test.@testset "vector and scalar fields" begin
     for sf in (
         SFT.ScalarSFType{2}(), SFT.ScalarSFType{3}(), SFT.ScalarSFType{4}(),
         SFT.MixedSFType{1, 0, 2}(), SFT.MixedSFType{1, 0, 1}(), SFT.MixedSFType{1, 2, 1}(),
@@ -91,7 +91,7 @@ Test.@testset "vector and scalar channels" begin
 end
 
 struct AbsoluteIncrementOperator <: SFT.AbstractPairwiseStructureFunctionType end
-(::AbsoluteIncrementOperator)(δu, r̂) = abs(SFT.SFC_channel_vector(δu, 1)[1])
+(::AbsoluteIncrementOperator)(δu, r̂) = abs(SFT.SFC_field_vector(δu, 1)[1])
 
 Test.@testset "non-polynomial operators are refused by name" begin
     δu = SA.SVector{2, Float64}(0.3, -1.2)
@@ -118,7 +118,7 @@ Test.@testset "non-polynomial operators are refused by name" begin
     )
 end
 
-Test.@testset "a channel the field does not carry is refused" begin
+Test.@testset "a field the field does not carry is refused" begin
     δu = SA.SVector{2, Float64}(randn(2))
     r̂ = SA.SVector{2, Float64}(1.0, 0.0)
     M2 = _outer(δu, Val(2))

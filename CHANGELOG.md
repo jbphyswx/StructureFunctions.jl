@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [0.4.0] - 2026-09-11
 
+### Names and namespace
+
+- The vocabulary is the domain's: several quantities at one set of points are **fields**, not
+  "channels". `Fields` now lives in the `MultiFields` submodule, with `FieldIncrement`,
+  `n_vector_fields`, `n_scalar_fields` and `field_dimension`.
+- The package exports only its own names — the bin-edge types, the tapers and `HarmonicNodes`, the
+  result types, `KHM` and `midpoints`. Everything else is reached through the submodule that owns it:
+  `Calculations` for the entries, `StructureFunctionTypes` for the operators, `HelperFunctions` for
+  the geometry, `MultiFields` for `Fields`.
+
 ### Input shapes and geometry
 
 - Arrays `(D, N)` for point lists and `(D, N, auxiliary...)` for batches over trailing axes are the
@@ -11,7 +21,7 @@ All notable changes to this project will be documented in this file.
 - Spherical geometry: `SphericalDistance(R)`, `Distances.Haversine` and `Distances.SphericalAngle`
   metrics transport every pair into its geodesic frame; a point is located by `(lon, lat)` while the
   velocity may carry a radial component. Degenerate (coincident, antipodal) pairs are skipped.
-- Channel bundles `Fields(vectors = (u, …), scalars = (θ, …))` with the operators `ScalarSFType{P}`,
+- Multi-fields `Fields(vectors = (u, …), scalars = (θ, …))` with the operators `ScalarSFType{P}`,
   `MixedSFType{NL,NT,P}`, `VectorDotSFType(a, b)`, `ScalarDotSFType(a, b)`; a field of scalars alone
   is located by its coordinates; odd scalar moments read every pair canonically, independent of the
   input order.
@@ -31,7 +41,7 @@ All notable changes to this project will be documented in this file.
   implementation for all separable schedules, with culling and threading.
 - The transform engine (`FastFourierTransformSpectralBackend`) computes **every polynomial operator at
   any order** on every separable schedule as cross-correlations of masked monomials: exact with missing
-  cells at every order, bounded directions zero-padded to `n + h_max`, channel bundles, weights, the
+  cells at every order, bounded directions zero-padded to `n + h_max`, multi-fields, weights, the
   directional histogram over the separation angle, and the increment moment tensors
   (`calculate_structure_function_tensor` on grids and the joint tensor over angle;
   `StructureFunctionTensor2DSumsAndCounts`). `AutoSpectralBackend()` costs both algorithms.
@@ -58,7 +68,7 @@ All notable changes to this project will be documented in this file.
   `helmholtz_spectra(L2, T2, geometry, lmax; variance)` by Legendre and Wigner-d orthogonality.
 - Third-order flux companions with their boundary terms: `spectral_flux` on `S3SFType`, `L3SFType`
   (with `S3`) and `MixedSFType{1,0,2}`, and `enstrophy_flux` from the velocity's advective structure
-  function; the `J₁` route on cross-channel moments.
+  function; the `J₁` route on cross-field moments.
 - `covariance`, `covariance_matrix` with a positive-definiteness check.
 - Regularised fits (issue #37): `SpectrumForwardModel`, `HelmholtzForwardModel`, `FluxForwardModel`;
   `RegularizedLeastSquares(prior)` with a posterior covariance, `NonNegativeLeastSquares()`,
@@ -78,6 +88,14 @@ All notable changes to this project will be documented in this file.
   moves, the cost falls with the cutoff.
 - Round-robin outer chunks on the threaded pair loops; SIMD compute/scatter split in the point kernels.
 - The direct lag sweep and the transform's lag loop allocate nothing per pair or per lag.
+- The device transform builds each monomial for every slab in one broadcast and transforms the slabs
+  in one batch, and writes the spectra in the order the binning stage reads them, so assembling its
+  input is a reshape. On an A100 the 720×360 lat-lon `L2` transform runs 28× the 8-thread CPU and a
+  stretched 256×128 grid 3.6×.
+- The device binning kernel launches each slab pair over its own lag box, which a schedule reports
+  through `uniform_lag_box`. On a sphere the box over all row pairs does not narrow with the largest
+  bin edge while each row pair's does, so the kernel speeds up as the sweep narrows: 2× at a quarter
+  of the sphere's radius, 3× at an eighth.
 
 ### Removed
 

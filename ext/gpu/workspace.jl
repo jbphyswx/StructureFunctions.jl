@@ -64,7 +64,7 @@ end
 Workspace for 2D histograms. Routes on `kind`:
 
 - `kind=:joint2d` — single distance × value joint histogram (see [`joint2d_smem_max`](@ref))
-- `kind=:single_pass_2d` — six-invariant-type single-pass 2D (see [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md))
+- `kind=:single_pass_2d` — six-invariant-type single-pass 2D
 
 Typed `AbstractBinEdges` distance bins (`LogBinEdges`, etc.) subtype `AbstractVector`;
 routing on `kind` avoids constructor ambiguity between joint and SP2D paths.

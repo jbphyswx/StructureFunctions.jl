@@ -135,8 +135,8 @@ function SFC._dispatch_execution_backend(
     chunks = _dist_batch_chunks(B, Distributed.nworkers())
     # Each worker computes its contiguous b-chunk locally via the inner backend, requesting the raw
     # accumulator so partials can be concatenated; the public boundary finalizes. The b-slice is the
-    # pmap ITEM, not a closure capture: `pmap` re-serializes the closure on every `remotecall`, so
-    # capturing `u_flat` would ship the whole batch to every worker instead of its own 1/nw share.
+    # pmap ITEM, not a closure capture: `pmap` re-serializes the closure on every `remotecall`, so a
+    # captured `u_flat` ships the whole batch to every worker, not its own 1/nw share.
     items = [(fixed_x ? x_flat : x_flat[:, :, bc], u_flat[:, :, bc]) for bc in chunks]
     parts = Distributed.pmap(items) do xu
         r = SFC.calculate_structure_function(
@@ -461,8 +461,8 @@ end
 # --- Tensor structure functions ---
 
 # Each worker takes a balanced share of the outer index and returns its own accumulators, which add
-# because a histogram is order-independent. `pmap` over the chunk list rather than a closure capture,
-# so the inputs are serialised once per item rather than per remotecall.
+# because a histogram is order-independent. `pmap` takes the chunk list as items, so the inputs are
+# serialised once per item; a closure capture would re-serialise them on every remotecall.
 function SFC.distributed_calculate_structure_function_tensor!(
     sums::AbstractArray, counts::AbstractArray, order::Val{P},
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
@@ -484,21 +484,21 @@ function SFC.distributed_calculate_structure_function_tensor!(
 end
 
 
-# --- Multi-channel (`Fields`) sweeps ---
+# --- Multi-field (`Fields`) sweeps ---
 
 function SFC.distributed_calculate_structure_function!(
     sums::AbstractVector, counts::AbstractVector,
     sf::SFT.AbstractPairwiseStructureFunctionType,
-    x::AbstractMatrix, f::SFC.CH.Fields, distance_bins;
+    x::AbstractMatrix, f::SFC.MF.Fields, distance_bins;
     verbose::Bool = true, show_progress::Bool = true, kwargs...,
 )
     _ = show_progress
-    verbose && @info("calculating multi-channel structure function (distributed)")
-    N = size(SFC.CH.packed(f), 2)
+    verbose && @info("calculating multi-field structure function (distributed)")
+    N = size(SFC.MF.packed(f), 2)
     chunks = SFC._balanced_index_chunks(N - 1, max(Distributed.nworkers(), 1))
     CT = eltype(counts)
     partials = Distributed.pmap(chunks) do chunk
-        SFC.channel_partial(sf, x, f, distance_bins, chunk; count_eltype = CT, kwargs...)
+        SFC.field_partial(sf, x, f, distance_bins, chunk; count_eltype = CT, kwargs...)
     end
     for (ps, pc) in partials
         sums .+= ps

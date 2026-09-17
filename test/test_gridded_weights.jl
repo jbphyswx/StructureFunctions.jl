@@ -1,6 +1,7 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO, Fields, HarmonicNodes
+    StructureFunctionObjects as SFO, HelperFunctions as SFH, HarmonicNodes
+using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
@@ -214,7 +215,7 @@ Test.@testset "the weighted transform equals the weighted sweep with masks and w
     end
 end
 
-Test.@testset "channel bundles carry weights on every route" begin
+Test.@testset "multi-fields carry weights on every route" begin
     Random.seed!(9530)
     dims, spacing = (9, 7), (0.1, 0.15)
     N = prod(dims)
@@ -267,7 +268,7 @@ Test.@testset "weights on the sphere: zonal sweep, transform, device and the poi
         end
         for backend in (SERIAL, THREADED)
             pts = SFC.calculate_structure_function(sf, x, data, bins, Float64; backend, weights = w,
-                                                   distance_metric = SF.SphericalDistance(1.0), verbose = false,
+                                                   distance_metric = SFH.SphericalDistance(1.0), verbose = false,
                                                    show_progress = false, output_type = RAW)
             Test.@test _close(pts.sums, ref_s)
             Test.@test pts.counts ≈ ref_c rtol = 1e-11
@@ -282,7 +283,7 @@ Test.@testset "cell_measure feeds a grid's cell areas as weights" begin
     lam = range(0.0, step = 2π / n_lon, length = n_lon)
     phi = range(-π / 2 + π / (2n_lat), step = π / n_lat, length = n_lat)
     grid = FG.Grids.StructuredGrid(geo, lam, phi)
-    w = SF.cell_measure(grid)
+    w = SFC.cell_measure(grid)
     N = n_lon * n_lat
     Test.@test length(w) == N
     Test.@test all(>(0), w)
@@ -294,7 +295,7 @@ Test.@testset "cell_measure feeds a grid's cell areas as weights" begin
     coords = FG.Grids.materialize(grid)
     x = Matrix(hcat(coords[1], coords[2])')
     ref = SFC.calculate_structure_function(SFT.L2SFType(), x, reshape(u, 2, N), bins, Float64; weights = w,
-                                           backend = SERIAL, distance_metric = SF.SphericalDistance(1.0),
+                                           backend = SERIAL, distance_metric = SFH.SphericalDistance(1.0),
                                            verbose = false, show_progress = false, output_type = RAW)
     Test.@test _close(got.sums, ref.sums)
     Test.@test got.counts ≈ ref.counts rtol = 1e-11
@@ -309,7 +310,7 @@ Test.@testset "cell_measure feeds a grid's cell areas as weights" begin
     # a Cartesian grid's cells are all alike, so its measure changes no average
     cgrid = FG.Grids.StructuredGrid(FG.Geometry.CartesianGeometry(), range(0.0, step = 0.1, length = 7),
                                     range(0.0, step = 0.2, length = 5))
-    cw = SF.cell_measure(cgrid)
+    cw = SFC.cell_measure(cgrid)
     Test.@test all(v -> v ≈ cw[1], cw)
     uc = randn(2, 7, 5)
     cbins = collect(range(0.0, 1.2; length = 7)) .+ 1e-3
@@ -333,7 +334,7 @@ Test.@testset "area-weighted hard bins agree with the harmonic route's area aver
         u[1, i, j] = -2 * cos(φ) * sin(2λ)
         u[2, i, j] = -2 * cos(φ) * sin(φ) * cos(2λ)
     end
-    w = SF.cell_measure(grid)
+    w = SFC.cell_measure(grid)
     nodes = HarmonicNodes(24, 48; taper = SF.GaussianTaper(π / 48))
     harm = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, nodes, SB.DirectSumSpectralBackend();
                                             verbose = false, output_type = RAW)
@@ -389,6 +390,6 @@ Test.@testset "weights are refused where they cannot be honoured" begin
                                                                      show_progress = false)
     grid = FG.Grids.StructuredGrid(FG.Geometry.CartesianGeometry(), range(0.0, step = 0.1, length = 6),
                                    range(0.0, step = 0.1, length = 5))
-    Test.@test_throws ArgumentError SFC.calculate_structure_function(L2, grid, u, bins; weights = SF.cell_measure(grid),
+    Test.@test_throws ArgumentError SFC.calculate_structure_function(L2, grid, u, bins; weights = SFC.cell_measure(grid),
                                                                      verbose = false, show_progress = false)
 end

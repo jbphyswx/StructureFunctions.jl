@@ -323,15 +323,15 @@ Test.@testset "the flux quadrature matches a closed-form integral" begin
     Test.@test all(<(0), got)
 end
 
-Test.@testset "a flux needs a cross-channel moment" begin
-    # ⟨δφ δ𝓐_φ⟩ is a moment across two channels; the diagonal is a variance and carries no flux.
+Test.@testset "a flux needs a cross-field moment" begin
+    # ⟨δφ δ𝓐_φ⟩ is a moment across two fields; the diagonal is a variance and carries no flux.
     for op in (SFT.VectorDotSFType(1, 1), SFT.ScalarDotSFType(2, 2))
         err = Test.@test_throws ArgumentError SFC.assert_advective(op)
         Test.@test occursin("diagonal", err.value.msg)
     end
     for op in (SFT.S2SFType(), SFT.L2SFType(), SFT.L3SFType())
         err = Test.@test_throws ArgumentError SFC.assert_advective(op)
-        Test.@test occursin("cross-channel", err.value.msg)
+        Test.@test occursin("cross-field", err.value.msg)
     end
     Test.@test SFC.assert_advective(SFT.VectorDotSFType(1, 2)) === nothing
     Test.@test SFC.assert_advective(SFT.ScalarDotSFType(1, 2)) === nothing

@@ -58,12 +58,9 @@ function threaded_calculate_structure_function!(args...; kwargs...)
     )
 end
 
-# Set to `true` by the OhMyThreads extension's `__init__` when it loads. AutoBackend gates its
-# threaded choice on this rather than `hasmethod`, because the throwing stub above makes
-# `hasmethod` always true — which previously fooled AutoBackend into the threaded path (then it
-# threw) when OhMyThreads was not loaded. With this flag, AutoBackend falls back to serial.
-# A `Ref` (set at load via `__init__`) is used instead of a method override, which would be an
-# illegal method-overwrite during the extension's precompilation.
+# Set to `true` by the OhMyThreads extension's `__init__`. This is what `AutoBackend` tests: the
+# throwing stub above makes `hasmethod` true whether or not the extension is loaded. A `Ref` set at
+# load time, because overwriting a method during the extension's precompilation is illegal.
 const _OHMYTHREADS_LOADED = Ref(false)
 _ohmythreads_loaded() = _OHMYTHREADS_LOADED[]
 

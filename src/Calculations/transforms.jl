@@ -96,7 +96,7 @@ Covariance matrix over `points`, evaluating the covariance function `(separation
 distance by linear interpolation and holding it constant outside the sampled range.
 
 A covariance matrix must be positive semi-definite, and one built this way need not be, so it is
-checked rather than assumed. Two different things trip the check and the message distinguishes them:
+checked. Two different things trip the check and the message distinguishes them:
 a covariance function that is not a valid kernel at all, and one that is valid but sampled too
 coarsely — interpolating a kernel does not preserve positive-definiteness, and the error falls as
 the square of the separation spacing. `check_posdef = false` returns the matrix regardless.
@@ -592,28 +592,28 @@ shell_spectrum(P::AbstractVector, wavenumbers::AbstractVector, ::Val{D}) where {
 """
     assert_advective(operator)
 
-Refuse a structure function that is not a cross-channel moment, so cannot be an advective one.
+Refuse a structure function that is not a cross-field moment, so cannot be an advective one.
 
 A flux relation consumes `⟨δφ δ𝓐_φ⟩` for a quantity `φ` and its advection `𝓐_φ = u·∇φ`, which is a
-moment across two channels. The diagonal `(a, a)` is a variance — `VectorDotSFType(1,1)` is `S2SF` —
+moment across two fields. The diagonal `(a, a)` is a variance — `VectorDotSFType(1,1)` is `S2SF` —
 and carries no flux.
 
-Whether the second channel really holds the advection of the first is the caller's construction, not
-something a moment can report; this checks only that two distinct channels were asked for.
+Whether the second field really holds the advection of the first is the caller's construction, not
+something a moment can report; this checks only that two distinct fields were asked for.
 """
 function assert_advective(op::Union{SFT.VectorDotStructureFunctionType,
                                     SFT.ScalarDotStructureFunctionType})
     op.a == op.b && throw(ArgumentError(
         "$(nameof(typeof(op)))($(op.a), $(op.b)) is a diagonal moment, which is a variance and not " *
-        "a flux. A flux relation needs two distinct channels, a quantity and its advection.",
+        "a flux. A flux relation needs two distinct fields, a quantity and its advection.",
     ))
     return nothing
 end
 
 assert_advective(op) = throw(ArgumentError(
-    "$(nameof(typeof(op))) is not a cross-channel moment. A spectral flux follows from an " *
+    "$(nameof(typeof(op))) is not a cross-field moment. A spectral flux follows from an " *
     "advective structure function ⟨δφ δ𝓐_φ⟩, built with `VectorDotSFType(a, b)` or " *
-    "`ScalarDotSFType(a, b)` over a field carrying the quantity and its advection as two channels. " *
+    "`ScalarDotSFType(a, b)` over a field carrying the quantity and its advection as two fields. " *
     "The third-order routes are the `spectral_flux` methods on `S3SFType`, `L3SFType` (with `S3`) " *
     "and `MixedSFType{1,0,2}`.",
 ))
@@ -795,7 +795,7 @@ function `SF_Au = ⟨δu · δ𝓐_u⟩`, `𝓐_u = u·∇u`, sampled at `separa
 
 The `J₁` relation on `⟨δω δ𝓐_ω⟩ = -∇² SF_Au` integrated by parts twice; `[J₃ - J₁]/2 = -J₂'`. The
 slope `SF_Au'(R)` is the one-sided difference of the last two samples, so the boundary term is
-sensitive to noise in the last bins. `operator` must name two distinct channels, the velocity and
+sensitive to noise in the last bins. `operator` must name two distinct fields, the velocity and
 its advection.
 """
 function enstrophy_flux(op::SFT.VectorDotStructureFunctionType, separations::AbstractVector,

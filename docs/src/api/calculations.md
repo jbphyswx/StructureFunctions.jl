@@ -4,7 +4,7 @@ CurrentModule = StructureFunctions
 
 # Calculations
 
-The compute API: the point-list and channel-bundle entries on every backend, the single-pass
+The compute API: the point-list and multi-field entries on every backend, the single-pass
 invariants, the joint histograms, the tensors, the gridded sweeps and transforms, the spectral and
 flux transforms, the regularised fits, and the device workspaces.
 

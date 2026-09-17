@@ -3,7 +3,7 @@ module StructureFunctionTypes
 using LinearAlgebra: LinearAlgebra as LA
 using StaticArrays: StaticArrays as SA
 using ..HelperFunctions: HelperFunctions as SFH
-using ..Channels: Channels as CH
+using ..MultiFields: MultiFields as MF
 
 """
     AbstractStructureFunctionType
@@ -62,6 +62,14 @@ transverse one. `NT = 2` is the invariant transverse energy `‖δu‖² − δu
 signed component along the first vector of `transverse_basis(basis, r̂)`, so the sign of an odd `NT`
 is the convention's. [`SFH.CanonicalTransverseBasis`](@ref) is `n̂`, the turn about `ẑ`. The basis travels
 with the operator into every result.
+
+The two readings differ only for `D ≥ 3`, where the transverse plane has more than one direction; in
+2-D `‖δu_T‖² = (δu·n̂)²`. They cannot be unified: `‖δu_T‖^NT` is a polynomial in `δu` only for even
+`NT`, since `‖δu_T‖² = ‖δu‖² − δu_L²` and an odd power needs the square root, so odd `NT` admits the
+component reading alone. `NT = 2` is the energy because that is the quantity the second-order
+relations are written in — the Helmholtz split and the `D_LL`/`D_TT` isotropy relations all take it.
+[`TransverseComponentSecondOrderStructureFunctionType`](@ref) is the per-component form,
+`‖δu_T‖²/(D−1)`.
 """
 struct ProjectedStructureFunctionType{NL, NT, B <: SFH.AbstractTransverseBasisConvention} <:
        AbstractPairwiseStructureFunctionType
@@ -113,7 +121,7 @@ Compute the structure function kernel for longitudinal/transverse components.
     end
 
     return quote
-        δu = SFC_channel_vector(δu_in, 1)
+        δu = SFC_field_vector(δu_in, 1)
         $ex
     end
 end
@@ -138,8 +146,8 @@ struct ThirdOrderStructureFunctionType <: AbstractPairwiseStructureFunctionType 
 """
     FullVectorStructureFunctionType{NF}
 
-Generic full-vector norm-power operator, ``||δu||^NF``. This is not used for
-`S3SF`, whose conventional definition is [`ThirdOrderStructureFunctionType`](@ref).
+Generic full-vector norm-power operator, ``||δu||^NF``. `S3SF`'s conventional definition is
+[`ThirdOrderStructureFunctionType`](@ref).
 """
 struct FullVectorStructureFunctionType{NF} <: AbstractPairwiseStructureFunctionType end
 
@@ -147,7 +155,7 @@ struct FullVectorStructureFunctionType{NF} <: AbstractPairwiseStructureFunctionT
     MomentTensorOperator{P}()
 
 The transform engine's request for the whole rank-`P` increment moment tensor
-`M[i₁, …, i_P] = Σ_pairs Π_k δu[i_k]` of a field's vector channel, in place of one scalar contraction
+`M[i₁, …, i_P] = Σ_pairs Π_k δu[i_k]` of a field's vector field, in place of one scalar contraction
 of it. It has no value on a single pair. In a fixed Cartesian frame an odd rank changes sign when a
 pair is read from its other end, exactly as an odd scalar increment does, so it takes the same
 canonical pair reading; in a pair's own geodesic frame the components are read the same from either
@@ -164,16 +172,16 @@ const FullVectorStructureFunction = FullVectorStructureFunctionType
 
 FullVectorStructureFunctionType(NF::Integer) = FullVectorStructureFunctionType{NF}()
 
-@inline (::SecondOrderStructureFunctionType)(δu, r̂) = norm2(SFC_channel_vector(δu, 1))
+@inline (::SecondOrderStructureFunctionType)(δu, r̂) = norm2(SFC_field_vector(δu, 1))
 
 @inline function (::ThirdOrderStructureFunctionType)(δu, r̂)
-    v = SFC_channel_vector(δu, 1)
+    v = SFC_field_vector(δu, 1)
     return SFH.mδu_l(v, r̂) * norm2(v)
 end
 
 @generated function (::FullVectorStructureFunctionType{NF})(δu, r̂) where {NF}
-    NF == 2 && return :(norm2(SFC_channel_vector(δu, 1)))
-    return :(LA.norm(SFC_channel_vector(δu, 1))^$NF)
+    NF == 2 && return :(norm2(SFC_field_vector(δu, 1)))
+    return :(LA.norm(SFC_field_vector(δu, 1))^$NF)
 end
 
 """
@@ -194,10 +202,10 @@ Per-component variant of `L1T2SF`,
 struct LongitudinalTransverseComponentThirdOrderStructureFunctionType <: AbstractPairwiseStructureFunctionType end
 
 @inline (::TransverseComponentSecondOrderStructureFunctionType)(δu, r̂) =
-    SFH.transverse_component_norm2(SFC_channel_vector(δu, 1), r̂)
+    SFH.transverse_component_norm2(SFC_field_vector(δu, 1), r̂)
 
 @inline function (::LongitudinalTransverseComponentThirdOrderStructureFunctionType)(δu, r̂)
-    v = SFC_channel_vector(δu, 1)
+    v = SFC_field_vector(δu, 1)
     return SFH.mδu_l(v, r̂) * SFH.transverse_component_norm2(v, r̂)
 end
 
@@ -327,13 +335,13 @@ end
 end
 
 """
-    ScalarStructureFunctionType{P}(channel = 1)
+    ScalarStructureFunctionType{P}(field = 1)
 
-``⟨(δθ)^P⟩`` on scalar `channel` — the scalar structure function. `P = 2` is the Obukhov–Corrsin
+``⟨(δθ)^P⟩`` on scalar `field` — the scalar structure function. `P = 2` is the Obukhov–Corrsin
 quantity; odd `P` measures the skewness of the tracer increment.
 """
 struct ScalarStructureFunctionType{P} <: AbstractPairwiseStructureFunctionType
-    channel::Int
+    field::Int
 end
 
 ScalarStructureFunctionType{P}() where {P} = ScalarStructureFunctionType{P}(1)
@@ -341,20 +349,20 @@ ScalarStructureFunctionType{P}() where {P} = ScalarStructureFunctionType{P}(1)
 const ScalarSFType = ScalarStructureFunctionType
 
 @inline (sf::ScalarStructureFunctionType{P})(δu, r̂) where {P} =
-    SFC_channel_scalar(δu, sf.channel)^P
+    SFC_field_scalar(δu, sf.field)^P
 
 """
-    MixedStructureFunctionType{NL, NT, P}(vector_channel = 1, scalar_channel = 1)
+    MixedStructureFunctionType{NL, NT, P}(vector_field = 1, scalar_field = 1)
 
 ``⟨δu_L^{NL} ‖δu_T‖^{NT} (δθ)^P⟩`` — a velocity–scalar mixed moment.
 
 `{1, 0, 2}` is Yaglom's law, ``⟨δu_L (δθ)²⟩ = −(4/3) ε_θ r``; `{1, 0, 1}` is the flux of the tracer
-itself. The velocity part is read from a transported vector channel and the scalar part from a
-differenced scalar channel, so the two never mix frames.
+itself. The velocity part is read from a transported vector field and the scalar part from a
+differenced scalar field, so the two never mix frames.
 """
 struct MixedStructureFunctionType{NL, NT, P} <: AbstractPairwiseStructureFunctionType
-    vector_channel::Int
-    scalar_channel::Int
+    vector_field::Int
+    scalar_field::Int
 end
 
 MixedStructureFunctionType{NL, NT, P}() where {NL, NT, P} =
@@ -363,8 +371,8 @@ MixedStructureFunctionType{NL, NT, P}() where {NL, NT, P} =
 const MixedSFType = MixedStructureFunctionType
 
 @inline function (sf::MixedStructureFunctionType{NL, NT, P})(δu, r̂) where {NL, NT, P}
-    v = SFC_channel_vector(δu, sf.vector_channel)
-    θ = SFC_channel_scalar(δu, sf.scalar_channel)
+    v = SFC_field_vector(δu, sf.vector_field)
+    θ = SFC_field_scalar(δu, sf.scalar_field)
     l = SFH.mδu_l(v, r̂)
     t2 = SFH.transverse_norm2(v, r̂)
     return l^NL * sqrt(t2)^NT * θ^P
@@ -373,10 +381,10 @@ end
 """
     ScalarDotStructureFunctionType(a, b)
 
-``⟨δθ^{(a)} δθ^{(b)}⟩`` — a second-order **cross-channel** scalar moment.
+``⟨δθ^{(a)} δθ^{(b)}⟩`` — a second-order **cross-field** scalar moment.
 
 `(1, 1)` is the scalar structure function. `(a, b)` with `a ≠ b` is what an advective structure
-function is: `⟨δω δ𝓐_ω⟩` is this with `ω` and its advection as the two channels.
+function is: `⟨δω δ𝓐_ω⟩` is this with `ω` and its advection as the two fields.
 """
 struct ScalarDotStructureFunctionType <: AbstractPairwiseStructureFunctionType
     a::Int
@@ -386,12 +394,12 @@ end
 const ScalarDotSFType = ScalarDotStructureFunctionType
 
 @inline (sf::ScalarDotStructureFunctionType)(δu, r̂) =
-    SFC_channel_scalar(δu, sf.a) * SFC_channel_scalar(δu, sf.b)
+    SFC_field_scalar(δu, sf.a) * SFC_field_scalar(δu, sf.b)
 
 """
     VectorDotStructureFunctionType(a, b)
 
-``⟨δu^{(a)} · δu^{(b)}⟩`` — a second-order **cross-channel** vector moment.
+``⟨δu^{(a)} · δu^{(b)}⟩`` — a second-order **cross-field** vector moment.
 
 `(1, 1)` **is** `S2SF`: the existing second-order operator is this one's diagonal, not a separate
 thing. `(a, b)` with `a ≠ b` is `⟨δu · δ𝓐_u⟩`, the advective structure function, which holds without
@@ -405,47 +413,45 @@ end
 const VectorDotSFType = VectorDotStructureFunctionType
 
 @inline (sf::VectorDotStructureFunctionType)(δu, r̂) =
-    LA.dot(SFC_channel_vector(δu, sf.a), SFC_channel_vector(δu, sf.b))
+    LA.dot(SFC_field_vector(δu, sf.a), SFC_field_vector(δu, sf.b))
 
-# How an operator reaches a channel of an increment. A single-channel field's increment is the plain
-# vector every existing operator takes, so naming channel 1 of it is the vector itself — that is what
+# How an operator reaches a field of an increment. A single-field increment is the plain
+# vector every existing operator takes, so naming field 1 of it is the vector itself — that is what
 # keeps `Fields(vectors = (u,))` identical to a bare `u`.
-@inline SFC_channel_vector(δu::CH.ChannelIncrement{D, 0, K}, i::Integer) where {D, K} =
+@inline SFC_field_vector(δu::MF.FieldIncrement{D, 0, K}, i::Integer) where {D, K} =
     throw(ArgumentError(
-        "this field carries no vector channels, so a velocity operator has nothing to read. Build " *
+        "this field carries no vector fields, so a velocity operator has nothing to read. Build " *
         "it with Fields(vectors = (...), ...), or use a scalar operator.",
     ))
 
-@inline SFC_channel_vector(δu::CH.ChannelIncrement, i::Integer) = CH.vector_channel(δu, i)
-@inline function SFC_channel_vector(δu, i::Integer)
+@inline SFC_field_vector(δu::MF.FieldIncrement, i::Integer) = MF.vector_field(δu, i)
+@inline function SFC_field_vector(δu, i::Integer)
     i == 1 || throw(ArgumentError(
-        "this field has one vector channel; asked for channel $i. Build the field with " *
+        "this field has one vector field; asked for field $i. Build the field with " *
         "Fields(vectors = (...), ...) to carry more.",
     ))
     return δu
 end
 
-@inline SFC_channel_scalar(δu::CH.ChannelIncrement, i::Integer) = CH.scalar_channel(δu, i)
-@inline SFC_channel_scalar(δu, i::Integer) = throw(ArgumentError(
-    "this field carries no scalar channels; asked for scalar channel $i. Build the field with " *
+@inline SFC_field_scalar(δu::MF.FieldIncrement, i::Integer) = MF.scalar_field(δu, i)
+@inline SFC_field_scalar(δu, i::Integer) = throw(ArgumentError(
+    "this field carries no scalar fields; asked for scalar field $i. Build the field with " *
     "Fields(scalars = (...), ...) to carry one.",
 ))
 
 """
     RotationalSecondOrderStructureFunctionType()
 
-Helmholtz-derived 2D rotational second-order component. This is not a
-pairwise operator; compute it from binned `L2SF`/`T2SF` with
-`helmholtz_decompose_2d`.
+Helmholtz-derived 2D rotational second-order component. A derived quantity, computed from binned
+`L2SF`/`T2SF` with `helmholtz_decompose_2d`.
 """
 struct RotationalSecondOrderStructureFunctionType <: AbstractDerivedStructureFunctionType end
 
 """
     DivergentSecondOrderStructureFunctionType()
 
-Helmholtz-derived 2D divergent second-order component. This is not a
-pairwise operator; compute it from binned `L2SF`/`T2SF` with
-`helmholtz_decompose_2d`.
+Helmholtz-derived 2D divergent second-order component. A derived quantity, computed from binned
+`L2SF`/`T2SF` with `helmholtz_decompose_2d`.
 """
 struct DivergentSecondOrderStructureFunctionType <: AbstractDerivedStructureFunctionType end
 
@@ -623,7 +629,7 @@ order(::VectorDotStructureFunctionType) = 2
 """
     scalar_order(sf) -> Int
 
-The total power of scalar-channel increments in `sf`.
+The total power of scalar-field increments in `sf`.
 
 Reading a pair from its other end leaves every vector quantity unchanged — `δu`, `r̂` and `n̂` all
 flip together — and negates each scalar increment, so `sf` changes sign under that reading exactly
@@ -722,8 +728,8 @@ end
     moment_contract(sf, M::SymmetricMoments, r̂, ::Val{V}, ::Val{K})
 
 `Σ_pairs sf(δu, r̂)` from the increment moment tensor `M[i₁, …, i_p] = Σ_pairs Π_k δu[i_k]` of the
-pairs sharing the unit separation `r̂`. `δu` is packed as `V` vector channels of width `D = length(r̂)`
-followed by `K` scalar channels, so `M` has `W = V * D + K` components. Operators that are not
+pairs sharing the unit separation `r̂`. `δu` is packed as `V` vector fields of width `D = length(r̂)`
+followed by `K` scalar fields, so `M` has `W = V * D + K` components. Operators that are not
 polynomials in `δu` have no method.
 """
 function moment_contract(sf::AbstractStructureFunctionType, M, r̂, ::Val, ::Val)
@@ -736,8 +742,8 @@ end
 
 @inline function _check_packed_width(::SymmetricMoments{W}, ::Val{D}, ::Val{V}, ::Val{K}) where {W, D, V, K}
     W == V * D + K || throw(DimensionMismatch(
-        "the moment tensor has $W components but the field packs $V vector channel(s) of width $D " *
-        "and $K scalar channel(s), $(V * D + K) components",
+        "the moment tensor has $W components but the field packs $V vector field(s) of width $D " *
+        "and $K scalar field(s), $(V * D + K) components",
     ))
     return nothing
 end
@@ -745,24 +751,24 @@ end
 @inline _unit(::Val{W}, i::Integer, ::Type{T}) where {W, T} =
     SA.SVector{W, T}(ntuple(j -> T(j == i), Val(W)))
 
-# `r̂` placed in vector channel `a` of the packed layout, zero elsewhere.
+# `r̂` placed in vector field `a` of the packed layout, zero elsewhere.
 @inline function _embed(::Val{W}, r̂::SA.SVector{D, T}, a::Integer) where {W, D, T}
     off = (a - 1) * D
     return SA.SVector{W, T}(ntuple(j -> off < j <= off + D ? r̂[j - off] : zero(T), Val(W)))
 end
 
 # One literal each: a device kernel compiles a throw of a constant, never a formatted or joined string.
-# The entry points name the channel and the field's layout before any moment is contracted.
-@inline function _require_vector_channel(a::Integer, ::Val{V}) where {V}
+# The entry points name the field and the field's layout before any moment is contracted.
+@inline function _require_vector_field(a::Integer, ::Val{V}) where {V}
     1 <= a <= V || throw(ArgumentError(
-        "the operator reads a vector channel the field does not carry; build the field with Fields(vectors = (...), ...) or use a scalar operator",
+        "the operator reads a vector field the field does not carry; build the field with Fields(vectors = (...), ...) or use a scalar operator",
     ))
     return nothing
 end
 
-@inline function _require_scalar_channel(k::Integer, ::Val{K}) where {K}
+@inline function _require_scalar_field(k::Integer, ::Val{K}) where {K}
     1 <= k <= K || throw(ArgumentError(
-        "the operator reads a scalar channel the field does not carry; build the field with Fields(scalars = (...), ...) to carry one",
+        "the operator reads a scalar field the field does not carry; build the field with Fields(scalars = (...), ...) to carry one",
     ))
     return nothing
 end
@@ -793,7 +799,7 @@ end
     return acc
 end
 
-# `n` trailing slot pairs, each Σ_c e_c ⊗ e_c over the components of vector channel `a`: ‖δu‖² per pair.
+# `n` trailing slot pairs, each Σ_c e_c ⊗ e_c over the components of vector field `a`: ‖δu‖² per pair.
 @inline _norm2_pairs(M, prefix::Tuple, ::Val{0}, a, ::Val{D}, ::Val{W}, ::Type{T}) where {D, W, T} =
     _contract(M, prefix)
 @inline function _norm2_pairs(
@@ -826,7 +832,7 @@ end
     ::SecondOrderStructureFunctionType, M::SymmetricMoments{W, 2}, r̂::SA.SVector{D}, ::Val{V}, ::Val{K},
 ) where {W, D, V, K}
     _check_packed_width(M, Val(D), Val(V), Val(K))
-    _require_vector_channel(1, Val(V))
+    _require_vector_field(1, Val(V))
     return _vector_dot(M, 1, 1, Val(D))
 end
 
@@ -854,7 +860,7 @@ end
     end
     return quote
         _check_packed_width(M, Val($D), Val($V), Val($K))
-        _require_vector_channel(1, Val($V))
+        _require_vector_field(1, Val($V))
         $frame
         return $core
     end
@@ -864,7 +870,7 @@ end
     ::ThirdOrderStructureFunctionType, M::SymmetricMoments{W, 3}, r̂::SA.SVector{D, TR}, ::Val{V}, ::Val{K},
 ) where {W, D, TR, V, K}
     _check_packed_width(M, Val(D), Val(V), Val(K))
-    _require_vector_channel(1, Val(V))
+    _require_vector_field(1, Val(V))
     T = promote_type(eltype(M), TR)
     rp = _embed(Val(W), r̂, 1)
     return _norm2_pairs(M, (rp,), Val(1), 1, Val(D), Val(W), T)
@@ -881,7 +887,7 @@ end
     T = promote_type(TM, TR)
     return quote
         _check_packed_width(M, Val($D), Val($V), Val($K))
-        _require_vector_channel(1, Val($V))
+        _require_vector_field(1, Val($V))
         return _norm2_pairs(M, (), Val($(NF ÷ 2)), 1, Val($D), Val($W), $T)
     end
 end
@@ -910,8 +916,8 @@ end
     sf::ScalarStructureFunctionType{P}, M::SymmetricMoments{W, P}, r̂::SA.SVector{D}, ::Val{V}, ::Val{K},
 ) where {P, W, D, V, K}
     _check_packed_width(M, Val(D), Val(V), Val(K))
-    _require_scalar_channel(sf.channel, Val(K))
-    s = V * D + sf.channel
+    _require_scalar_field(sf.field, Val(K))
+    s = V * D + sf.field
     return @inbounds M.data[symmetric_rank(Val(W), Val(P), ntuple(_ -> s, Val(P)))]
 end
 
@@ -930,12 +936,12 @@ end
     slots = vcat(fill(:rp, NL), fill(:es, P))
     return quote
         _check_packed_width(M, Val($D), Val($V), Val($K))
-        _require_vector_channel(sf.vector_channel, Val($V))
-        _require_scalar_channel(sf.scalar_channel, Val($K))
-        rp = _embed(Val($W), r̂, sf.vector_channel)
-        es = _unit(Val($W), $V * $D + sf.scalar_channel, $T)
+        _require_vector_field(sf.vector_field, Val($V))
+        _require_scalar_field(sf.scalar_field, Val($K))
+        rp = _embed(Val($W), r̂, sf.vector_field)
+        es = _unit(Val($W), $V * $D + sf.scalar_field, $T)
         return _transverse_pairs(
-            M, ($(slots...),), Val($(NT ÷ 2)), rp, sf.vector_channel, Val($D), Val($W), $T,
+            M, ($(slots...),), Val($(NT ÷ 2)), rp, sf.vector_field, Val($D), Val($W), $T,
         )
     end
 end
@@ -944,8 +950,8 @@ end
     sf::ScalarDotStructureFunctionType, M::SymmetricMoments{W, 2}, r̂::SA.SVector{D}, ::Val{V}, ::Val{K},
 ) where {W, D, V, K}
     _check_packed_width(M, Val(D), Val(V), Val(K))
-    _require_scalar_channel(sf.a, Val(K))
-    _require_scalar_channel(sf.b, Val(K))
+    _require_scalar_field(sf.a, Val(K))
+    _require_scalar_field(sf.b, Val(K))
     return @inbounds M.data[symmetric_rank(Val(W), Val(2), (V * D + sf.a, V * D + sf.b))]
 end
 
@@ -953,8 +959,8 @@ end
     sf::VectorDotStructureFunctionType, M::SymmetricMoments{W, 2}, r̂::SA.SVector{D}, ::Val{V}, ::Val{K},
 ) where {W, D, V, K}
     _check_packed_width(M, Val(D), Val(V), Val(K))
-    _require_vector_channel(sf.a, Val(V))
-    _require_vector_channel(sf.b, Val(V))
+    _require_vector_field(sf.a, Val(V))
+    _require_vector_field(sf.b, Val(V))
     return _vector_dot(M, sf.a, sf.b, Val(D))
 end
 

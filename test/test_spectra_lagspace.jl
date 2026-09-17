@@ -1,6 +1,7 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO, HelperFunctions as SFH, Fields
+    StructureFunctionObjects as SFO, HelperFunctions as SFH
+using StructureFunctions.MultiFields: Fields
 using Bessels: Bessels
 using FFTW: FFTW
 using SpectralBackends: SpectralBackends as SB
@@ -313,9 +314,9 @@ Test.@testset "the spherical inversion of the package's own pair sums" begin
 
     nb = length(edges) - 1
     sL = zeros(nb); cL = zeros(Int, nb)
-    SF.calculate_structure_function!(sL, cL, SFT.L2SFType(), x, u, edges; distance_metric = SFH.SphericalDistance(1.0))
+    SFC.calculate_structure_function!(sL, cL, SFT.L2SFType(), x, u, edges; distance_metric = SFH.SphericalDistance(1.0))
     sT = zeros(nb); cT = zeros(Int, nb)
-    SF.calculate_structure_function!(sT, cT, SFT.T2SFType(), x, u, edges; distance_metric = SFH.SphericalDistance(1.0))
+    SFC.calculate_structure_function!(sT, cT, SFT.T2SFType(), x, u, edges; distance_metric = SFH.SphericalDistance(1.0))
     L2 = SF.StructureFunctionSumsAndCounts(SFT.L2SFType(), edges, sL, cL)
     T2 = SF.StructureFunctionSumsAndCounts(SFT.T2SFType(), edges, sT, cT)
     variance = sum(abs2, u) / N

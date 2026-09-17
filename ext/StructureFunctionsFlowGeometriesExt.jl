@@ -5,7 +5,7 @@ using Distances: Distances as DI
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     HelperFunctions as SFH, StructureFunctionObjects as SFO, StructureFunctionTypes as SFT,
-    Channels as CH
+    MultiFields as MF
 
 """
     _grid_metric(grid) -> Distances metric
@@ -107,7 +107,7 @@ function _scattered(grid::FG.Grids.AbstractGrid)
     return SFC.ScatteredPairs(pts, _grid_metric(grid))
 end
 
-const GriddedField = Union{AbstractArray, CH.Fields}
+const GriddedField = Union{AbstractArray, MF.Fields}
 
 """
     cell_measure(grid) -> Vector
@@ -163,14 +163,14 @@ end
 """
     calculate_structure_function(sf_type, grid, u, distance_bins[, count_eltype]; backend, kwargs...)
 
-Structure function of the field `u` sampled on `grid`, computed by sweeping lag vectors rather than
-pairs wherever the grid has a uniform direction: every pair sharing a lag shares its separation,
-direction and distance bin. Which enumeration the grid gets is decided by the types of its axes (see
+Structure function of the field `u` sampled on `grid`, computed by sweeping lag vectors wherever the
+grid has a uniform direction: every pair sharing a lag shares its separation, direction and distance
+bin. Which enumeration the grid gets is decided by the types of its axes (see
 [`_lag_schedule`](@ref)) and reported when `verbose = true`.
 
 `u` is `(component, cells...)` with its trailing axes matching the grid, and its component count may
 exceed the grid's dimension — a lag then lies in the grid's directions and is zero along the rest. A
-`Fields` bundle built from grid-shaped channels is taken the same way. On a spherical grid the
+a multi-field built from grid-shaped fields is taken the same way. On a spherical grid the
 components are `(east, north[, radial])` and separations are in the unit of the geometry's radius.
 
 `weights`, one per cell, weights each pair by `w_k · w_kp` in sums and counts, so the bin average is
@@ -356,7 +356,7 @@ end
 
 _one_vector_field(::Val{1}, ::Val{0}) = nothing
 _one_vector_field(::Val{V}, ::Val{K}) where {V, K} = throw(ArgumentError(
-    "a tensor structure function is of one vector field; got a bundle of $V vector and $K scalar channels",
+    "a tensor structure function is of one vector field; got a multi-field of $V vector and $K scalar fields",
 ))
 
 """

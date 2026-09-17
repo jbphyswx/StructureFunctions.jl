@@ -34,7 +34,7 @@ function serial_calculate_structure_function!(
     second_axis isa InvariantValueAxis || throw(ArgumentError(
         "$(typeof(second_axis)) is supported on the flat D ∈ {2,3} path; this call has " *
         "$(nameof(typeof(geometry))) with D = $D, whose separation direction lives in each pair's " *
-        "own frame rather than a shared one.",
+        "own frame, not in a shared one.",
     ))
     PM.@showprogress enabled = show_progress for i in eachindex(x_vecs[1])
         calculate_structure_function_2d_i!(

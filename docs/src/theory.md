@@ -22,14 +22,24 @@ polynomials. With ``\hat r = \vec r / |\vec r|`` the unit separation:
 | `ProjectedStructureFunctionType{NL,NT}` | ``δu_L^{NL}`` times ``‖δu_T‖^{NT}`` for ``NT = 2``, ``(δu·\hat n)^{NT}`` otherwise | |
 | `TransverseComponentSecondOrderStructureFunctionType`, `LongitudinalTransverseComponentThirdOrderStructureFunctionType` | ``‖δu_T‖²/(D-1)``, ``δu_L ‖δu_T‖²/(D-1)`` — per transverse component | `T2ComponentSFType`, `L1T2ComponentSFType` |
 | `FullVectorStructureFunctionType{NF}` | ``‖δu‖^{NF}`` | |
-| `ScalarStructureFunctionType{P}` | ``(δθ)^P`` on a scalar channel | `ScalarSFType` |
+| `ScalarStructureFunctionType{P}` | ``(δθ)^P`` on a scalar field | `ScalarSFType` |
 | `MixedStructureFunctionType{NL,NT,P}` | ``δu_L^{NL} ‖δu_T‖^{NT} (δθ)^P`` | `MixedSFType` |
-| `VectorDotStructureFunctionType(a, b)`, `ScalarDotStructureFunctionType(a, b)` | ``δu^{(a)} · δu^{(b)}``, ``δθ^{(a)}\, δθ^{(b)}`` across channels | |
+| `VectorDotStructureFunctionType(a, b)`, `ScalarDotStructureFunctionType(a, b)` | ``δu^{(a)} · δu^{(b)}``, ``δθ^{(a)}\, δθ^{(b)}`` across fields | |
 | `MomentTensorOperator{P}` | the whole tensor ``δu_{i_1} ⋯ δu_{i_P}`` | |
 
 ``δu_L`` is the **longitudinal** increment, the component along the separation, and
 ``‖δu_T‖² = ‖δu‖² - δu_L^2`` is the **transverse** energy, the squared norm of everything
-perpendicular to it — in any dimension. The signed transverse component ``δu · \hat n`` that the
+perpendicular to it — in any dimension.
+
+The two readings of ``NT`` in the table differ only for ``D ≥ 3``, where the transverse plane has
+more than one direction; in two dimensions ``‖δu_T‖² = (δu·\hat n)²``. They cannot be made uniform:
+``‖δu_T‖^{NT}`` is a polynomial in ``δu`` only for even ``NT``, because ``‖δu_T‖²`` is one and an odd
+power needs its square root, so an odd ``NT`` admits the component reading alone. ``NT = 2`` is the
+energy because that is the quantity the second-order relations below are written in — the Helmholtz
+split and the ``D_{LL}``/``D_{TT}`` isotropy relations all take it. The per-component form has its own
+operator, `T2ComponentSFType`.
+
+The signed transverse component ``δu · \hat n`` that the
 odd transverse operators read needs a direction ``\hat n`` perpendicular to ``\hat r``, which is a
 convention: in two dimensions ``\hat n = \hat z × \hat r = (-\hat r_2, \hat r_1)``, and in three the
 `CanonicalTransverseBasis` is ``\hat n = \hat z × \hat r / |\hat z × \hat r|`` continued about
@@ -165,8 +175,8 @@ FFTs of the masked monomials, the same transform the gridded engine expects, and
 are pair sums with the periodic Dirichlet kernel of the mode set in place of a delta at each lag: a
 **soft bin** of width about one cell of the mode grid, with sidelobes a `GaussianTaper` trades for
 width. This route (`ScatteredModesSchedule`, `ModeBinEdges`) is **not exact**; it converges to the
-hard-binned pair sum as the mode count grows, and its results are marked so they cannot be mistaken
-for pair counts. It is never selected automatically.
+hard-binned pair sum as the mode count grows. Its results carry `ModeBinEdges` and its counts are a
+kernel-weighted pair mass, not pair counts. It is selected only by passing the tag.
 
 ## Fitting instead of inverting
 

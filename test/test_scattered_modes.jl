@@ -12,8 +12,6 @@ using KernelAbstractions: KernelAbstractions as KA
 using Random: Random
 
 const PROVIDERS = (SFC.NonuniformFFTsSpectralBackend(), SFC.FINUFFTSpectralBackend())
-const NonuniformFFTsSpectralBackend = SB.NonUniformFastFourierTransformSpectralBackend()
-const FINUFFTSpectralBackend = SB.FINUFFTSpectralBackend()
 const FFT_TAG = SB.FastFourierTransformSpectralBackend()
 const SERIAL = CB.SerialBackend()
 const DEVICE = CB.GPUBackend(KA.CPU())
@@ -81,16 +79,16 @@ Test.@testset "points on the mode grid reproduce the periodic gridded transform 
             end
         end
     end
-    # a channel bundle on the lattice
+    # a multi-field on the lattice
     dims, spacing = (12, 8), (0.25, 0.4)
     x = _lattice_points(dims, spacing)
-    f = SF.Channels.Fields(vectors = (randn(2, dims...),), scalars = (randn(dims...),))
+    f = SF.MultiFields.Fields(vectors = (randn(2, dims...),), scalars = (randn(dims...),))
     grid = SFC.UniformLagSchedule(dims, spacing, (true, true))
     modes = _lattice_schedule(x, dims, spacing)
     bins = collect(range(0.0, 1.3; length = 6))
     for sf in (SFT.MixedSFType{1, 0, 2}(), SFT.ScalarSFType{2}(), SFT.MixedSFType{1, 0, 1}())
-        ref_s, ref_c = _gridded_run(sf, SF.Channels.packed(f), grid, bins, Val(2), Val(1), Val(1))
-        got_s, got_c = _gridded_run(sf, SF.Channels.packed(f), modes, bins, Val(2), Val(1), Val(1); tag)
+        ref_s, ref_c = _gridded_run(sf, SF.MultiFields.packed(f), grid, bins, Val(2), Val(1), Val(1))
+        got_s, got_c = _gridded_run(sf, SF.MultiFields.packed(f), modes, bins, Val(2), Val(1), Val(1); tag)
         Test.@test _close(got_c, ref_c)
         Test.@test _close(got_s, ref_s)
     end
@@ -262,26 +260,27 @@ Test.@testset "the route is asked for by name and refuses what it cannot mean" b
     Test.@test_throws ArgumentError SFC.ScatteredModesSchedule(x, 0.0, (16, 16))
     Test.@test_throws ArgumentError SFC.ScatteredModesSchedule(x, 0.5, (1, 16))
     Test.@test_throws DimensionMismatch SFC.ScatteredModesSchedule(x, 0.5, (16,))
-    # the transforms' accuracy is the provider's own knob, validated on its tag
-    Test.@test_throws ArgumentError SFC.NonuniformFFTsSpectralBackend(half_support = 0)
-    Test.@test SFC.NonuniformFFTsSpectralBackend(half_support = 4).half_support == 4
-    Test.@test_throws ArgumentError SFC.FINUFFTSpectralBackend(tolerance = 0.0)
-    Test.@test_throws ArgumentError SFC.FINUFFTSpectralBackend(tolerance = 1.0)
-    Test.@test SFC.FINUFFTSpectralBackend(tolerance = 1e-9).tolerance == 1e-9
+    # the transforms' accuracy is one tolerance on either tag; NonuniformFFTs' kernel half-support follows from it
+    for make in (SFC.NonuniformFFTsSpectralBackend, SFC.FINUFFTSpectralBackend)
+        Test.@test_throws ArgumentError make(tolerance = 0.0)
+        Test.@test_throws ArgumentError make(tolerance = 1.0)
+        Test.@test make(tolerance = 1e-9).tolerance == 1e-9
+        Test.@test make().tolerance == 1e-12
+    end
+    Test.@test SFC.nufft_half_support(SFC.NonuniformFFTsSpectralBackend(tolerance = 1e-7)) == 4
+    Test.@test SFC.nufft_half_support(SFC.NonuniformFFTsSpectralBackend(tolerance = 1e-12)) == 7
+    Test.@test SFC.nufft_half_support(SFC.NonuniformFFTsSpectralBackend(tolerance = 1e-15)) == 8
     # NonuniformFFTs' spreading kernel needs at least its half-support in modes; FINUFFT pads its own fine grid
     small = SFC.ScatteredModesSchedule(x, 0.5, (4, 16))
     Test.@test_throws ArgumentError _gridded_run(SFT.L2SFType(), u, small, bins, Val(2), Val(1), Val(0);
                                                  tag = SFC.NonuniformFFTsSpectralBackend())
     Test.@test all(isfinite, _gridded_run(SFT.L2SFType(), u, small, bins, Val(2), Val(1), Val(0);
-                                          tag = SFC.NonuniformFFTsSpectralBackend(half_support = 4))[1])
+                                          tag = SFC.NonuniformFFTsSpectralBackend(tolerance = 1e-7))[1])
     Test.@test all(isfinite, _gridded_run(SFT.L2SFType(), u, small, bins, Val(2), Val(1), Val(0);
                                           tag = SFC.FINUFFTSpectralBackend())[1])
-    # the plain tag names the one loaded provider; with both loaded it names neither
-    for tag in PROVIDERS
-        Test.@test SFC.nufft_provider(tag) === tag
-    end
-    Test.@test_throws ArgumentError SFC.nufft_provider(PLAIN_NUFFT)
-    Test.@test_throws ArgumentError _gridded_run(SFT.L2SFType(), u, s, bins, Val(2), Val(1), Val(0); tag = PLAIN_NUFFT)
+    # the generic SpectralBackends NUFFT tag names no provider
+    Test.@test_throws ArgumentError _gridded_run(SFT.L2SFType(), u, s, bins, Val(2), Val(1), Val(0);
+                                                 tag = SB.NonUniformFastFourierTransformSpectralBackend())
     sums = zeros(4)
     Test.@test_throws ArgumentError SFC.gridded_sweep!(sums, zeros(4), SFT.L2SFType(), u, s, bins, Val(2), Val(1), Val(0), FFT_TAG)
     Test.@test_throws ArgumentError SFC.gridded_sweep!(sums, zeros(4), SFT.L2SFType(), u, s, bins, Val(2), Val(1), Val(0),

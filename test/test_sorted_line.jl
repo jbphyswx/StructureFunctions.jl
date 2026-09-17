@@ -1,6 +1,7 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    Channels as CH, Fields
+    MultiFields as MF
+using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using StaticArrays: StaticArrays as SA
 using OhMyThreads: OhMyThreads
@@ -17,8 +18,8 @@ const LINE_OPS = (
     SFT.FullVectorStructureFunctionType{2}(), SFT.FullVectorStructureFunctionType{4}(),
 )
 
-# One pair's increment, read from point `i` to point `j`: the plain vector for one vector channel, else
-# the channel bundle.
+# One pair's increment, read from point `i` to point `j`: the plain vector for one vector field, else
+# the multi-field.
 function _line_increment(data, i, j, ::Val{D}, ::Val{V}, ::Val{K}) where {D, V, K}
     T = eltype(data)
     V == 1 && K == 0 && return SA.SVector{D, T}(ntuple(d -> data[d, j] - data[d, i], Val(D)))
@@ -27,7 +28,7 @@ function _line_increment(data, i, j, ::Val{D}, ::Val{V}, ::Val{K}) where {D, V, 
         SA.SVector{D, T}(ntuple(d -> data[o + d, j] - data[o + d, i], Val(D)))
     end
     scalars = ntuple(c -> data[V * D + c, j] - data[V * D + c, i], Val(K))
-    return CH.ChannelIncrement{D, V, K, T}(vectors, scalars)
+    return MF.FieldIncrement{D, V, K, T}(vectors, scalars)
 end
 
 # The pair statistic written out on a line: Σ w_i w_j sf(δu, r̂) and Σ w_i w_j over the pairs each (lo, hi]
@@ -77,7 +78,7 @@ Test.@testset "every polynomial operator on a line equals the pair loop" begin
     Test.@test _close(res.values, ref_s ./ ref_c)
 end
 
-Test.@testset "channel bundles on a line" begin
+Test.@testset "multi-fields on a line" begin
     Random.seed!(4220)
     N = 240
     x = rand(N) .* 6.0
@@ -96,8 +97,8 @@ Test.@testset "channel bundles on a line" begin
         (Fields(scalars = (θ, φ)), (SFT.ScalarDotSFType(1, 2), SFT.ScalarSFType{4}(2), SFT.ScalarSFType{3}(1))),
     )
     for (f, ops) in cases, sf in ops
-        D, V, K = CH.channel_dimension(f), CH.n_vector_channels(f), CH.n_scalar_channels(f)
-        ref_s, ref_c = _line_pair_loop(sf, x, CH.packed(f), bins, ones_w, Val(D), Val(V), Val(K))
+        D, V, K = MF.field_dimension(f), MF.n_vector_fields(f), MF.n_scalar_fields(f)
+        ref_s, ref_c = _line_pair_loop(sf, x, MF.packed(f), bins, ones_w, Val(D), Val(V), Val(K))
         Test.@test sum(ref_c) > 0
         for backend in (SERIAL, THREADED)
             got = SFC.calculate_structure_function(sf, x1, f, bins; backend, verbose = false,
@@ -128,7 +129,7 @@ Test.@testset "pair weights on a line" begin
     end
     f = Fields(vectors = (u,), scalars = (θ,))
     for sf in (SFT.MixedSFType{1, 0, 2}(), SFT.ScalarSFType{3}())
-        ref_s, ref_c = _line_pair_loop(sf, x, CH.packed(f), bins, w, Val(1), Val(1), Val(1))
+        ref_s, ref_c = _line_pair_loop(sf, x, MF.packed(f), bins, w, Val(1), Val(1), Val(1))
         got = SFC.calculate_structure_function(sf, x1, f, bins, Float64; backend = SERIAL, weights = w,
                                                verbose = false, show_progress = false, output_type = RAW)
         Test.@test _close(got.counts, ref_c)
@@ -165,7 +166,7 @@ Test.@testset "the order of the points and coincident points change nothing" beg
     f = Fields(vectors = (u,), scalars = (θ,))
     fp = Fields(vectors = (u[:, perm],), scalars = (θ[perm],))
     for sf in (SFT.ScalarSFType{3}(), SFT.MixedSFType{1, 0, 1}())
-        ref_s, ref_c = _line_pair_loop(sf, x, CH.packed(f), bins, ones_w, Val(1), Val(1), Val(1))
+        ref_s, ref_c = _line_pair_loop(sf, x, MF.packed(f), bins, ones_w, Val(1), Val(1), Val(1))
         got = SFC.calculate_structure_function(sf, reshape(x[perm], 1, :), fp, bins; backend = SERIAL,
                                                verbose = false, show_progress = false, output_type = RAW)
         Test.@test got.counts == UInt32.(ref_c)

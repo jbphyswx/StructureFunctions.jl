@@ -126,7 +126,7 @@ Test.@testset "culling policy" begin
 
     Test.@test SFC.cull_grid_for(xc, g, tight, SFC.NoCulling()) === nothing
     Test.@test SFC.cull_grid_for(xc, g, tight, SFC.AutoCulling()) !== nothing
-    # a cutoff spanning the grid removes no pairs, so :auto declines rather than pay for the sort
+    # a cutoff spanning the grid removes no pairs, so :auto declines and pays for no sort
     Test.@test SFC.cull_grid_for(xc, g, wide, SFC.AutoCulling()) === nothing
     Test.@test SFC.cull_grid_for(xc, g, wide, SFC.AlwaysCulling()) !== nothing
 
@@ -242,7 +242,7 @@ Test.@testset "2D kernels are invariant to the block schedule" begin
         # single-pass 2D
         vb = ntuple(_ -> val, SFC.SINGLE_PASS_N)
         # h is (sum/count, invariant, value bin, distance bin) — the kernel scatters with
-        # @inbounds, so a wrong shape here corrupts the heap instead of erroring.
+        # @inbounds, so a wrong shape here corrupts the heap and never errors.
         sp2d(pol) = begin
             h = zeros(FT, 2, SFC.SINGLE_PASS_N, n_val, n_dist)
             SFC._sp2d_simd_partial!(h, x, u, dist, vb, Val(D), n_val, 1:(N - 1), pol)

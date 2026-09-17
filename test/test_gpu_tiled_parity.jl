@@ -2,7 +2,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH,
     LinearBinEdges, LogBinEdges
 using Random: Random
 using LinearAlgebra: LinearAlgebra as LA
@@ -180,7 +180,7 @@ Test.@testset "GPU tiled parity — signed transverse operators keep the operato
         bin_edges = collect(range(0.0, 1.4; length = 8))
         ops = (SFT.T3SFType(), SFT.L2T1SFType())
         D == 3 && (ops = (ops..., SFT.ProjectedStructureFunctionType{0, 3}(
-            SF.ReferenceAxisTransverseBasis(LA.normalize(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))))))
+            SFH.ReferenceAxisTransverseBasis(LA.normalize(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))))))
         for sft in ops
             ref = _cpu_ref(sft, x, u, bin_edges)
             gpu = _gpu_tiled(sft, x, u, bin_edges)

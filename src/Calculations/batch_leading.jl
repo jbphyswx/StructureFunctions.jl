@@ -1,17 +1,9 @@
-# Batch-leading, Val{D}-specialized CPU batch kernels.
+# CPU batch kernels over a batch-leading `(B, D, N)` working buffer, specialized on `Val(D)`.
 #
-# Two problems in the original (D,N,B) batch kernels (see benchmark/cpu_regimes.jl baseline):
-#   1. `D = size(x,1)` was a RUNTIME value, so `SVector{D}` / `Val(D)` built the SVector TYPE
-#      inside the hot loop → type instability → ~1140 allocs per pair-op → GC-bound (the 32 s).
-#   2. the `@simd for b` loop read `u[d, point, b]` with stride D*N in b → no packed SIMD.
-#
-# Fix (proven ordering — type stability first, then layout):
-#   * a single dynamic dispatch on `Val(D)` is a FUNCTION BARRIER: the kernel body is fully
-#     specialized on `D` (0 allocations), the one unstable call is amortized over the whole O(N²B).
-#   * kernels operate on a batch-LEADING working buffer `(B, D, N)` so `@simd for b` gets unit
-#     stride; for shared positions the bin is constant across b ⇒ contiguous accumulate (no scatter).
-#
-# Isolated micro-bench (N=150,B=64,D=3): runtime-D 814M allocs/1906 ms → Val{D}+(B,D,N) 0/0.53 ms.
+# `D` reaches every kernel as a type parameter, so each `SVector{D}` has a compile-time type and the
+# body allocates nothing; the one dynamic dispatch on `Val(D)` is amortized over the whole `O(N²B)`
+# sweep. The batch axis is innermost, so `@simd for b` reads unit stride, and with shared positions
+# the bin is constant across `b`, making the accumulation contiguous.
 
 using Distances: Distances as DI
 
@@ -23,7 +15,7 @@ using Distances: Distances as DI
 Wrap a velocity/position array that is already stored **batch-leading**, shape `(B, D, N)`
 (batch axis innermost/contiguous — the CPU-optimal SoA layout). CPU batch kernels then run
 zero-copy. A plain `(D, N, B...)` array (the default contract, GPU-optimal) is transposed once
-internally (measured <1% of one pass). Zero-cost type tag.
+internally. Zero-cost type tag.
 """
 struct BatchLeading{A <: AbstractArray}
     data::A
@@ -95,9 +87,8 @@ Base.@propagate_inbounds _bl_vel(ub, b, i, ::Val{D}) where {D} =
 """
 Throw unless the staged coordinate width matches what `geom` needs.
 
-The batch entry points take raw `(D, N, B…)` arrays rather than going through
-[`_validate_array_shape`](@ref), so this is where a mismatched `x` is caught — before the kernels
-load it under `@inbounds`.
+The batch entry points take raw `(D, N, B…)` arrays, so this is where a mismatched `x` is caught,
+before the kernels load it under `@inbounds`.
 """
 @inline function _validate_bl_geometry(geom, W::Int, D::Int)
     want = _val_int(SFH.coordinate_width(geom))
@@ -273,18 +264,10 @@ end
 # and du_norm2=⟨du,du⟩ are needed — the old `du_T = mδu_t(...)` was dead work (now removed).
 # ----------------------------------------------------------------------------------------
 @inline function _bl_sp1d_write!(sums_bl, counts_bl, b, bin, du_L, du_norm2, ::Type{CT}) where {CT}
-    du_L2 = du_L * du_L
-    du_T2 = du_norm2 - du_L2
-    @inbounds begin
-        sums_bl[b, 1, bin] += du_norm2          # S2  = du_L2 + du_T2
-        sums_bl[b, 2, bin] += du_L2             # L2
-        sums_bl[b, 3, bin] += du_T2             # T2
-        sums_bl[b, 4, bin] += du_L * du_norm2   # S3
-        sums_bl[b, 5, bin] += du_L * du_L2      # L3
-        sums_bl[b, 6, bin] += du_L * du_T2      # L1T2
-        for t in 1:SINGLE_PASS_N
-            counts_bl[b, t, bin] += one(CT)
-        end
+    vals = single_pass_invariants(du_L, du_norm2)
+    @inbounds for t in 1:SINGLE_PASS_N
+        sums_bl[b, t, bin] += vals[t]
+        counts_bl[b, t, bin] += one(CT)
     end
     return nothing
 end
@@ -344,11 +327,7 @@ end
 # Single-pass 2D (6 invariants × per-invariant value bins). Accumulator (B, 6, n_dist, n_val);
 # per-invariant value bin ⇒ scatter ⇒ plain b-loop.
 # ----------------------------------------------------------------------------------------
-@inline function _sp1d_vals(du_L, du_norm2)
-    du_L2 = du_L * du_L
-    du_T2 = du_norm2 - du_L2
-    return (du_norm2, du_L2, du_T2, du_L * du_norm2, du_L * du_L2, du_L * du_T2)
-end
+@inline _sp1d_vals(du_L, du_norm2) = single_pass_invariants(du_L, du_norm2)
 
 @inline function _bl_sp2d_write!(sums_bl, counts_bl, b, dbin, vals, value_bins, n_val, ::Type{CT}) where {CT}
     @sp2d_each_invariant value_bins t vb begin
@@ -416,11 +395,9 @@ end
 # ========================================================================================
 # Drivers: prep (transpose to batch-leading) + run kernel via an EXECUTOR + transpose back.
 #
-# Parallelism is over the OUTER pair index `i` (each pair's geometry is computed exactly once;
-# the inner batch loop over b stays full and SIMD-vectorized). The b-work is so fast that
-# parallelizing over b instead (recomputing geometry per task) was a NET SLOWDOWN — so we
-# partition `i` with round-robin chunks (triangle load balance) and reduce thread-local
-# accumulators, mirroring the point-field threaded path.
+# Parallelism is over the outer pair index `i`, so each pair's geometry is computed once and the
+# inner batch loop over `b` stays full and SIMD-vectorized. `i` is partitioned into round-robin
+# chunks, which balances the triangle, and thread-local accumulators are reduced at the end.
 #
 # executor(make_accum, run_chunk!, ifull, B, accum_bytes, ws) → reduced (sums, counts), width B:
 #   make_accum(bw)                     → fresh zeroed (sums_bl, counts_bl) of batch width bw

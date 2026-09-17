@@ -151,7 +151,7 @@ end
 # splits into a product at `i` and a product at `j`, each a spin-weighted monomial of the field.
 
 # A monomial of the point quantities at one end: powers of U_v, conj(U_v), the radial component of
-# channel v, and the scalar channels; its spin is Σ_v (a_v − b_v).
+# field v, and the scalar fields; its spin is Σ_v (a_v − b_v).
 struct SiteMonomial{V, K}
     a::NTuple{V, Int}
     b::NTuple{V, Int}
@@ -162,8 +162,8 @@ end
 _spin(p::SiteMonomial) = sum(p.a; init = 0) - sum(p.b; init = 0)
 _conjugate(p::SiteMonomial) = SiteMonomial(p.b, p.a, p.r, p.c)
 
-# Site variables of a pair, as positions in an exponent tuple: for channel v the four
-# (Ū_i, conj Ū_i, Ū_j, conj Ū_j), then (w_i, w_j) per channel on a shell, then (θ_i, θ_j) per scalar.
+# Site variables of a pair, as positions in an exponent tuple: for field v the four
+# (Ū_i, conj Ū_i, Ū_j, conj Ū_j), then (w_i, w_j) per field on a shell, then (θ_i, θ_j) per scalar.
 struct SiteLayout{V, K, R} end
 @inline _n_vars(::SiteLayout{V, K, R}) where {V, K, R} = Val(4V + (R ? 2V : 0) + 2K)
 _exponent_type(::SiteLayout{V, K, R}) where {V, K, R} = NTuple{4V + (R ? 2V : 0) + 2K, Int}
@@ -338,7 +338,7 @@ end
 Accumulate the kernel-binned pair statistic of `sf` at the nodes' separations into `sums`, and the
 kernel-weighted pair count into `counts`, from spherical-harmonic pseudo-coefficients of the masked,
 weighted field. `x` is `(lon, lat)` per point in the metric's angle unit; `data` is the packed field
-with vector channels in `(east, north[, radial])` components; `weights` one weight per point; `valid`
+with vector fields in `(east, north[, radial])` components; `weights` one weight per point; `valid`
 which points hold a datum. `spectral_backend` names what computes the pseudo-coefficients: the
 direct sum, `O(N lmax²)`, or a fast spherical harmonic transform from an extension.
 
@@ -386,9 +386,9 @@ function _harmonic_sweep!(
         "every pair, so the moment is identically zero on this route. Use the pair loop, which reads " *
         "each pair once by its convention.",
     ))
-    validate_channels(sf, Val(V), Val(K))
+    validate_fields(sf, Val(V), Val(K))
     (V == 0 || D == 2 || D == 3) || throw(ArgumentError(
-        "a vector channel on a sphere has 2 components (east, north) or 3 (with radial); got $D",
+        "a vector field on a sphere has 2 components (east, north) or 3 (with radial); got $D",
     ))
     N = size(x, 2)
     W = V * D + K
@@ -402,7 +402,7 @@ function _harmonic_sweep!(
     ))
 
     θ, φ = _sphere_angles(g, x)
-    # the spin-1 quantity u_θ + i u_φ of each vector channel: θ̂ is south, φ̂ is east
+    # the spin-1 quantity u_θ + i u_φ of each vector field: θ̂ is south, φ̂ is east
     U = Matrix{ComplexF64}(undef, V, N)
     R = Matrix{Float64}(undef, V, N)
     Θ = Matrix{Float64}(undef, K, N)
@@ -465,7 +465,7 @@ end
 The kernel-binned structure function of `u` sampled at the points `x` of a sphere, at the nodes'
 separations, by spherical harmonic pseudo-coefficients (see [`harmonic_sweep!`](@ref)). `x` is
 `(lon, lat)` in the angle unit of `distance_metric`, which must be spherical; `u` is a `(D, cells...)`
-field of `(east, north[, radial])` components, a `(1, cells...)` scalar, or a `Fields` bundle, with
+field of `(east, north[, radial])` components, a `(1, cells...)` scalar, or a multi-field, with
 `prod(cells) == size(x, 2)`. `weights` default to
 one per point; on a grid the cell measure makes the statistic an area average.
 
@@ -473,7 +473,7 @@ The result's `distance` is the `HarmonicNodes` object itself, one value per node
 the kernel-weighted pair counts, floating point.
 """
 function calculate_structure_function(
-    sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, u::Union{AbstractArray, CH.Fields},
+    sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, u::Union{AbstractArray, MF.Fields},
     nodes::HarmonicNodes, spectral_backend;
     distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing,
     output_type::Type{OT} = SFO.StructureFunction, verbose::Bool = true, show_progress::Bool = true,

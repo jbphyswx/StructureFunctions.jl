@@ -248,3 +248,52 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     SFC.release!(ws_sp)
     SFC.release!(ws_sp2d)
 end
+
+Test.@testset "three-dimensional slice batches (KA.CPU)" begin
+    # The slice-batch drivers dispatch their launchers on a runtime `D`, and those launchers
+    # specialize on `Val(2)` and `Val(3)`, so a `(3, N, T)` batch is a supported shape and must
+    # equal the same slices computed one at a time. A width the launchers do not specialize for
+    # is refused by name.
+    N, T, FT = 40, 4, Float64
+    backend = KA.CPU()
+    sft = SFT.L2SFType()
+    bins = collect(FT, range(0.0, 1.5, length = 11))
+    NB = length(bins) - 1
+    Random.seed!(8801)
+    x_batch = rand(FT, 3, N, T)
+    u_batch = rand(FT, 3, N, T)
+
+    ref_s = zeros(FT, NB, T)
+    ref_c = zeros(UInt32, NB, T)
+    for t in 1:T
+        r = SFC.gpu_calculate_structure_function(sft, backend, x_batch[:, :, t], u_batch[:, :, t], bins)
+        ref_s[:, t] .= r.sums
+        ref_c[:, t] .= r.counts
+    end
+
+    got_s = zeros(FT, NB, T)
+    got_c = zeros(UInt32, NB, T)
+    SFC.gpu_calculate_structure_function_batch!(got_s, got_c, sft, backend, x_batch, u_batch, bins)
+    Test.@test got_c == ref_c
+    Test.@test isapprox(got_s, ref_s; atol = 1e-12)
+    Test.@test sum(Int.(got_c)) == T * N * (N - 1) ÷ 2
+
+    # the six single-pass invariants over the same batch
+    sp_s = zeros(FT, SFC.SINGLE_PASS_N, NB, T)
+    sp_c = zeros(UInt32, SFC.SINGLE_PASS_N, NB, T)
+    SFC.gpu_calculate_structure_functions_single_pass_batch!(sp_s, sp_c, backend, x_batch, u_batch, bins)
+    for t in 1:T
+        one_s = zeros(FT, SFC.SINGLE_PASS_N, NB)
+        one_c = zeros(UInt32, SFC.SINGLE_PASS_N, NB)
+        SFC.calculate_structure_functions_single_pass!(one_s, one_c, x_batch[:, :, t], u_batch[:, :, t],
+                                                       bins; backend = CB.SerialBackend())
+        Test.@test isapprox(sp_s[:, :, t], one_s; rtol = 1e-10, atol = 1e-12)
+        Test.@test sp_c[1, :, t] == one_c[1, :]
+    end
+
+    # a width the launchers do not specialize for is refused, and says so
+    x4 = rand(FT, 4, N, T)
+    u4 = rand(FT, 4, N, T)
+    Test.@test_throws ErrorException SFC.gpu_calculate_structure_function_batch!(
+        got_s, got_c, sft, backend, x4, u4, bins)
+end

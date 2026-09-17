@@ -192,7 +192,7 @@ Test.@testset "the segmented power law recovers slopes and breaks" begin
         Test.@test sel.misfits[2] < 1e-6
         Test.@test sel.misfits[1] > 1e-2
         Test.@test issorted(sel.misfits[1:2]; rev = true)
-        # a data covariance weighs the residual instead of the relative misfit
+        # a data covariance weighs the residual, where the default weighs the relative misfit
         fw = SFC.fit_spectrum(res2, [k_lo, k_hi], SFC.SegmentedPowerLaw(2), Val(D); W = fill(1e-6, 100))
         Test.@test fw.parameters ≈ p2 rtol = 1e-5
     end

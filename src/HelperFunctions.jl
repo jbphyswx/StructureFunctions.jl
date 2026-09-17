@@ -109,8 +109,7 @@ end
 end
 
 @inline r̂(x1, x2, ::DI.Euclidean, distance) = δr(x1, x2) / distance
-# NOTE: LA.normalize is fast here because the vector is a StaticArray.SVector.
-# If dynamic Vectors are ever used, LA.normalize would be ~2.5x slower due to scaling checks.
+# `LA.normalize` is cheap here because the vector is an `SVector`: no scaling checks.
 @inline r̂(x1, x2, ::DI.PreMetric, distance) = LA.normalize(δr(x1, x2))
 
 # -----------------------------------------------------------------------------
@@ -144,9 +143,9 @@ Smallest `sin²σ` for which the separation direction is still representable.
 
 This guards only against `1/0`, NOT against a physical scale: the normalization is exact in the
 `σ → 0` limit (`t_A ≈ d` has magnitude `O(σ)` and `inv_s ≈ 1/σ`, so the product stays `O(1)`), so
-short pairs are fine and must not be dropped. `eps(T)` would be catastrophically wrong here —
-`sin²σ` for a 1 km separation on Earth is `2.5e-8`, below `eps(Float32)`, which would silently
-discard every pair closer than ~2 km in Float32.
+short pairs are fine and must not be dropped. The tolerance is `floatmin`, not `eps`: `sin²σ` for a
+1 km separation on Earth is `2.5e-8`, below `eps(Float32)`, so an `eps` guard silently discards every
+`Float32` pair closer than about 2 km.
 """
 @inline _geodesic_degeneracy_tol(::Type{T}) where {T} = floatmin(T)
 
@@ -157,8 +156,7 @@ Smallest `‖p̂+q̂‖²` for which the separation direction still carries info
 [`_geodesic_degeneracy_tol`](@ref) guards `σ → 0`, where the cancellation in `t_A = d − (d·p̂)p̂` is
 exact in structure and short pairs are computed perfectly. At `σ → π` it is not: `d ≈ −2p̂` and
 `d·p̂ ≈ −2`, so `t_A` is the difference of two `O(2)` quantities and the direction's error grows as
-`ε/(π−σ)` — measured against `BigFloat` at 3.7e-11 for `π−σ = 1e-5`, 3.5e-3 for `1e-13`, and **0.385**
-for `1e-15`, i.e. a unit vector wrong by 38%.
+`ε/(π−σ)`: against `BigFloat` it reaches 0.385 at `π−σ = 1e-15`, a unit vector wrong by 38 %.
 
 `‖p̂+q̂‖ = 2cos(σ/2) ≈ π−σ` near that root, so requiring `eps(T)` here bounds the direction error at
 about `sqrt(eps(T))`. Antipodal points are joined by infinitely many great circles, so no tie-break
@@ -178,8 +176,8 @@ of that circle, hence tangent to the sphere at each of them, and it is parallel 
 Both tangents also share one normalizer, since `‖q̂ − (p̂·q̂)p̂‖² = ‖(p̂·q̂)q̂ − p̂‖² = 1 − (p̂·q̂)²`.
 So the whole frame costs one `sqrt`.
 
-`σ` uses the tangent-half-angle form `2·atan(‖p̂−q̂‖, ‖p̂+q̂‖)`, which is accurate for every `σ`
-including antipodal, unlike `acos(p̂·q̂)` (which loses half the mantissa near `σ=0` — fatal in Float32).
+`σ` uses the tangent-half-angle form `2·atan(‖p̂−q̂‖, ‖p̂+q̂‖)`, accurate for every `σ` including
+antipodal. `acos(p̂·q̂)` loses half the mantissa near `σ=0`, which is fatal in `Float32`.
 
 `ok` is `false` for coincident (`σ=0`) and antipodal (`σ=π`) pairs, where the direction is genuinely
 undefined — antipodal points are joined by infinitely many great circles, so parallel transport
@@ -234,8 +232,8 @@ SphericalGeometry{D}(metric::M, radius::T) where {D, M, T} = SphericalGeometry{D
     coordinate_width(geometry) -> Val{W}
 
 How many numbers locate one point in the form the kernels consume, as a `Val` so callers can build a
-statically-sized load. This is not the velocity dimension: a point on a shell takes three ambient
-components whether or not the velocity carries a radial one.
+statically-sized load. It is the coordinate count, never the velocity dimension: a point on a shell
+takes three ambient components whether or not the velocity carries a radial one.
 
 See [`input_coordinate_width`](@ref) for the width a caller supplies and
 [`prepare_pair_inputs`](@ref) for the conversion between the two.
@@ -314,8 +312,8 @@ On the sphere the frame IS the basis, so the longitudinal direction is `ê₁` b
     pair_invariants(geometry, frame, r, u1, u2) -> (δu_L, ‖δu‖²)
 
 The only two scalars the six isotropic invariants consume: every one of them is built from `δu_L`,
-`δu_L²` and `δu_T² = ‖δu‖² − δu_L²`. Kernels that need no separation direction call this instead of
-[`pair_increments`](@ref) and never form `r̂`.
+`δu_L²` and `δu_T² = ‖δu‖² − δu_L²`. A kernel that needs no separation direction calls this and never
+forms `r̂`; [`pair_increments`](@ref) is the form that does.
 """
 @inline function pair_invariants(::FlatGeometry, frame, r, u1, u2)
     δu = u2 - u1
@@ -403,7 +401,7 @@ fixed-position batch), in which case its single slice supplies the basis for all
     prepare_coordinates(geometry, x) -> x_kernel
 
 The coordinate half of [`prepare_pair_inputs`](@ref), for a caller that has no field to convert
-alongside — a field of scalar channels only has nothing to transport, but its points still have to
+alongside — a field of scalar fields only has nothing to transport, but its points still have to
 reach the form the kernels index.
 """
 @inline prepare_coordinates(::Any, x) = x
@@ -490,8 +488,8 @@ end
     pair_geometry_for(metric, ::Val{D}) -> geometry
 
 Geometry implied by `metric` for user-facing dimension `D`. A distance function alone does not define
-a direction or a transport rule, so there is deliberately **no generic method**: an unrecognized
-metric raises rather than silently assuming flat space. Add a method here (and a
+a direction or a transport rule, so there is deliberately **no generic method** and an unrecognized
+metric raises. Add a method here (and a
 [`pair_geometry`](@ref) method for the geometry it returns) to support another manifold.
 """
 pair_geometry_for(::DI.Euclidean, ::Val{D}) where {D} = FlatGeometry{D}()
@@ -526,7 +524,7 @@ Ingest helpers that take the angle unit from the metric's own documented convent
 `Distances.Haversine` is **degrees**, `Distances.SphericalAngle` and [`SphericalDistance`](@ref) are
 **radians**. Confusing the two
 silently rescales every separation by a factor of ~57, so the convention is pinned next to the metric
-that defines it rather than repeated at each call site.
+that defines it.
 """
 @inline unit_position(::DI.Haversine, lon, lat) = unit_position(lon, lat)
 @inline local_east_north(::DI.Haversine, lon, lat) = local_east_north(lon, lat)
@@ -749,7 +747,7 @@ Return the transverse magnitude of `δu`, signed relative to the normal vector `
 caller must ensure `r_hat` is a unit vector.
 """
 @inline function magnitude_δu_transverse(δu, r_hat)
-    # Signed relative to n̂, unlike LA.norm(δu .- δu_longitudinal(δu, r_hat)).
+    # Signed relative to n̂; the norm of the rejected component is the unsigned magnitude.
     return LA.dot(δu, n̂(r_hat))
 end
 

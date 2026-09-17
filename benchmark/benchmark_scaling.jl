@@ -76,7 +76,12 @@ function run_worker(n_threads::Int, n_points::Int)
     julia_bin = joinpath(Sys.BINDIR, "julia")
     project_dir = joinpath(@__DIR__, "..")
 
-    cmd = `$julia_bin --project=$project_dir/benchmark -t $n_threads $worker_script $n_points`
+    # `JULIA_EXCLUSIVE=1` pins the worker's threads one per core. Without it the OS is free to put
+    # two threads on the two hyperthreads of one core, which reads as a scaling cliff: an unpinned
+    # 16-thread run measured 0.325 s or 0.581 s from one launch to the next, the second being the
+    # 8-thread time.
+    cmd = setenv(`$julia_bin --project=$project_dir/benchmark -t $n_threads $worker_script $n_points`,
+                 merge(ENV, Dict("JULIA_EXCLUSIVE" => "1")))
     output = readchomp(cmd)
     lines = filter(!isempty, split(output, '\n'))
     return JSON.parse(last(lines))

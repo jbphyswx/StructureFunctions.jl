@@ -16,10 +16,9 @@ single-pass 2D uses tiled128 pair traversal with **HTP-EJ** when `n_dist ≤ SF_
 and distance bins are typed (`LinearBinEdges` / `LogBinEdges`):
 
 - **On-chip** (`:shared`, `:typeplane`): shared histogram during the pair loop,
-  block-end `@atomic` flush into final output (same pattern as joint 2D) — no private partition, no merge.
-- **Direct** (`:direct`): block-private global atomics during one pair pass, then merge kernel.
-
-See [`gpu/SP2D_HTP_EJ.md`](../gpu/SP2D_HTP_EJ.md) for strategy, routing, benchmarks, and known perf gaps.
+  block-end `@atomic` flush into final output (the joint 2D pattern), with no private partition and
+  no merge.
+- **Direct** (`:direct`): block-private global atomics during one pair pass, then a merge kernel.
 
 Pass `force_global_atomic=true` to bypass HTP-EJ and use the global-atomic path.
 
@@ -262,22 +261,21 @@ include(joinpath(@__DIR__, "gpu", "kernels_2d_single_pass.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_2d_value_axis.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_2d_direct.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_batch.jl"))
-# Unified parametric kernel core (building blocks) + the two tiled kernels that
-# replace the per-variant kernels above. See gpu/OPTIMAL_KERNEL_DESIGN.md.
+# Unified parametric kernel core (building blocks) and the two tiled kernels built on it.
 include(joinpath(@__DIR__, "gpu", "sf_core.jl"))
 include(joinpath(@__DIR__, "gpu", "sf_tiled.jl"))
 include(joinpath(@__DIR__, "gpu", "workspace.jl"))
 include(joinpath(@__DIR__, "gpu", "launch.jl"))
 include(joinpath(@__DIR__, "gpu", "tensor.jl"))
-include(joinpath(@__DIR__, "gpu", "channels.jl"))
+include(joinpath(@__DIR__, "gpu", "multifields.jl"))
 
 # The kernels compute Euclidean geometry inline, so every GPU entry types its `distance_metric`
 # keyword as `DI.Euclidean`: asking for another metric is a TypeError naming the keyword, and the
-# constraint lives in the signature rather than in a trait table and a runtime branch.
+# constraint lives in the signature.
 
 """`true` when `a` is an array living on `backend`. Only a missing `KA.get_backend` method (i.e. `a`
-is not a recognized device array) counts as "not on this backend" — every other failure is a real
-fault and propagates rather than silently degrading to a host round-trip."""
+is not a recognized device array) counts as "not on this backend"; every other failure is a real
+fault and propagates."""
 function _array_on_backend(a, backend::KA.Backend)
     a_backend = try
         KA.get_backend(a)
@@ -933,9 +931,9 @@ function _gpu_calculate_structure_function_core(
         nb = SFC.n_histogram_bins(distance_bins)
         sums = zeros(promote_type(float(FT), Float64), nb)
         counts = zeros(CT, nb)
-        SFC.gpu_calculate_structure_function_channels!(
+        SFC.gpu_calculate_structure_function_fields!(
             CB.GPUBackend(backend), sums, counts, sf_type, x_mat,
-            SFC.CH.Fields(vectors = (u_mat,)), distance_bins;
+            SFC.MF.Fields(vectors = (u_mat,)), distance_bins;
             distance_metric, culling, verbose, show_progress,
         )
         return SF.StructureFunctionSumsAndCounts(sf_type, distance_bins, sums, counts)
@@ -1073,8 +1071,7 @@ end
     U2 = _gpu_ld_col(u_mat, j, Val(2), FT)
     ok, dist, frame = SFH.pair_frame(geom, X1, X2)
     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-    du_L2 = du_L * du_L
-    return ok, dist, du_L, du_L2, du_n2 - du_L2
+    return ok, dist, du_L, du_n2
 end
 
 @inline function _gpu_single_pass_pair_invariants(
@@ -1092,8 +1089,7 @@ end
     U2 = _gpu_ld_col(u_mat, j, Val(3), FT)
     ok, dist, frame = SFH.pair_frame(geom, X1, X2)
     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-    du_L2 = du_L * du_L
-    return ok, dist, du_L, du_L2, du_n2 - du_L2
+    return ok, dist, du_L, du_n2
 end
 
 @inline function _gpu_accumulate_single_pass_global!(
@@ -1101,17 +1097,11 @@ end
     output_counts,
     bin::Int,
     du_L,
-    du_L2,
-    du_T2,
+    du_n2,
 )
-    @atomic output_sums[1, bin] += du_L2 + du_T2
-    @atomic output_sums[2, bin] += du_L2
-    @atomic output_sums[3, bin] += du_T2
-    @atomic output_sums[4, bin] += du_L * (du_L2 + du_T2)
-    @atomic output_sums[5, bin] += du_L * du_L2
-    @atomic output_sums[6, bin] += du_L * du_T2
-
+    vals = SFC.single_pass_invariants(du_L, du_n2)
     for t in 1:SF_GPU_SINGLE_PASS_N
+        @atomic output_sums[t, bin] += vals[t]
         @atomic output_counts[t, bin] += one(eltype(output_counts))
     end
     return nothing
@@ -1136,7 +1126,7 @@ KA.@kernel unsafe_indices=true function _sf_single_pass_kernel_linear!(
     j = I[2]
 
     if i < j
-        ok, dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+        ok, dist, du_L, du_n2 = _gpu_single_pass_pair_invariants(
             x_mat, u_mat, i, j, Val(D), FT, geom,
         )
         bin = _gpu_digitize_linear(
@@ -1144,7 +1134,7 @@ KA.@kernel unsafe_indices=true function _sf_single_pass_kernel_linear!(
         )
 
         if ok && 1 <= bin < N_bins
-            _gpu_accumulate_single_pass_global!(output_sums, output_counts, bin, du_L, du_L2, du_T2)
+            _gpu_accumulate_single_pass_global!(output_sums, output_counts, bin, du_L, du_n2)
         end
     end
 end
@@ -1168,13 +1158,13 @@ KA.@kernel unsafe_indices=true function _sf_single_pass_kernel_log!(
     j = I[2]
 
     if i < j
-        ok, dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+        ok, dist, du_L, du_n2 = _gpu_single_pass_pair_invariants(
             x_mat, u_mat, i, j, Val(D), FT, geom,
         )
         bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, step_val, N_bins)
 
         if ok && 1 <= bin < N_bins
-            _gpu_accumulate_single_pass_global!(output_sums, output_counts, bin, du_L, du_L2, du_T2)
+            _gpu_accumulate_single_pass_global!(output_sums, output_counts, bin, du_L, du_n2)
         end
     end
 end
@@ -1196,13 +1186,13 @@ KA.@kernel unsafe_indices=true function _sf_single_pass_kernel!(
     
     if i < j
         FT = eltype(x_mat)
-        ok, dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+        ok, dist, du_L, du_n2 = _gpu_single_pass_pair_invariants(
             x_mat, u_mat, i, j, Val(D), FT, geom,
         )
         bin = _gpu_digitize_general(dist, distance_bins, N_bins)
         
         if ok && 1 <= bin < N_bins
-            _gpu_accumulate_single_pass_global!(output_sums, output_counts, bin, du_L, du_L2, du_T2)
+            _gpu_accumulate_single_pass_global!(output_sums, output_counts, bin, du_L, du_n2)
         end
     end
 end
@@ -1211,10 +1201,8 @@ end
 Offer a non-batch single-pass 1D launch to the batch dispatcher as `B=1`, which reaches the CUDA
 N-body kernel; `false` means the hook declined and the caller stays on the tiled128 path.
 
-Measured on A100 (N=20000): 1.90× Float32, 1.32× Float64. The batch machinery is not a win at
-`B=1` in general — 1D-individual measures 0.64× because its fixed-x path pays strip staging and two
-merge kernels for a strip of one — so this is applied per regime, not globally. See
-`gpu/SPEED_OF_LIGHT.md`.
+The offer is made per regime, not globally: a fixed-x 1D-individual launch at `B=1` pays strip
+staging and two merge kernels for a strip of one, so it stays on its own path.
 """
 @inline function _sp1d_try_fast_batch!(
     backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, dist_bins,
@@ -1454,8 +1442,7 @@ end
 Offer a non-batch joint 2D launch to the batch dispatcher as `B=1` (`NMOM=1`, so `sf_type` is
 carried through and does the per-pair math); `false` means the hook declined and the caller
 continues unchanged. `(n_dist, n_val)` reshapes to `(1, n_dist, n_val, 1)` at no cost — column-major
-layout is identical. Measured on A100 (N=20000): 1.48× Float32, 1.18× Float64.
-See `gpu/SPEED_OF_LIGHT.md`.
+layout is identical.
 """
 @inline function _joint2d_try_fast_batch!(
     backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type, dist_bins, vp,
@@ -1807,20 +1794,10 @@ end
     value_edges,
     bin::Int,
     du_L,
-    du_T,
-    du_L2,
-    du_T2,
+    du_n2,
     N_val_edges::Int,
 )
-    FT = eltype(output_sums)
-    vals = SA.SVector(
-        du_L2 + du_T2,
-        du_L2,
-        du_T2,
-        du_L * (du_L2 + du_T2),
-        du_L * du_L2,
-        du_L * du_T2,
-    )
+    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
@@ -1850,7 +1827,7 @@ KA.@kernel unsafe_indices=true function _sf_single_pass_2d_kernel_linear!(
     I = @index(Global, NTuple)
     i, j = I[1], I[2]
     if i < j
-        ok, dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+        ok, dist, du_L, du_n2 = _gpu_single_pass_pair_invariants(
             x_mat, u_mat, i, j, Val(D), FT, geom,
         )
         bin = _gpu_digitize_linear(
@@ -1859,7 +1836,7 @@ KA.@kernel unsafe_indices=true function _sf_single_pass_2d_kernel_linear!(
         if ok && 1 <= bin < N_bins
             _gpu_accumulate_single_pass_2d_pair!(
                 output_sums, output_counts, value_edges, bin,
-                du_L, zero(du_L), du_L2, du_T2, N_val_edges,
+                du_L, du_n2, N_val_edges,
             )
         end
     end
@@ -1884,14 +1861,14 @@ KA.@kernel unsafe_indices=true function _sf_single_pass_2d_kernel_log!(
     I = @index(Global, NTuple)
     i, j = I[1], I[2]
     if i < j
-        ok, dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+        ok, dist, du_L, du_n2 = _gpu_single_pass_pair_invariants(
             x_mat, u_mat, i, j, Val(D), FT, geom,
         )
         bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, step_val, N_bins)
         if ok && 1 <= bin < N_bins
             _gpu_accumulate_single_pass_2d_pair!(
                 output_sums, output_counts, value_edges, bin,
-                du_L, zero(du_L), du_L2, du_T2, N_val_edges,
+                du_L, du_n2, N_val_edges,
             )
         end
     end
@@ -1914,14 +1891,14 @@ KA.@kernel unsafe_indices=true function _sf_single_pass_2d_kernel!(
     i, j = I[1], I[2]
     if i < j
         FT = eltype(x_mat)
-        ok, dist, du_L, du_L2, du_T2 = _gpu_single_pass_pair_invariants(
+        ok, dist, du_L, du_n2 = _gpu_single_pass_pair_invariants(
             x_mat, u_mat, i, j, Val(D), FT, geom,
         )
         bin = _gpu_digitize_general(dist, distance_bins, N_bins)
         if ok && 1 <= bin < N_bins
             _gpu_accumulate_single_pass_2d_pair!(
                 output_sums, output_counts, value_edges, bin,
-                du_L, zero(du_L), du_L2, du_T2, N_val_edges,
+                du_L, du_n2, N_val_edges,
             )
         end
     end
@@ -2246,10 +2223,9 @@ function SFC.gpu_calculate_structure_function_batch!(
         throw(DimensionMismatch("sums must have shape ($NB, $T); got $(size(sums))"))
     size(counts) == (NB, T) ||
         throw(DimensionMismatch("counts must have shape ($NB, $T); got $(size(counts))"))
-    N_dims == 2 ||
-        error("GPUExt: slice batch requires N_dims=2 (got N_dims=$N_dims)")
-    # Fused varying-x batch (B = T) through the unified N-body path (measured
-    # ~1.9× the old per-slice varying kernel; single launch, no per-slice loop).
+    N_dims == 2 || N_dims == 3 ||
+        error("GPUExt: slice batch requires N_dims ∈ {2,3} (got N_dims=$N_dims)")
+    # Fused varying-x batch (B = T) through the unified N-body path: one launch for every slice.
     # `size(u, 1)` is the velocity dimension only before the conversion.
     geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
     x, u = SFH.prepare_pair_inputs(geom, x, u)
@@ -2323,8 +2299,8 @@ function SFC.gpu_calculate_structure_functions_single_pass_batch!(
         throw(DimensionMismatch("sums must have shape ($(SFC.SINGLE_PASS_N), $n_bins, $T); got $(size(sums))"))
     size(counts) == size(sums) ||
         throw(DimensionMismatch("counts must match sums shape $(size(sums))"))
-    N_dims == 2 ||
-        error("GPUExt: single-pass slice batch requires N_dims=2 (got N_dims=$N_dims)")
+    N_dims == 2 || N_dims == 3 ||
+        error("GPUExt: single-pass slice batch requires N_dims ∈ {2,3} (got N_dims=$N_dims)")
     # Fused varying-x batch (B = T) through the unified N-body single-pass path.
     # `size(u, 1)` is the velocity dimension only before the conversion.
     geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
@@ -2364,11 +2340,10 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d_batch!(
         throw(DimensionMismatch("sums must have shape ($(SFC.SINGLE_PASS_N), $n_bins, $n_val, $T); got $(size(sums))"))
     size(counts) == size(sums) ||
         throw(DimensionMismatch("counts must match sums shape $(size(sums))"))
-    N_dims == 2 ||
-        error("GPUExt: SP2D slice batch requires N_dims=2 (got N_dims=$N_dims)")
-    # Fused varying-x batch (B = T) through the unified single-pass-2D path
-    # (N-body + dynamic-shared privatized histogram; ~17× the old per-slice path
-    # at 50×50, one launch instead of T).
+    N_dims == 2 || N_dims == 3 ||
+        error("GPUExt: SP2D slice batch requires N_dims ∈ {2,3} (got N_dims=$N_dims)")
+    # Fused varying-x batch (B = T) through the unified single-pass-2D path: N-body with a
+    # dynamic-shared privatized histogram, one launch for every slice.
     # `size(u, 1)` is the velocity dimension only before the conversion.
     geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
     x, u = SFH.prepare_pair_inputs(geom, x, u)

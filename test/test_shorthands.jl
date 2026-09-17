@@ -1,6 +1,7 @@
 using Test: Test
 using StructureFunctions:
-    StructureFunctions as SF, StructureFunctionObjects as SFO, StructureFunctionTypes as SFT
+    StructureFunctions as SF, StructureFunctionObjects as SFO, StructureFunctionTypes as SFT,
+    Calculations as SFC
 using StaticArrays: StaticArrays as SA
 
 Test.@testset "Structure function resolver API" begin
@@ -10,17 +11,17 @@ Test.@testset "Structure function resolver API" begin
     u = rand(FT, 2, N)
     bins = SA.SVector(0.0, 1.4)
 
-    Test.@test SF.get_structure_function_type(:L2SF) === SF.L2SF
-    Test.@test SF.get_structure_function_type(Val(:L2SF)) === SF.L2SF
-    Test.@test SF.get_structure_function_type(2, :longitudinal) === SF.L2SF
-    Test.@test SF.get_structure_function_type(Val(2), Val(:long)) === SF.L2SF
+    Test.@test SFT.get_structure_function_type(:L2SF) === SFT.L2SF
+    Test.@test SFT.get_structure_function_type(Val(:L2SF)) === SFT.L2SF
+    Test.@test SFT.get_structure_function_type(2, :longitudinal) === SFT.L2SF
+    Test.@test SFT.get_structure_function_type(Val(2), Val(:long)) === SFT.L2SF
 
-    op = SF.get_structure_function_type(:L2SF)
-    res = SF.calculate_structure_function(op, x, u, bins; verbose = false, show_progress = false)
+    op = SFT.get_structure_function_type(:L2SF)
+    res = SFC.calculate_structure_function(op, x, u, bins; verbose = false, show_progress = false)
     Test.@test res isa SF.StructureFunction
-    Test.@test res.operator === SF.L2SF
+    Test.@test res.operator === SFT.L2SF
 
-    Test.@test_throws MethodError SF.calculate_structure_function(
+    Test.@test_throws MethodError SFC.calculate_structure_function(
         :L2SF,
         x,
         u,
@@ -28,7 +29,7 @@ Test.@testset "Structure function resolver API" begin
         verbose = false,
         show_progress = false,
     )
-    Test.@test_throws MethodError SF.calculate_structure_function(
+    Test.@test_throws MethodError SFC.calculate_structure_function(
         2,
         :longitudinal,
         x,
@@ -40,8 +41,8 @@ Test.@testset "Structure function resolver API" begin
 
     x_tuple = (vec(x[1, :]), vec(x[2, :]))
     u_tuple = (vec(u[1, :]), vec(u[2, :]))
-    Test.@test_throws ArgumentError SF.calculate_structure_function(
-        SF.L2SF,
+    Test.@test_throws ArgumentError SFC.calculate_structure_function(
+        SFT.L2SF,
         x_tuple,
         u_tuple,
         bins;
@@ -49,20 +50,20 @@ Test.@testset "Structure function resolver API" begin
         show_progress = false,
     )
 
-    Test.@test SF.S2SF === SFT.SecondOrderStructureFunction
-    Test.@test SF.S3SF === SFT.ThirdOrderStructureFunction
-    Test.@test SF.T3SF === SFT.OffDiagonalConsistentThirdOrderStructureFunction
-    Test.@test SF.L2T1SF === SFT.DiagonalInconsistentThirdOrderStructureFunction
-    Test.@test SF.L1T2SF === SFT.OffDiagonalInconsistentThirdOrderStructureFunction
+    Test.@test SFT.S2SF === SFT.SecondOrderStructureFunction
+    Test.@test SFT.S3SF === SFT.ThirdOrderStructureFunction
+    Test.@test SFT.T3SF === SFT.OffDiagonalConsistentThirdOrderStructureFunction
+    Test.@test SFT.L2T1SF === SFT.DiagonalInconsistentThirdOrderStructureFunction
+    Test.@test SFT.L1T2SF === SFT.OffDiagonalInconsistentThirdOrderStructureFunction
 
-    Test.@test SF.get_structure_function_type(2, :rotational) ===
-        SF.RotationalSecondOrderStructureFunction
-    Test.@test SF.get_structure_function_type(2, :divergent) ===
-        SF.DivergentSecondOrderStructureFunction
-    Test.@test SF.RotationalSecondOrderStructureFunction isa SF.AbstractDerivedStructureFunctionType
-    Test.@test SF.DivergentSecondOrderStructureFunction isa SF.AbstractDerivedStructureFunctionType
-    Test.@test_throws ArgumentError SF.calculate_structure_function(
-        SF.RotationalSecondOrderStructureFunction,
+    Test.@test SFT.get_structure_function_type(2, :rotational) ===
+        SFT.RotationalSecondOrderStructureFunction
+    Test.@test SFT.get_structure_function_type(2, :divergent) ===
+        SFT.DivergentSecondOrderStructureFunction
+    Test.@test SFT.RotationalSecondOrderStructureFunction isa SFT.AbstractDerivedStructureFunctionType
+    Test.@test SFT.DivergentSecondOrderStructureFunction isa SFT.AbstractDerivedStructureFunctionType
+    Test.@test_throws ArgumentError SFC.calculate_structure_function(
+        SFT.RotationalSecondOrderStructureFunction,
         x,
         u,
         bins;

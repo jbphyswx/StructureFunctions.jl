@@ -2,8 +2,8 @@
 #
 # One thread owns an `i` and walks every `j > i`, so the pair set is the same upper triangle the CPU
 # kernel enumerates. The accumulation is a global atomic per tensor component: a rank-`P` tensor has
-# `D^P` of them per pair, which is why this is a separate kernel rather than a mode of the scalar
-# ones — there is no shared-memory histogram small enough to stage it.
+# `D^P` of them per pair, and no shared-memory histogram is small enough to stage that, so this is
+# its own kernel and not a mode of the scalar ones.
 
 KA.@kernel unsafe_indices = true function _tensor_kernel!(
     sums, counts, @Const(x_mat), @Const(u_mat), geom, dist_be,

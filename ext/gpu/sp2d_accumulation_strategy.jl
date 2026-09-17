@@ -42,25 +42,17 @@ Joint-histogram bytes above which plain global atomics beat `:direct`, so `_laun
 routes past it.
 
 `:direct` gives up the on-chip histogram for block-private global partitions plus a merge pass, so
-its cost grows with cells × tile-blocks; plain global atomics get *cheaper* as more cells spread the
-contention. Measured on A100 at N=8000, `:direct` vs naive in bapps:
-
-| hist bytes | Float32 | Float64 |
-|---|---|---|
-| 253–307 KB | 3.85 vs 3.46 → `:direct` | 3.44 vs 3.47 → wash |
-| 373–389 KB | 3.52 vs 4.33 → naive | 3.41 vs 4.21 → naive |
-| 461–720 KB | 2.43 vs 6.22 → naive | 1.87 vs 6.70 → naive |
-
-The crossover falls between 307 and 373 KB for both element types, and naive's margin grows steeply
-above it. `:shared` and `:typeplane` keep the histogram on chip and are unaffected. See
-`gpu/SPEED_OF_LIGHT.md`.
+its cost grows with cells × tile-blocks, while plain global atomics get cheaper as more cells spread
+the contention. On an A100 the two cross between 307 and 373 KiB for both element types, and this
+constant is the midpoint of that band. `:shared` and `:typeplane` keep the histogram on chip and are
+unaffected.
 """
 const SP2D_GLOBAL_ATOMIC_HIST_BYTES = 340 * 1024
 
 """
     _sp2d_prefers_global_atomics(n_dist, n_val, FT, caps) -> Bool
 
-Whether SP2D should hand this shape to the plain global-atomic kernel instead of `:direct`.
+Whether SP2D hands this shape to the plain global-atomic kernel in place of `:direct`.
 
 Consulted in **two** places that must agree: where the value plan is built
 (`_gpu_run_single_pass_2d!`, which must produce a `GPUValueVectorCols` because that is the plan the
@@ -172,9 +164,9 @@ const SP2D_COMPILE_CELL_QUANTUM = 1024
     _sp2d_sharedhist_compile_cells(config) -> Int
 
 Compile-time `@localmem` histogram width. Sized to what the config actually needs, rounded up to
-[`SP2D_COMPILE_CELL_QUANTUM`] so nearby configs reuse one compiled kernel instead of each forcing
-its own. Reserving the whole budget instead would cost residency: a config needing 3072 cells would
-hold 5371 cells of shared and drop from 5 blocks per SM to 3.
+[`SP2D_COMPILE_CELL_QUANTUM`] so nearby configs reuse one compiled kernel. Reserving the whole
+budget costs residency: a config needing 3072 cells then holds 5371 cells of shared and drops from
+5 blocks per SM to 3.
 """
 @inline function _sp2d_sharedhist_compile_cells(config::SP2DAccumulationStrategy)
     # Both branches must use the PADDED extents: the kernel indexes and bounds its loops with the

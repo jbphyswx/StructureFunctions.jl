@@ -14,7 +14,7 @@ const MODULES = [
     StructureFunctions.StructureFunctionObjects,
     StructureFunctions.Calculations,
     StructureFunctions.HelperFunctions,
-    StructureFunctions.Channels,
+    StructureFunctions.MultiFields,
     StructureFunctions.KHM,
 ]
 

@@ -26,6 +26,8 @@ Calculations.FrameTransport
 Calculations.uniform_axes
 Calculations.n_slabs
 Calculations.separable_layout
+Calculations.lag_limits
+Calculations.uniform_lag_box
 Calculations.lag_transport
 Calculations.NoWeights
 Calculations.AllValid

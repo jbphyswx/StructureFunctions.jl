@@ -1,6 +1,7 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO, Fields
+    StructureFunctionObjects as SFO, HelperFunctions as SFH
+using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using StaticArrays: StaticArrays as SA
 using FFTW: FFTW
@@ -10,7 +11,7 @@ using Random: Random
 
 const FFT_TAG = SB.FastFourierTransformSpectralBackend()
 
-# One call for either route, on a bare array or a channel bundle.
+# One call for either route, on a bare array or a multi-field.
 function _moments_run(sf, field, dims, spacing, periodic, bins; valid = SFC.AllValid(), backend = nothing)
     nb = SFC.n_histogram_bins(SFC.squared_digitize_plan(bins))
     s = zeros(Float64, nb)
@@ -50,7 +51,7 @@ const VECTOR_OPS = (
 const ODD_TRANSVERSE_OPS = (SFT.L2T1SFType(), SFT.T3SFType(), SFT.ProjectedStructureFunctionType{0, 4}())
 # The canonical rule about an axis no lattice lag is parallel to: a non-canonical basis through moment_contract.
 const AXIS_OPS = (SFT.ProjectedStructureFunctionType{0, 3}(
-    SF.ReferenceAxisTransverseBasis(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))),)
+    SFH.ReferenceAxisTransverseBasis(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))),)
 
 Test.@testset "the transform equals the lag sweep for every polynomial operator" begin
     for (dims, spacing, periodic) in MOMENT_GRIDS
@@ -107,7 +108,7 @@ function _grid_points(dims, spacing)
     return x
 end
 
-Test.@testset "channel bundles on a grid: scalar, mixed and cross-channel moments" begin
+Test.@testset "multi-fields on a grid: scalar, mixed and cross-field moments" begin
     dims = (9, 7)
     spacing = (0.1, 0.15)
     Random.seed!(9300)
@@ -133,8 +134,8 @@ Test.@testset "channel bundles on a grid: scalar, mixed and cross-channel moment
         Test.@test sum(got_c) > 0
     end
 
-    # The lag sweep on a bundle against the unstructured channel path over the same points, which is
-    # checked against brute force in test_channels.jl and shares no code with the lag enumeration.
+    # The lag sweep on a multi-field against the unstructured field path over the same points, which is
+    # checked against brute force in test_multifields.jl and shares no code with the lag enumeration.
     x = _grid_points(dims, spacing)
     for (f, ops) in cases, sf in ops
         ref = SFC.calculate_structure_function(sf, x, f, bins; backend = CB.SerialBackend(),
@@ -145,7 +146,7 @@ Test.@testset "channel bundles on a grid: scalar, mixed and cross-channel moment
         Test.@test isapprox(got_s, ref.sums; rtol = 1e-10, atol = 1e-12)
     end
 
-    # a channel the bundle does not carry is refused, on both routes
+    # a field the multi-field does not carry is refused, on both routes
     Test.@test_throws ArgumentError _moments_run(SFT.VectorDotSFType(1, 2), f_vs, dims, spacing,
                                                  (false, false), bins)
     Test.@test_throws ArgumentError _moments_run(SFT.VectorDotSFType(1, 2), f_vs, dims, spacing,
@@ -201,8 +202,39 @@ Test.@testset "directional output on a grid agrees with the unstructured joint p
     Test.@test isapprox(vec(sum(ps; dims = 2)), ps1; rtol = 1e-9, atol = 1e-10)
 end
 
+Test.@testset "the forward transforms batch, and the batch size changes nothing" begin
+    # Every (slab, monomial) is a short transform along the uniform directions, so they go through one
+    # batched call; the batch is bounded by a byte budget. Driving the budget down to one column at a
+    # time, and to a size that leaves a short last batch, must not move a single number.
+    ext = Base.get_extension(SF, :StructureFunctionsAbstractFFTsExt)
+    Random.seed!(9550)
+    dims = (24, 9)                       # 9 slabs of 24, so the stretched axis makes many small transforms
+    coords = cumsum(0.7 .+ 0.4 .* rand(dims[2]))
+    s = SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((dims[1],), (0.5,), (true,)), (coords,), (1, 2))
+    u = randn(2, dims...)
+    bins = collect(range(0.0, 4.0; length = 9))
+    budget = ext.FORWARD_BATCH_BYTES[]
+    try
+        nb = SFC.n_histogram_bins(SFC.squared_digitize_plan(bins))
+        run() = (a = zeros(Float64, nb); c = zeros(Int, nb);
+                 SFC.gridded_sweep!(a, c, SFT.L2SFType(), u, s, bins, Val(2), FFT_TAG); (a, c))
+        ref_s, ref_c = run()
+        # a slab costs 24·8 + 13·16 = 400 bytes here, so these give batches of 9 (one), 1, 2 (a short
+        # last batch of 1) and 4 (a short last batch of 1)
+        for bytes in (budget, 1, 800, 1600)
+            ext.FORWARD_BATCH_BYTES[] = bytes
+            got_s, got_c = run()
+            Test.@test got_s == ref_s
+            Test.@test got_c == ref_c
+        end
+        Test.@test sum(ref_c) > 0
+    finally
+        ext.FORWARD_BATCH_BYTES[] = budget
+    end
+end
+
 Test.@testset "gridded_spectrum transforms each monomial once, and a descending axis gives positive dk" begin
-    ext = Base.get_extension(SF, :StructureFunctionsFFTExt)
+    ext = Base.get_extension(SF, :StructureFunctionsAbstractFFTsExt)
     Test.@test ext !== nothing
     dims = (16, 12)
     Random.seed!(9500)
@@ -223,7 +255,7 @@ Test.@testset "gridded_spectrum transforms each monomial once, and a descending 
 end
 
 Test.@testset "padding to n + h_max reproduces the 2n − 1 result at every lag within r_max" begin
-    ext = Base.get_extension(SF, :StructureFunctionsFFTExt)
+    ext = Base.get_extension(SF, :StructureFunctionsAbstractFFTsExt)
     dims = (24, 20)
     spacing = (0.1, 0.1)
     Random.seed!(9600)
@@ -242,7 +274,7 @@ Test.@testset "padding to n + h_max reproduces the 2n − 1 result at every lag 
     end
 end
 
-Test.@testset "the grid entry takes a channel bundle and a joint request" begin
+Test.@testset "the grid entry takes a multi-field and a joint request" begin
     geo = FG.Geometry.CartesianGeometry()
     nx, ny = 9, 7
     grid = FG.Grids.StructuredGrid(geo, range(0.0, step = 0.2, length = nx),

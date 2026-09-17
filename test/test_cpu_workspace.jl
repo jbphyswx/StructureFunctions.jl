@@ -1,7 +1,7 @@
 using Test
 using Random: Random
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT,
-    LinearBinEdges, CPUSFWorkspace, reset_histogram!
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, LinearBinEdges
+using StructureFunctions.Calculations: CPUSFWorkspace, reset_histogram!
 using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads: OhMyThreads
 

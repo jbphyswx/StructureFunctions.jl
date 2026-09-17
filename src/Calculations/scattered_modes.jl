@@ -99,10 +99,9 @@ end
 @inline _mode_integer(i::Int, M::Int, half::Bool) = (half || i - 1 <= (M - 1) ÷ 2) ? i - 1 : i - 1 - M
 
 _no_lag_sweep(::ScatteredModesSchedule) = throw(ArgumentError(
-    "a ScatteredModesSchedule has no lags to sweep: its pairs are summed by a non-uniform FFT. Pass a non-uniform " *
-    "FFT tag — NonuniformFFTsSpectralBackend() or FINUFFTSpectralBackend(), or NonUniformFastFourierTransformSpectralBackend() " *
-    "with one provider loaded — with the provider and an AbstractFFTs implementation loaded, or call the point entry " *
-    "without a schedule for the exact pair loop.",
+    "a ScatteredModesSchedule has no lags to sweep: its pairs are summed by a non-uniform FFT. Pass " *
+    "NonuniformFFTsSpectralBackend() or FINUFFTSpectralBackend() with the provider and an AbstractFFTs implementation " *
+    "loaded, or call the point entry without a schedule for the exact pair loop.",
 ))
 
 function gridded_lag_sweep!(
@@ -124,21 +123,18 @@ end
 # ---------------------------------------------------------------------------------------------------
 
 """
-    NonuniformFFTsSpectralBackend(; half_support = 8)
+    NonuniformFFTsSpectralBackend(; tolerance = 1e-12)
 
-The non-uniform FFT tag that names NonuniformFFTs.jl as the provider, on the CPU or a device; `using
-NonuniformFFTs` supplies it. `half_support` is the spreading kernel's half-support in oversampled grid
-points, which sets the transforms' accuracy (8 gives about `1e-12` in `Float64`) and the least number
-of modes a direction of the schedule may have.
+The non-uniform FFT tag that names NonuniformFFTs.jl as the provider, on the CPU or on the device the
+points live on; `using NonuniformFFTs` supplies it. `tolerance` is the relative accuracy asked of the
+transforms; the provider's kernel half-support follows from it by [`nufft_half_support`](@ref), and is
+also the least number of modes a direction of the schedule may have.
 """
 struct NonuniformFFTsSpectralBackend <: SB.AbstractNonUniformFastFourierTransformSpectralBackend
-    half_support::Int
+    tolerance::Float64
 end
 
-function NonuniformFFTsSpectralBackend(; half_support::Integer = 8)
-    half_support >= 1 || throw(ArgumentError("half_support must be positive; got $half_support"))
-    return NonuniformFFTsSpectralBackend(Int(half_support))
-end
+NonuniformFFTsSpectralBackend(; tolerance::Real = 1e-12) = NonuniformFFTsSpectralBackend(_nufft_tolerance(tolerance))
 
 """
     FINUFFTSpectralBackend(; tolerance = 1e-12)
@@ -151,40 +147,30 @@ struct FINUFFTSpectralBackend <: SB.AbstractNonUniformFastFourierTransformSpectr
     tolerance::Float64
 end
 
-function FINUFFTSpectralBackend(; tolerance::Real = 1e-12)
+FINUFFTSpectralBackend(; tolerance::Real = 1e-12) = FINUFFTSpectralBackend(_nufft_tolerance(tolerance))
+
+function _nufft_tolerance(tolerance::Real)
     0 < tolerance < 1 || throw(ArgumentError("tolerance must lie in (0, 1); got $tolerance"))
-    return FINUFFTSpectralBackend(Float64(tolerance))
+    return Float64(tolerance)
 end
 
-"""The provider tags the plain non-uniform FFT tag may resolve to."""
-const NUFFT_PROVIDERS = (NonuniformFFTsSpectralBackend, FINUFFTSpectralBackend)
+"""
+    nufft_half_support(tag::NonuniformFFTsSpectralBackend) -> Int
 
-"""Whether a provider tag's extension is loaded; each extension answers `true` for its own tag."""
-_nufft_loaded(::Type) = false
+The kernel half-support `M` at which NonuniformFFTs' backwards Kaiser–Bessel kernel, of shape
+`β = π γ M (2 − 1/σ)` (Potts & Steidl 2003, eq. 5.12) at its oversampling `σ = 2`, reaches the tag's
+tolerance: its aliasing error is `ε = exp(−π M √((2 − 1/σ)² − 1/σ²)) = exp(−2π M √(1 − 1/σ))`, so
+`M = ⌈−ln ε / (2π √(1 − 1/σ))⌉`; `γ ≤ 1` makes the realised error slightly better than the estimate.
+The tolerance is floored at `eps(Float64)`, below which nothing is left to resolve, and `M` at 2.
+`1e-7` gives 4, `1e-12` gives 7, `1e-15` gives 8.
+"""
+function nufft_half_support(tag::NonuniformFFTsSpectralBackend)
+    ε = max(tag.tolerance, eps(Float64))
+    return max(ceil(Int, -log(ε) / (2π * sqrt(1 - 1 / 2))), 2)
+end
 
 _nufft_package(::Type{NonuniformFFTsSpectralBackend}) = "NonuniformFFTs"
 _nufft_package(::Type{FINUFFTSpectralBackend}) = "FINUFFT"
-
-"""
-    nufft_provider(tag) -> provider tag
-
-The provider a non-uniform FFT tag names: a provider tag names itself, and the plain
-`NonUniformFastFourierTransformSpectralBackend()` names the one loaded provider's default, refusing by
-name when none or both are loaded.
-"""
-nufft_provider(tag::SB.AbstractNonUniformFastFourierTransformSpectralBackend) = tag
-
-function nufft_provider(::SB.NonUniformFastFourierTransformSpectralBackend)
-    loaded = filter(_nufft_loaded, NUFFT_PROVIDERS)
-    length(loaded) == 1 && return loaded[1]()
-    isempty(loaded) && throw(ArgumentError(
-        "the non-uniform FFT route needs a provider: `using NonuniformFFTs` or `using FINUFFT`.",
-    ))
-    throw(ArgumentError(
-        "both non-uniform FFT providers are loaded, so NonUniformFastFourierTransformSpectralBackend() names " *
-        "neither; pass NonuniformFFTsSpectralBackend() or FINUFFTSpectralBackend().",
-    ))
-end
 
 """
     nufft_monomial_transforms(tag, schedule::ScatteredModesSchedule, data, valid, weights, keys, ::Val{Pm}; to = identity) -> Vector
@@ -192,18 +178,39 @@ end
 Type-1 non-uniform FFTs of the masked, weighted monomials `keys` of the packed point field onto the
 schedule's mode grid, one array per key in the real-to-complex half-spectrum layout
 `(M₁ ÷ 2 + 1, M₂, …)`, each weighted by the schedule's taper; the arrays in the family `to` returns.
-`tag` is a provider tag, or the plain tag resolved by `nufft_provider`; supplied by the provider's
-extension.
+`tag` is a provider tag, [`NonuniformFFTsSpectralBackend`](@ref) or [`FINUFFTSpectralBackend`](@ref);
+supplied by the provider's extension.
 """
-nufft_monomial_transforms(tag::SB.NonUniformFastFourierTransformSpectralBackend, args...; kwargs...) =
-    nufft_monomial_transforms(nufft_provider(tag), args...; kwargs...)
-
 nufft_monomial_transforms(tag::SB.AbstractNonUniformFastFourierTransformSpectralBackend, args...; kwargs...) =
     throw(ArgumentError(_nufft_missing(typeof(tag))))
 
 _nufft_missing(::Type{T}) where {T <: Union{NonuniformFFTsSpectralBackend, FINUFFTSpectralBackend}} =
     "$(nameof(T)) needs `using $(_nufft_package(T))`."
+_nufft_missing(::Type{SB.NonUniformFastFourierTransformSpectralBackend}) =
+    "NonUniformFastFourierTransformSpectralBackend() names no provider; pass NonuniformFFTsSpectralBackend() or " *
+    "FINUFFTSpectralBackend()."
 _nufft_missing(::Type{T}) where {T} = "no extension computes non-uniform FFTs for $(nameof(T))."
+
+"""
+    nufft_plan(tag::NonuniformFFTsSpectralBackend, FT, modes, x)
+
+NonuniformFFTs' type-1 plan for `modes` in precision `FT` on the device the array `x` lives on: the host
+plan from the NonuniformFFTs extension for an `Array`, a device plan from its KernelAbstractions extension.
+"""
+nufft_plan(tag, ::Type, modes, x) = throw(ArgumentError(_needs_device_extension(tag, x)))
+
+"""
+    nufft_type1!(tag::FINUFFTSpectralBackend, full, strengths, θ, modes)
+
+FINUFFT's batched type-1 transform of the complex `strengths` `(N, ntrans)` at the points `θ` onto the
+full FFT-ordered mode grid `full` `(modes…, ntrans)`: the host transform from the FINUFFT extension for
+`Array`s, cuFINUFFT from its KernelAbstractions extension for arrays on a CUDA device.
+"""
+nufft_type1!(tag, full, strengths, θ, modes) = throw(ArgumentError(_needs_device_extension(tag, full)))
+
+_needs_device_extension(tag, x) =
+    "$(nameof(typeof(tag))) on $(typeof(x)) needs `using KernelAbstractions` beside " *
+    "`using $(_nufft_package(typeof(tag)))`, and `using CUDA` for a CUDA device."
 
 # A non-uniform FFT tag with no transform loaded: the route's inverse transforms come from the AbstractFFTs extension.
 _no_nufft_route() = throw(ArgumentError(
@@ -238,14 +245,13 @@ end
     calculate_structure_function(sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend; weights, backend, output_type, verbose)
 
 The soft-binned structure function of scattered points by non-uniform FFT. `u` is `(D, N)` over the
-`N` points of `schedule`, or a `Fields` bundle over them; `spectral_backend` is a non-uniform FFT tag —
-[`NonuniformFFTsSpectralBackend`](@ref), [`FINUFFTSpectralBackend`](@ref), or the plain
-`NonUniformFastFourierTransformSpectralBackend()` when exactly one provider is loaded. Counts are
+`N` points of `schedule`, or a multi-field over them; `spectral_backend` is a provider tag,
+[`NonuniformFFTsSpectralBackend`](@ref) or [`FINUFFTSpectralBackend`](@ref). Counts are
 `Float64`, the kernel-weighted pair mass, and the result's `distance` is a [`ModeBinEdges`](@ref)
 carrying the schedule. See [`ScatteredModesSchedule`](@ref) for what is and is not exact.
 """
 function calculate_structure_function(
-    sf::SFT.AbstractPairwiseStructureFunctionType, s::ScatteredModesSchedule, u::Union{AbstractArray, CH.Fields},
+    sf::SFT.AbstractPairwiseStructureFunctionType, s::ScatteredModesSchedule, u::Union{AbstractArray, MF.Fields},
     distance_bins::AbstractVector, spectral_backend;
     weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     output_type::Type{OT} = SFO.StructureFunction, verbose::Bool = true,

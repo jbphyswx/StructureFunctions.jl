@@ -274,7 +274,7 @@ function _tensor_setup(
             D = D, P = P, axis)
 end
 
-"""Flattened views of the accumulators, so the kernel indexes one auxiliary axis rather than many."""
+"""Flattened views of the accumulators, so the kernel indexes one auxiliary axis."""
 @inline _tensor_flat(sums, counts, s) = s.axis === nothing ?
     (reshape(sums, ntuple(_ -> s.D, s.P)..., s.n_bins, s.B), reshape(counts, s.n_bins, s.B)) :
     (sums, counts)
@@ -322,8 +322,8 @@ function _tensor_pairs!(sums_flat, counts_flat, order::Val{P}, s, outer) where {
     XT, UT = eltype(s.xk), eltype(s.uk)
 
     # The increment comes from `pair_delta`, so on a curved manifold the tensor components are in
-    # the pair's own transported frame rather than raw coordinate differences. An odd rank takes the
-    # canonical pair reading, as an odd scalar increment does.
+    # the pair's own transported frame. An odd rank takes the canonical pair reading, as an odd
+    # scalar increment does.
     @inbounds for i in outer
         for j in (i + 1):N
             if s.fixed_x
@@ -455,22 +455,26 @@ end
 """
     gridded_tensor_sweep!(sums, counts, order, data, schedule, distance_bins[, axis_bins], ::Val{D}, spectral_backend; valid, weights, backend[, second_axis])
 
-Accumulate the rank-`P` increment moment tensor of a field's vector channel over every lag
+Accumulate the rank-`P` increment moment tensor of a field's vector field over every lag
 `schedule` names, by the transform `spectral_backend` names, into `sums` `(D, …, D, n_bins[, n_axis])`
 and `counts` `(n_bins[, n_axis])`. Supplied by the AbstractFFTs extension for every separable
 schedule, the non-uniform FFT provider included.
 """
-gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule, distance_bins, ::Val{D},
-                      ::SB.AbstractDirectSumSpectralBackend; kwargs...) where {D} = _no_tensor_sum()
+gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule::AbstractSeparableSchedule,
+                      distance_bins, ::Val{D}, ::SB.AbstractDirectSumSpectralBackend; kwargs...) where {D} =
+    _no_tensor_sum()
 
-gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule, distance_bins, axis_bins, ::Val{D},
-                      ::SB.AbstractDirectSumSpectralBackend; kwargs...) where {D} = _no_tensor_sum()
+gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule::AbstractSeparableSchedule,
+                      distance_bins, axis_bins, ::Val{D}, ::SB.AbstractDirectSumSpectralBackend;
+                      kwargs...) where {D} = _no_tensor_sum()
 
-gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule, distance_bins, ::Val{D},
-                      tag::SB.AbstractSpectralBackend; kwargs...) where {D} = _no_transform_loaded(tag, schedule)
+gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule::AbstractSeparableSchedule,
+                      distance_bins, ::Val{D}, tag::SB.AbstractSpectralBackend; kwargs...) where {D} =
+    _no_transform_loaded(tag, schedule)
 
-gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule, distance_bins, axis_bins, ::Val{D},
-                      tag::SB.AbstractSpectralBackend; kwargs...) where {D} = _no_transform_loaded(tag, schedule)
+gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule::AbstractSeparableSchedule,
+                      distance_bins, axis_bins, ::Val{D}, tag::SB.AbstractSpectralBackend; kwargs...) where {D} =
+    _no_transform_loaded(tag, schedule)
 
 gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule, distance_bins, ::Val{D},
                       spectral_backend; kwargs...) where {D} = _not_a_spectral_tag(spectral_backend)

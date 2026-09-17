@@ -58,8 +58,8 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Directional Test ---")
     include("test_directional.jl")
 
-    println("--- Running Multi-Channel Fields Test ---")
-    include("test_channels.jl")
+    println("--- Running Multi-Field Fields Test ---")
+    include("test_multifields.jl")
 
     println("--- Running Operator Polynomial Contract Test ---")
     include("test_operator_contract.jl")

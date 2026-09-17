@@ -152,8 +152,8 @@ Test.@testset "GPU single-pass 2D global fallback parity" begin
         sp_cpu = SFC.calculate_structure_functions_single_pass_2d(
             x, u, bins, value_bins; backend = CB.SerialBackend(),
         )
-        # `force_global_atomic` is a GPU routing override, so it goes to the GPU entry rather
-        # than the backend-generic one, which would have to ignore it on a CPU backend.
+        # `force_global_atomic` is a GPU routing override, so it goes to the GPU entry; the
+        # backend-generic entry has no meaning for it on a CPU backend.
         gs, gc = SFC.gpu_calculate_structure_functions_single_pass_2d(
             backend.backend, x, u, bins, value_bins; force_global_atomic = true,
         )

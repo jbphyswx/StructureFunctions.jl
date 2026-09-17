@@ -6,20 +6,20 @@
 
 Rows 3 (`T2`) and 6 (`L1T2`) are exact differences of the others (`T2 = S2 - L2`,
 `L1T2 = S3 - L3`) and a bin is a sum, so they are left zero here and reconstructed once at flush by
-[`_sf_flush_moment`](@ref) — 4 shared atomics per pair instead of 6."""
+[`_sf_flush_moment`](@ref), leaving 4 shared atomics per pair."""
 @inline function _gpu_accumulate_single_pass_1d_shared!(
     shared_sums,
     shared_cnts,
     bin::Int,
     du_L,
-    du_L2,
     du_norm2,
     NB::Int,
 )
-    @atomic shared_sums[bin] += du_norm2
-    @atomic shared_sums[NB + bin] += du_L2
-    @atomic shared_sums[3NB + bin] += du_L * du_norm2
-    @atomic shared_sums[4NB + bin] += du_L * du_L2
+    vals = SFC.single_pass_invariants(du_L, du_norm2)
+    @atomic shared_sums[bin] += vals[1]
+    @atomic shared_sums[NB + bin] += vals[2]
+    @atomic shared_sums[3NB + bin] += vals[4]
+    @atomic shared_sums[4NB + bin] += vals[5]
     @atomic shared_cnts[bin] += UInt32(1)
     return nothing
 end
@@ -127,9 +127,8 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_linear_
                 )
                 if ok && 1 <= bin < N_bins
                     du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
                     _gpu_accumulate_single_pass_1d_shared!(
-                        shared_sums, shared_cnts, bin, du_L, du_L2, du_norm2, NB,
+                        shared_sums, shared_cnts, bin, du_L, du_norm2, NB,
                     )
                 end
                 p += workgroup_size
@@ -264,9 +263,8 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
                 bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, step_val, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
                     _gpu_accumulate_single_pass_1d_shared!(
-                        shared_sums, shared_cnts, bin, du_L, du_L2, du_norm2, NB,
+                        shared_sums, shared_cnts, bin, du_L, du_norm2, NB,
                     )
                 end
                 p += workgroup_size
@@ -399,9 +397,8 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_general
                 bin = _gpu_digitize_general(dist, bins, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-                    du_L2 = du_L * du_L
                     _gpu_accumulate_single_pass_1d_shared!(
-                        shared_sums, shared_cnts, bin, du_L, du_L2, du_norm2, NB,
+                        shared_sums, shared_cnts, bin, du_L, du_norm2, NB,
                     )
                 end
                 p += workgroup_size

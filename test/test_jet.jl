@@ -18,8 +18,8 @@ Test.@testset "JET Stability Audit" begin
         # Audit type stability of the compute kernel on a concrete backend. The default (averaged)
         # path exercises the full backend compute (which produces the raw
         # `StructureFunctionSumsAndCounts`) plus `_finalize`, so any kernel instability surfaces
-        # here. We audit `SerialBackend` (concrete) rather than `AutoBackend` because AutoBackend's
-        # runtime backend selection is an intended runtime branch, not a fixable instability. We
+        # here. The audit takes `SerialBackend`, which is concrete: `AutoBackend`'s backend
+        # selection is an intended runtime branch, not a fixable instability. It
         # only audit the SF module to ignore internal Base.Threads dispatches. (Passing a
         # non-default `output_type` explicitly incurs a single by-design dynamic-dispatch barrier
         # in `_finalize`; it is checked for error-freedom via @test_call below, not @test_opt.)

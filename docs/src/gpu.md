@@ -89,7 +89,7 @@ another `AbstractFFTs` implementation) and `using KernelAbstractions: KernelAbst
 `GPUBackend` moves the masked, weighted monomials to the device, takes their transforms there through
 the device's own `AbstractFFTs` implementation, forms every inverse column of a batch of slab pairs in
 one kernel, and bins every lag of every slab pair in a second kernel with a privatized histogram.
-Uniform, stretched and lat-lon grids, masks, weights, channel bundles, every polynomial order, the
+Uniform, stretched and lat-lon grids, masks, weights, multi-fields, every polynomial order, the
 joint histogram over angle and the soft-binned non-uniform FFT route run through it; the counts are
 exactly the CPU engine's.
 
@@ -101,12 +101,22 @@ sf = calculate_structure_function(SFT.L3SFType(), grid, u, bins, SB.FastFourierT
 ```
 
 `AutoSpectralBackend()` on a device always takes the transform, since the direct lag sweep has no
-device method. On an A100 the 720×360 lat-lon `L2` transform runs 9× faster than the 8-thread CPU;
-small grids are dominated by the per-call FFT plan and term tables.
+device method. On an A100 the 720×360 lat-lon `L2` transform runs 28× faster than the 8-thread CPU
+(`0.045 s` against `1.28 s`), and a stretched 256×128 grid 3.6× (`0.0027 s` against `0.0098 s`).
+
+A schedule with many slabs transforms many short monomials, so the *number* of operations rather than
+their size sets the cost. Each monomial is built for every slab in one broadcast, the slabs are
+transformed in one batch, and the spectra are laid out in the order the spectral kernel reads them, so
+assembling its input is a reshape rather than a copy per spectrum.
+
+The binning kernel launches each slab pair over the lags that pair can reach, the same box the host
+loop takes. On a lat-lon grid a parallel spans less distance the nearer it lies to a pole, so the box
+over all row pairs stays as wide as the equator's however small the largest bin edge is; a schedule
+that reports `uniform_lag_box` instead shares one box across every pair and is indexed by division.
 
 ## Single-type joint 2D shared memory
 
-[`GPUSFWorkspace`](@ref) for `kind = :joint2d` defaults to the exact compile-time shared histogram
+[`GPUSFWorkspace`](@ref StructureFunctions.Calculations.GPUSFWorkspace) for `kind = :joint2d` defaults to the exact compile-time shared histogram
 width `n_dist × n_val`; `joint2d_compile_cells = joint2d_smem_max()` or `joint2d_smem_align256(n_dist,
 n_val)` override it.
 

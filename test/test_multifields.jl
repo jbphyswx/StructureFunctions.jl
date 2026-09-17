@@ -1,8 +1,9 @@
 using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
-    StructureFunctionTypes as SFT, Channels as CH
-using StructureFunctions: MixedSFType, ScalarSFType, VectorDotSFType, ScalarDotSFType, MixedStructureFunctionType
+    StructureFunctionTypes as SFT, MultiFields as MF
+using StructureFunctions.StructureFunctionTypes: MixedSFType, ScalarSFType, VectorDotSFType, ScalarDotSFType,
+    MixedStructureFunctionType
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: dot
 using OhMyThreads: OhMyThreads
@@ -35,7 +36,7 @@ _run(op, x, f, bins) = SFC.calculate_structure_function(
     op, x, f, bins, UInt32; output_type = SF.StructureFunctionSumsAndCounts,
     verbose = false, show_progress = false)
 
-Test.@testset "a field of one vector channel is the array path" begin
+Test.@testset "a field of one vector field is the array path" begin
     # The adapter must be a no-op for what callers already pass: same kernel, same answer, bit for bit.
     Random.seed!(1200)
     x = rand(2, 80)
@@ -44,25 +45,25 @@ Test.@testset "a field of one vector channel is the array path" begin
     for op in (SFT.L2SFType(), SFT.T2SFType(), SFT.S2SFType(), SFT.L3SFType())
         bare = SFC.calculate_structure_function(op, x, u, bins, UInt32;
             output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
-        bundled = _run(op, x, SF.Fields(vectors = (u,)), bins)
-        Test.@test bundled.counts == bare.counts
-        Test.@test bundled.sums == bare.sums          # identical, not merely close
+        multi = _run(op, x, MF.Fields(vectors = (u,)), bins)
+        Test.@test multi.counts == bare.counts
+        Test.@test multi.sums == bare.sums          # identical, not merely close
     end
     # and the packing itself copies nothing it need not
-    Test.@test CH.packed(SF.Fields(vectors = (u,))) == u
+    Test.@test MF.packed(MF.Fields(vectors = (u,))) == u
 end
 
-Test.@testset "packing lays channels out as declared" begin
+Test.@testset "packing lays fields out as declared" begin
     Random.seed!(1300)
     u = randn(3, 6)
     a = randn(3, 6)
     th = randn(6)
     ph = randn(6)
-    f = SF.Fields(vectors = (u, a), scalars = (th, ph))
-    Test.@test CH.channel_dimension(f) == 3
-    Test.@test CH.n_vector_channels(f) == 2
-    Test.@test CH.n_scalar_channels(f) == 2
-    d = CH.packed(f)
+    f = MF.Fields(vectors = (u, a), scalars = (th, ph))
+    Test.@test MF.field_dimension(f) == 3
+    Test.@test MF.n_vector_fields(f) == 2
+    Test.@test MF.n_scalar_fields(f) == 2
+    d = MF.packed(f)
     Test.@test size(d) == (3 * 2 + 2, 6)
     Test.@test d[1:3, :] == u
     Test.@test d[4:6, :] == a
@@ -70,14 +71,14 @@ Test.@testset "packing lays channels out as declared" begin
     Test.@test d[8, :] == ph
 end
 
-Test.@testset "the bundle refuses what it cannot mean" begin
-    Test.@test_throws ArgumentError SF.Fields()
-    Test.@test_throws DimensionMismatch SF.Fields(vectors = (randn(2, 5), randn(3, 5)))
-    Test.@test_throws DimensionMismatch SF.Fields(vectors = (randn(2, 5),), scalars = (randn(4),))
-    Test.@test_throws ArgumentError SF.Fields(vectors = (randn(5),))
-    Test.@test_throws DimensionMismatch SF.Fields(vectors = (randn(2, 5, 2),), scalars = (randn(5, 3),))
-    # a grid-shaped channel is one vector channel over the flattened cells
-    Test.@test size(CH.packed(SF.Fields(vectors = (randn(2, 5, 2),), scalars = (randn(5, 2),)))) == (3, 10)
+Test.@testset "the multi-field refuses what it cannot mean" begin
+    Test.@test_throws ArgumentError MF.Fields()
+    Test.@test_throws DimensionMismatch MF.Fields(vectors = (randn(2, 5), randn(3, 5)))
+    Test.@test_throws DimensionMismatch MF.Fields(vectors = (randn(2, 5),), scalars = (randn(4),))
+    Test.@test_throws ArgumentError MF.Fields(vectors = (randn(5),))
+    Test.@test_throws DimensionMismatch MF.Fields(vectors = (randn(2, 5, 2),), scalars = (randn(5, 3),))
+    # a grid-shaped field is one vector field over the flattened cells
+    Test.@test size(MF.packed(MF.Fields(vectors = (randn(2, 5, 2),), scalars = (randn(5, 2),)))) == (3, 10)
 end
 
 Test.@testset "the scalar structure function matches brute force" begin
@@ -86,7 +87,7 @@ Test.@testset "the scalar structure function matches brute force" begin
     x = rand(2, N)
     th = randn(N)
     bins = collect(range(0.0, 1.5; length = 7))   # spans the unit square diagonal
-    f = SF.Fields(vectors = (randn(2, N),), scalars = (th,))
+    f = MF.Fields(vectors = (randn(2, N),), scalars = (th,))
     for P in (2, 3)
         got = _run(SFT.ScalarSFType{P}(), x, f, bins)
         # an odd power reads the pair from the lower to the upper end along the first separating axis
@@ -99,7 +100,7 @@ Test.@testset "the scalar structure function matches brute force" begin
 end
 
 Test.@testset "Yaglom's mixed moment matches brute force" begin
-    # ⟨δu_L (δθ)²⟩ — the velocity part read from a transported channel, the scalar part from a
+    # ⟨δu_L (δθ)²⟩ — the velocity part read from a transported field, the scalar part from a
     # differenced one, so the two never share a frame by accident.
     Random.seed!(1500)
     N = 70
@@ -107,7 +108,7 @@ Test.@testset "Yaglom's mixed moment matches brute force" begin
     u = randn(2, N)
     th = randn(N)
     bins = collect(range(0.0, 1.5; length = 7))   # spans the unit square diagonal
-    f = SF.Fields(vectors = (u,), scalars = (th,))
+    f = MF.Fields(vectors = (u,), scalars = (th,))
     got = _run(SFT.MixedSFType{1, 0, 2}(), x, f, bins)
     ref_s, ref_c = _brute((dv, ds, rh) -> dot(dv[1], rh) * ds[1]^2, x, (u,), (th,), bins)
     Test.@test got.counts == ref_c
@@ -121,7 +122,7 @@ Test.@testset "Yaglom's mixed moment matches brute force" begin
 end
 
 Test.@testset "a field of scalars alone is located by its coordinates" begin
-    # With no vector channel there is no velocity dimension to read the geometry from; the points
+    # With no vector field there is no velocity dimension to read the geometry from; the points
     # carry it. Checked against brute force on two- and three-dimensional points.
     Random.seed!(1550)
     N = 60
@@ -130,7 +131,7 @@ Test.@testset "a field of scalars alone is located by its coordinates" begin
         th = randn(N)
         ph = randn(N)
         bins = collect(range(0.0, 1.2; length = 6))
-        f = SF.Fields(scalars = (th, ph))
+        f = MF.Fields(scalars = (th, ph))
         got = _run(SFT.ScalarSFType{2}(), x, f, bins)
         ref_s, ref_c = _brute((dv, ds, rh) -> ds[1]^2, x, (), (th, ph), bins)
         Test.@test got.counts == ref_c
@@ -154,8 +155,8 @@ Test.@testset "odd scalar moments do not depend on how the points are ordered" b
         bins = metric isa DI.Haversine ? collect(range(0.0, 1.2e7; length = 6)) :
                                          collect(range(0.0, 1.5; length = 6))
         perm = Random.randperm(N)
-        f = SF.Fields(vectors = (u,), scalars = (th,))
-        fp = SF.Fields(vectors = (u[:, perm],), scalars = (th[perm],))
+        f = MF.Fields(vectors = (u,), scalars = (th,))
+        fp = MF.Fields(vectors = (u[:, perm],), scalars = (th[perm],))
         for sf in (SFT.MixedSFType{1, 0, 1}(), SFT.ScalarSFType{3}())
             a = SFC.calculate_structure_function(sf, x, f, bins; backend = CB.SerialBackend(),
                 distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
@@ -186,8 +187,8 @@ Test.@testset "odd scalar moments do not depend on how the points are ordered" b
     end
 end
 
-Test.@testset "cross-channel moments are what an advective structure function is" begin
-    # ⟨δu · δ𝓐⟩ and ⟨δω δ𝓐_ω⟩ — second-order moments between two different channels.
+Test.@testset "cross-field moments are what an advective structure function is" begin
+    # ⟨δu · δ𝓐⟩ and ⟨δω δ𝓐_ω⟩ — second-order moments between two different fields.
     Random.seed!(1600)
     N = 60
     x = rand(2, N)
@@ -197,38 +198,38 @@ Test.@testset "cross-channel moments are what an advective structure function is
     advw = randn(N)
     bins = collect(range(0.0, 1.3; length = 6))
 
-    fv = SF.Fields(vectors = (u, adv))
+    fv = MF.Fields(vectors = (u, adv))
     got = _run(SFT.VectorDotSFType(1, 2), x, fv, bins)
     ref_s, ref_c = _brute((dv, ds, rh) -> dot(dv[1], dv[2]), x, (u, adv), (), bins)
     Test.@test got.counts == ref_c
     Test.@test isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)
 
-    fs = SF.Fields(vectors = (u,), scalars = (w, advw))
+    fs = MF.Fields(vectors = (u,), scalars = (w, advw))
     gots = _run(SFT.ScalarDotSFType(1, 2), x, fs, bins)
     refs_s, _ = _brute((dv, ds, rh) -> ds[1] * ds[2], x, (u,), (w, advw), bins)
     Test.@test isapprox(gots.sums, refs_s; rtol = 1e-10, atol = 1e-12)
 
     # the diagonal of the vector cross-moment IS the second-order structure function
     diag = _run(SFT.VectorDotSFType(1, 1), x, fv, bins)
-    s2 = _run(SFT.S2SFType(), x, SF.Fields(vectors = (u,)), bins)
+    s2 = _run(SFT.S2SFType(), x, MF.Fields(vectors = (u,)), bins)
     Test.@test diag.counts == s2.counts
     Test.@test isapprox(diag.sums, s2.sums; rtol = 1e-12)
 end
 
-Test.@testset "asking for a channel a field does not carry says so" begin
+Test.@testset "asking for a field a field does not carry says so" begin
     Random.seed!(1700)
     x = rand(2, 20)
     u = randn(2, 20)
     bins = collect(range(0.0, 1.0; length = 4))
-    # a plain velocity has no scalar channel
-    Test.@test_throws ArgumentError _run(SFT.ScalarSFType{2}(), x, SF.Fields(vectors = (u,)), bins)
-    # and only one vector channel
-    Test.@test_throws ArgumentError _run(SFT.VectorDotSFType(1, 2), x, SF.Fields(vectors = (u,)), bins)
+    # a plain velocity has no scalar field
+    Test.@test_throws ArgumentError _run(SFT.ScalarSFType{2}(), x, MF.Fields(vectors = (u,)), bins)
+    # and only one vector field
+    Test.@test_throws ArgumentError _run(SFT.VectorDotSFType(1, 2), x, MF.Fields(vectors = (u,)), bins)
 end
 
-Test.@testset "channels are transported on a sphere, scalars are not" begin
-    # A vector channel is carried as an ambient 3-vector on a sphere, so a bundle must widen every
-    # vector channel exactly as the array path widens the one it has. A scalar has nothing to
+Test.@testset "fields are transported on a sphere, scalars are not" begin
+    # A vector field is carried as an ambient 3-vector on a sphere, so a multi-field must widen every
+    # vector field exactly as the array path widens the one it has. A scalar has nothing to
     # transport and passes through untouched.
     Random.seed!(1800)
     N = 50
@@ -238,23 +239,23 @@ Test.@testset "channels are transported on a sphere, scalars are not" begin
     bins = collect(range(0.0, 2.4; length = 6))
     metric = SFC.DI.SphericalAngle()
 
-    # one vector channel: the same kernel as the array path, so identical to the last bit
-    # Both pinned to the same backend: the claim is that the bundle takes the *same kernel*, and a
+    # one vector field: the same kernel as the array path, so identical to the last bit
+    # Both pinned to the same backend: the claim is that the multi-field takes the *same kernel*, and a
     # different backend would differ in summation order alone, which would not test that.
     bare_s = zeros(5); bare_c = zeros(UInt32, 5)
-    SF.calculate_structure_function!(bare_s, bare_c, SFT.L2SFType(), x, u, bins;
+    SFC.calculate_structure_function!(bare_s, bare_c, SFT.L2SFType(), x, u, bins;
                                      distance_metric = metric, backend = CB.SerialBackend())
-    bundled = SFC.calculate_structure_function(
-        SFT.L2SFType(), x, SF.Fields(vectors = (u,)), bins, UInt32; distance_metric = metric,
+    multi = SFC.calculate_structure_function(
+        SFT.L2SFType(), x, MF.Fields(vectors = (u,)), bins, UInt32; distance_metric = metric,
         backend = CB.SerialBackend(),
         output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
-    Test.@test bundled.counts == bare_c
-    Test.@test bundled.sums == bare_s
+    Test.@test multi.counts == bare_c
+    Test.@test multi.sums == bare_s
 
-    # a scalar rides along without disturbing the velocity part: L2SF on the bundle must still equal
+    # a scalar rides along without disturbing the velocity part: L2SF on the multi-field must still equal
     # L2SF on the velocity alone
     with_tracer = SFC.calculate_structure_function(
-        SFT.L2SFType(), x, SF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32;
+        SFT.L2SFType(), x, MF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32;
         distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
         verbose = false, show_progress = false)
     Test.@test with_tracer.counts == bare_c
@@ -262,7 +263,7 @@ Test.@testset "channels are transported on a sphere, scalars are not" begin
 
     # the scalar structure function on a sphere: transport-free, so it is the plain difference
     scalar_only = SFC.calculate_structure_function(
-        SFT.ScalarSFType{2}(), x, SF.Fields(scalars = (th,)), bins, UInt32;
+        SFT.ScalarSFType{2}(), x, MF.Fields(scalars = (th,)), bins, UInt32;
         distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
         verbose = false, show_progress = false)
     ref_s = zeros(5); ref_c = zeros(Int, 5)
@@ -280,7 +281,7 @@ Test.@testset "channels are transported on a sphere, scalars are not" begin
     # Yaglom on a sphere runs and stays finite; its velocity half is transported, so it is not the
     # flat answer
     yag = SFC.calculate_structure_function(
-        SFT.MixedSFType{1, 0, 2}(), x, SF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32;
+        SFT.MixedSFType{1, 0, 2}(), x, MF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32;
         distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
         verbose = false, show_progress = false)
     Test.@test all(isfinite, yag.sums)
@@ -288,7 +289,7 @@ Test.@testset "channels are transported on a sphere, scalars are not" begin
 end
 
 Test.@testset "the threaded backend gives the serial answer" begin
-    # Multi-channel across threads: the setup happens once above the task loop and each task sweeps
+    # Multi-field across threads: the setup happens once above the task loop and each task sweeps
     # its own outer indices, so the only thing that may differ from serial is summation order.
     Random.seed!(1900)
     N = 400
@@ -299,10 +300,10 @@ Test.@testset "the threaded backend gives the serial answer" begin
     bins = collect(range(0.0, 1.5; length = 8))   # spans the unit square diagonal
     nb = length(bins) - 1
 
-    for (f, op) in ((SF.Fields(vectors = (u,), scalars = (th,)), SFT.MixedSFType{1, 0, 2}()),
-                    (SF.Fields(vectors = (u, adv)), SFT.VectorDotSFType(1, 2)),
-                    (SF.Fields(vectors = (u,), scalars = (th,)), SFT.ScalarSFType{2}()),
-                    (SF.Fields(vectors = (u,)), SFT.L2SFType()))
+    for (f, op) in ((MF.Fields(vectors = (u,), scalars = (th,)), SFT.MixedSFType{1, 0, 2}()),
+                    (MF.Fields(vectors = (u, adv)), SFT.VectorDotSFType(1, 2)),
+                    (MF.Fields(vectors = (u,), scalars = (th,)), SFT.ScalarSFType{2}()),
+                    (MF.Fields(vectors = (u,)), SFT.L2SFType()))
         ser_s = zeros(nb); ser_c = zeros(Int, nb)
         SFC.serial_calculate_structure_function!(ser_s, ser_c, op, x, f, bins;
                                                  verbose = false, show_progress = false)
@@ -315,7 +316,7 @@ Test.@testset "the threaded backend gives the serial answer" begin
     end
 end
 
-Test.@testset "the channel operators are exported" begin
+Test.@testset "the field operators are exported" begin
     Test.@test MixedSFType === MixedStructureFunctionType
     Test.@test MixedSFType{1, 0, 2}() === SFT.MixedSFType{1, 0, 2}()
     Test.@test ScalarSFType{2}() === SFT.ScalarSFType{2}()

@@ -1,5 +1,5 @@
 using StructureFunctions:
-    StructureFunctions as SF, StructureFunctionTypes as SFT, Calculations as SFC
+    StructureFunctions as SF, StructureFunctionTypes as SFT, Calculations as SFC, HelperFunctions as SFH
 using Test: Test
 using Random: Random
 using StaticArrays: StaticArrays as SA
@@ -186,8 +186,8 @@ Test.@testset "a projected operator's convention decides its signed transverse c
     x = randn(3, N)
     u = randn(3, N)
     bins = [0.0, 100.0]
-    conventions = (SF.CanonicalTransverseBasis(),
-                   SF.ReferenceAxisTransverseBasis(LA.normalize(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))))
+    conventions = (SFH.CanonicalTransverseBasis(),
+                   SFH.ReferenceAxisTransverseBasis(LA.normalize(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))))
     for (NL, NT) in ((0, 3), (2, 1))
         by_basis = Float64[]
         for basis in conventions
@@ -197,7 +197,7 @@ Test.@testset "a projected operator's convention decides its signed transverse c
                 dx = SA.SVector{3}(x[1, j] - x[1, i], x[2, j] - x[2, i], x[3, j] - x[3, i])
                 r̂ = dx / LA.norm(dx)
                 δu = SA.SVector{3}(u[1, j] - u[1, i], u[2, j] - u[2, i], u[3, j] - u[3, i])
-                e = SF.transverse_basis(basis, r̂)[1]
+                e = SFH.transverse_basis(basis, r̂)[1]
                 expected += LA.dot(δu, r̂)^NL * LA.dot(δu, e)^NT
             end
             for backend in (CB.SerialBackend(), CB.ThreadedBackend())

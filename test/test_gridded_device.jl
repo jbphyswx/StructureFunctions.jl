@@ -1,5 +1,6 @@
 using Test: Test
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, Fields
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using SpectralBackends: SpectralBackends as SB
 using KernelAbstractions: KernelAbstractions as KA
@@ -53,7 +54,7 @@ Test.@testset "the device engine equals the CPU engine on a uniform grid" begin
     _device_matches(SFT.S3SFType(), u3, s3, SF.LogBinEdges(exp.(range(log(0.8), log(6.0); length = 8))), 3)
 end
 
-Test.@testset "channel bundles and higher moments ride the device engine" begin
+Test.@testset "multi-fields and higher moments ride the device engine" begin
     Random.seed!(12)
     dims = (18, 16)
     s = SFC.UniformLagSchedule(dims, (1.0, 1.0), (true, true))
