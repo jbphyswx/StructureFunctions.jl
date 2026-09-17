@@ -61,8 +61,8 @@ the batched paths; `JULIA_EXCLUSIVE=1` pins threads.
 The gridded routes split **slab pairs** across tasks, and the direct lag sweep additionally splits a
 single slab's lags, so a one-slab schedule still threads. A transform splits slab pairs only: its
 unit of work is a pair, because the pair's inverse transform must finish before any of that pair's
-lags can be read. On a [`UniformLagSchedule`](@ref Calculations.UniformLagSchedule) or a
-[`ScatteredModesSchedule`](@ref Calculations.ScatteredModesSchedule), which have exactly one slab
+lags can be read. On a [`UniformLagSchedule`](@ref StructureFunctions.Calculations.UniformLagSchedule) or a
+[`ScatteredModesSchedule`](@ref StructureFunctions.Calculations.ScatteredModesSchedule), which have exactly one slab
 pair, a transform therefore sweeps its lags on one task whatever backend is asked for.
 
 Most of a one-slab transform is the transforms themselves rather than the lag sweep, and those are
