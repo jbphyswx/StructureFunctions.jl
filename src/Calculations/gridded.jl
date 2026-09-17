@@ -1013,6 +1013,294 @@ _require_directional(::FrameTransport) = throw(ArgumentError(
     "property of the pair. Ask for the 1-D histogram.",
 ))
 
+# ---------------------------------------------------------------------------------------------------
+# Batches over a trailing slice axis
+# ---------------------------------------------------------------------------------------------------
+
+"""
+    batch_validity(u[, cell_mask]) -> BitMatrix or AllValid
+
+Which cells hold a usable datum in each slice of `u`, stored `(components, cells..., slices)`: one
+column of cell validity per slice. `cell_mask`, where a grid carries one, marks the cells that exist.
+
+Returns [`AllValid`](@ref) when nothing is excluded, as [`field_validity`](@ref) does for one slice.
+"""
+function batch_validity(u::AbstractArray, cell_mask = nothing)
+    W = size(u, 1)
+    nt = size(u)[end]
+    n = length(u) ÷ (W * nt)
+    uf = reshape(u, W, n, nt)
+    v = trues(n, nt)
+    any_invalid = false
+    @inbounds for t in 1:nt, k in 1:n
+        ok = true
+        for c in 1:W
+            ok &= isfinite(uf[c, k, t])
+        end
+        cell_mask === nothing || (ok &= cell_mask[k])
+        v[k, t] = ok
+        any_invalid |= !ok
+    end
+    return any_invalid ? v : AllValid()
+end
+
+"""Slice `t`'s cell validity: its own column, or the complete-field value for every slice."""
+@inline _valid_slice(::AllValid, ::Int) = AllValid()
+@inline _valid_slice(v::AbstractMatrix, t::Int) = view(v, :, t)
+
+"""
+    batch_shares_lag_geometry(schedule) -> Bool
+
+Whether a transform batch visits each lag once and contracts every slice against it, holding all the
+slices' inverted columns of a slab pair at the same time.
+
+A schedule answering `false` takes its slices one at a time, with the inverse scratch of a single
+slice. Curved schedules answer `true`: their per-lag geometry is a geodesic frame and `W×W` transport
+matrices built from the schedule alone, and their uniform directions are a slab's, so the columns of
+every slice fit together.
+"""
+batch_shares_lag_geometry(s::AbstractSeparableSchedule) = lag_transport(s) isa FrameTransport
+
+"""
+    _batch_slices(schedule, data, valid, weights) -> (data_slices, valid_slices, weights)
+
+Each slice of a `(components, cells, slices)` batch laid out as the schedule's slabs. The weights
+belong to the cells, so one set serves every slice.
+"""
+function _batch_slices(s::AbstractSeparableSchedule, data::AbstractArray{<:Any, 3}, valid, weights)
+    laid = map(t -> separable_layout(s, view(data, :, :, t), _valid_slice(valid, t), weights), 1:size(data, 3))
+    return map(first, laid), map(x -> x[2], laid), laid[1][3]
+end
+
+"""
+    _check_batch(sf, data, schedule, valid, ::Val{D}, ::Val{V}, ::Val{K}) -> Int
+
+The slice count of a `(V·D + K, cells, slices)` batch, with the field checked against the schedule
+and the validity against both.
+"""
+function _check_batch(
+    sf, data::AbstractArray{<:Any, 3}, s, valid, ::Val{D}, ::Val{V}, ::Val{K},
+) where {D, V, K}
+    nt = size(data, 3)
+    nt >= 1 || throw(ArgumentError("a batch holds at least one slice; got $nt"))
+    _check_grid_field(sf, view(data, :, :, 1), s, Val(D), Val(V), Val(K))
+    valid isa AllValid || size(valid) == (size(data, 2), nt) || throw(DimensionMismatch(
+        "valid must be $((size(data, 2), nt)) — one cell validity per slice; got $(size(valid))",
+    ))
+    return nt
+end
+
+"""
+    gridded_sweep_batch!(sums, counts, sf, u, schedule, distance_bins[, axis_bins], ::Val{D}, spectral_backend; valid, weights, backend)
+
+Accumulate the histogram of every pair `schedule` names, for every slice of a batch, by the algorithm
+`spectral_backend` selects. `sums` and `counts` are `(n_distance, n_slices)`, or with `axis_bins`
+`(n_distance, n_angle, n_slices)`.
+
+`u` is `(component, cells..., slices)` with the cells matching the schedule; the packed form is
+`(V·D + K, cells, slices)`, which is how a multi-field time series is passed. `valid`, `weights` and
+`backend` are as on [`gridded_lag_sweep_batch!`](@ref).
+
+Each pair's geometry is fixed by `schedule` alone, so the lag sweep visits every lag once and reduces
+all the slices against it. A transform shares each lag between the slices on the schedules that
+answer [`batch_shares_lag_geometry`](@ref) and takes one slice at a time on the rest.
+"""
+gridded_sweep_batch!(sums, counts, sf, data::AbstractArray{<:Any, 3}, schedule, distance_bins, ::Val{D}, ::Val{V},
+                     ::Val{K}, ::Union{SB.AbstractDirectSumSpectralBackend, SB.AbstractAutoSpectralBackend};
+                     kwargs...) where {D, V, K} =
+    gridded_lag_sweep_batch!(sums, counts, sf, data, schedule, distance_bins, Val(D), Val(V), Val(K); kwargs...)
+
+gridded_sweep_batch!(sums, counts, sf, data::AbstractArray{<:Any, 3}, schedule, distance_bins, axis_bins, ::Val{D},
+                     ::Val{V}, ::Val{K},
+                     ::Union{SB.AbstractDirectSumSpectralBackend, SB.AbstractAutoSpectralBackend};
+                     kwargs...) where {D, V, K} =
+    gridded_lag_sweep_batch!(sums, counts, sf, data, schedule, distance_bins, axis_bins, Val(D), Val(V), Val(K);
+                             kwargs...)
+
+gridded_sweep_batch!(sums, counts, sf, ::AbstractArray{<:Any, 3}, schedule, distance_bins, ::Val{D}, ::Val{V},
+                     ::Val{K}, tag::SB.AbstractSpectralBackend; kwargs...) where {D, V, K} =
+    _no_transform_loaded(tag, schedule)
+
+gridded_sweep_batch!(sums, counts, sf, ::AbstractArray{<:Any, 3}, schedule, distance_bins, axis_bins, ::Val{D},
+                     ::Val{V}, ::Val{K}, tag::SB.AbstractSpectralBackend; kwargs...) where {D, V, K} =
+    _no_transform_loaded(tag, schedule)
+
+gridded_sweep_batch!(sums, counts, sf, ::AbstractArray{<:Any, 3}, schedule, distance_bins, ::Val{D}, ::Val{V},
+                     ::Val{K}, spectral_backend; kwargs...) where {D, V, K} = _not_a_spectral_tag(spectral_backend)
+
+gridded_sweep_batch!(sums, counts, sf, ::AbstractArray{<:Any, 3}, schedule, distance_bins, axis_bins, ::Val{D},
+                     ::Val{V}, ::Val{K}, spectral_backend; kwargs...) where {D, V, K} =
+    _not_a_spectral_tag(spectral_backend)
+
+# The array forms of both batch sweeps route through the packed layout, as the single-slice forms do.
+function gridded_sweep_batch!(sums, counts, sf, u::AbstractArray, schedule, distance_bins, ::Val{D},
+                              spectral_backend; kwargs...) where {D}
+    return gridded_sweep_batch!(sums, counts, sf, _packed_batch(u, Val(D)), schedule, distance_bins, Val(D), Val(1),
+                                Val(0), spectral_backend; kwargs...)
+end
+
+function gridded_sweep_batch!(sums, counts, sf, u::AbstractArray, schedule, distance_bins, axis_bins, ::Val{D},
+                              spectral_backend; kwargs...) where {D}
+    return gridded_sweep_batch!(sums, counts, sf, _packed_batch(u, Val(D)), schedule, distance_bins, axis_bins,
+                                Val(D), Val(1), Val(0), spectral_backend; kwargs...)
+end
+
+function gridded_lag_sweep_batch!(sums, counts, sf, u::AbstractArray, schedule, distance_bins, ::Val{D};
+                                  kwargs...) where {D}
+    return gridded_lag_sweep_batch!(sums, counts, sf, _packed_batch(u, Val(D)), schedule, distance_bins, Val(D),
+                                    Val(1), Val(0); kwargs...)
+end
+
+function gridded_lag_sweep_batch!(sums, counts, sf, u::AbstractArray, schedule, distance_bins, axis_bins, ::Val{D};
+                                  kwargs...) where {D}
+    return gridded_lag_sweep_batch!(sums, counts, sf, _packed_batch(u, Val(D)), schedule, distance_bins, axis_bins,
+                                    Val(D), Val(1), Val(0); kwargs...)
+end
+
+"""The `(D, cells, slices)` layout of a batch stored `(D, cells..., slices)`, one vector field of width `D`."""
+@inline function _packed_batch(u::AbstractArray, ::Val{D}) where {D}
+    size(u, 1) == D || throw(DimensionMismatch("field has $(size(u, 1)) components, declared $D"))
+    ndims(u) >= 3 || throw(DimensionMismatch(
+        "a batch is stored (component, cells..., slices) and so has at least three axes; got $(size(u))",
+    ))
+    return reshape(u, D, :, size(u)[end])
+end
+
+"""
+    gridded_lag_sweep_batch!(sums, counts, sf, u, schedule, distance_bins[, axis_bins], ::Val{D}; valid, weights, backend)
+
+Sweep the lags of `schedule` once and reduce every slice of a batch against each of them, into
+`sums`/`counts` of shape `(n_distance, n_slices)` — with `axis_bins`,
+`(n_distance, n_angle, n_slices)`.
+
+`u` is `(component, cells..., slices)`, the cells matching the schedule. `valid` is `AllValid()` or
+one column of cell validity per slice ([`batch_validity`](@ref)); `weights` is one finite weight per
+cell, shared by the slices, so a cell measure is given once. `backend` names the hardware, as on
+[`gridded_lag_sweep!`](@ref), whose pair enumeration, reading rule and half-turn averaging this
+follows exactly: slice `t` of the output is that sweep on slice `t` of the field.
+"""
+function gridded_lag_sweep_batch!(
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
+    data::AbstractArray{<:Any, 3}, s::AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+) where {OT, CT, D, V, K}
+    nt = _check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
+    w = _pair_weights(weights, size(data, 2), float(eltype(data)))
+    _check_weighted_counts(w, CT)
+    plan = squared_digitize_plan(dist_be)
+    nb = n_histogram_bins(plan)
+    size(sums) == (nb, nt) && size(counts) == (nb, nt) || throw(DimensionMismatch(
+        "sums and counts must be ($nb, $nt); got $(size(sums)) and $(size(counts))",
+    ))
+    su = uniform_axes(s)
+    T = eltype(su.spacing)
+    r_max = _cull_is_unbounded(dist_be) ? T(Inf) : T(float(last(dist_be)))
+    dps, vps, wp = _batch_slices(s, data, valid, w)
+    transport = lag_transport(s)
+    items = sweep_items(s, r_max, sweep_tasks(backend), true)
+    body! = (ls, lc, it, _) -> _sweep_item_batch!(ls, lc, sf, s, su, dps, vps, wp, it, plan, nb, r_max, transport,
+                                                  Val(D), Val(V), Val(K))
+    sweep_reduce!(sums, counts, backend, items, () -> nothing, body!)
+    return sums, counts
+end
+
+function _sweep_item_batch!(
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, s, su::UniformLagSchedule{Dg}, dps, vps, weights,
+    item::NTuple{4, Int}, plan, nb, r_max, transport, ::Val{D}, ::Val{V}, ::Val{K},
+) where {OT, CT, Dg, D, V, K}
+    I, J, part, n_parts = item
+    lags = _pair_lags(s, su, I, J, r_max)
+    strides = grid_strides(su)
+    Nu = n_cells(su)
+    baseI, baseJ = (I - 1) * Nu, (J - 1) * Nu
+    @inbounds for lin in part:n_parts:length(lags)
+        h = Tuple(lags[lin])
+        v = _lag_visit(sf, s, su, I, J, h, plan, nb, Val(D), Val(V), Val(K))
+        v === nothing && continue
+        b, r2, factor, geometry, self_reverse = v
+        half_dim = self_reverse ? findfirst(!iszero, h)::Int : 0
+        with_frames(transport, geometry) do frames
+            for t in eachindex(dps)
+                totals, n_pairs = _lag_reduce(transport, sf, dps[t], vps[t], weights, Val(D), Val(V), Val(K),
+                                              Val(Dg), su, strides, h, frames, r2, half_dim, baseI, baseJ)
+                sums[b, t] += OT(factor * sum(totals) / length(totals))
+                counts[b, t] += CT(n_pairs)
+            end
+        end
+    end
+    return nothing
+end
+
+function gridded_lag_sweep_batch!(
+    sums::AbstractArray{OT, 3}, counts::AbstractArray{CT, 3}, sf::SFT.AbstractPairwiseStructureFunctionType,
+    data::AbstractArray{<:Any, 3}, s::AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K};
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    second_axis::SeparationAngleAxis,
+) where {OT, CT, D, V, K}
+    nt = _check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
+    _require_directional(s)
+    w = _pair_weights(weights, size(data, 2), float(eltype(data)))
+    _check_weighted_counts(w, CT)
+    plan = squared_digitize_plan(dist_be)
+    nb = n_histogram_bins(plan)
+    axis_edges = BinEdges(axis_be)
+    na = n_histogram_bins(axis_edges)
+    size(sums) == (nb, na, nt) && size(counts) == (nb, na, nt) || throw(DimensionMismatch(
+        "sums and counts must be ($nb, $na, $nt); got $(size(sums)) and $(size(counts))",
+    ))
+    su = uniform_axes(s)
+    T = eltype(su.spacing)
+    r_max = _cull_is_unbounded(dist_be) ? T(Inf) : T(float(last(dist_be)))
+    dps, vps, wp = _batch_slices(s, data, valid, w)
+    transport = lag_transport(s)
+    items = sweep_items(s, r_max, sweep_tasks(backend), true)
+    body! = (ls, lc, it, _) -> _sweep_item_batch!(ls, lc, sf, s, su, dps, vps, wp, it, plan, nb, r_max, transport,
+                                                  axis_edges, na, second_axis, Val(D), Val(V), Val(K))
+    sweep_reduce!(sums, counts, backend, items, () -> nothing, body!)
+    return sums, counts
+end
+
+function _sweep_item_batch!(
+    sums::AbstractArray{OT, 3}, counts::AbstractArray{CT, 3}, sf, s, su::UniformLagSchedule{Dg}, dps, vps, weights,
+    item::NTuple{4, Int}, plan, nb, r_max, transport, axis_edges, na, second_axis, ::Val{D}, ::Val{V}, ::Val{K},
+) where {OT, CT, Dg, D, V, K}
+    I, J, part, n_parts = item
+    lags = _pair_lags(s, su, I, J, r_max)
+    strides = grid_strides(su)
+    Nu = n_cells(su)
+    baseI, baseJ = (I - 1) * Nu, (J - 1) * Nu
+    @inbounds for lin in part:n_parts:length(lags)
+        h = Tuple(lags[lin])
+        v = _lag_visit(sf, s, su, I, J, h, plan, nb, Val(D), Val(V), Val(K))
+        v === nothing && continue
+        b, r2, factor, geometry, self_reverse = v
+        half_dim = self_reverse ? findfirst(!iszero, h)::Int : 0
+        with_frames(transport, geometry) do frames
+            dirs = map(f -> f.dir, frames)
+            for t in eachindex(dps)
+                totals, n_pairs = _lag_reduce(transport, sf, dps[t], vps[t], weights, Val(D), Val(V), Val(K),
+                                              Val(Dg), su, strides, h, frames, r2, half_dim, baseI, baseJ)
+                _scatter_joint!(view(sums, :, :, t), view(counts, :, :, t), b, factor, totals, n_pairs, dirs, r2,
+                                axis_edges, na, second_axis)
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    device_transform_sweep_batch!(sums, counts, backend, sf, data, schedule, distance_bins, plan, nb, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag, axis)
+
+The transform engine on a device backend for a batch over a trailing slice axis, supplied by the
+KernelAbstractions extension together with an AbstractFFTs implementation for the device's arrays.
+`axis` is `nothing` for the distance histogram or `(axis_edges, n_angle, second_axis)` for the joint
+one.
+"""
+device_transform_sweep_batch!(sums, counts, backend, args...) = throw(ArgumentError(
+    "a transform on $(typeof(backend)) needs `using KernelAbstractions` for the device lag kernel, and an " *
+    "AbstractFFTs implementation on the device's arrays (`using CUDA` supplies CUFFT) for the transforms.",
+))
+
 # Each equal-length image carries its share of the lag's pairs to its own angle bin.
 @inline function _scatter_joint!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, b, factor, totals::NTuple{M}, n_pairs, images,

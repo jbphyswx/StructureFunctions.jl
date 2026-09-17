@@ -62,6 +62,8 @@ function SFC.gpu_fast_launch_1d_batch!(
                             Int(N), Int(NB), Int(B), Int(D), Int(nmom), fixed_x, geom, cull)
 end
 
+SFC.gpu_free_memory(::CUDA.CUDABackend) = Int(CUDA.free_memory())
+
 # The real device numbers. Reached only through the CUDABackend hook, so a device exists by
 # construction and a query failure is a driver fault.
 function SFC.gpu_device_caps(::CUDA.CUDABackend)

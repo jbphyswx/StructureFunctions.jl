@@ -67,6 +67,21 @@ The batch entries — `calculate_structure_function_batch!`, `calculate_structur
 `calculate_structure_functions_single_pass_batch!`, `calculate_structure_functions_single_pass_2d_batch!` —
 dispatch on the backend; the CPU backends run them too.
 
+A field sampled repeatedly on a grid takes the same entry with the grid in place of the coordinates,
+`(component, cells..., T)` in and `(n_distance, T)` out:
+
+```julia
+u_batch = randn(2, 360, 180, T)
+sums = zeros(length(bins) - 1, T)
+counts = zeros(Int, length(bins) - 1, T)
+SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), grid, u_batch, bins;
+                                        backend = CB.GPUBackend(CUDA.CUDABackend()))
+```
+
+Each pair's separation, distance bin, reading and geodesic frame belong to the grid, not to the
+field, so the batch computes them once and contracts every slice against them. In the device kernel
+one work item still owns one `(lag, slab pair)` and loops the slices inside.
+
 ### Route table for point lists
 
 | call | shapes | `D` | bins | device route |

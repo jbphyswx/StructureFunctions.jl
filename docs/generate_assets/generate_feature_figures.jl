@@ -919,6 +919,86 @@ function generate_fits_figure()
     println("  wrote $out")
 end
 
+# ─── A batch over a trailing slice axis ────────────────────────────────────
+
+function generate_slice_batch_figure()
+    Random.seed!(51)
+    Ts = [1, 2, 4, 8]
+    bins_sphere = collect(range(0.0, π / 2; length = 17)) .+ 1e-3
+    n_lon, n_lat = 120, 60
+    lats = collect(range(-π / 2 + π / (2n_lat), π / 2 - π / (2n_lat); length = n_lat))
+    sphere = SFC.ZonalLagSchedule(lats, n_lon, 2π / n_lon, 1.0, true)
+    n_flat = 128
+    flat = SFC.UniformLagSchedule((n_flat, n_flat), (1 / n_flat, 1 / n_flat), (true, true))
+    bins_flat = collect(range(0.0, 0.5; length = 17))
+    tag = SB.FastFourierTransformSpectralBackend()
+
+    # the two arrangements of the same calculation, timed on the same data in the same process
+    function pair_of_times(s, bins, ncell, nt)
+        nb = length(bins) - 1
+        u = randn(2, ncell, nt)
+        looped = () -> for t in 1:nt
+            SFC.gridded_sweep!(zeros(nb), zeros(Int, nb), SFT.L2SFType(), view(u, :, :, t), s, bins,
+                               Val(2), Val(1), Val(0), tag)
+        end
+        batch = () -> SFC.gridded_sweep_batch!(zeros(nb, nt), zeros(Int, nb, nt), SFT.L2SFType(), u, s,
+                                               bins, Val(2), Val(1), Val(0), tag)
+        looped(); batch()
+        (minimum(@elapsed(looped()) for _ in 1:3), minimum(@elapsed(batch()) for _ in 1:3))
+    end
+
+    t_sphere = [pair_of_times(sphere, bins_sphere, n_lon * n_lat, nt) for nt in Ts]
+    t_flat = [pair_of_times(flat, bins_flat, n_flat^2, nt) for nt in Ts]
+
+    # and the answers: every slice of the batch against the single-slice entry on that slice
+    nt = 4
+    nb = length(bins_sphere) - 1
+    u = randn(2, n_lon * n_lat, nt)
+    ref = zeros(nb, nt)
+    refc = zeros(Int, nb, nt)
+    for t in 1:nt
+        SFC.gridded_sweep!(view(ref, :, t), view(refc, :, t), SFT.L2SFType(), view(u, :, :, t), sphere,
+                           bins_sphere, Val(2), Val(1), Val(0), tag)
+    end
+    got = zeros(nb, nt)
+    gotc = zeros(Int, nb, nt)
+    SFC.gridded_sweep_batch!(got, gotc, SFT.L2SFType(), u, sphere, bins_sphere, Val(2), Val(1), Val(0), tag)
+    mids = SF.midpoints(bins_sphere)
+
+    fig = CM.Figure(size = (1150, 430))
+    ax1 = CM.Axis(fig[1, 1]; xlabel = "snapshots T", ylabel = "seconds",
+                  title = "One geodesic frame per lag, not T of them")
+    CM.scatterlines!(ax1, Float64.(Ts), [p[1] for p in t_sphere]; linewidth = 3, markersize = 11,
+                     label = "lat-lon 120×60, one call per snapshot")
+    CM.scatterlines!(ax1, Float64.(Ts), [p[2] for p in t_sphere]; linewidth = 3, markersize = 11,
+                     label = "lat-lon 120×60, batch")
+    CM.axislegend(ax1; position = :lt)
+
+    gains = [p[1] / p[2] for p in t_sphere]
+    gflat = [p[1] / p[2] for p in t_flat]
+    ax2 = CM.Axis(fig[1, 2]; xlabel = "snapshots T", ylabel = "speedup over one call per snapshot",
+                  title = "The gain is the share of the work the field does not change")
+    CM.scatterlines!(ax2, Float64.(Ts), gains; linewidth = 3, markersize = 11, label = "lat-lon (frames per lag)")
+    CM.scatterlines!(ax2, Float64.(Ts), gflat; linewidth = 3, markersize = 11, label = "uniform (a displacement and a bin)")
+    CM.hlines!(ax2, [1.0]; color = :gray, linestyle = :dash)
+    CM.axislegend(ax2; position = :lt)
+
+    ax3 = CM.Axis(fig[1, 3]; xlabel = "separation r", ylabel = "⟨δu_L²⟩",
+                  title = "and every slice is the single-slice answer")
+    for t in 1:nt
+        CM.lines!(ax3, mids, ref[:, t]; linewidth = 6, color = (:steelblue, 0.35))
+        CM.lines!(ax3, mids, got[:, t]; linewidth = 2, color = :black, linestyle = :dash)
+    end
+    CM.text!(ax3, 0.04, 0.06;
+             text = "counts equal exactly, max |Δsum| / scale = " *
+                    string(round(maximum(abs, got .- ref) / maximum(abs, ref); sigdigits = 1)),
+             space = :relative, fontsize = 13)
+
+    out = joinpath(ASSETS_DIR, "sf_slice_batch.png")
+    CM.save(out, fig)
+    println("  wrote $out")
+end
+
 println("Generating StructureFunctions.jl feature figures...")
 generate_spectra_figure()
 generate_missing_data_figure()
@@ -936,4 +1016,5 @@ generate_sorted_line_figure()
 generate_tensor_figure()
 generate_scattered_modes_figure()
 generate_fits_figure()
+generate_slice_batch_figure()
 println("Done.")

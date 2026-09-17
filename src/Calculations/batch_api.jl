@@ -2,12 +2,20 @@
 
 """
     calculate_structure_function_batch!(sums, counts, sf_type, x, u, distance_bins; backend=..., workspace=nothing, ...)
+    calculate_structure_function_batch!(sums, counts, sf_type, grid, u, distance_bins[, axis_bins][, spectral_backend]; ...)
 
-Batch structure functions over the third dimension of matrix inputs `(N_dims, N_points, T)`.
-Host `sums`, `counts` must have shape `(NB, T)` where `NB = length(distance_bins) - 1`.
+Structure functions of one fixed sampling observed over a trailing slice axis, accumulated into
+`sums` and `counts` of shape `(NB, T)` with `NB = length(distance_bins) - 1`.
 
-GPU: fully implemented via `GPUBackend` when `KernelAbstractions` is loaded.
-CPU backends: not yet implemented (use a loop over `t` with `calculate_structure_function!`).
+With coordinates `x` the sampling is a point list, `(N_dims, N_points, T)`, and the pair loop runs
+once for the whole batch: `GPUBackend` keeps the batch on the device and synchronises once when
+`KernelAbstractions` is loaded.
+
+With a grid or a lag schedule in place of `x` the sampling is a grid, the field is
+`(component, cells..., T)`, and the lag enumeration runs once for the whole batch; `axis_bins` makes
+the histogram joint in separation and angle, `sums` and `counts` then being `(NB, n_angle, T)`. The
+grid form is supplied by the FlowGeometries extension and the schedule forms by
+[`gridded_sweep_batch!`](@ref).
 """
 function calculate_structure_function_batch!(
     sums, counts, sf_type, x, u, distance_bins;

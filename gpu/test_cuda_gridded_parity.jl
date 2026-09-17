@@ -100,6 +100,62 @@ let n_lon = 720, n_lat = 360
     (dc == 0 && ds <= 1e-10) || (failures[] += 1)
 end
 
+# A batch over a trailing slice axis: the device sweeps each lag once and loops the slices inside, so
+# every slice must equal the single-slice device call and the host batch.
+function compare_batch(name, sf, u, s, edges, D; valid = SFC.AllValid(), weights = nothing)
+    nt = size(u)[end]
+    nb = length(edges) - 1
+    CT = weights === nothing ? Int : Float64
+    ref, cref = zeros(nb, nt), zeros(CT, nb, nt)
+    for t in 1:nt
+        us = selectdim(u, ndims(u), t)
+        vs = valid isa SFC.AllValid ? valid : view(valid, :, t)
+        SFC.gridded_sweep!(view(ref, :, t), view(cref, :, t), sf, us, s, edges, Val(D), FFT;
+                           valid = vs, weights, backend = GPU)
+    end
+    a, ca = zeros(nb, nt), zeros(CT, nb, nt)
+    b, cb = zeros(nb, nt), zeros(CT, nb, nt)
+    SFC.gridded_sweep_batch!(a, ca, sf, u, s, edges, Val(D), FFT; valid, weights, backend = CPU)
+    SFC.gridded_sweep_batch!(b, cb, sf, u, s, edges, Val(D), FFT; valid, weights, backend = GPU)
+    # both entries accumulate, so every buffer is cleared before the timed pass
+    fill!(a, 0); fill!(ca, 0); fill!(b, 0); fill!(cb, 0)
+    tc = @elapsed SFC.gridded_sweep_batch!(a, ca, sf, u, s, edges, Val(D), FFT; valid, weights, backend = CPU)
+    tg = @elapsed (SFC.gridded_sweep_batch!(b, cb, sf, u, s, edges, Val(D), FFT; valid, weights, backend = GPU);
+                   CUDA.synchronize())
+    scale = max(maximum(abs, ref), 1e-12)
+    cscale = CT <: Integer ? 1 : max(maximum(abs, cref), 1e-12)
+    dc = max(maximum(abs, cb .- cref), maximum(abs, ca .- cref)) / cscale
+    ds = max(maximum(abs, b .- ref), maximum(abs, a .- ref)) / scale
+    Printf.@printf("| %s (T = %d) | %s | %.1e | %.1e | %.3f | %.3f |\n", name, nt, nameof(typeof(sf)), dc, ds, tc, tg)
+    (dc <= (CT <: Integer ? 0 : 1e-12) && ds <= 1e-10) || (failures[] += 1)
+    return nothing
+end
+
+Random.seed!(2)
+let dims = (256, 256), nt = 8
+    s = SFC.UniformLagSchedule(dims, (1.0, 1.0), (true, true))
+    edges = collect(range(0.0, 120.0; length = 41))
+    u = randn(2, dims..., nt)
+    compare_batch("uniform 256² periodic batch", SFT.L2SFType(), u, s, edges, 2)
+    um = copy(u)
+    umf = reshape(um, 2, prod(dims), nt)
+    for t in 1:nt
+        umf[:, rand(prod(dims)) .< 0.2, t] .= NaN
+    end
+    valid = SFC.batch_validity(um)
+    compare_batch("uniform 256² masked batch", SFT.L3SFType(), um, s, edges, 2; valid)
+    compare_batch("uniform 256² masked, weighted batch", SFT.L2SFType(), um, s, edges, 2;
+                  valid, weights = 0.5 .+ rand(prod(dims)))
+end
+
+let n_lon = 720, n_lat = 360, nt = 4
+    lats = collect(range(-π / 2 + π / (2n_lat), π / 2 - π / (2n_lat); length = n_lat))
+    s = SFC.ZonalLagSchedule(lats, n_lon, 2π / n_lon, 1.0, true)
+    edges = collect(range(0.0, π / 2; length = 33)) .+ 1e-3
+    u = randn(2, n_lon, n_lat, nt)
+    compare_batch("zonal 720×360 batch", SFT.L2SFType(), u, s, edges, 2)
+end
+
 # The non-uniform FFT route: the same engine on scattered points, its forward transforms from each provider on
 # the device the field lives on (cuFINUFFT for FINUFFT); counts are a kernel-weighted mass, compared relatively.
 # The two providers are also held to each other on the host.

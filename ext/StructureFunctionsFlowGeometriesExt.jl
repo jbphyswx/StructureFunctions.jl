@@ -3,6 +3,7 @@ module StructureFunctionsFlowGeometriesExt
 using FlowGeometries: FlowGeometries as FG
 using Distances: Distances as DI
 using ComputationalBackends: ComputationalBackends as CB
+using SpectralBackends: SpectralBackends as SB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     HelperFunctions as SFH, StructureFunctionObjects as SFO, StructureFunctionTypes as SFT,
     MultiFields as MF
@@ -293,6 +294,95 @@ function SFC.calculate_structure_function(
     SFC.gridded_sweep!(sums, counts, sf_type, data, sched, distance_bins, axis_bins, vD, vV, vK,
                        spectral_backend; valid, weights = w, backend, second_axis)
     return _gridded_result(sf_type, distance_bins, axis_bins, sums, counts, OT)
+end
+
+"""
+    _gridded_batch_setup(grid, u, distance_bins, count_eltype, kwargs, verbose; weights)
+        -> (schedule, data, vD, vV, vK, valid, weights, n_slices)
+
+As [`_gridded_setup`](@ref) for a field sampled repeatedly on one grid, stored
+`(component, cells..., slices)`: the grid must be one the lag enumeration describes, every slice must
+cover it, and the validity is settled per slice.
+"""
+function _gridded_batch_setup(grid, u::AbstractArray, distance_bins, ::Type{CT}, kwargs, verbose::Bool;
+                              weights = nothing) where {CT}
+    isempty(kwargs) || throw(ArgumentError(
+        "unsupported keyword(s) $(join(keys(kwargs), ", ")) for a gridded calculation",
+    ))
+    ndims(u) >= 3 || throw(DimensionMismatch(
+        "a slice batch is stored (component, cells..., slices) and so has at least three axes; got $(size(u))",
+    ))
+    sched = _lag_schedule(grid)
+    D = size(u, 1)
+    nt = size(u)[end]
+    cells = SFC.n_cells(sched)
+    data = reshape(u, D, :, nt)
+    size(data, 2) == cells || throw(DimensionMismatch(
+        "each slice must cover the grid's $cells cells; got $(size(data, 2))",
+    ))
+    SFC._validate_spatial_dimension(D)
+    _grid_geometry(grid, D)          # refuses a geometry the schedules do not describe
+    SFC._assert_counts_representable(CT, cells)
+    cm = FG.Grids.mask(grid)
+    valid = SFC.batch_validity(u, cm isa FG.Grids.AllActive ? nothing : vec(cm))
+    w = SFC._pair_weights(weights, cells, float(eltype(data)))
+    SFC._check_weighted_counts(w, CT)
+    verbose && @info "gridded slice batch: $(nameof(typeof(sched))) over $cells cells × $nt slices"
+    return sched, data, Val(D), Val(1), Val(0), valid, w, nt
+end
+
+"""
+    calculate_structure_function_batch!(sums, counts, sf_type, grid, u, distance_bins[, spectral_backend]; weights, backend, verbose)
+    calculate_structure_function_batch!(sums, counts, sf_type, grid, u, distance_bins, axis_bins[, spectral_backend]; second_axis, weights, backend, verbose)
+
+Structure functions of a field sampled repeatedly on one `grid`: `u` is
+`(component, cells..., slices)` and `sums`/`counts` are `(n_distance, n_slices)`, or with
+`axis_bins` `(n_distance, n_angle, n_slices)`.
+
+The grid fixes every pair, so the lags are enumerated once and each slice is summed against them;
+this is the gridded counterpart of the point-list slice batch, which takes `(N_dims, N_points, T)`.
+`weights` belongs to the cells and so is given once for the whole batch; validity is settled per
+slice, as a slice may be missing data another holds. Accumulates into the caller's arrays and
+returns nothing.
+"""
+function SFC.calculate_structure_function_batch!(
+    sums::AbstractMatrix, counts::AbstractMatrix,
+    sf_type::SFT.AbstractPairwiseStructureFunctionType,
+    grid::FG.Grids.AbstractGrid,
+    u::AbstractArray,
+    distance_bins::AbstractVector,
+    spectral_backend = SB.AutoSpectralBackend();
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
+    weights = nothing,
+    verbose::Bool = true,
+    kwargs...,
+)
+    sched, data, vD, vV, vK, valid, w, nt =
+        _gridded_batch_setup(grid, u, distance_bins, eltype(counts), kwargs, verbose; weights)
+    SFC.gridded_sweep_batch!(sums, counts, sf_type, data, sched, distance_bins, vD, vV, vK, spectral_backend;
+                             valid, weights = w, backend)
+    return nothing
+end
+
+function SFC.calculate_structure_function_batch!(
+    sums::AbstractArray{<:Any, 3}, counts::AbstractArray{<:Any, 3},
+    sf_type::SFT.AbstractPairwiseStructureFunctionType,
+    grid::FG.Grids.AbstractGrid,
+    u::AbstractArray,
+    distance_bins::AbstractVector,
+    axis_bins::AbstractVector,
+    spectral_backend = SB.AutoSpectralBackend();
+    second_axis::SFC.SeparationAngleAxis,
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
+    weights = nothing,
+    verbose::Bool = true,
+    kwargs...,
+)
+    sched, data, vD, vV, vK, valid, w, nt =
+        _gridded_batch_setup(grid, u, distance_bins, eltype(counts), kwargs, verbose; weights)
+    SFC.gridded_sweep_batch!(sums, counts, sf_type, data, sched, distance_bins, axis_bins, vD, vV, vK,
+                             spectral_backend; valid, weights = w, backend, second_axis)
+    return nothing
 end
 
 """

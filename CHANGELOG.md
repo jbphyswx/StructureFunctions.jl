@@ -57,6 +57,15 @@ All notable changes to this project will be documented in this file.
 - An exact sorted route for one-dimensional point lists (prefix sums of monomials), taken automatically
   by the CPU backends for polynomial operators.
 - Tensors on point lists at any order, joint in separation and angle.
+- A batch over a trailing slice axis for a field sampled repeatedly on one grid:
+  `calculate_structure_function_batch!(sums, counts, sf, grid, u, bins[, axis_bins][, tag])` with
+  `(component, cells..., T)` in and `(n_distance, T)` — or `(n_distance, n_angle, T)` — out, on the
+  lag sweep, the transform and the device engine, with validity per slice and the cell weights shared.
+  The lags are enumerated once for the whole batch. A schedule names through
+  `batch_shares_lag_geometry` whether the transform holds every slice's columns of a slab pair
+  together: a curved schedule's per-lag geodesic frame and transport matrices are the same for every
+  slice, while a flat schedule's are a displacement and a bin, and it takes its slices one at a time.
+  The same entry takes a `ScatteredModesSchedule` for a fixed set of stations sampled over time.
 
 ### Spectra and fluxes
 

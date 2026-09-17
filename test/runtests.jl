@@ -42,6 +42,8 @@ Test.@testset "StructureFunctions.jl" begin
     include("test_gridded_separable.jl")
     println("--- Running Gridded Device Engine Test ---")
     include("test_gridded_device.jl")
+    println("--- Running Gridded Slice Batch Test ---")
+    include("test_gridded_batch.jl")
     println("--- Running Pair Weights Test ---")
     include("test_gridded_weights.jl")
     println("--- Running Scattered Modes (NUFFT) Test ---")

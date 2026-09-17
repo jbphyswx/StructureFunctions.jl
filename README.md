@@ -123,6 +123,26 @@ That bins `5.4 × 10¹¹` pairs in about ten seconds on eight cores; the direct 
 takes 60× longer and returns the same counts. The same call with `backend = CB.GPUBackend(...)` runs
 the engine on a device.
 
+### The same grid at many times
+
+A grid fixes every pair, so a time series of one grid pays for the geometry once. Stack the snapshots
+on a trailing axis and ask for the batch:
+
+```julia
+u = randn(2, n_lon, n_lat, 24)                  # (east, north) at every cell, 24 times
+sums = zeros(length(bins) - 1, 24)
+counts = zeros(Int, length(bins) - 1, 24)
+
+SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), grid, u, bins,
+                                        SB.FastFourierTransformSpectralBackend())
+```
+
+Column `t` is what the single-slice call returns for snapshot `t`. Each lag's separation, distance
+bin, pair reading and geodesic frame is computed once for the whole batch, and every snapshot's
+spectra of a slab pair are inverted in one transform with the snapshots laid out contiguously per
+lag. The same entry takes a point list as `(D, N, T)`, a `ScatteredModesSchedule` for a fixed set of
+stations, and `backend = CB.GPUBackend(...)` on any of them.
+
 ## Extensions
 
 | load | adds |
@@ -248,7 +268,14 @@ finite mode count and converges as the mode count grows; it is selected only by 
 estimators with stated priors, beside the exact transforms they approximate: without a prior the
 inversion is singular below `π/r_max`, which is what the regularisation is for.*
 
-*Regenerate the sixteen feature figures with `julia --project=docs/generate_assets
+![One grid, many snapshots](docs/src/assets/sf_slice_batch.png)
+
+*A field sampled repeatedly on one grid: every pair's separation, bin and — on a sphere — geodesic
+frame is a property of the grid, so the batch computes them once. The gain is the share of the work
+the field does not change: substantial on a lat-lon grid, where the frames dominate, and none on a
+flat uniform grid, where a lag is a displacement and a bin. Every slice is the single-slice answer.*
+
+*Regenerate the seventeen feature figures with `julia --project=docs/generate_assets
 docs/generate_assets/generate_feature_figures.jl`, and the six above them with
 `generate_assets.jl` in the same environment.*
 

@@ -29,10 +29,24 @@ Calculations.separable_layout
 Calculations.lag_limits
 Calculations.uniform_lag_box
 Calculations.lag_transport
+Calculations.batch_shares_lag_geometry
 Calculations.NoWeights
 Calculations.AllValid
 Calculations.field_validity
+Calculations.batch_validity
 Calculations.BatchLeading
+```
+
+## Gridded sweeps
+
+```@docs
+Calculations.gridded_lag_sweep!
+Calculations.gridded_sweep!
+Calculations.gridded_lag_sweep_batch!
+Calculations.gridded_sweep_batch!
+Calculations.transform_engine
+Calculations.device_transform_sweep!
+Calculations.device_transform_sweep_batch!
 ```
 
 ## Kernels of the transforms

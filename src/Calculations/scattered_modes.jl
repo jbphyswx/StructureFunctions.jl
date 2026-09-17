@@ -267,3 +267,34 @@ function calculate_structure_function(
     gridded_sweep!(sums, counts, sf, data, s, distance_bins, vD, vV, vK, spectral_backend; valid, weights, backend)
     return _finalize(SFO.StructureFunctionSumsAndCounts(sf, ModeBinEdges(distance_bins, s), sums, counts), OT)
 end
+
+"""
+    calculate_structure_function_batch!(sums, counts, sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend; weights, backend, verbose)
+
+The soft-binned structure function of one set of scattered points sampled repeatedly: `u` is
+`(D, N, slices)` over the `N` points of `schedule` and `sums`/`counts` are
+`(n_distance, n_slices)`, the counts a kernel-weighted pair mass.
+
+The points fix every pair, so the lags are enumerated once and every slice is summed against them —
+the fixed-station case of the point-list slice batch. Accumulates into the caller's arrays and
+returns nothing. See [`ScatteredModesSchedule`](@ref) for what is and is not exact.
+"""
+function calculate_structure_function_batch!(
+    sums::AbstractMatrix, counts::AbstractMatrix, sf::SFT.AbstractPairwiseStructureFunctionType,
+    s::ScatteredModesSchedule, u::AbstractArray, distance_bins::AbstractVector, spectral_backend;
+    weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(), verbose::Bool = true,
+)
+    ndims(u) >= 3 || throw(DimensionMismatch(
+        "a slice batch is stored (component, points, slices) and so has at least three axes; got $(size(u))",
+    ))
+    D = size(u, 1)
+    nt = size(u)[end]
+    data = reshape(u, D, :, nt)
+    N = n_cells(s)
+    size(data, 2) == N || throw(DimensionMismatch("each slice covers $(size(data, 2)) points, the schedule $N"))
+    valid = batch_validity(u)
+    verbose && @info "soft-binned slice batch by non-uniform FFT: $N points onto $(s.modes) modes × $nt slices"
+    gridded_sweep_batch!(sums, counts, sf, data, s, distance_bins, Val(D), Val(1), Val(0), spectral_backend;
+                         valid, weights, backend)
+    return nothing
+end

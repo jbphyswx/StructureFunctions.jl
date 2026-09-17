@@ -92,6 +92,16 @@ attributes.
 """
 gpu_device_caps(::Any) = GPUDeviceCaps(GPU_SMEM_UNIVERSAL_FLOOR, GPU_SMEM_UNIVERSAL_FLOOR, 1, 32)
 
+"""
+    gpu_free_memory(backend) -> Int
+
+Bytes `backend` reports free for allocation. There is deliberately **no generic method**: a staged
+calculation sizes its batches against this, and a backend whose memory is unknown raises rather than
+staging against a guess. `KernelAbstractions.CPU()` answers with the host's free memory and
+`CUDA.CUDABackend()` with the device's.
+"""
+function gpu_free_memory end
+
 """Zero device histogram buffers in a [`GPUSFWorkspace`](@ref) before the next launch."""
 function reset_histogram! end
 

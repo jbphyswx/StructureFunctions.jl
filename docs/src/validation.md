@@ -39,6 +39,7 @@ were of exactly that kind — a plausible number that was wrong by a constant fa
 | 25 | Sorted line against the pair loop | counts exact, 10⁻¹² | every polynomial operator, multi-fields, weights, unsorted and coincident points; linear in the points | `test/test_sorted_line.jl` |
 | 26 | Tensor from the transform against the point tensor | counts exact, 10⁻⁹ | flat and spherical grids, orders 2–4, the joint tensor over angle | `test/test_tensor_khm.jl` |
 | 27 | Forward models against closed forms | 10⁻⁸–10⁻¹² | the spectrum, Helmholtz and flux forward models; round trips through the inversions; the fitted flux is the flux the `J₂` transform recovers | `test/test_fits.jl` |
+| 28 | Slice batch against the single-slice entry | counts exact, 10⁻¹² | a batch over a trailing slice axis equals the single-slice entry run once per slice, on the lag sweep, the transform and the device engine: uniform periodic, bounded and mixed grids, lat-lon, a stretched axis with permuted axis order, a mask that differs per slice, cell weights, the joint histogram over angle, and both answers of `batch_shares_lag_geometry` | `test/test_gridded_batch.jl`, `gpu/test_cuda_gridded_parity.jl` |
 
 Every route with a device kernel — the point kernels, the transform engine on every schedule, the
 non-uniform FFT route and the tensor kernel — is also run on an A100 against the CPU by

@@ -306,6 +306,40 @@ multi-fields and every polynomial order run through the same code, and the count
 engine's. `CB.GPUBackend(KernelAbstractions.CPU())` runs the identical kernel on the host, which is
 how the suite checks it without a device.
 
+### One grid, many times
+
+A grid fixes every pair, so a time series of one grid pays for the pair enumeration once. Stack the
+snapshots on a trailing axis and ask for the batch:
+
+```julia
+u = randn(2, n_lon, n_lat, 24)
+sums = zeros(length(bins) - 1, 24)
+counts = zeros(Int, length(bins) - 1, 24)
+
+SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), grid, u, bins,
+                                        SB.FastFourierTransformSpectralBackend())
+```
+
+Column `t` is what the single-snapshot call returns for snapshot `t` — the same lags, the same pair
+reading, the same half-turn averaging. What the batch saves is everything a lag knows without the
+field: its separation, its distance bin, its reading factor and, on a sphere, its geodesic frame and
+`W×W` transport matrices. Those are computed once and every snapshot is contracted against them.
+Validity is settled per snapshot, since one may be missing data another holds, while `weights`
+belongs to the cells and is given once for the whole batch.
+
+How much that saves is a property of the schedule, and the schedule says which arrangement it takes
+through `batch_shares_lag_geometry`. On a lat-lon grid the frames and transport matrices are most of
+the per-lag work, so the transform holds every snapshot's inverted columns of a row pair together and
+visits each lag once. On a flat uniform grid a lag's geometry is a displacement and a bin, so the
+batch takes its snapshots one at a time, each with the inverse scratch of a single snapshot. Both
+arrangements return the same histogram; only the work differs.
+
+The same entry takes a point list as `(D, N, T)`, and a `ScatteredModesSchedule` for a fixed set of
+stations sampled over time — a mooring array, a buoy record — where the mode transforms are what gets
+shared.
+
+![One grid, many snapshots](assets/sf_slice_batch.png)
+
 ### Tensors
 
 The transform forms the whole increment moment tensor at every lag before contracting it with an
