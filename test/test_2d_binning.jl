@@ -1,6 +1,7 @@
 module Test2DBinning
 
 using ComputationalBackends: ComputationalBackends as CB
+using KernelAbstractions: KernelAbstractions as KA
 using Test
 using Random
 using OhMyThreads
@@ -171,6 +172,26 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         combined = sf1 + sf2
         @test combined.sums == sf1.sums .* 2
         @test combined.counts == sf1.counts .* 2
+    end
+
+    # 7. A histogram wider than the device's shared-memory cap takes its global-atomic kernels,
+    # which are a separate code path and read the coordinate width off the geometry.
+    @testset "the device global-atomic joint route agrees at every width" begin
+        Random.seed!(4321)
+        n = 150
+        dbins = collect(range(0.0, 1.2; length = 7))
+        routes = (("tiled", collect(range(-3.0, 3.0; length = 6))),
+                  ("global atomic", collect(range(-3.0, 3.0; length = 201))))
+        for D in (2, 3), (route, vbins) in routes
+            x, u = rand(D, n), randn(D, n)
+            ref = SFC.calculate_structure_function(SFT.L2SF, x, u, dbins, vbins;
+                backend = CB.SerialBackend(), verbose = false, show_progress = false)
+            dev = SFC.calculate_structure_function(SFT.L2SF, x, u, dbins, vbins;
+                backend = CB.GPUBackend(KA.CPU()), verbose = false, show_progress = false)
+            @test sum(ref.counts) > 0
+            @test dev.counts == ref.counts
+            @test dev.sums ≈ ref.sums
+        end
     end
 end
 

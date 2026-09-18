@@ -918,12 +918,28 @@ function gridded_lag_sweep!(
     r_max = _cull_is_unbounded(dist_be) ? T(Inf) : T(float(last(dist_be)))
     dp, vp, wp = separable_layout(s, data, valid, w)
     transport = lag_transport(s)
+    if backend isa CB.AbstractGPUBackend
+        return device_lag_sweep!(sums, counts, backend, sf, s, su, dp, vp, wp, plan, nb, r_max,
+                                 transport, Val(D), Val(V), Val(K))
+    end
     items = sweep_items(s, r_max, sweep_tasks(backend), true)
     body! = (ls, lc, it, _) -> _sweep_item!(ls, lc, sf, s, su, dp, vp, wp, it, plan, nb, r_max, transport,
                                              Val(D), Val(V), Val(K))
     sweep_reduce!(sums, counts, backend, items, () -> nothing, body!)
     return sums, counts
 end
+
+"""
+    device_lag_sweep!(sums, counts, backend, sf, s, su, data, valid, weights, plan, nb, r_max, transport, ::Val{D}, ::Val{V}, ::Val{K})
+
+Accumulate the direct lag sweep on a device: one work item per (slab pair, lag), each reducing over
+the cells of the uniform directions. Supplied by the KernelAbstractions extension; this is the
+route a non-polynomial operator takes on a grid, which the transform cannot express.
+"""
+device_lag_sweep!(sums, counts, backend, args...) = throw(ArgumentError(
+    "a gridded sweep on $(typeof(backend)) needs KernelAbstractions: run `using KernelAbstractions` " *
+    "and a device backend such as CUDA.",
+))
 
 function _sweep_item!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, s, su::UniformLagSchedule{Dg}, data, valid, weights,

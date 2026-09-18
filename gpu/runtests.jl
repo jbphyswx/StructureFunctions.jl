@@ -29,6 +29,10 @@ const SCRIPT_SUITES = (
     "test_e2e_2d_cuda.jl",
     "test_slices_e2e.jl",
     "test_cuda_gridded_parity.jl",
+    "test_cuda_pair_weights.jl",
+    "test_cuda_second_axis.jl",
+    "test_cuda_lag_sweep.jl",
+    "test_cuda_harmonic.jl",
 )
 
 Test.@testset "StructureFunctions GPU" begin

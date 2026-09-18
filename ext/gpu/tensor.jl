@@ -5,10 +5,24 @@
 # `D^P` of them per pair, and no shared-memory histogram is small enough to stage that, so this is
 # its own kernel and not a mode of the scalar ones.
 
+# The last accumulator axis is the auxiliary slice when there is no second axis, and the angle bin
+# when there is one; the joint form takes a single field, so the two never both need it. Both
+# helpers dispatch on the source's type, so the plain sweep compiles to the indexing it had.
+@inline _gpu_tensor_axis_bin(::Nothing, X1, X2, dist, axis_be, n_axis) = -1
+@inline function _gpu_tensor_axis_bin(s::SFC.SeparationAngleAxis, X1, X2, dist, axis_be, n_axis)
+    abin = SFH.digitize(SFC.axis_quantity(s, X2 - X1, dist * dist), axis_be)
+    return (1 <= abin <= n_axis) ? abin : 0
+end
+
+@inline _gpu_tensor_slot(::Nothing, b::Int, abin::Int) = b
+@inline _gpu_tensor_slot(::SFC.SeparationAngleAxis, b::Int, abin::Int) = abin
+
 KA.@kernel unsafe_indices = true function _tensor_kernel!(
     sums, counts, @Const(x_mat), @Const(u_mat),
     wts,                    # NoWeights(), or one weight per point
     geom, dist_be,
+    second_axis,            # nothing, or the separation-angle source
+    axis_be, n_axis::Int,
     N_points::Int, N_bins::Int, B::Int, ::Val{W}, ::Val{F}, ::Val{D}, ::Val{P},
 ) where {W, F, D, P}
     i = @index(Global)
@@ -20,24 +34,26 @@ KA.@kernel unsafe_indices = true function _tensor_kernel!(
             X2 = SA.SVector{W, XT}(ntuple(d -> @inbounds(x_mat[d, j]), Val(W)))
             ok, dist, frame = SFH.pair_frame(geom, X1, X2)
             bin = SFH.digitize(dist, dist_be)
-            if ok && 1 <= bin <= N_bins
+            abin = _gpu_tensor_axis_bin(second_axis, X1, X2, dist, axis_be, n_axis)
+            if ok && 1 <= bin <= N_bins && abin != 0
                 sgn = SFC._tensor_reading(Val(P), geom, frame)
                 pw = SFC._point_weight(wts, i) * SFC._point_weight(wts, j)
                 for b in 1:B
+                    slot = _gpu_tensor_slot(second_axis, b, abin)
                     U1 = SA.SVector{F, UT}(ntuple(d -> @inbounds(u_mat[d, i, b]), Val(F)))
                     U2 = SA.SVector{F, UT}(ntuple(d -> @inbounds(u_mat[d, j, b]), Val(F)))
                     du = sgn * SFH.pair_delta(geom, frame, X1, X2, U1, U2)
                     if P == 2
                         for a in 1:D, c in 1:D
-                            @atomic sums[(a - 1) * D + c, bin, b] += pw * du[a] * du[c]
+                            @atomic sums[(a - 1) * D + c, bin, slot] += pw * du[a] * du[c]
                         end
                     else
                         for a in 1:D, c in 1:D, e in 1:D
-                            @atomic sums[(a - 1) * D * D + (c - 1) * D + e, bin, b] +=
+                            @atomic sums[(a - 1) * D * D + (c - 1) * D + e, bin, slot] +=
                                 pw * du[a] * du[c] * du[e]
                         end
                     end
-                    @atomic counts[bin, b] += convert(eltype(counts), pw)
+                    @atomic counts[bin, slot] += convert(eltype(counts), pw)
                 end
             end
         end
@@ -52,9 +68,6 @@ function SFC.gpu_calculate_structure_function_tensor!(
     distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
     weights = SFC.NoWeights(),
 ) where {P, D}
-    axis === nothing || throw(ArgumentError(
-        "the joint tensor over the separation angle runs on the CPU backends",
-    ))
     2 <= P <= 3 || throw(ArgumentError(
         "the GPU tensor kernel accumulates orders 2 and 3; order $P runs on the CPU backends",
     ))
@@ -69,23 +82,28 @@ function SFC.gpu_calculate_structure_function_tensor!(
     W, F, N, B, n_bins = s.W, s.F, s.N, s.B, s.n_bins
     OT = eltype(sums)
     CT = eltype(counts)
+    # The last accumulator axis carries the auxiliary slices, or the angle bins when joint.
+    second_axis = axis === nothing ? nothing : axis[3]
+    n_axis = axis === nothing ? 0 : axis[2]
+    n_last = axis === nothing ? B : n_axis
 
     x_dev = KA.adapt(ka, reshape(collect(s.xk), W, N))
     u_dev = KA.adapt(ka, reshape(collect(s.uk), F, N, B))
-    sums_dev = KA.adapt(ka, zeros(OT, D^P, n_bins, B))
-    counts_dev = KA.adapt(ka, zeros(CT, n_bins, B))
+    sums_dev = KA.adapt(ka, zeros(OT, D^P, n_bins, n_last))
+    counts_dev = KA.adapt(ka, zeros(CT, n_bins, n_last))
     dist_dev = KA.adapt(ka, s.dist_be)
+    axis_dev = axis === nothing ? nothing : KA.adapt(ka, axis[1])
 
     kernel = _tensor_kernel!(ka, 256)
     kernel(sums_dev, counts_dev, x_dev, u_dev, _sf_weights_to_device(ka, s.weights),
-           s.geom, dist_dev, N, n_bins, B,
+           s.geom, dist_dev, second_axis, axis_dev, n_axis, N, n_bins, B,
            Val(W), Val(F), Val(D), order; ndrange = N)
     KA.synchronize(ka)
 
     host_sums = Array(sums_dev)
     host_counts = Array(counts_dev)
     sums_flat, counts_flat = SFC._tensor_flat(sums, counts, s)
-    @inbounds for b in 1:B, bin in 1:n_bins
+    @inbounds for b in 1:n_last, bin in 1:n_bins
         for q in 1:(D^P)
             sums_flat[_tensor_component(q, Val(D), order)..., bin, b] += host_sums[q, bin, b]
         end

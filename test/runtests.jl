@@ -117,6 +117,9 @@ Test.@testset "StructureFunctions.jl" begin
     include("test_no_silent_fallback.jl")
 
 
+    println("--- Running Capability Matrix Test ---")
+    include("test_capability_matrix.jl")
+
     # Enable Parallel/Distributed Test
     println("--- Running Parallel Equivalence Test ---")
     include("test_parallel_equivalence.jl")

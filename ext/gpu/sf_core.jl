@@ -150,6 +150,18 @@ kernel's shared histogram then follows `eltype` of the buffer it flushes into.
 @inline _sf_weights_to_device(backend, w::SFC.NoWeights) = w
 @inline _sf_weights_to_device(backend, w::AbstractVector) = KA.adapt(backend, w)
 
+"""
+    _gpu_axis_key(second_axis, val, X1, X2, dist)
+
+The quantity a joint kernel digitizes onto its second axis: the operator value the kernel just
+computed, or the pair's own separation angle. Dispatch on an isbits source, so the value axis
+compiles to `val`. The angle reads `X2 - X1`, which is the separation only on a flat metric; the
+launcher admits no other.
+"""
+@inline _gpu_axis_key(::SFC.InvariantValueAxis, val, X1, X2, dist) = val
+@inline _gpu_axis_key(s::SFC.SeparationAngleAxis, val, X1, X2, dist) =
+    SFC.axis_quantity(s, X2 - X1, dist * dist)
+
 # -----------------------------------------------------------------------------
 # Moments
 # -----------------------------------------------------------------------------

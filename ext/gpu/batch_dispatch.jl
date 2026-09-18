@@ -374,9 +374,14 @@ function _gpu_calculate_structure_function_2d_batch(
     count_eltype::Type{CT} = UInt32,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = SFC.NoWeights(),
+    second_axis = SFC.InvariantValueAxis(),
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {FT, CT}
+    second_axis isa SFC.InvariantValueAxis || throw(ArgumentError(
+        "the device joint slice batch bins each pair's own value; $(typeof(second_axis)) runs on " *
+        "the CPU backends, or one slice at a time on the device.",
+    ))
     fixed_x = ndims(x) == 2
     n_dist = length(distance_bins) - 1
     n_val = length(value_bins) - 1

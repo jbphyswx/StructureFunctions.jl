@@ -32,6 +32,7 @@ function _launch_joint_2d_tiled_kernel!(
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
+    second_axis = SFC.InvariantValueAxis(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     NB2 = n_dist * n_val
@@ -49,7 +50,7 @@ function _launch_joint_2d_tiled_kernel!(
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa LinearBinEdges && val_plan isa GPUValueInfLinearShared
@@ -61,7 +62,7 @@ function _launch_joint_2d_tiled_kernel!(
             lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
             vp.first, vp.last, vp.inv_step, vp.step,
             vp.n_inner_edges, vp.inner_last,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa LinearBinEdges && val_plan isa GPUValueLogLinearShared
@@ -72,7 +73,7 @@ function _launch_joint_2d_tiled_kernel!(
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa LinearBinEdges && val_plan === nothing
@@ -82,7 +83,7 @@ function _launch_joint_2d_tiled_kernel!(
             out_sums_dev, out_cnts_dev, x_dev, u_dev, wts, value_edges_dev, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa LogBinEdges && val_plan isa GPUValueLinearShared
@@ -94,7 +95,7 @@ function _launch_joint_2d_tiled_kernel!(
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             d_f, d_l, d_inv, d_st,
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa LogBinEdges && val_plan isa GPUValueInfLinearShared
@@ -107,7 +108,7 @@ function _launch_joint_2d_tiled_kernel!(
             d_f, d_l, d_inv, d_st,
             vp.first, vp.last, vp.inv_step, vp.step,
             vp.n_inner_edges, vp.inner_last,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa LogBinEdges && val_plan isa GPUValueLogLinearShared
@@ -119,7 +120,7 @@ function _launch_joint_2d_tiled_kernel!(
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             d_f, d_l, d_inv, d_st,
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa LogBinEdges && val_plan === nothing
@@ -130,7 +131,7 @@ function _launch_joint_2d_tiled_kernel!(
             out_sums_dev, out_cnts_dev, x_dev, u_dev, wts, value_edges_dev, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             d_f, d_l, d_inv, d_st,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa Vector && val_plan isa GPUValueLinearShared
@@ -148,7 +149,7 @@ function _launch_joint_2d_tiled_kernel!(
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             edges[1],
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa Vector && val_plan isa GPUValueInfLinearShared
@@ -167,7 +168,7 @@ function _launch_joint_2d_tiled_kernel!(
             edges[1],
             vp.first, vp.last, vp.inv_step, vp.step,
             vp.n_inner_edges, vp.inner_last,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa Vector && val_plan isa GPUValueLogLinearShared
@@ -185,7 +186,7 @@ function _launch_joint_2d_tiled_kernel!(
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             edges[1],
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, vcst, geom;
+            sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     elseif dist_bins isa Vector && val_plan === nothing
@@ -202,7 +203,7 @@ function _launch_joint_2d_tiled_kernel!(
             out_sums_dev, out_cnts_dev, x_dev, u_dev, wts,
             dist_dev, value_edges_dev, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
-            edges[1], sched, n_tile_blocks, ws, vcst, geom;
+            edges[1], sched, n_tile_blocks, ws, vcst, geom, second_axis;
             ndrange = ndrange,
         )
     else

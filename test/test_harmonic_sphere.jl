@@ -4,6 +4,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC, Structu
 using StructureFunctions.MultiFields: Fields
 using SpectralBackends: SpectralBackends as SB
 using ComputationalBackends: ComputationalBackends as CB
+using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
 using NUFSHT: NUFSHT
 using NonuniformFFTs: NonuniformFFTs
@@ -462,7 +463,7 @@ Test.@testset "the harmonic route splits its point loop across backends" begin
 
     for (f, s) in ((fr, 0), (fc, 1), (fc, 2))
         ref = SFC.pseudo_coefficients_direct(f, θ, φ, s, lmax; backend = CB.SerialBackend())
-        for be in (CB.ThreadedBackend(), CB.AutoBackend())
+        for be in (CB.ThreadedBackend(), CB.AutoBackend(), CB.GPUBackend(KA.CPU()))
             got = SFC.pseudo_coefficients_direct(f, θ, φ, s, lmax; backend = be)
             Test.@test maximum(abs, got .- ref) <= 1e-10 * max(maximum(abs, ref), 1e-10)
         end

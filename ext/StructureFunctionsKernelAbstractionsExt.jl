@@ -266,6 +266,8 @@ include(joinpath(@__DIR__, "gpu", "sf_tiled.jl"))
 include(joinpath(@__DIR__, "gpu", "workspace.jl"))
 include(joinpath(@__DIR__, "gpu", "launch.jl"))
 include(joinpath(@__DIR__, "gpu", "tensor.jl"))
+include(joinpath(@__DIR__, "gpu", "harmonic.jl"))
+include(joinpath(@__DIR__, "gpu", "gridded_sweep.jl"))
 include(joinpath(@__DIR__, "gpu", "multifields.jl"))
 
 # The kernels compute Euclidean geometry inline, so every GPU entry types its `distance_metric`
@@ -1260,14 +1262,18 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel_linear!(
     inv_step::FT,
     step_val::FT,
     geom,
-) where {FT}
+    second_axis,
+    ::Val{W},
+) where {FT, W}
     I = @index(Global, NTuple)
     i, j = I[1], I[2]
     if i < j
-        X1 = SA.SVector{2}(x_mat[1, i], x_mat[2, i])
-        X2 = SA.SVector{2}(x_mat[1, j], x_mat[2, j])
-        U1 = SA.SVector{2}(u_mat[1, i], u_mat[2, i])
-        U2 = SA.SVector{2}(u_mat[1, j], u_mat[2, j])
+        XT = eltype(x_mat)
+        UT = eltype(u_mat)
+        X1 = _gpu_ld_col(x_mat, i, Val(W), XT)
+        X2 = _gpu_ld_col(x_mat, j, Val(W), XT)
+        U1 = _gpu_ld_col(u_mat, i, Val(W), UT)
+        U2 = _gpu_ld_col(u_mat, j, Val(W), UT)
         ok, dist, frame = SFH.pair_frame(geom, X1, X2)
         dbin = _gpu_digitize_linear(
             dist, first_edge, last_edge, inv_step, step_val, N_dist_bins,
@@ -1275,7 +1281,8 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel_linear!(
         if ok && 1 <= dbin < N_dist_bins
             dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
             val = sf_type(dU, r̂)
-            vbin = _gpu_digitize_general(val, value_edges, N_val_edges)
+            akey = _gpu_axis_key(second_axis, val, X1, X2, dist)
+            vbin = _gpu_digitize_general(akey, value_edges, N_val_edges)
             if 1 <= vbin < N_val_edges
                 pw = SFC._point_weight(wts, i) * SFC._point_weight(wts, j)
                 @atomic output_sums[dbin, vbin] += pw * val
@@ -1301,20 +1308,25 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel_log!(
     inv_step::FT,
     step_val::FT,
     geom,
-) where {FT}
+    second_axis,
+    ::Val{W},
+) where {FT, W}
     I = @index(Global, NTuple)
     i, j = I[1], I[2]
     if i < j
-        X1 = SA.SVector{2}(x_mat[1, i], x_mat[2, i])
-        X2 = SA.SVector{2}(x_mat[1, j], x_mat[2, j])
-        U1 = SA.SVector{2}(u_mat[1, i], u_mat[2, i])
-        U2 = SA.SVector{2}(u_mat[1, j], u_mat[2, j])
+        XT = eltype(x_mat)
+        UT = eltype(u_mat)
+        X1 = _gpu_ld_col(x_mat, i, Val(W), XT)
+        X2 = _gpu_ld_col(x_mat, j, Val(W), XT)
+        U1 = _gpu_ld_col(u_mat, i, Val(W), UT)
+        U2 = _gpu_ld_col(u_mat, j, Val(W), UT)
         ok, dist, frame = SFH.pair_frame(geom, X1, X2)
         dbin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, step_val, N_dist_bins)
         if ok && 1 <= dbin < N_dist_bins
             dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
             val = sf_type(dU, r̂)
-            vbin = _gpu_digitize_general(val, value_edges, N_val_edges)
+            akey = _gpu_axis_key(second_axis, val, X1, X2, dist)
+            vbin = _gpu_digitize_general(akey, value_edges, N_val_edges)
             if 1 <= vbin < N_val_edges
                 pw = SFC._point_weight(wts, i) * SFC._point_weight(wts, j)
                 @atomic output_sums[dbin, vbin] += pw * val
@@ -1337,20 +1349,25 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel!(
     N_dist_bins::Int,
     N_val_edges::Int,
     geom,
-)
+    second_axis,
+    ::Val{W},
+) where {W}
     I = @index(Global, NTuple)
     i, j = I[1], I[2]
     if i < j
-        X1 = SA.SVector{2}(x_mat[1, i], x_mat[2, i])
-        X2 = SA.SVector{2}(x_mat[1, j], x_mat[2, j])
-        U1 = SA.SVector{2}(u_mat[1, i], u_mat[2, i])
-        U2 = SA.SVector{2}(u_mat[1, j], u_mat[2, j])
+        XT = eltype(x_mat)
+        UT = eltype(u_mat)
+        X1 = _gpu_ld_col(x_mat, i, Val(W), XT)
+        X2 = _gpu_ld_col(x_mat, j, Val(W), XT)
+        U1 = _gpu_ld_col(u_mat, i, Val(W), UT)
+        U2 = _gpu_ld_col(u_mat, j, Val(W), UT)
         ok, dist, frame = SFH.pair_frame(geom, X1, X2)
         dbin = _gpu_digitize_general(dist, distance_edges, N_dist_bins)
         if ok && 1 <= dbin < N_dist_bins
             dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
             val = sf_type(dU, r̂)
-            vbin = _gpu_digitize_general(val, value_edges, N_val_edges)
+            akey = _gpu_axis_key(second_axis, val, X1, X2, dist)
+            vbin = _gpu_digitize_general(akey, value_edges, N_val_edges)
             if 1 <= vbin < N_val_edges
                 pw = SFC._point_weight(wts, i) * SFC._point_weight(wts, j)
                 @atomic output_sums[dbin, vbin] += pw * val
@@ -1399,11 +1416,12 @@ function _launch_joint_2d_kernel!(
     val_plan::Union{GPUValueDigitizePlan, Nothing} = nothing,
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
+    second_axis = SFC.InvariantValueAxis(),
 )
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
     vp = isnothing(val_plan) && !isnothing(workspace) ? workspace.val_plan : val_plan
-    weights isa SFC.NoWeights &&
+    weights isa SFC.NoWeights && second_axis isa SFC.InvariantValueAxis &&
         _joint2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
                              dist_bins, vp, N_points, n_dist, n_val, geom,
                              _active_cull(workspace)) && return nothing
@@ -1411,13 +1429,13 @@ function _launch_joint_2d_kernel!(
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
             sf_type, dist_bins, vp, N_points, n_dist_edges, n_val_edges, n_dist, n_val, geom;
-            workspace = workspace, weights = weights,
+            workspace = workspace, weights = weights, second_axis = second_axis,
         )
     end
     return _launch_joint_2d_global_kernel!(
         backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
-        sf_type, dist_bins, N_points, n_dist_edges, n_val_edges;
-        workspace = workspace, weights = weights,
+        sf_type, dist_bins, N_points, n_dist_edges, n_val_edges, geom;
+        workspace = workspace, weights = weights, second_axis = second_axis,
     )
 end
 
@@ -1438,11 +1456,12 @@ function _launch_joint_2d_kernel!(
     val_plan::Union{GPUValueDigitizePlan, Nothing} = nothing,
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
+    second_axis = SFC.InvariantValueAxis(),
 )
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
     vp = isnothing(val_plan) && !isnothing(workspace) ? workspace.val_plan : val_plan
-    weights isa SFC.NoWeights &&
+    weights isa SFC.NoWeights && second_axis isa SFC.InvariantValueAxis &&
         _joint2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
                              dist_bins, vp, N_points, n_dist, n_val, geom,
                              _active_cull(workspace)) && return nothing
@@ -1450,13 +1469,13 @@ function _launch_joint_2d_kernel!(
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
             sf_type, dist_bins, vp, N_points, n_dist_edges, n_val_edges, n_dist, n_val, geom;
-            workspace = workspace, weights = weights,
+            workspace = workspace, weights = weights, second_axis = second_axis,
         )
     end
     return _launch_joint_2d_global_kernel!(
         backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
-        sf_type, dist_bins, N_points, n_dist_edges, n_val_edges;
-        workspace = workspace, weights = weights,
+        sf_type, dist_bins, N_points, n_dist_edges, n_val_edges, geom;
+        workspace = workspace, weights = weights, second_axis = second_axis,
     )
 end
 
@@ -1477,11 +1496,12 @@ function _launch_joint_2d_kernel!(
     val_plan::Union{GPUValueDigitizePlan, Nothing} = nothing,
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
+    second_axis = SFC.InvariantValueAxis(),
 ) where {FT}
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
     vp = isnothing(val_plan) && !isnothing(workspace) ? workspace.val_plan : val_plan
-    weights isa SFC.NoWeights &&
+    weights isa SFC.NoWeights && second_axis isa SFC.InvariantValueAxis &&
         _joint2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
                              dist_bins, vp, N_points, n_dist, n_val, geom,
                              _active_cull(workspace)) && return nothing
@@ -1489,13 +1509,13 @@ function _launch_joint_2d_kernel!(
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
             sf_type, dist_bins, vp, N_points, n_dist_edges, n_val_edges, n_dist, n_val, geom;
-            workspace = workspace, weights = weights,
+            workspace = workspace, weights = weights, second_axis = second_axis,
         )
     end
     return _launch_joint_2d_global_kernel!(
         backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
-        sf_type, dist_bins, N_points, n_dist_edges, n_val_edges;
-        workspace = workspace, weights = weights,
+        sf_type, dist_bins, N_points, n_dist_edges, n_val_edges, geom;
+        workspace = workspace, weights = weights, second_axis = second_axis,
     )
 end
 
@@ -1511,16 +1531,19 @@ function _launch_joint_2d_global_kernel!(
     lbe::LinearBinEdges,
     N_points::Int,
     n_dist_edges::Int,
-    n_val_edges::Int;
+    n_val_edges::Int,
+    geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
+    second_axis = SFC.InvariantValueAxis(),
 )
     kernel! = _sf_joint_2d_kernel_linear!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
         _sf_weights_to_device(backend, weights), value_edges_dev, sf_type,
         N_points, n_dist_edges, n_val_edges,
-        lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val, geom;
+        lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val, geom, second_axis,
+        Val(SFC._val_int(SFH.coordinate_width(geom)));
         ndrange = (N_points, N_points),
     )
     return nothing
@@ -1538,9 +1561,11 @@ function _launch_joint_2d_global_kernel!(
     lbe::LogBinEdges,
     N_points::Int,
     n_dist_edges::Int,
-    n_val_edges::Int;
+    n_val_edges::Int,
+    geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
+    second_axis = SFC.InvariantValueAxis(),
 )
     lb = lbe.log_linear
     kernel! = _sf_joint_2d_kernel_log!(backend, workgroup_size)
@@ -1548,7 +1573,8 @@ function _launch_joint_2d_global_kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
         _sf_weights_to_device(backend, weights), value_edges_dev, sf_type,
         N_points, n_dist_edges, n_val_edges,
-        lb.first_edge, lb.last_edge, lb.inv_step, lb.step_val, geom;
+        lb.first_edge, lb.last_edge, lb.inv_step, lb.step_val, geom, second_axis,
+        Val(SFC._val_int(SFH.coordinate_width(geom)));
         ndrange = (N_points, N_points),
     )
     return nothing
@@ -1566,9 +1592,11 @@ function _launch_joint_2d_global_kernel!(
     edges::Vector{FT},
     N_points::Int,
     n_dist_edges::Int,
-    n_val_edges::Int;
+    n_val_edges::Int,
+    geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
+    second_axis = SFC.InvariantValueAxis(),
 ) where {FT}
     _, _, gen_e = _workspace_dist_edge_bufs(workspace)
     if isnothing(gen_e)
@@ -1581,7 +1609,8 @@ function _launch_joint_2d_global_kernel!(
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
         _sf_weights_to_device(backend, weights), dist_dev, value_edges_dev, sf_type,
-        N_points, n_dist_edges, n_val_edges, geom;
+        N_points, n_dist_edges, n_val_edges, geom, second_axis,
+        Val(SFC._val_int(SFH.coordinate_width(geom)));
         ndrange = (N_points, N_points),
     )
     return nothing
@@ -1601,6 +1630,7 @@ function _launch_gpu_joint2d!(
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
     count_eltype::Type = UInt32,
+    second_axis = SFC.InvariantValueAxis(),
 )
     FT = promote_type(eltype(x_mat), eltype(u_mat), eltype(distance_bins), eltype(value_bins))
     N_dims, N_points = size(x_mat)
@@ -1655,7 +1685,7 @@ function _launch_gpu_joint2d!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
         sf_type, dist_bins, N_points, n_dist_edges, n_val_edges,
         geom;
-        val_plan = val_plan, workspace = ws, weights = w_dev,
+        val_plan = val_plan, workspace = ws, weights = w_dev, second_axis = second_axis,
     )
     synchronize && KA.synchronize(backend)
     return out_sums_dev, out_cnts_dev
@@ -1712,15 +1742,18 @@ function _gpu_calculate_structure_function_2d_snapshot(
     show_progress::Bool = true,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, FT4 <: Number, CT}
     SFC._check_weighted_counts(weights, CT)
-    second_axis isa SFC.InvariantValueAxis || throw(ArgumentError(
-        "the device joint histogram bins each pair's own value; $(typeof(second_axis)) runs on " *
-        "the CPU backends.",
-    ))
+    # The angle reads `X2 - X1`, which is the separation only on a flat metric; on a curved one
+    # each pair's direction lives in its own frame, as the CPU kernels say.
+    if !(second_axis isa SFC.InvariantValueAxis)
+        axis_geom = SFH.pair_geometry_for(distance_metric, Val(size(u_mat, 1)))
+        axis_geom isa SFH.FlatGeometry ||
+            SFC._require_value_axis(second_axis, axis_geom, size(u_mat, 1))
+    end
     out_sums_dev, out_cnts_dev = _launch_gpu_joint2d!(
         sf_type, backend, x_mat, u_mat, distance_bins, value_bins;
         workgroup_size = workgroup_size, workspace = workspace,
         distance_metric = distance_metric, culling = culling,
-        weights = weights, count_eltype = CT,
+        weights = weights, count_eltype = CT, second_axis = second_axis,
     )
     sums = Array(out_sums_dev)
     counts = _download_gpu_counts(out_cnts_dev, CT)

@@ -86,7 +86,7 @@ function _joint2d_kernel_param_exprs(dist_route::Symbol, val_route::Symbol)
         ])
     end
     append!(params, [:(sched), :(n_tile_blocks::Int), :(workgroup_size::Int),
-                     :(::Val{CST}), :(geom)])
+                     :(::Val{CST}), :(geom), :(second_axis)])
     return params
 end
 
@@ -104,22 +104,23 @@ function _joint2d_dist_digitize_expr(dist_route::Symbol)
     return :(dbin = _gpu_digitize_general(dist, distance_edges, N_dist_edges))
 end
 
+# `akey` is the second-axis quantity: the operator value, or the pair's separation angle.
 function _joint2d_val_digitize_expr(val_route::Symbol)
-    val_route == :general && return :(vbin = _gpu_digitize_general(val, value_edges, N_val_edges))
+    val_route == :general && return :(vbin = _gpu_digitize_general(akey, value_edges, N_val_edges))
     val_route == :linear && return :(
         vbin = _gpu_digitize_linear(
-            val, val_first, val_last, val_inv_step, val_step, N_val_edges,
+            akey, val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
     )
     val_route == :inflinear && return :(
         vbin = _gpu_digitize_inf_padded_linear(
-            val, val_first, val_last, val_inv_step, val_step,
+            akey, val_first, val_last, val_inv_step, val_step,
             n_inner_edges, inner_last,
         )
     )
     return :(
         vbin = _gpu_digitize_log_spaced(
-            val, val_first, val_last, val_inv_step, val_step, N_val_edges,
+            akey, val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
     )
 end
@@ -206,6 +207,7 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                         if ok && 1 <= dbin < N_dist_edges
                             dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
                             val = sf_type(dU, r̂)
+                            akey = _gpu_axis_key(second_axis, val, X1, X2, dist)
                             $(val_digitize)
                             if 1 <= vbin < N_val_edges
                                 idx = (dbin - 1) * NV + vbin

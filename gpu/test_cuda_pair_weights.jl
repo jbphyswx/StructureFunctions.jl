@@ -90,6 +90,31 @@ let D = 2
     compare("multi-field weighted", gs, gc, rs, rc)
 end
 
+# The moment tensor: the device kernel gained the weight argument its siblings carry, so this is
+# the first CUDA compile of that signature.
+for (D, P) in ((2, 2), (3, 2), (2, 3))
+    x = rand(D, np); u = rand(D, np)
+    nb = length(bins) - 1
+    rs = zeros(Float64, ntuple(_ -> D, P)..., nb); rc = zeros(Float64, nb)
+    SFC.calculate_structure_function_tensor!(rs, rc, Val(P), x, u, bins; backend = SER, weights = w)
+    gs = zeros(Float64, ntuple(_ -> D, P)..., nb); gc = zeros(Float64, nb)
+    SFC.calculate_structure_function_tensor!(gs, gc, Val(P), x, u, bins; backend = DEV, weights = w)
+    compare("moment tensor weighted D=$D P=$P", gs, gc, rs, rc)
+end
+
+# A constant weight k scales every sum and count by exactly k², whatever the operator or binning,
+# so this fails for a kernel that takes the weight and does not apply it.
+let D = 2, P = 2, k = 3.0
+    x = rand(D, np); u = rand(D, np)
+    nb = length(bins) - 1
+    us = zeros(Float64, D, D, nb); uc = zeros(Float64, nb)
+    SFC.calculate_structure_function_tensor!(us, uc, Val(P), x, u, bins; backend = DEV)
+    ks = zeros(Float64, D, D, nb); kc = zeros(Float64, nb)
+    SFC.calculate_structure_function_tensor!(ks, kc, Val(P), x, u, bins; backend = DEV,
+        weights = fill(k, np))
+    compare("moment tensor k^2 scaling on device", ks, kc, k^2 .* us, k^2 .* uc)
+end
+
 # the unweighted device answer must be untouched by all of this
 for D in (2, 3)
     x = rand(D, np); u = rand(D, np)

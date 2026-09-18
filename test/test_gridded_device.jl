@@ -139,6 +139,42 @@ Test.@testset "the device answers Auto with the transform and refuses what it ca
     nb = length(edges) - 1
     Test.@test_throws ArgumentError SFC.gridded_sweep!(zeros(nb), zeros(Int, nb), SFT.FullVectorStructureFunctionType{3}(),
                                                       u, s, edges, Val(2), SB.AutoSpectralBackend(); backend = DEV)
-    Test.@test_throws ArgumentError SFC.gridded_lag_sweep!(zeros(nb), zeros(Int, nb), SFT.L2SFType(), u, s, edges,
-                                                          Val(2); backend = DEV)
+end
+
+Test.@testset "the direct lag sweep runs on the device, for the operators the transform refuses" begin
+    # The transform computes polynomial moments, so a norm of odd order has no transform at all;
+    # the direct sweep is the only route to it, and it must exist on the device too.
+    Random.seed!(9001)
+    nb = 6
+    ops = (SFT.L2SFType(), SFT.S3SFType(), SFT.FullVectorStructureFunctionType{3}())
+
+    uni = SFC.UniformLagSchedule((8, 8), (1 / 8, 1 / 8), (true, true))
+    uu = reshape(randn(2, 8, 8), 2, :)
+    ub = collect(range(0.0, 0.5; length = nb + 1))
+
+    ys = collect(range(0.0, 1.0; length = 9))
+    rect = SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((7,), (0.15,), (false,)), (ys,), (2, 1))
+    ur = reshape(randn(2, 7, 9), 2, :)
+    rb = collect(range(0.0, 0.7; length = nb + 1))
+
+    nlat, nlon = 7, 12
+    lats = collect(range(-60.0, 60.0; length = nlat)) .* (π / 180)
+    zon = SFC.ZonalLagSchedule(lats, nlon, 2π / nlon, 1.0, true)
+    uz = reshape(randn(2, nlon, nlat), 2, :)
+    zb = collect(range(0.0, 1.5; length = nb + 1))
+
+    # Zonal pairs do not share one lag box, so the device offers the global box and relies on
+    # `_lag_visit` to reject: that branch only runs when the trait is false.
+    Test.@test SFC.uniform_lag_box(zon) == false
+
+    for (sched, u, edges) in ((uni, uu, ub), (rect, ur, rb), (zon, uz, zb)), op in ops
+        rs, rc = zeros(nb), zeros(Int, nb)
+        SFC.gridded_lag_sweep!(rs, rc, op, u, sched, edges, Val(2), Val(1), Val(0);
+                               backend = CB.SerialBackend())
+        gs, gc = zeros(nb), zeros(Int, nb)
+        SFC.gridded_lag_sweep!(gs, gc, op, u, sched, edges, Val(2), Val(1), Val(0); backend = DEV)
+        Test.@test sum(rc) > 0
+        Test.@test gc == rc
+        Test.@test isapprox(gs, rs; rtol = 1e-11, atol = 1e-12)
+    end
 end

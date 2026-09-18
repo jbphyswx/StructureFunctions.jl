@@ -296,7 +296,7 @@ Test.@testset "the joint tensor over angle marginalises to the tensor and to the
     θbins = collect(range(prevfloat(0.0), π; length = 5))
     axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
     t1 = SFC.calculate_structure_function_tensor(Val(2), x, u, bins; backend = CB.SerialBackend(), output_type = RAW_T)
-    for backend in (CB.SerialBackend(), CB.ThreadedBackend())
+    for backend in (CB.SerialBackend(), CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
         joint = SFC.calculate_structure_function_tensor(Val(2), x, u, bins, θbins; second_axis = axis, backend)
         Test.@test joint isa RAW_T2
         Test.@test size(joint.sums) == (2, 2, 5, 4)
@@ -308,8 +308,18 @@ Test.@testset "the joint tensor over angle marginalises to the tensor and to the
         Test.@test joint.counts == s2.counts
         Test.@test isapprox(joint.sums[1, 1, :, :] .+ joint.sums[2, 2, :, :], s2.sums; rtol = 1e-11, atol = 1e-12)
     end
-    Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(Val(2), x, u, bins, θbins; second_axis = axis,
-                                                                            backend = CB.GPUBackend(KA.CPU()))
+    # Rank 3 on the device exercises the other branch of the component loop.
+    for D in (2, 3)
+        xd, ud = rand(D, N), randn(D, N)
+        ax_d = SFC.SeparationAngleAxis(D == 2 ? SA.SVector(1.0, 0.0) : SA.SVector(1.0, 0.0, 0.0))
+        ref3 = SFC.calculate_structure_function_tensor(Val(3), xd, ud, bins, θbins;
+                                                       second_axis = ax_d, backend = CB.SerialBackend())
+        dev3 = SFC.calculate_structure_function_tensor(Val(3), xd, ud, bins, θbins;
+                                                       second_axis = ax_d, backend = CB.GPUBackend(KA.CPU()))
+        Test.@test sum(ref3.counts) > 0
+        Test.@test dev3.counts == ref3.counts
+        Test.@test isapprox(dev3.sums, ref3.sums; rtol = 1e-11, atol = 1e-12)
+    end
     Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(Val(2), x, cat(u, 2u; dims = 3), bins, θbins;
                                                                             second_axis = axis)
     # on a grid, from the transform

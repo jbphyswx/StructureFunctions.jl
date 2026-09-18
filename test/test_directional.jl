@@ -144,8 +144,36 @@ Test.@testset "the angle axis reaches every backend through the public entry" be
     Test.@test thr.counts == ref.counts
     Test.@test thr.sums ≈ ref.sums
 
-    # The device joint kernel bins each pair's own value, so it says so by name.
-    Test.@test_throws ArgumentError through(CB.GPUBackend(KA.CPU()))
+    dev = through(CB.GPUBackend(KA.CPU()))
+    Test.@test dev.counts == ref.counts
+    Test.@test dev.sums ≈ ref.sums
+
+    # A histogram wider than the shared-memory cap takes the device's global-atomic route, which
+    # is a different kernel and was unreachable until its launcher was given the geometry.
+    wide = collect(range(prevfloat(0.0), π; length = 201))
+    wide_ref = SFC.calculate_structure_function(SF2, x, u, dist_bins, wide;
+        backend = CB.SerialBackend(), verbose = false, second_axis = src)
+    wide_dev = SFC.calculate_structure_function(SF2, x, u, dist_bins, wide;
+        backend = CB.GPUBackend(KA.CPU()), verbose = false, second_axis = src)
+    Test.@test wide_dev.counts == wide_ref.counts
+    Test.@test wide_dev.sums ≈ wide_ref.sums
+
+    # Three coordinates on that same route: the global-atomic kernels read the width off the
+    # geometry, and reading two of three silently returns a two-dimensional answer.
+    x3, u3 = rand(3, N), randn(3, N)
+    src3 = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0, 0.0))
+    ref3 = SFC.calculate_structure_function(SF2, x3, u3, dist_bins, wide;
+        backend = CB.SerialBackend(), verbose = false, second_axis = src3)
+    dev3 = SFC.calculate_structure_function(SF2, x3, u3, dist_bins, wide;
+        backend = CB.GPUBackend(KA.CPU()), verbose = false, second_axis = src3)
+    Test.@test sum(ref3.counts) > 0
+    Test.@test dev3.counts == ref3.counts
+    Test.@test dev3.sums ≈ ref3.sums
+
+    # On a curved metric each pair's direction is in its own frame, so the device refuses too.
+    Test.@test_throws ArgumentError SFC.calculate_structure_function(
+        SF2, x, u, dist_bins, ax_bins; backend = CB.GPUBackend(KA.CPU()), verbose = false,
+        second_axis = src, distance_metric = SFC.DI.SphericalAngle())
 end
 
 Test.@testset "an angle axis is refused where the direction is not shared" begin

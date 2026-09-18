@@ -38,6 +38,11 @@ end
 @inline _lag_strides(P::NTuple{Dg, Int}) where {Dg} =
     ntuple(d -> prod(ntuple(k -> P[k], d - 1); init = 1), Val(Dg))
 
+"""The lag at position `lin` of a box starting at `lo`, of extent `len` and strides `strides`."""
+@inline _decode_lag(lin::Int, lo::NTuple{Dg, Int}, len::NTuple{Dg, Int},
+                    strides::NTuple{Dg, Int}) where {Dg} =
+    ntuple(d -> @inbounds(lo[d] + ((lin - 1) ÷ strides[d]) % len[d]), Val(Dg))
+
 """Linear position of lag `h` in a transform of size `P`, wrapping the negative offsets."""
 @inline function _lag_index(h::NTuple{Dg, Int}, P::NTuple{Dg, Int}, strides::NTuple{Dg, Int}) where {Dg}
     lin = 1

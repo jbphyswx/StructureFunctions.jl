@@ -457,25 +457,23 @@ SFC.gridded_sweep!(::AbstractMatrix, ::AbstractMatrix, ::SFT.AbstractPairwiseStr
 # innermost loop of every lag.
 # ---------------------------------------------------------------------------------------------------
 
-# The batched inverse plan over `nt` slices of `ncols` columns and the per-task scratch it fills;
-# `outs[t]` is the `(lags, columns)` matrix of slice `t`. Both buffers are written whole before they
-# are read — every column of `specf`, then all of `out` by the transform — so neither is zeroed.
+# The per-executor scratch for `nt` slices of `ncols` columns and the batched inverse plan that
+# fills it; `outs[t]` is the `(lags, columns)` matrix of slice `t`. Both buffers are written whole
+# before they are read — every column of `specf`, then all of `out` by the transform — so neither is
+# zeroed. The plan is built here for the same reason as in `_inverse_plan`.
 function _inverse_plan_batch(eng, ncols::Int, nt::Int)
     F1 = eng.fwd[1][1]
-    CT = eltype(F1)
-    FT = real(CT)
+    FT = real(eltype(F1))
     P = eng.P
     Ph = size(F1)
-    proto = fill!(similar(F1, Ph..., ncols * nt), zero(CT))
-    iplan = AbstractFFTs.plan_irfft(proto, P[1], 1:length(P))
-    make_scratch = () -> begin
+    return () -> begin
         spec = similar(F1, Ph..., ncols * nt)
         out = similar(F1, FT, P..., ncols * nt)
         out3 = reshape(out, :, ncols, nt)
-        (spec = spec, specf = reshape(spec, :, ncols, nt), out = out,
+        (iplan = AbstractFFTs.plan_irfft(spec, P[1], 1:length(P)),
+         spec = spec, specf = reshape(spec, :, ncols, nt), out = out,
          outs = [view(out3, :, :, t) for t in 1:nt])
     end
-    return iplan, make_scratch
 end
 
 # Fill every slice's columns for slab pair (I, J) and invert them all at once; returns one

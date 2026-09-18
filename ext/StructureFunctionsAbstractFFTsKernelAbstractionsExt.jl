@@ -13,8 +13,6 @@ SFC.gpu_free_memory(::KA.CPU) = Int(Sys.free_memory())
 const WORKGROUP = 256
 
 # The lag `lin` of the box `lo .+ (0:len-1)`, column-major with the given strides.
-@inline _decode_lag(lin::Int, lo::NTuple{Dg, Int}, len::NTuple{Dg, Int}, strides::NTuple{Dg, Int}) where {Dg} =
-    ntuple(d -> @inbounds(lo[d] + ((lin - 1) ÷ strides[d]) % len[d]), Val(Dg))
 
 # The slab pair in `lo:hi` owning work item `item`, from `off`, the exclusive prefix sum of every
 # pair's lag-box volume: pair `b` owns `off[b] + 1 : off[b + 1]`.
@@ -39,14 +37,14 @@ end
 ) where {UB, Dg}
     if UB
         g = first_pair + (gid - 1) ÷ n_box
-        return g, _decode_lag(gid - (g - first_pair) * n_box, box_lo, box_len, box_strides)
+        return g, SFC._decode_lag(gid - (g - first_pair) * n_box, box_lo, box_len, box_strides)
     end
     item = gid + @inbounds(pair_off[first_pair])
     g = _pair_of_item(pair_off, item, first_pair, last_pair)
     blo = @inbounds pair_lo[g]
     blen = @inbounds pair_len[g]
     bstr = @inbounds pair_str[g]
-    return g, _decode_lag(item - @inbounds(pair_off[g]), ntuple(d -> Int(blo[d]), Val(Dg)),
+    return g, SFC._decode_lag(item - @inbounds(pair_off[g]), ntuple(d -> Int(blo[d]), Val(Dg)),
                           ntuple(d -> Int(blen[d]), Val(Dg)), ntuple(d -> Int(bstr[d]), Val(Dg)))
 end
 
