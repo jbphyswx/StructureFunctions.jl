@@ -125,6 +125,7 @@ function _bl_shared_1d!(
     ::Val{D},
     irange,
     brange,
+    weights = NoWeights(),
 ) where {OT, CT, D}
     N = size(ub, 3)
     nb = size(sums_bl, 2)
@@ -133,18 +134,21 @@ function _bl_shared_1d!(
     vD = Val(D)
     @inbounds for i in irange
         Xi = _bl_pt(x, i, vW)
+        wi = _point_weight(weights, i)
         for j in (i + 1):N
             Xj = _bl_pt(x, j, vW)
             ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
             bin = SFH.digitize(dist, dist_be)
             (ok && 1 <= bin <= nb) || continue
-            # Loop-invariant across the b strip: one frame and one direction serve every field.
+            # Loop-invariant across the b strip: one frame, one direction and one pair weight serve
+            # every field, since a weight belongs to the point and not to the slice.
             rh = SFH.pair_direction(geom, frame, dist)
+            w = wi * _point_weight(weights, j)
             @simd for b in brange
                 du = SFH.pair_delta(geom, frame, Xi, Xj, _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
                 v = sf_type(du, rh)
-                sums_bl[b - boff, bin] += v
-                counts_bl[b - boff, bin] += one(CT)
+                sums_bl[b - boff, bin] += w * v
+                counts_bl[b - boff, bin] += CT(w)
             end
         end
     end
@@ -165,6 +169,7 @@ function _bl_varying_1d!(
     ::Val{D},
     irange,
     brange,
+    weights = NoWeights(),
 ) where {OT, CT, D}
     N = size(ub, 3)
     nb = size(sums_bl, 2)
@@ -172,7 +177,9 @@ function _bl_varying_1d!(
     vW = SFH.coordinate_width(geom)
     vD = Val(D)
     @inbounds for i in irange
+        wi = _point_weight(weights, i)
         for j in (i + 1):N
+            w = wi * _point_weight(weights, j)
             @simd for b in brange
                 Xi = _bl_pt(xb, b, i, vW)
                 Xj = _bl_pt(xb, b, j, vW)
@@ -181,8 +188,8 @@ function _bl_varying_1d!(
                 if ok && 1 <= bin <= nb
                     du, rh = SFH.pair_increments(geom, frame, dist, Xi, Xj,
                         _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
-                    sums_bl[b - boff, bin] += sf_type(du, rh)
-                    counts_bl[b - boff, bin] += one(CT)
+                    sums_bl[b - boff, bin] += w * sf_type(du, rh)
+                    counts_bl[b - boff, bin] += CT(w)
                 end
             end
         end
@@ -198,6 +205,7 @@ function _bl_joint2d_shared!(
     sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{CT, 3},
     x::AbstractMatrix, ub::AbstractArray{<:Any, 3},
     sf_type::SFT.AbstractPairwiseStructureFunctionType, dist_be, val_be, geom, ::Val{D}, irange, brange,
+    weights = NoWeights(),
 ) where {OT, CT, D}
     N = size(ub, 3)
     n_dist = size(sums_bl, 2); n_val = size(sums_bl, 3)
@@ -206,19 +214,21 @@ function _bl_joint2d_shared!(
     vD = Val(D)
     @inbounds for i in irange
         Xi = _bl_pt(x, i, vW)
+        wi = _point_weight(weights, i)
         for j in (i + 1):N
             Xj = _bl_pt(x, j, vW)
             ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
             dbin = SFH.digitize(dist, dist_be)
             (ok && 1 <= dbin <= n_dist) || continue
             rh = SFH.pair_direction(geom, frame, dist)
+            w = wi * _point_weight(weights, j)
             for b in brange
                 du = SFH.pair_delta(geom, frame, Xi, Xj, _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
                 val = sf_type(du, rh)
                 vbin = SFH.digitize(val, val_be)
                 if 1 <= vbin <= n_val
-                    sums_bl[b - boff, dbin, vbin] += val
-                    counts_bl[b - boff, dbin, vbin] += one(CT)
+                    sums_bl[b - boff, dbin, vbin] += w * val
+                    counts_bl[b - boff, dbin, vbin] += CT(w)
                 end
             end
         end
@@ -230,6 +240,7 @@ function _bl_joint2d_varying!(
     sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{CT, 3},
     xb::AbstractArray{<:Any, 3}, ub::AbstractArray{<:Any, 3},
     sf_type::SFT.AbstractPairwiseStructureFunctionType, dist_be, val_be, geom, ::Val{D}, irange, brange,
+    weights = NoWeights(),
 ) where {OT, CT, D}
     N = size(ub, 3)
     n_dist = size(sums_bl, 2); n_val = size(sums_bl, 3)
@@ -237,7 +248,9 @@ function _bl_joint2d_varying!(
     vW = SFH.coordinate_width(geom)
     vD = Val(D)
     @inbounds for i in irange
+        wi = _point_weight(weights, i)
         for j in (i + 1):N
+            w = wi * _point_weight(weights, j)
             for b in brange
                 Xi = _bl_pt(xb, b, i, vW)
                 Xj = _bl_pt(xb, b, j, vW)
@@ -249,8 +262,8 @@ function _bl_joint2d_varying!(
                 val = sf_type(du, rh)
                 vbin = SFH.digitize(val, val_be)
                 if 1 <= vbin <= n_val
-                    sums_bl[b - boff, dbin, vbin] += val
-                    counts_bl[b - boff, dbin, vbin] += one(CT)
+                    sums_bl[b - boff, dbin, vbin] += w * val
+                    counts_bl[b - boff, dbin, vbin] += CT(w)
                 end
             end
         end
@@ -263,11 +276,12 @@ end
 # constant over b, so each of the 6 writes is contiguous in b (vectorizes). Note: only du_L
 # and du_norm2=⟨du,du⟩ are needed — the old `du_T = mδu_t(...)` was dead work (now removed).
 # ----------------------------------------------------------------------------------------
-@inline function _bl_sp1d_write!(sums_bl, counts_bl, b, bin, du_L, du_norm2, ::Type{CT}) where {CT}
+@inline function _bl_sp1d_write!(sums_bl, counts_bl, b, bin, du_L, du_norm2, ::Type{CT},
+                                 w = true) where {CT}
     vals = single_pass_invariants(du_L, du_norm2)
     @inbounds for t in 1:SINGLE_PASS_N
-        sums_bl[b, t, bin] += vals[t]
-        counts_bl[b, t, bin] += one(CT)
+        sums_bl[b, t, bin] += w * vals[t]
+        counts_bl[b, t, bin] += CT(w)
     end
     return nothing
 end
@@ -275,6 +289,7 @@ end
 function _bl_sp1d_shared!(
     sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{CT, 3},
     x::AbstractMatrix, ub::AbstractArray{<:Any, 3}, dist_be, geom, ::Val{D}, irange, brange,
+    weights = NoWeights(),
 ) where {OT, CT, D}
     N = size(ub, 3); nb = size(sums_bl, 3)
     boff = first(brange) - 1
@@ -282,15 +297,17 @@ function _bl_sp1d_shared!(
     vD = Val(D)
     @inbounds for i in irange
         Xi = _bl_pt(x, i, vW)
+        wi = _point_weight(weights, i)
         for j in (i + 1):N
             Xj = _bl_pt(x, j, vW)
             ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
             bin = SFH.digitize(dist, dist_be)
             (ok && 1 <= bin <= nb) || continue
             rh = SFH.pair_direction(geom, frame, dist)
+            w = wi * _point_weight(weights, j)
             @simd for b in brange
                 du = SFH.pair_delta(geom, frame, Xi, Xj, _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
-                _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, LA.dot(du, rh), LA.dot(du, du), CT)
+                _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, LA.dot(du, rh), LA.dot(du, du), CT, w)
             end
         end
     end
@@ -300,13 +317,16 @@ end
 function _bl_sp1d_varying!(
     sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{CT, 3},
     xb::AbstractArray{<:Any, 3}, ub::AbstractArray{<:Any, 3}, dist_be, geom, ::Val{D}, irange, brange,
+    weights = NoWeights(),
 ) where {OT, CT, D}
     N = size(ub, 3); nb = size(sums_bl, 3)
     boff = first(brange) - 1
     vW = SFH.coordinate_width(geom)
     vD = Val(D)
     @inbounds for i in irange
+        wi = _point_weight(weights, i)
         for j in (i + 1):N
+            w = wi * _point_weight(weights, j)
             @simd for b in brange
                 Xi = _bl_pt(xb, b, i, vW)
                 Xj = _bl_pt(xb, b, j, vW)
@@ -315,7 +335,7 @@ function _bl_sp1d_varying!(
                 if ok && 1 <= bin <= nb
                     du, rh = SFH.pair_increments(geom, frame, dist, Xi, Xj,
                         _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
-                    _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, LA.dot(du, rh), LA.dot(du, du), CT)
+                    _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, LA.dot(du, rh), LA.dot(du, du), CT, w)
                 end
             end
         end
@@ -329,12 +349,13 @@ end
 # ----------------------------------------------------------------------------------------
 @inline _sp1d_vals(du_L, du_norm2) = single_pass_invariants(du_L, du_norm2)
 
-@inline function _bl_sp2d_write!(sums_bl, counts_bl, b, dbin, vals, value_bins, n_val, ::Type{CT}) where {CT}
+@inline function _bl_sp2d_write!(sums_bl, counts_bl, b, dbin, vals, value_bins, n_val, ::Type{CT},
+                                 w = true) where {CT}
     @sp2d_each_invariant value_bins t vb begin
         vbin = SFH.digitize(vals[t], vb)
         if 1 <= vbin <= (length(vb) - 1) && vbin <= n_val
-            @inbounds sums_bl[b, t, dbin, vbin] += vals[t]
-            @inbounds counts_bl[b, t, dbin, vbin] += one(CT)
+            @inbounds sums_bl[b, t, dbin, vbin] += w * vals[t]
+            @inbounds counts_bl[b, t, dbin, vbin] += CT(w)
         end
     end
     return nothing
@@ -343,6 +364,7 @@ end
 function _bl_sp2d_shared!(
     sums_bl::AbstractArray{OT, 4}, counts_bl::AbstractArray{CT, 4},
     x::AbstractMatrix, ub::AbstractArray{<:Any, 3}, dist_be, value_bins, geom, ::Val{D}, irange, brange,
+    weights = NoWeights(),
 ) where {OT, CT, D}
     N = size(ub, 3); nb = size(sums_bl, 3); n_val = size(sums_bl, 4)
     boff = first(brange) - 1
@@ -350,16 +372,18 @@ function _bl_sp2d_shared!(
     vD = Val(D)
     @inbounds for i in irange
         Xi = _bl_pt(x, i, vW)
+        wi = _point_weight(weights, i)
         for j in (i + 1):N
             Xj = _bl_pt(x, j, vW)
             ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
             dbin = SFH.digitize(dist, dist_be)
             (ok && 1 <= dbin <= nb) || continue
             rh = SFH.pair_direction(geom, frame, dist)
+            w = wi * _point_weight(weights, j)
             for b in brange
                 du = SFH.pair_delta(geom, frame, Xi, Xj, _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
                 vals = _sp1d_vals(LA.dot(du, rh), LA.dot(du, du))
-                _bl_sp2d_write!(sums_bl, counts_bl, b - boff, dbin, vals, value_bins, n_val, CT)
+                _bl_sp2d_write!(sums_bl, counts_bl, b - boff, dbin, vals, value_bins, n_val, CT, w)
             end
         end
     end
@@ -369,13 +393,16 @@ end
 function _bl_sp2d_varying!(
     sums_bl::AbstractArray{OT, 4}, counts_bl::AbstractArray{CT, 4},
     xb::AbstractArray{<:Any, 3}, ub::AbstractArray{<:Any, 3}, dist_be, value_bins, geom, ::Val{D}, irange, brange,
+    weights = NoWeights(),
 ) where {OT, CT, D}
     N = size(ub, 3); nb = size(sums_bl, 3); n_val = size(sums_bl, 4)
     boff = first(brange) - 1
     vW = SFH.coordinate_width(geom)
     vD = Val(D)
     @inbounds for i in irange
+        wi = _point_weight(weights, i)
         for j in (i + 1):N
+            w = wi * _point_weight(weights, j)
             for b in brange
                 Xi = _bl_pt(xb, b, i, vW)
                 Xj = _bl_pt(xb, b, j, vW)
@@ -385,7 +412,7 @@ function _bl_sp2d_varying!(
                 du, rh = SFH.pair_increments(geom, frame, dist, Xi, Xj,
                     _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
                 vals = _sp1d_vals(LA.dot(du, rh), LA.dot(du, du))
-                _bl_sp2d_write!(sums_bl, counts_bl, b - boff, dbin, vals, value_bins, n_val, CT)
+                _bl_sp2d_write!(sums_bl, counts_bl, b - boff, dbin, vals, value_bins, n_val, CT, w)
             end
         end
     end
@@ -466,8 +493,9 @@ const _BL_ACCUM_BUDGET = 64 * 1024 * 1024
     _bl_n_tasks(backend) -> Int
 
 How many tasks a batch call on `backend` splits into, and therefore how many accumulators a
-[`CPUSFWorkspace`](@ref) must hold. A threaded backend falls back to the serial executor when
-OhMyThreads is not loaded, so the count follows the executor that will actually run.
+[`CPUSFWorkspace`](@ref) must hold. A threaded backend is refused without the OhMyThreads
+extension, so with the extension absent the count is the one task a serial or `AutoBackend()` call
+will use.
 """
 _bl_n_tasks(::CB.AbstractExecutionBackend) = 1
 _bl_n_tasks(::CB.AbstractThreadedBackend) = _ohmythreads_loaded() ? Threads.nthreads() : 1
@@ -499,58 +527,68 @@ and allocates nothing.
     return dest
 end
 
-function _bl_run_1d!(sums, counts, sf_type, x, u, dist_be, distance_metric, executor, workspace = nothing)
+function _bl_run_1d!(sums, counts, sf_type, x, u, dist_be, distance_metric, executor, workspace = nothing;
+                     weights = NoWeights())
     n_bins = n_histogram_bins(dist_be)
     OT = eltype(sums); CT = eltype(counts)
     xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :sf1d, (n_bins,))
+    _check_weighted_counts(weights, CT)
+    w = _pair_weights(weights, N, OT)
     make_accum(bw) = (zeros(OT, bw, n_bins), zeros(CT, bw, n_bins))
     run_chunk! = fixed_x ?
-        ((acc, isub, br) -> _bl_shared_1d!(acc[1], acc[2], xb, ub, sf_type, dist_be, geom, vD, isub, br)) :
-        ((acc, isub, br) -> _bl_varying_1d!(acc[1], acc[2], xb, ub, sf_type, dist_be, geom, vD, isub, br))
+        ((acc, isub, br) -> _bl_shared_1d!(acc[1], acc[2], xb, ub, sf_type, dist_be, geom, vD, isub, br, w)) :
+        ((acc, isub, br) -> _bl_varying_1d!(acc[1], acc[2], xb, ub, sf_type, dist_be, geom, vD, isub, br, w))
     sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, n_bins), workspace)
     _bl_add_permuted!(reshape(sums, n_bins, B), sums_bl, (2, 1))
     _bl_add_permuted!(reshape(counts, n_bins, B), counts_bl, (2, 1))
     return nothing
 end
 
-function _bl_run_joint2d!(sums, counts, sf_type, x, u, dist_be, val_be, distance_metric, executor, workspace = nothing)
+function _bl_run_joint2d!(sums, counts, sf_type, x, u, dist_be, val_be, distance_metric, executor, workspace = nothing;
+                          weights = NoWeights())
     n_dist = n_histogram_bins(dist_be); n_val = n_histogram_bins(val_be)
     OT = eltype(sums); CT = eltype(counts)
     xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :joint2d, (n_dist, n_val))
+    _check_weighted_counts(weights, CT)
+    w = _pair_weights(weights, N, OT)
     make_accum(bw) = (zeros(OT, bw, n_dist, n_val), zeros(CT, bw, n_dist, n_val))
     run_chunk! = fixed_x ?
-        ((acc, isub, br) -> _bl_joint2d_shared!(acc[1], acc[2], xb, ub, sf_type, dist_be, val_be, geom, vD, isub, br)) :
-        ((acc, isub, br) -> _bl_joint2d_varying!(acc[1], acc[2], xb, ub, sf_type, dist_be, val_be, geom, vD, isub, br))
+        ((acc, isub, br) -> _bl_joint2d_shared!(acc[1], acc[2], xb, ub, sf_type, dist_be, val_be, geom, vD, isub, br, w)) :
+        ((acc, isub, br) -> _bl_joint2d_varying!(acc[1], acc[2], xb, ub, sf_type, dist_be, val_be, geom, vD, isub, br, w))
     sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, n_dist, n_val), workspace)
     _bl_add_permuted!(reshape(sums, n_dist, n_val, B), sums_bl, (2, 3, 1))
     _bl_add_permuted!(reshape(counts, n_dist, n_val, B), counts_bl, (2, 3, 1))
     return nothing
 end
 
-function _bl_run_sp1d!(sums, counts, x, u, dist_be, distance_metric, executor, workspace = nothing)
+function _bl_run_sp1d!(sums, counts, x, u, dist_be, distance_metric, executor, workspace = nothing;
+                       weights = NoWeights())
     n_bins = n_histogram_bins(dist_be)
     OT = eltype(sums); CT = eltype(counts)
     xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :single_pass, (SINGLE_PASS_N, n_bins))
+    _check_weighted_counts(weights, CT)
+    w = _pair_weights(weights, N, OT)
     make_accum(bw) = (zeros(OT, bw, SINGLE_PASS_N, n_bins), zeros(CT, bw, SINGLE_PASS_N, n_bins))
     run_chunk! = fixed_x ?
-        ((acc, isub, br) -> _bl_sp1d_shared!(acc[1], acc[2], xb, ub, dist_be, geom, vD, isub, br)) :
-        ((acc, isub, br) -> _bl_sp1d_varying!(acc[1], acc[2], xb, ub, dist_be, geom, vD, isub, br))
+        ((acc, isub, br) -> _bl_sp1d_shared!(acc[1], acc[2], xb, ub, dist_be, geom, vD, isub, br, w)) :
+        ((acc, isub, br) -> _bl_sp1d_varying!(acc[1], acc[2], xb, ub, dist_be, geom, vD, isub, br, w))
     sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins), workspace)
     _bl_add_permuted!(reshape(sums, SINGLE_PASS_N, n_bins, B), sums_bl, (2, 3, 1))
     _bl_add_permuted!(reshape(counts, SINGLE_PASS_N, n_bins, B), counts_bl, (2, 3, 1))
     return nothing
 end
 
-function _bl_run_sp2d!(sums, counts, x, u, dist_be, value_bins, distance_metric, executor, workspace = nothing)
+function _bl_run_sp2d!(sums, counts, x, u, dist_be, value_bins, distance_metric, executor, workspace = nothing;
+                       weights = NoWeights())
     n_bins = n_histogram_bins(dist_be)
     n_val = size(sums, 3)
     _validate_value_bins!(value_bins, n_val)
@@ -559,10 +597,12 @@ function _bl_run_sp2d!(sums, counts, x, u, dist_be, value_bins, distance_metric,
     vD = Val(D)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :single_pass_2d, (SINGLE_PASS_N, n_bins, n_val))
+    _check_weighted_counts(weights, CT)
+    w = _pair_weights(weights, N, OT)
     make_accum(bw) = (zeros(OT, bw, SINGLE_PASS_N, n_bins, n_val), zeros(CT, bw, SINGLE_PASS_N, n_bins, n_val))
     run_chunk! = fixed_x ?
-        ((acc, isub, br) -> _bl_sp2d_shared!(acc[1], acc[2], xb, ub, dist_be, value_bins, geom, vD, isub, br)) :
-        ((acc, isub, br) -> _bl_sp2d_varying!(acc[1], acc[2], xb, ub, dist_be, value_bins, geom, vD, isub, br))
+        ((acc, isub, br) -> _bl_sp2d_shared!(acc[1], acc[2], xb, ub, dist_be, value_bins, geom, vD, isub, br, w)) :
+        ((acc, isub, br) -> _bl_sp2d_varying!(acc[1], acc[2], xb, ub, dist_be, value_bins, geom, vD, isub, br, w))
     sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins, n_val), workspace)
     _bl_add_permuted!(reshape(sums, SINGLE_PASS_N, n_bins, n_val, B), sums_bl, (2, 3, 4, 1))
     _bl_add_permuted!(reshape(counts, SINGLE_PASS_N, n_bins, n_val, B), counts_bl, (2, 3, 4, 1))

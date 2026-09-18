@@ -46,6 +46,8 @@ Test.@testset "StructureFunctions.jl" begin
     include("test_gridded_batch.jl")
     println("--- Running Pair Weights Test ---")
     include("test_gridded_weights.jl")
+    println("--- Running Pair Weights Across Routes Test ---")
+    include("test_pair_weights.jl")
     println("--- Running Scattered Modes (NUFFT) Test ---")
     include("test_scattered_modes.jl")
     println("--- Running Sorted Line Route Test ---")
@@ -110,6 +112,9 @@ Test.@testset "StructureFunctions.jl" begin
 
     println("--- Running CPU Workspace Test ---")
     include("test_cpu_workspace.jl")
+
+    println("--- Running No Silent Fallback Test ---")
+    include("test_no_silent_fallback.jl")
 
 
     # Enable Parallel/Distributed Test

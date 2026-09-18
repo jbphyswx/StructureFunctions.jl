@@ -15,6 +15,7 @@
 *.in
 *.gz
 *.txt
+*.out
 *.log
 benchmark_run.log
 

@@ -139,28 +139,26 @@ Local east and north unit vectors at longitude/latitude **in degrees**. Together
 @inline local_east_north(lon, lat) = _local_east_north(sincosd(lon)..., sincosd(lat)...)
 
 """
-Smallest `sin²σ` for which the separation direction is still representable.
+Smallest `sin²σ` for which the separation direction is still representable: `floatmin(T)`, which
+guards `1/0` alone.
 
-This guards only against `1/0`, NOT against a physical scale: the normalization is exact in the
-`σ → 0` limit (`t_A ≈ d` has magnitude `O(σ)` and `inv_s ≈ 1/σ`, so the product stays `O(1)`), so
-short pairs are fine and must not be dropped. The tolerance is `floatmin`, not `eps`: `sin²σ` for a
-1 km separation on Earth is `2.5e-8`, below `eps(Float32)`, so an `eps` guard silently discards every
-`Float32` pair closer than about 2 km.
+The normalization is exact as `σ → 0`: `t_A ≈ d` is `O(σ)` and `inv_s ≈ 1/σ`, so their product stays
+`O(1)` and a short pair is computed to full precision. The tolerance therefore has to stay below the
+physical scales in play — `sin²σ` is `2.5e-8` for a 1 km separation on Earth, and smaller as the
+square of the separation.
 """
 @inline _geodesic_degeneracy_tol(::Type{T}) where {T} = floatmin(T)
 
 """
-Smallest `‖p̂+q̂‖²` for which the separation direction still carries information.
+Smallest `‖p̂+q̂‖²` for which the separation direction still carries information: `eps(T)`.
 
-`sin σ` vanishes at **two** separations, and the frame behaves differently at each.
-[`_geodesic_degeneracy_tol`](@ref) guards `σ → 0`, where the cancellation in `t_A = d − (d·p̂)p̂` is
-exact in structure and short pairs are computed perfectly. At `σ → π` it is not: `d ≈ −2p̂` and
-`d·p̂ ≈ −2`, so `t_A` is the difference of two `O(2)` quantities and the direction's error grows as
-`ε/(π−σ)`: against `BigFloat` it reaches 0.385 at `π−σ = 1e-15`, a unit vector wrong by 38 %.
+`sin σ` vanishes at both `σ = 0` and `σ = π`, and each root needs its own tolerance. Near `π`,
+`d ≈ −2p̂` and `d·p̂ ≈ −2`, so `t_A = d − (d·p̂)p̂` is the difference of two `O(2)` quantities and the
+direction's relative error grows as `ε/(π−σ)`. With `‖p̂+q̂‖ = 2cos(σ/2) ≈ π−σ` near that root, a
+tolerance of `eps(T)` bounds that error at about `sqrt(eps(T))`.
 
-`‖p̂+q̂‖ = 2cos(σ/2) ≈ π−σ` near that root, so requiring `eps(T)` here bounds the direction error at
-about `sqrt(eps(T))`. Antipodal points are joined by infinitely many great circles, so no tie-break
-recovers the direction — the pair carries a separation but no orientation, and is refused.
+Antipodal points are joined by infinitely many great circles, so the pair carries a separation but no
+orientation and `ok` is `false`.
 """
 @inline _antipodal_degeneracy_tol(::Type{T}) where {T} = eps(T)
 
@@ -773,10 +771,15 @@ end
 
 Squared norm of the full transverse vector ``δu - (δu⋅r̂)r̂``. This is the
 invariant transverse energy used by `T2SF` and `L1T2SF`.
+
+Formed as ``‖δu‖² - (δu⋅r̂)²``, whose two terms cancel to within round-off when the increment is
+almost parallel to `r̂`, so the difference is floored at zero — the value is a squared norm and the
+only negative it can take is that cancellation, which a `sqrt` downstream would throw on.
 """
 @inline function transverse_norm2(δu, r_hat)
     du_l = magnitude_δu_longitudinal(δu, r_hat)
-    return _sum_abs2(δu) - du_l * du_l
+    t2 = _sum_abs2(δu) - du_l * du_l
+    return max(t2, zero(t2))
 end
 
 """

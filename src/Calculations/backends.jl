@@ -4,21 +4,21 @@
 using ComputationalBackends: ComputationalBackends as CB
 
 """
-    resolve_auto_backend(shape, threaded_available, distributed_available; nthreads=Threads.nthreads())
+    resolve_auto_backend(shape, threaded_available; nthreads=Threads.nthreads())
 
-What `AutoBackend` resolves to. `threaded_available`/`distributed_available` are zero-argument
-predicates because each entry family probes a different dispatch.
+What `AutoBackend` resolves to. `threaded_available` is a zero-argument predicate, since the
+OhMyThreads extension is optional; [`distributed_adds_hardware`](@ref) is the whole test for the
+Distributed backend, which the extension covers for every entry family.
+
+Every candidate is tested before it is named, so `AutoBackend` only ever resolves to a backend that
+can run the request.
 
 `nthreads` defaults to `Threads.nthreads()`, which is fixed at process start.
 """
 function resolve_auto_backend(
-    shape, threaded_available::F, distributed_available::G;
-    nthreads::Int = Threads.nthreads(),
-) where {F, G}
-    (distributed_workers_available(Val(:distributed)) && distributed_available()) &&
-        return CB.DistributedBackend()
-    has_auxiliary_axes(shape) &&
-        return nthreads > 1 ? CB.ThreadedBackend() : CB.SerialBackend()
+    shape, threaded_available::F; nthreads::Int = Threads.nthreads(),
+) where {F}
+    distributed_adds_hardware(Val(:distributed)) && return CB.DistributedBackend()
     (nthreads > 1 && threaded_available()) && return CB.ThreadedBackend()
     return CB.SerialBackend()
 end
@@ -63,6 +63,15 @@ end
 # load time, because overwriting a method during the extension's precompilation is illegal.
 const _OHMYTHREADS_LOADED = Ref(false)
 _ohmythreads_loaded() = _OHMYTHREADS_LOADED[]
+
+"""
+    _auto_local_backend()
+
+The CPU backend `AutoBackend` resolves to: `ThreadedBackend()` when the process has more than one
+thread and the OhMyThreads extension supplies the threaded driver, `SerialBackend()` otherwise.
+"""
+_auto_local_backend() =
+    (Threads.nthreads() > 1 && _ohmythreads_loaded()) ? CB.ThreadedBackend() : CB.SerialBackend()
 
 function _threaded_backend_available(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -120,4 +129,17 @@ function _dispatch_execution_backend!(
     throw(ArgumentError("Distributed backend is unavailable. Load Distributed (`using Distributed`) or use backend=CB.SerialBackend()."))
 end
 
-distributed_workers_available(::Val) = false
+"""
+    distributed_adds_hardware(::Val{:distributed}) -> Bool
+
+Whether the worker pool reaches cores this process cannot reach on its own — the question
+`AutoBackend` asks before it names [`DistributedBackend`](@ref).
+
+Workers on the driver's own node redistribute the cores the threaded backend already uses and pay
+serialisation on top, so `Auto` prefers the local backend for them; workers placed by a cluster
+manager bring hardware threads cannot. Supplied by the Distributed extension, which reads the
+worker's `ClusterManager`; `false` without it.
+
+An explicit `DistributedBackend()` is unaffected — this decides only what `Auto` chooses.
+"""
+distributed_adds_hardware(::Val) = false

@@ -496,11 +496,11 @@ function generate_spherical_figure()
     bins = collect(range(0.0, 8.0e6; length = 21))
     mids = SF.midpoints(bins)
     sphere = SFC.calculate_structure_functions_single_pass(
-        x, u, bins; distance_metric = DI.Haversine(Rearth))
+        x, u, bins; distance_metric = DI.Haversine(Rearth), output_type = SF.StructureFunction)
     # the same data with no transport: treat lon/lat as if they were a plane
     flatb = collect(range(0.0, 80.0; length = 21))
     flat = SFC.calculate_structure_functions_single_pass(
-        x, u, flatb; distance_metric = DI.Euclidean())
+        x, u, flatb; distance_metric = DI.Euclidean(), output_type = SF.StructureFunction)
 
     ratio(res) = begin
         occ = isfinite.(res.L2.values) .& isfinite.(res.S2.values) .& (res.S2.values .> 0)

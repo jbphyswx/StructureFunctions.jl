@@ -10,13 +10,14 @@
     du_L,
     du_n2,
     N_val_edges::Int,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
-            @atomic output_sums[t, bin, vbin] += vals[t]
-            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+            @atomic output_sums[t, bin, vbin] += w * vals[t]
+            @atomic output_counts[t, bin, vbin] += convert(eltype(output_counts), w)
         end
     end
     return nothing
@@ -33,6 +34,7 @@ end
     val_last::FT,
     val_inv_step::FT,
     val_step::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -40,8 +42,8 @@ end
             vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            @atomic output_sums[t, bin, vbin] += vals[t]
-            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+            @atomic output_sums[t, bin, vbin] += w * vals[t]
+            @atomic output_counts[t, bin, vbin] += convert(eltype(output_counts), w)
         end
     end
     return nothing
@@ -58,6 +60,7 @@ end
     du_L,
     du_n2,
     N_val_edges::Int,
+    w,
 )
     FT = eltype(output_sums)
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
@@ -67,8 +70,8 @@ end
             N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            @atomic output_sums[t, bin, vbin] += vals[t]
-            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+            @atomic output_sums[t, bin, vbin] += w * vals[t]
+            @atomic output_counts[t, bin, vbin] += convert(eltype(output_counts), w)
         end
     end
     return nothing
@@ -87,6 +90,7 @@ end
     val_step::FT,
     n_inner_edges::Int,
     inner_last::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -95,8 +99,8 @@ end
             n_inner_edges, inner_last,
         )
         if 1 <= vbin < N_val_edges
-            @atomic output_sums[t, bin, vbin] += vals[t]
-            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+            @atomic output_sums[t, bin, vbin] += w * vals[t]
+            @atomic output_counts[t, bin, vbin] += convert(eltype(output_counts), w)
         end
     end
     return nothing
@@ -115,6 +119,7 @@ end
     du_n2,
     n_inner_edges::Int,
     N_val_edges::Int,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -123,8 +128,8 @@ end
             n_inner_edges, inner_last[t],
         )
         if 1 <= vbin < N_val_edges
-            @atomic output_sums[t, bin, vbin] += vals[t]
-            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+            @atomic output_sums[t, bin, vbin] += w * vals[t]
+            @atomic output_counts[t, bin, vbin] += convert(eltype(output_counts), w)
         end
     end
     return nothing
@@ -141,13 +146,14 @@ end
     du_L,
     du_n2,
     N_val_edges::Int,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced(vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges)
         if 1 <= vbin < N_val_edges
-            @atomic output_sums[t, bin, vbin] += vals[t]
-            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+            @atomic output_sums[t, bin, vbin] += w * vals[t]
+            @atomic output_counts[t, bin, vbin] += convert(eltype(output_counts), w)
         end
     end
     return nothing
@@ -164,13 +170,14 @@ end
     du_L,
     du_n2,
     N_val_edges::Int,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_log_spaced_col(vals[t], val_first, val_last, val_inv_step, val_step, t, N_val_edges)
         if 1 <= vbin < N_val_edges
-            @atomic output_sums[t, bin, vbin] += vals[t]
-            @atomic output_counts[t, bin, vbin] += one(eltype(output_counts))
+            @atomic output_sums[t, bin, vbin] += w * vals[t]
+            @atomic output_counts[t, bin, vbin] += convert(eltype(output_counts), w)
         end
     end
     return nothing
@@ -196,6 +203,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
     sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    wts,
     geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
@@ -248,6 +256,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
         nj = min(SF_GPU_TILE, N_points - j0 + 1)
         if ni > 0 && nj > 0
             n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
+            jbase = ti < tj ? j0 : i0
             p = lid
             while p <= n_pairs
                 if ti < tj
@@ -274,6 +283,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_line
                         output_sums, output_counts, bin,
                         du_L, du_n2, N_val_edges,
                         val_first, val_last, val_inv_step, val_step,
+                        SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1),
                     )
                 end
                 p += workgroup_size
@@ -299,6 +309,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
     sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    wts,
     geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
@@ -351,6 +362,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
         nj = min(SF_GPU_TILE, N_points - j0 + 1)
         if ni > 0 && nj > 0
             n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
+            jbase = ti < tj ? j0 : i0
             p = lid
             while p <= n_pairs
                 if ti < tj
@@ -374,6 +386,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
                     _gpu_accumulate_single_pass_2d_pair_global!(
                         output_sums, output_counts, value_edges, bin,
                         du_L, du_n2, N_val_edges,
+                        SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1),
                     )
                 end
                 p += workgroup_size
@@ -402,6 +415,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
     sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    wts,
     geom,
 ) where {FT}
     shared_xi = @localmem FT (256,)
@@ -454,6 +468,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
         nj = min(SF_GPU_TILE, N_points - j0 + 1)
         if ni > 0 && nj > 0
             n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
+            jbase = ti < tj ? j0 : i0
             p = lid
             while p <= n_pairs
                 if ti < tj
@@ -478,6 +493,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_2d_kernel_tiled128_log_
                         output_sums, output_counts, bin,
                         du_L, du_n2, N_val_edges,
                         val_first, val_last, val_inv_step, val_step,
+                        SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1),
                     )
                 end
                 p += workgroup_size

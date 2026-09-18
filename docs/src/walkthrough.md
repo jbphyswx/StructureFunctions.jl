@@ -56,7 +56,10 @@ them together costs one pass rather than six.
 
 ```julia
 bins = collect(10 .^ range(log10(0.05), log10(2.0); length = 25))
-res = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = CB.SerialBackend())
+# the entries return raw sums and counts by default, which is what adds across slices and
+# processes; `output_type` asks for the bin averages instead
+res = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = CB.SerialBackend(),
+                                                    output_type = SF.StructureFunction)
 
 keys(res)
 # (:S2, :L2, :T2, :S3, :L3, :L1T2, :helmholtz)

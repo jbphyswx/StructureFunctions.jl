@@ -66,7 +66,9 @@ function _pair_weights(w::AbstractVector, n::Int, ::Type{FT}) where {FT}
     return convert(Vector{FT}, w)
 end
 
-"""Weighted pairs make the counts a weighted pair mass, which needs a floating-point count type."""
+"""Weighted pairs make the counts a weighted pair mass, which needs a floating-point count type.
+Takes the three spellings [`_pair_weights`](@ref) takes, so a caller may check before normalising."""
+_check_weighted_counts(::Nothing, ::Type) = nothing
 _check_weighted_counts(::NoWeights, ::Type) = nothing
 _check_weighted_counts(::AbstractVector, ::Type{CT}) where {CT} = CT <: AbstractFloat ? nothing : throw(ArgumentError(
     "pair weights make the counts a weighted pair mass, which the count type $CT cannot hold; pass count_eltype = Float64, or Float64 counts",
@@ -694,8 +696,10 @@ function sweep_reduce!(sums, counts, ::CB.AbstractSerialBackend, items, make_scr
     return nothing
 end
 
-sweep_reduce!(sums, counts, ::CB.AbstractThreadedBackend, items, make_scratch, body!) =
-    threaded_sweep_reduce!(sums, counts, items, make_scratch, body!)
+function sweep_reduce!(sums, counts, ::CB.AbstractThreadedBackend, items, make_scratch, body!)
+    _require_threading("a gridded sweep")
+    return threaded_sweep_reduce!(sums, counts, items, make_scratch, body!)
+end
 
 function sweep_reduce!(sums, counts, ::CB.AbstractAutoBackend, items, make_scratch, body!)
     _gridded_threads() > 1 && return threaded_sweep_reduce!(sums, counts, items, make_scratch, body!)
@@ -708,9 +712,8 @@ sweep_reduce!(sums, counts, backend::CB.AbstractExecutionBackend, items, make_sc
         "gridded method",
     ))
 
-threaded_sweep_reduce!(sums, counts, items, make_scratch, body!) = throw(ArgumentError(
-    "Threaded backend is unavailable. Load the OhMyThreads extension or use backend=CB.SerialBackend().",
-))
+"""Threaded gridded sweep over work items; the OhMyThreads extension supplies the method."""
+function threaded_sweep_reduce! end
 
 """
     transform_engine(sf, data, schedule, distance_bins, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag; to = identity)
@@ -900,7 +903,7 @@ function gridded_lag_sweep!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
-    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {OT, CT, D, V, K}
     _check_grid_field(sf, data, s, Val(D), Val(V), Val(K))
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
@@ -951,7 +954,7 @@ function gridded_lag_sweep!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K};
-    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     second_axis::SeparationAngleAxis,
 ) where {OT, CT, D, V, K}
     _check_grid_field(sf, data, s, Val(D), Val(V), Val(K))
@@ -1182,7 +1185,7 @@ follows exactly: slice `t` of the output is that sweep on slice `t` of the field
 function gridded_lag_sweep_batch!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractArray{<:Any, 3}, s::AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
-    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {OT, CT, D, V, K}
     nt = _check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
@@ -1234,7 +1237,7 @@ end
 function gridded_lag_sweep_batch!(
     sums::AbstractArray{OT, 3}, counts::AbstractArray{CT, 3}, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractArray{<:Any, 3}, s::AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K};
-    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     second_axis::SeparationAngleAxis,
 ) where {OT, CT, D, V, K}
     nt = _check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))

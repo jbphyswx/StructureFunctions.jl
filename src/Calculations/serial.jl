@@ -396,8 +396,10 @@ function _partial_sums_counts(
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     culling::CullingPolicy = AutoCulling(),
     count_eltype::Type{CT} = UInt32,
+    weights = NoWeights(),
 ) where {CT}
     _assert_counts_representable(CT, length(x_vecs[1]))
+    _check_weighted_counts(weights, CT)
     OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
     nb = n_histogram_bins(distance_bins)
     sums = zeros(OT, nb)
@@ -409,14 +411,15 @@ function _partial_sums_counts(
     # scalar per-`i` kernel.
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         vD = D == 2 ? Val(2) : Val(3)
-        _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, be, vD, ilist, culling)
+        _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, be, vD, ilist, culling;
+                          geometry = geometry, weights = weights)
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
     _cull_reject_unsupported(culling, "the scalar per-point kernel that this geometry uses")
 
     for i in ilist
         calculate_structure_function_i!(
-            sums, counts, geometry, structure_function_type, i, x_vecs, u_vecs, be,
+            sums, counts, geometry, structure_function_type, i, x_vecs, u_vecs, be, weights,
         )
     end
     return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)

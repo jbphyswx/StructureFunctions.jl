@@ -5,7 +5,7 @@ function calculate_structure_function_tensor(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3};
-    backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     output_type::Type{OTT} = SFO.StructureFunctionTensor,
     count_eltype::Type{CT} = UInt32,
     distance_metric::DI.PreMetric = DI.Euclidean(),
@@ -43,7 +43,7 @@ function calculate_structure_function_tensor(
     distance_bins::AbstractVector,
     axis_bins::AbstractVector;
     second_axis::SeparationAngleAxis,
-    backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     output_type::Type{OTT} = SFO.StructureFunctionTensor2DSumsAndCounts,
     count_eltype::Type{CT} = UInt32,
     distance_metric::DI.PreMetric = DI.Euclidean(),
@@ -76,15 +76,15 @@ function calculate_structure_function_tensor!(
     x::AbstractArray,
     u::AbstractArray,
     distance_bins::AbstractVector;
-    backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    kwargs...,
+    weights = NoWeights(),
 ) where {P}
     shape = _validate_array_shape(x, u, distance_metric)
-    # Only forward knobs the kernel accepts; it has no `kwargs...` sink.
+    _tensor_check(order, shape, sums, counts, x, u, distance_bins, nothing, weights)
     return _dispatch_tensor!(
         backend, shape, sums, counts, order, x, u, distance_bins;
-        distance_metric = distance_metric,
+        distance_metric = distance_metric, weights = weights,
     )
 end
 
@@ -97,14 +97,17 @@ function calculate_structure_function_tensor!(
     distance_bins::AbstractVector,
     axis_bins::AbstractVector;
     second_axis::SeparationAngleAxis,
-    backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    weights = NoWeights(),
 ) where {P}
     shape = _validate_array_shape(x, u, distance_metric)
     axis_edges = BinEdges(axis_bins)
+    axis = (axis_edges, n_histogram_bins(axis_edges), second_axis)
+    _tensor_check(order, shape, sums, counts, x, u, distance_bins, axis, weights)
     return _dispatch_tensor!(
         backend, shape, sums, counts, order, x, u, distance_bins;
-        distance_metric = distance_metric, axis = (axis_edges, n_histogram_bins(axis_edges), second_axis),
+        distance_metric = distance_metric, weights = weights, axis = axis,
     )
 end
 
@@ -136,7 +139,7 @@ function _dispatch_tensor!(
     kwargs...,
 )
     return _dispatch_tensor!(
-        CB.SerialBackend(), shape, sums, counts, order, x, u, distance_bins; kwargs...
+        _auto_local_backend(), shape, sums, counts, order, x, u, distance_bins; kwargs...
     )
 end
 
@@ -214,6 +217,25 @@ function distributed_calculate_structure_function_tensor!(sums, counts, order, s
 end
 
 """
+    mpi_calculate_structure_function_tensor!(sums, counts, order, shape, x, u, bins; kwargs...)
+
+Accumulate a tensor structure function across MPI ranks. Supplied by the MPI extension.
+"""
+function mpi_calculate_structure_function_tensor!(sums, counts, order, shape, x, u, bins;
+                                                  kwargs...)
+    throw(ArgumentError(
+        "the MPI tensor backend needs MPI: run `using MPI` under `mpiexec`.",
+    ))
+end
+
+function _dispatch_tensor!(b::CB.AbstractMPIBackend, shape::AbstractFieldShape, sums::AbstractArray,
+                           counts::AbstractArray, order::Val, x::AbstractArray, u::AbstractArray,
+                           distance_bins::AbstractVector; kwargs...)
+    return mpi_calculate_structure_function_tensor!(sums, counts, order, shape, x, u,
+                                                    distance_bins; backend = b, kwargs...)
+end
+
+"""
     gpu_calculate_structure_function_tensor!(backend, sums, counts, order, shape, x, u, bins; kwargs...)
 
 Accumulate a tensor structure function on a device. Supplied by the KernelAbstractions extension.
@@ -227,19 +249,16 @@ function gpu_calculate_structure_function_tensor!(backend, sums, counts, order, 
 end
 
 """
-    _tensor_setup(order, shape, x, u, distance_bins, distance_metric[, axis]) -> NamedTuple
+    _tensor_check(order, shape, sums, counts, x, u, distance_bins, axis, weights)
 
-Everything a tensor sweep needs before its first pair: the geometry, the widened coordinates and
-field, the bin edges, and the flattened accumulator shapes. With `axis = (axis_edges, n_axis,
-second_axis)` the sweep is joint in separation and angle, over one field on a flat metric.
+Validate the accumulator shapes and the count type for a tensor sweep.
 
-Shared by every backend so the preparation happens **once**, above any task or worker loop, and so
-there is one place where the shapes are validated.
+Called at the public boundary, before any backend dispatch, so a caller's mistake reaches the
+caller as an `ArgumentError`: a threaded or distributed driver raises inside a task, and the
+parallel primitive wraps that in a `TaskFailedException` or a `RemoteException`.
 """
-function _tensor_setup(
-    order::Val{P}, shape::AbstractFieldShape{D}, sums, counts, x, u, distance_bins, distance_metric,
-    axis = nothing,
-) where {P, D}
+function _tensor_check(order::Val{P}, shape::AbstractFieldShape{D}, sums, counts, x, u,
+                       distance_bins, axis, weights) where {P, D}
     n_bins = n_histogram_bins(distance_bins)
     auxiliary_dims = has_auxiliary_axes(shape) ? size(u)[3:end] : ()
     if axis === nothing
@@ -256,7 +275,30 @@ function _tensor_setup(
         throw(DimensionMismatch("sums must have shape $expected_sums; got $(size(sums))"))
     size(counts) == expected_counts ||
         throw(DimensionMismatch("counts must have shape $expected_counts; got $(size(counts))"))
+    _check_weighted_counts(
+        _pair_weights(weights, size(u, 2), promote_type(float(eltype(x)), float(eltype(u)))),
+        eltype(counts),
+    )
+    return nothing
+end
 
+"""
+    _tensor_setup(order, shape, x, u, distance_bins, distance_metric[, axis]) -> NamedTuple
+
+Everything a tensor sweep needs before its first pair: the geometry, the widened coordinates and
+field, the bin edges, and the flattened accumulator shapes. With `axis = (axis_edges, n_axis,
+second_axis)` the sweep is joint in separation and angle, over one field on a flat metric.
+
+Shared by every backend so the preparation happens **once**, above any task or worker loop, and so
+there is one place where the shapes are validated.
+"""
+function _tensor_setup(
+    order::Val{P}, shape::AbstractFieldShape{D}, sums, counts, x, u, distance_bins, distance_metric,
+    axis = nothing, weights = NoWeights(),
+) where {P, D}
+    _tensor_check(order, shape, sums, counts, x, u, distance_bins, axis, weights)
+    n_bins = n_histogram_bins(distance_bins)
+    auxiliary_dims = has_auxiliary_axes(shape) ? size(u)[3:end] : ()
     dist_be = BinEdges(distance_bins)
     N = size(u, 2)
     B = isempty(auxiliary_dims) ? 1 : prod(auxiliary_dims)
@@ -270,8 +312,9 @@ function _tensor_setup(
     W = _val_int(vW)
     F = _val_int(vF)
 
+    w = _pair_weights(weights, N, promote_type(float(eltype(x)), float(eltype(u))))
     return (; n_bins, auxiliary_dims, dist_be, N, B, fixed_x, geom, xk, uk, vW, vF, W, F,
-            D = D, P = P, axis)
+            D = D, P = P, axis, weights = w)
 end
 
 """Flattened views of the accumulators, so the kernel indexes one auxiliary axis."""
@@ -296,8 +339,9 @@ function serial_calculate_structure_function_tensor!(
     distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     axis = nothing,
+    weights = NoWeights(),
 ) where {P, D}
-    s = _tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric, axis)
+    s = _tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric, axis, weights)
     sums_flat, counts_flat = _tensor_flat(sums, counts, s)
     _tensor_pairs!(sums_flat, counts_flat, order, s, 1:s.N)
     return sums, counts
@@ -324,8 +368,11 @@ function _tensor_pairs!(sums_flat, counts_flat, order::Val{P}, s, outer) where {
     # The increment comes from `pair_delta`, so on a curved manifold the tensor components are in
     # the pair's own transported frame. An odd rank takes the canonical pair reading, as an odd
     # scalar increment does.
+    wts = s.weights
     @inbounds for i in outer
+        wi = _point_weight(wts, i)
         for j in (i + 1):N
+            w = wi * _point_weight(wts, j)
             if s.fixed_x
                 X1 = SA.SVector{W, XT}(ntuple(d -> x_fixed[d, i], vW))
                 X2 = SA.SVector{W, XT}(ntuple(d -> x_fixed[d, j], vW))
@@ -337,7 +384,7 @@ function _tensor_pairs!(sums_flat, counts_flat, order::Val{P}, s, outer) where {
                         U1 = SA.SVector{F, UT}(ntuple(d -> u_flat[d, i, b], vF))
                         U2 = SA.SVector{F, UT}(ntuple(d -> u_flat[d, j, b], vF))
                         du = sgn * SFH.pair_delta(geom, frame, X1, X2, U1, U2)
-                        _accumulate_tensor_pair!(sums_flat, counts_flat, du, bin, b, order)
+                        _accumulate_tensor_pair!(sums_flat, counts_flat, du, bin, b, order, w)
                     end
                 end
             else
@@ -350,7 +397,7 @@ function _tensor_pairs!(sums_flat, counts_flat, order::Val{P}, s, outer) where {
                         U1 = SA.SVector{F, UT}(ntuple(d -> u_flat[d, i, b], vF))
                         U2 = SA.SVector{F, UT}(ntuple(d -> u_flat[d, j, b], vF))
                         du = _tensor_reading(order, geom, frame) * SFH.pair_delta(geom, frame, X1, X2, U1, U2)
-                        _accumulate_tensor_pair!(sums_flat, counts_flat, du, bin, b, order)
+                        _accumulate_tensor_pair!(sums_flat, counts_flat, du, bin, b, order, w)
                     end
                 end
             end
@@ -382,10 +429,13 @@ function _tensor_pairs_joint!(sums, counts, order::Val{P}, s, outer) where {P}
     x_fixed = reshape(s.xk, W, N)
     u_flat = reshape(s.uk, F, N)
     XT, UT = eltype(s.xk), eltype(s.uk)
+    wts = s.weights
     @inbounds for i in outer
+        wi = _point_weight(wts, i)
         X1 = SA.SVector{W, XT}(ntuple(d -> x_fixed[d, i], vW))
         U1 = SA.SVector{F, UT}(ntuple(d -> u_flat[d, i], vF))
         for j in (i + 1):N
+            w = wi * _point_weight(wts, j)
             X2 = SA.SVector{W, XT}(ntuple(d -> x_fixed[d, j], vW))
             ok, dist, frame = SFH.pair_frame(geom, X1, X2)
             bin = SFH.digitize(dist, dist_be)
@@ -395,7 +445,7 @@ function _tensor_pairs_joint!(sums, counts, order::Val{P}, s, outer) where {P}
             1 <= bθ <= na || continue
             U2 = SA.SVector{F, UT}(ntuple(d -> u_flat[d, j], vF))
             du = _tensor_reading(order, geom, frame) * SFH.pair_delta(geom, frame, X1, X2, U1, U2)
-            _accumulate_tensor_pair!(sums, counts, du, bin, bθ, order)
+            _accumulate_tensor_pair!(sums, counts, du, bin, bθ, order, w)
         end
     end
     return sums, counts
@@ -412,6 +462,7 @@ The outer lists partition `1:N`, so the partials add to the whole sweep exactly.
 function tensor_partial(
     order::Val{P}, shape::AbstractFieldShape{D}, x, u, distance_bins, outer;
     distance_metric::DI.PreMetric = DI.Euclidean(), count_eltype::Type{CT} = UInt32, axis = nothing,
+    weights = NoWeights(),
 ) where {P, D, CT}
     n_bins = n_histogram_bins(distance_bins)
     OT = promote_type(float(eltype(x)), float(eltype(u)))
@@ -423,7 +474,7 @@ function tensor_partial(
         sums = zeros(OT, ntuple(_ -> D, P)..., n_bins, axis[2])
         counts = zeros(CT, n_bins, axis[2])
     end
-    s = _tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric, axis)
+    s = _tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric, axis, weights)
     sf, cf = _tensor_flat(sums, counts, s)
     _tensor_pairs!(sf, cf, order, s, outer)
     return sums, counts
@@ -431,10 +482,10 @@ end
 
 # One pair's `δu^{⊗P}` added at `[…, bin, b]`, the loops over the P component indices unrolled to
 # the order at compile time.
-@generated function _accumulate_tensor_pair!(sums, counts, du, bin::Int, b::Int, ::Val{P}) where {P}
+@generated function _accumulate_tensor_pair!(sums, counts, du, bin::Int, b::Int, ::Val{P}, w) where {P}
     idx = [Symbol(:i, k) for k in 1:P]
     prod_ex = Expr(:call, :*, [:(du[$(idx[k])]) for k in 1:P]...)
-    body = :(sums[$(idx...), bin, b] += $prod_ex)
+    body = :(sums[$(idx...), bin, b] += w * $prod_ex)
     for k in P:-1:1
         body = :(for $(idx[k]) in 1:D
             $body
@@ -443,7 +494,7 @@ end
     return quote
         D = length(du)
         @inbounds $body
-        @inbounds counts[bin, b] += one(eltype(counts))
+        @inbounds counts[bin, b] += convert(eltype(counts), w)
         return nothing
     end
 end

@@ -212,7 +212,7 @@ function gridded_lag_sweep!(
     sums::AbstractVector, counts::AbstractVector,
     sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::ScatteredPairs, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
-    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {D, V, K}
     n = n_scattered_cells(s)
     size(data) == (V * D + K, n) || throw(DimensionMismatch(
@@ -236,30 +236,31 @@ function gridded_lag_sweep!(
     return sums, counts
 end
 
-# A structureless grid's tensor is the point tensor over its held cells; the point kernels take no weights.
+# A structureless grid's tensor is the point tensor over its held cells, so the cells it drops drop
+# their weights with them.
 function gridded_tensor_sweep!(
     sums::AbstractArray, counts::AbstractVector, order::Val{P}, data::AbstractMatrix, s::ScatteredPairs, dist_be,
     ::Val{D}, spectral_backend;
-    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {P, D}
-    weights === nothing || throw(ArgumentError(
-        "pair weights are not implemented on the point tensor kernels, which a structureless grid's tensor uses",
-    ))
     n = n_scattered_cells(s)
     size(data) == (D, n) || throw(DimensionMismatch(
         "field holds $(size(data, 2)) cells of $(size(data, 1)) components, the grid $n cells of $D",
     ))
+    w = _pair_weights(weights, n, promote_type(float(eltype(s.points)), float(eltype(data))))
     keep = valid isa AllValid ? Colon() : findall(valid)
     x = valid isa AllValid ? s.points : s.points[:, keep]
     uu = valid isa AllValid ? data : data[:, keep]
-    calculate_structure_function_tensor!(sums, counts, order, x, uu, dist_be; distance_metric = s.metric, backend)
+    wk = (valid isa AllValid || w isa NoWeights) ? w : w[keep]
+    calculate_structure_function_tensor!(sums, counts, order, x, uu, dist_be;
+        distance_metric = s.metric, backend, weights = wk)
     return sums, counts
 end
 
 function gridded_lag_sweep!(
     sums::AbstractMatrix, counts::AbstractMatrix, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::ScatteredPairs, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K};
-    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     second_axis::SeparationAngleAxis,
 ) where {D, V, K}
     throw(ArgumentError(

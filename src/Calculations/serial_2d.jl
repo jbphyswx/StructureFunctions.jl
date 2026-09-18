@@ -1,5 +1,21 @@
 # Serial 2D CPU Joint Reduction Kernels
 
+"""
+    _require_value_axis(second_axis, geometry, D)
+
+Refuse a second axis the scalar per-`i` kernel cannot read. That kernel serves the curved
+geometries, where an angle to a fixed reference axis is not a property of the pair alone, so only
+the pair's own value is available there.
+"""
+@inline function _require_value_axis(second_axis, geometry, D)
+    second_axis isa InvariantValueAxis || throw(ArgumentError(
+        "$(typeof(second_axis)) is supported on the flat D ∈ {2,3} path; this call has " *
+        "$(nameof(typeof(geometry))) with D = $D, whose separation direction lives in each pair's " *
+        "own frame, not in a shared one.",
+    ))
+    return nothing
+end
+
 function serial_calculate_structure_function!(
     sums_2d::AbstractMatrix{OT},
     counts_2d::AbstractMatrix{CT},
@@ -10,11 +26,14 @@ function serial_calculate_structure_function!(
     value_bins::AbstractVector;
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
+    weights = nothing,
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {OT, CT, T1, T2}
     distance_bins = BinEdges(distance_bins)
     value_bins = BinEdges(value_bins)
+    w = _pair_weights(weights, length(x_vecs[1]), OT)
+    _check_weighted_counts(w, CT)
 
     if verbose
         @info("calculating 2D joint structure function (serial reduction)")
@@ -25,21 +44,16 @@ function serial_calculate_structure_function!(
     D = length(u_vecs)
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         _pf_2d_simd_run!(sums_2d, counts_2d, structure_function_type, x_vecs, u_vecs,
-                         distance_bins, value_bins, D == 2 ? Val(2) : Val(3); second_axis)
+                         distance_bins, value_bins, D == 2 ? Val(2) : Val(3);
+                         second_axis, weights = w)
         return nothing
     end
 
-    # The scalar fallback carries no second-axis source: it serves the curved geometries, where an
-    # angle to a fixed reference axis is not a property of the pair alone.
-    second_axis isa InvariantValueAxis || throw(ArgumentError(
-        "$(typeof(second_axis)) is supported on the flat D ∈ {2,3} path; this call has " *
-        "$(nameof(typeof(geometry))) with D = $D, whose separation direction lives in each pair's " *
-        "own frame, not in a shared one.",
-    ))
+    _require_value_axis(second_axis, geometry, D)
     PM.@showprogress enabled = show_progress for i in eachindex(x_vecs[1])
         calculate_structure_function_2d_i!(
             sums_2d, counts_2d, geometry, structure_function_type, i, x_vecs, u_vecs,
-            distance_bins, value_bins,
+            distance_bins, value_bins, w,
         )
     end
     return nothing
@@ -64,6 +78,7 @@ function _pf_2d_simd_pairs!(
     keybuf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32}, blocks,
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
     axbuf::AbstractVector = valbuf,
+    weights = NoWeights(),
 ) where {OT, CT, D}
     n_dist = n_histogram_bins(plan)
     n_val = n_histogram_bins(val_be)
@@ -73,6 +88,7 @@ function _pf_2d_simd_pairs!(
         for i in ir
             jlo = max(i + 1, j_first)
             jlo > j_last && continue
+            wi = _point_weight(weights, i)
             Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
             Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
             @simd for j in jlo:j_last
@@ -94,8 +110,9 @@ function _pf_2d_simd_pairs!(
                 if 1 <= dbin <= n_dist
                     vbin = SFH.digitize(axis_key(second_axis, valbuf, axbuf, j), val_be)
                     if 1 <= vbin <= n_val
-                        sums2d[dbin, vbin] += valbuf[j]
-                        counts2d[dbin, vbin] += one(CT)
+                        w = wi * _point_weight(weights, j)
+                        sums2d[dbin, vbin] += w * valbuf[j]
+                        counts2d[dbin, vbin] += CT(w)
                     end
                 end
             end
@@ -113,24 +130,27 @@ concretely typed schedule.
 @inline _pf_2d_run_blocks!(
     sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf,
     ilist, N, ::Nothing, second_axis = InvariantValueAxis(), axbuf = valbuf,
+    weights = NoWeights(),
 ) where {D} = _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D),
-    keybuf, valbuf, idxbuf, pair_blocks(N, ilist), second_axis, axbuf)
+    keybuf, valbuf, idxbuf, pair_blocks(N, ilist), second_axis, axbuf, weights)
 
 @inline _pf_2d_run_blocks!(
     sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf,
     ilist, N, grid::CellGrid, second_axis = InvariantValueAxis(), axbuf = valbuf,
+    weights = NoWeights(),
 ) where {D} = _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D),
-    keybuf, valbuf, idxbuf, pair_blocks(N, ilist; grid = grid), second_axis, axbuf)
+    keybuf, valbuf, idxbuf, pair_blocks(N, ilist; grid = grid), second_axis, axbuf, weights)
 
 function _pf_2d_simd_run!(
     sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple, u_vecs::Tuple, dist_be, val_be, ::Val{D};
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
+    weights = NoWeights(),
 ) where {OT, CT, D}
     N = length(x_vecs[1])
     return _pf_2d_simd_partial!(sums2d, counts2d, sf, x_vecs, u_vecs, dist_be, val_be, Val(D),
-                                1:(N - 1), AutoCulling(); second_axis)
+                                1:(N - 1), AutoCulling(); second_axis, weights)
 end
 
 """
@@ -146,6 +166,7 @@ function _pf_2d_simd_partial!(
     x_vecs::Tuple, u_vecs::Tuple, dist_be, val_be, ::Val{D}, ilist,
     culling::CullingPolicy = AutoCulling();
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
+    weights = NoWeights(),
 ) where {OT, CT, D}
     x_raw = ntuple(d -> collect(x_vecs[d]), Val(D))
     u_raw = ntuple(d -> collect(u_vecs[d]), Val(D))
@@ -159,8 +180,9 @@ function _pf_2d_simd_partial!(
            cull_grid_for(x_raw, SFH.FlatGeometry{D}(), dist_be, culling)
     xc, uc = isnothing(grid) ? (x_raw, u_raw) :
              (apply_perm(x_raw, grid.perm), apply_perm(u_raw, grid.perm))
+    wc = (weights isa NoWeights || isnothing(grid)) ? weights : weights[grid.perm]
     _pf_2d_run_blocks!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D),
-        keybuf, valbuf, idxbuf, ilist, N, grid, second_axis, axbuf)
+        keybuf, valbuf, idxbuf, ilist, N, grid, second_axis, axbuf, wc)
     return nothing
 end
 
@@ -181,8 +203,11 @@ function _partial_2d_sums_counts(
     ilist;
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     count_eltype::Type{CT} = UInt32,
+    weights = NoWeights(),
+    second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
 ) where {CT}
     _assert_counts_representable(CT, length(x_vecs[1]))
+    _check_weighted_counts(weights, CT)
     OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
     nd = n_histogram_bins(distance_bins)
     nv = n_histogram_bins(value_bins)
@@ -194,13 +219,15 @@ function _partial_2d_sums_counts(
 
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         vD = D == 2 ? Val(2) : Val(3)
-        _pf_2d_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, dist_be, val_be, vD, ilist)
+        _pf_2d_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, dist_be, val_be, vD,
+                             ilist; weights = weights, second_axis = second_axis)
         return sums, counts
     end
 
+    _require_value_axis(second_axis, geometry, D)
     for i in ilist
         calculate_structure_function_2d_i!(
-            sums, counts, geometry, structure_function_type, i, x_vecs, u_vecs, dist_be, val_be,
+            sums, counts, geometry, structure_function_type, i, x_vecs, u_vecs, dist_be, val_be, weights,
         )
     end
     return sums, counts
@@ -319,6 +346,7 @@ function calculate_structure_function_2d_i!(
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector,
     value_bins::AbstractVector,
+    weights = NoWeights(),
 ) where {OT, T1, T2}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
@@ -335,6 +363,7 @@ function calculate_structure_function_2d_i!(
     U1 = SA.SVector{F, FT2}(ntuple(k -> u_vecs[k][i], vF))
 
     iter_inds = eachindex(x_vecs[1])
+    wi = _point_weight(weights, i)
     for j in (i + 1):last(iter_inds)
         X2 = SA.SVector{W, FT1}(ntuple(k -> x_vecs[k][j], vW))
         U2 = SA.SVector{F, FT2}(ntuple(k -> u_vecs[k][j], vF))
@@ -345,10 +374,11 @@ function calculate_structure_function_2d_i!(
             δu, rh = SFH.pair_increments(geom, frame, distance, X1, X2, U1, U2)
             val = structure_function_type(δu, rh)
             val_bin = SFH.digitize(val, value_bins)
-            
+
             if 1 <= val_bin < N4
-                @inbounds sums_2d[dist_bin, val_bin] += val
-                @inbounds counts_2d[dist_bin, val_bin] += 1
+                w = wi * _point_weight(weights, j)
+                @inbounds sums_2d[dist_bin, val_bin] += w * val
+                @inbounds counts_2d[dist_bin, val_bin] += eltype(counts_2d)(w)
             end
         end
     end

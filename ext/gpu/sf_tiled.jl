@@ -12,6 +12,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
     counts,                 # (NMOM, NB, B)  (count replicated across moment rows)
     @Const(x),              # (D, N, B)      (non-batch: B = 1)
     @Const(u),              # (D, N, B)
+    wts,                    # NoWeights(), or one weight per point
     sf_type,
     digitizer,              # SFLinearDigitizer / SFLogDigitizer / SFGeneralDigitizer
     N::Int,
@@ -23,14 +24,15 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
     ::Val{D},
     ::Val{NMOM},
     ::Val{R},
+    ::Val{CST},             # shared count element: UInt32 unweighted, the count type weighted
     geom,
-) where {D, NMOM, R}
+) where {D, NMOM, R, CST}
     shared_xi = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_xj = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_ui = @localmem eltype(u) (D * SF_GPU_TILE,)
     shared_uj = @localmem eltype(u) (D * SF_GPU_TILE,)
     shared_sums = @localmem eltype(output) (NMOM * SF_GPU_MAX_BINS * R,)
-    shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS * R,)
+    shared_cnts = @localmem CST (SF_GPU_MAX_BINS * R,)
 
     lid = @index(Local, Linear)
     launch_block = @index(Group, Linear)
@@ -46,9 +48,10 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
         @inbounds shared_sums[zi] = zsum
         zi += wgsize
     end
+    zcnt = zero(CST)
     zc = lid
     while zc <= NB * R
-        @inbounds shared_cnts[zc] = UInt32(0)
+        @inbounds shared_cnts[zc] = zcnt
         zc += wgsize
     end
     @synchronize
@@ -104,6 +107,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
             off_diag = ti < tj
             n_pairs = off_diag ? ni * nj : ni * (ni - 1) ÷ 2
             lane = ((lid - 1) ÷ 32) % R + 1   # rotate the REPLICA index, never the bin
+            jbase = off_diag ? j0 : i0
             p = lid
             while p <= n_pairs
                 if off_diag
@@ -125,12 +129,13 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
                 if ok && 1 <= bin <= NB
                     dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                     moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
+                    pw = SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1)
                     # accumulate into replica `lane` (inline localmem atomics)
                     abase = (bin - 1) * R + lane
                     @inbounds for m in 1:NMOM
-                        @atomic shared_sums[(m - 1) * (NB * R) + abase] += moments[m]
+                        @atomic shared_sums[(m - 1) * (NB * R) + abase] += pw * moments[m]
                     end
-                    @inbounds @atomic shared_cnts[abase] += UInt32(1)
+                    @inbounds @atomic shared_cnts[abase] += CST(pw)
                 end
                 p += wgsize
             end
@@ -161,11 +166,11 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
         bcell = lid
         while bcell <= NB
             cbase = (bcell - 1) * R
-            ctot = UInt32(0)
+            ctot = zero(CST)
             @inbounds for r in 1:R
                 ctot += shared_cnts[cbase + r]
             end
-            if ctot != UInt32(0)
+            if ctot != zero(CST)
                 @inbounds for m in 1:NMOM
                     @atomic counts[m, bcell, b] += ctot
                 end
@@ -206,6 +211,7 @@ function _launch_sf_tiled_1d_varying!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer,
     N::Int, NB::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
     R::Int = _sf_tiled_1d_replication(eltype(out_dev), D, NMOM),
+    weights = SFC.NoWeights(),
 ) where {D, NMOM}
     _sf_tiled_1d_check_nb(NB)
     sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
@@ -213,22 +219,13 @@ function _launch_sf_tiled_1d_varying!(
     ws = SF_GPU_TILED_WS
     ndrange = n_tile_blocks * ws * B
     kernel! = sf_tiled_1d_varying!(backend, ws)
-    if R == 16
-        kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(16), geom; ndrange = ndrange)
-    elseif R == 8
-        kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(8), geom; ndrange = ndrange)
-    elseif R == 4
-        kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(4), geom; ndrange = ndrange)
-    elseif R == 2
-        kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(2), geom; ndrange = ndrange)
-    else
-        kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(1), geom; ndrange = ndrange)
-    end
+    wts = _sf_weights_to_device(backend, weights)
+    vcst = Val(eltype(cnt_dev))
+    launch = (Rv) -> kernel!(out_dev, cnt_dev, x_dev, u_dev, wts, sf_type, digitizer, N, NB,
+                             sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Rv, vcst, geom;
+                             ndrange = ndrange)
+    R == 16 ? launch(Val(16)) : R == 8 ? launch(Val(8)) : R == 4 ? launch(Val(4)) :
+        R == 2 ? launch(Val(2)) : launch(Val(1))
     return nothing
 end
 
@@ -250,6 +247,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
     counts,                 # (NMOM, NB, B)
     @Const(x),              # (D, N)        shared geometry
     @Const(u),              # (D, N, B)     velocity fields
+    wts,                    # NoWeights(), or one weight per point
     sf_type,
     digitizer,
     N::Int,
@@ -262,14 +260,15 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
     ::Val{D},
     ::Val{NMOM},
     ::Val{W},
+    ::Val{CST},             # shared count element: UInt32 unweighted, the count type weighted
     geom,
-) where {D, NMOM, W}
+) where {D, NMOM, W, CST}
     shared_xi = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_xj = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_ui = @localmem eltype(u) (W * D * SF_GPU_TILE,)
     shared_uj = @localmem eltype(u) (W * D * SF_GPU_TILE,)
     shared_sums = @localmem eltype(output) (NMOM * SF_GPU_MAX_BINS * W,)
-    shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS * W,)
+    shared_cnts = @localmem CST (SF_GPU_MAX_BINS * W,)
 
     lid = @index(Local, Linear)
     bid = @index(Group, Linear)
@@ -282,9 +281,10 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
         @inbounds shared_sums[zi] = zsum
         zi += wgsize
     end
+    zcnt = zero(CST)
     zc = lid
     while zc <= NB * W
-        @inbounds shared_cnts[zc] = UInt32(0)
+        @inbounds shared_cnts[zc] = zcnt
         zc += wgsize
     end
     @synchronize
@@ -346,6 +346,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
             off_diag = ti < tj
             n_pairs = off_diag ? ni * nj : ni * (ni - 1) ÷ 2
             cnt_lane = ((lid - 1) ÷ 32) % W + 1
+            jbase = off_diag ? j0 : i0
             p = lid
             while p <= n_pairs
                 if off_diag
@@ -363,6 +364,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
                 if ok && 1 <= bin <= NB
                     # Loop-invariant across the strip: one frame serves all bw fields.
                     rhat = SFH.pair_direction(geom, frame, dist)
+                    pw = SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1)
                     @inbounds for w in 1:bw
                         Ui = off_diag ?
                             _sf_load_field(Val(D), shared_ui, w, ia) :
@@ -376,11 +378,11 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
                         base = (bin - 1) * W + w
                         plane = NB * W
                         for m in 1:NMOM
-                            @atomic shared_sums[(m - 1) * plane + base] += moments[m]
+                            @atomic shared_sums[(m - 1) * plane + base] += pw * moments[m]
                         end
                     end
                     # counts: field-independent → one atomic into a contention replica
-                    @atomic shared_cnts[(bin - 1) * W + cnt_lane] += UInt32(1)
+                    @atomic shared_cnts[(bin - 1) * W + cnt_lane] += CST(pw)
                 end
                 p += wgsize
             end
@@ -406,12 +408,12 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
         end
         bcell = lid
         while bcell <= NB
-            total = UInt32(0)
+            total = zero(CST)
             cbase = (bcell - 1) * W
             @inbounds for r in 1:W
                 total += shared_cnts[cbase + r]
             end
-            if total != UInt32(0)
+            if total != zero(CST)
                 @inbounds for w in 1:bw, m in 1:NMOM
                     @atomic counts[m, bcell, b_base + w - 1] += total
                 end
@@ -438,19 +440,22 @@ function _launch_sf_tiled_1d_fixed!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer,
     N::Int, NB::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
     W::Int = _sf_tiled_1d_fixed_strip(eltype(out_dev), D, NMOM),
+    weights = SFC.NoWeights(),
 ) where {D, NMOM}
     _sf_tiled_1d_check_nb(NB)
     sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
     n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
     ndrange = n_tile_blocks * ws
+    wts = _sf_weights_to_device(backend, weights)
+    vcst = Val(eltype(cnt_dev))
     launch = (Wv) -> begin
         kernel! = sf_tiled_1d_fixed!(backend, ws)
         b_base = 1
         while b_base <= B
             bw = min(Wv, B - b_base + 1)
-            kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer, N, NB,
-                    b_base, bw, sched, n_tile_blocks, ws, Val(D), Val(NMOM), Val(Wv), geom;
+            kernel!(out_dev, cnt_dev, x_dev, u_dev, wts, sf_type, digitizer, N, NB,
+                    b_base, bw, sched, n_tile_blocks, ws, Val(D), Val(NMOM), Val(Wv), vcst, geom;
                     ndrange = ndrange)
             b_base += bw
         end
@@ -474,6 +479,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_varying!(
     counts,                 # (NMOM, n_dist, n_val, B)
     @Const(x),              # (D, N, B)
     @Const(u),              # (D, N, B)
+    wts,                    # NoWeights(), or one weight per point
     sf_type,
     dist_digitizer,
     val_plan,
@@ -544,6 +550,8 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_varying!(
         if ni > 0 && nj > 0
             off_diag = ti < tj
             n_pairs = off_diag ? ni * nj : ni * (ni - 1) ÷ 2
+            jbase = off_diag ? j0 : i0
+            CT = eltype(counts)
             p = lid
             while p <= n_pairs
                 if off_diag
@@ -565,11 +573,12 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_varying!(
                 if ok && 1 <= dbin <= n_dist
                     dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                     moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
+                    pw = SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1)
                     @inbounds for m in 1:NMOM
                         vbin = _gpu_digitize_value_plan(moments[m], val_plan, m, n_val + 1)
                         if 1 <= vbin <= n_val
-                            @atomic output[m, dbin, vbin, b] += moments[m]
-                            @atomic counts[m, dbin, vbin, b] += UInt32(1)
+                            @atomic output[m, dbin, vbin, b] += pw * moments[m]
+                            @atomic counts[m, dbin, vbin, b] += CT(pw)
                         end
                     end
                 end
@@ -583,13 +592,15 @@ end
 x_dev,u_dev=(D,N,B); out_dev,cnt_dev=(NMOM,n_dist,n_val,B)."""
 function _launch_sf_tiled_2d_varying!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom,
+    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
+    weights = SFC.NoWeights(),
 ) where {D, NMOM}
     sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
     n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
     kernel! = sf_tiled_2d_varying!(backend, ws)
-    kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
+    kernel!(out_dev, cnt_dev, x_dev, u_dev, _sf_weights_to_device(backend, weights),
+            sf_type, dist_digitizer, val_plan,
             N, n_dist, n_val, sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), geom;
             ndrange = n_tile_blocks * ws * B)
     return nothing
@@ -608,6 +619,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
     counts,                 # (NMOM, n_dist, n_val, B)
     @Const(x),              # (D, N, B) varying  /  (D, N, 1) fixed
     @Const(u),              # (D, N, B)
+    wts,                    # NoWeights(), or one weight per point
     sf_type,
     dist_digitizer,
     val_plan,
@@ -622,14 +634,15 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
     ::Val{NMOM},
     ::Val{NCELLS},
     ::Val{FIXED_X},
+    ::Val{CST},             # shared count element: UInt32 unweighted, the count type weighted
     geom,
-) where {D, NMOM, NCELLS, FIXED_X}
+) where {D, NMOM, NCELLS, FIXED_X, CST}
     shared_xi = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_xj = @localmem eltype(x) (D * SF_GPU_TILE,)
     shared_ui = @localmem eltype(u) (D * SF_GPU_TILE,)
     shared_uj = @localmem eltype(u) (D * SF_GPU_TILE,)
     shared_sums = @localmem eltype(output) (NMOM * NCELLS,)
-    shared_cnts = @localmem UInt32 (NMOM * NCELLS,)
+    shared_cnts = @localmem CST (NMOM * NCELLS,)
 
     lid = @index(Local, Linear)
     launch_block = @index(Group, Linear)
@@ -638,10 +651,11 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
 
     # phase 0: zero shared histogram (inline)
     zsum = zero(eltype(output))
+    zcnt = zero(CST)
     zi = lid
     while zi <= NMOM * NCELLS
         @inbounds shared_sums[zi] = zsum
-        @inbounds shared_cnts[zi] = UInt32(0)
+        @inbounds shared_cnts[zi] = zcnt
         zi += wgsize
     end
     @synchronize
@@ -697,6 +711,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
         if ni > 0 && nj > 0
             off_diag = ti < tj
             n_pairs = off_diag ? ni * nj : ni * (ni - 1) ÷ 2
+            jbase = off_diag ? j0 : i0
             p = lid
             while p <= n_pairs
                 if off_diag
@@ -718,12 +733,13 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
                 if ok && 1 <= dbin <= n_dist
                     dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                     moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
+                    pw = SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1)
                     @inbounds for m in 1:NMOM
                         vbin = _gpu_digitize_value_plan(moments[m], val_plan, m, n_val + 1)
                         if 1 <= vbin <= n_val
                             cell = (m - 1) * NCELLS + (dbin - 1) * n_val + vbin
-                            @atomic shared_sums[cell] += moments[m]
-                            @atomic shared_cnts[cell] += UInt32(1)
+                            @atomic shared_sums[cell] += pw * moments[m]
+                            @atomic shared_cnts[cell] += CST(pw)
                         end
                     end
                 end
@@ -743,7 +759,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
         while cell <= NMOM * NCELLS
             s = shared_sums[cell]
             c = shared_cnts[cell]
-            if c != UInt32(0)
+            if c != zero(CST)
                 m = (cell - 1) ÷ NCELLS + 1
                 lc = (cell - 1) % NCELLS
                 dbin = lc ÷ n_val + 1
@@ -758,8 +774,9 @@ end
 
 """Whether a shared NMOM×n_dist×n_val histogram (sums + counts) fits in 44 KiB alongside the four
 staged coordinate tiles, which is the condition for taking the shared kernel."""
-@inline function _sf_2d_shared_fits(::Type{FT}, D::Int, NMOM::Int, n_dist::Int, n_val::Int) where {FT}
-    hist = NMOM * n_dist * n_val * (sizeof(FT) + sizeof(UInt32))
+@inline function _sf_2d_shared_fits(::Type{FT}, ::Type{CST}, D::Int, NMOM::Int,
+                                    n_dist::Int, n_val::Int) where {FT, CST}
+    hist = NMOM * n_dist * n_val * (sizeof(FT) + sizeof(CST))
     staging = 4 * D * SF_GPU_TILE * sizeof(FT)
     return hist + staging <= 44 * 1024
 end
@@ -768,22 +785,20 @@ end
 `x_dev` is (D,N,B) for varying-x or (D,N,1) for fixed-x; `u_dev` is (D,N,B)."""
 function _launch_sf_tiled_2d_shared!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, fixed_x::Bool, geom,
+    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, fixed_x::Bool, geom;
+    weights = SFC.NoWeights(),
 ) where {D, NMOM}
     sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
     n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
     ndrange = n_tile_blocks * ws * B
     kernel! = sf_tiled_2d_shared!(backend, ws)
-    if fixed_x
-        kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-                N, n_dist, n_val, sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(n_dist * n_val), Val(true), geom;
-                ndrange = ndrange)
-    else
-        kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
-                N, n_dist, n_val, sched, n_tile_blocks, ws, B, Val(D), Val(NMOM), Val(n_dist * n_val), Val(false), geom;
-                ndrange = ndrange)
-    end
+    wts = _sf_weights_to_device(backend, weights)
+    vcst = Val(eltype(cnt_dev))
+    launch = (fx) -> kernel!(out_dev, cnt_dev, x_dev, u_dev, wts, sf_type, dist_digitizer, val_plan,
+                             N, n_dist, n_val, sched, n_tile_blocks, ws, B, Val(D), Val(NMOM),
+                             Val(n_dist * n_val), fx, vcst, geom; ndrange = ndrange)
+    fixed_x ? launch(Val(true)) : launch(Val(false))
     return nothing
 end
 
@@ -794,6 +809,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
     counts,                 # (NMOM, n_dist, n_val, B)
     @Const(x),              # (D, N)
     @Const(u),              # (D, N, B)
+    wts,                    # NoWeights(), or one weight per point
     sf_type,
     dist_digitizer,
     val_plan,
@@ -872,6 +888,8 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
         if ni > 0 && nj > 0
             off_diag = ti < tj
             n_pairs = off_diag ? ni * nj : ni * (ni - 1) ÷ 2
+            jbase = off_diag ? j0 : i0
+            CT = eltype(counts)
             p = lid
             while p <= n_pairs
                 if off_diag
@@ -889,6 +907,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
                 if ok && 1 <= dbin <= n_dist
                     # Loop-invariant across the strip: one frame serves all bw fields.
                     rhat = SFH.pair_direction(geom, frame, dist)
+                    pw = SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1)
                     @inbounds for w in 1:bw
                         Ui = _sf_load_field(Val(D), shared_ui, w, ia)
                         Uj = off_diag ? _sf_load_field(Val(D), shared_uj, w, jb) :
@@ -899,8 +918,8 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
                         for m in 1:NMOM
                             vbin = _gpu_digitize_value_plan(moments[m], val_plan, m, n_val + 1)
                             if 1 <= vbin <= n_val
-                                @atomic output[m, dbin, vbin, bb] += moments[m]
-                                @atomic counts[m, dbin, vbin, bb] += UInt32(1)
+                                @atomic output[m, dbin, vbin, bb] += pw * moments[m]
+                                @atomic counts[m, dbin, vbin, bb] += CT(pw)
                             end
                         end
                     end
@@ -926,17 +945,19 @@ function _launch_sf_tiled_2d_fixed!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
     N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
     W::Int = _sf_tiled_2d_fixed_strip(eltype(out_dev), D),
+    weights = SFC.NoWeights(),
 ) where {D, NMOM}
     sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
     n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
     ndrange = n_tile_blocks * ws
+    wts = _sf_weights_to_device(backend, weights)
     launch = (Wv) -> begin
         kernel! = sf_tiled_2d_fixed!(backend, ws)
         b_base = 1
         while b_base <= B
             bw = min(Wv, B - b_base + 1)
-            kernel!(out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
+            kernel!(out_dev, cnt_dev, x_dev, u_dev, wts, sf_type, dist_digitizer, val_plan,
                     N, n_dist, n_val, b_base, bw, sched, n_tile_blocks, ws,
                     Val(D), Val(NMOM), Val(Wv), geom; ndrange = ndrange)
             b_base += bw
@@ -970,22 +991,26 @@ end
 
 """Dispatch a 2D batch launch on runtime D ∈ {2,3} into the Val-specialized launchers."""
 function _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
-                              N, n_dist, n_val, B, D::Int, ::Val{NMOM}, fixed_x::Bool, geom) where {NMOM}
+                              N, n_dist, n_val, B, D::Int, ::Val{NMOM}, fixed_x::Bool, geom;
+                              weights = SFC.NoWeights()) where {NMOM}
     # CUDA fast path (N-body broadcast + dynamic-shared privatized histogram,
     # TILE=1024) when StructureFunctionsCUDAExt is active and it fits the device.
-    SFC.gpu_fast_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
-                                  N, n_dist, n_val, B, D, NMOM, fixed_x, geom, nothing) && return nothing
+    weights isa SFC.NoWeights &&
+        SFC.gpu_fast_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
+                                      N, n_dist, n_val, B, D, NMOM, fixed_x, geom, nothing) && return nothing
     # The shared-histogram kernel (fixed or varying) whenever the histogram fits; a bin count too
     # large for shared memory goes to global atomics.
-    use_shared = _sf_2d_shared_fits(eltype(out_dev), D, NMOM, n_dist, n_val)
+    wts = _sf_weights_to_device(backend, weights)
+    use_shared = _sf_2d_shared_fits(eltype(out_dev), eltype(cnt_dev), D, NMOM, n_dist, n_val)
     go(Dv) =
         use_shared ?
             _launch_sf_tiled_2d_shared!(backend, out_dev, cnt_dev,
                 (fixed_x ? reshape(x_dev, size(x_dev, 1), size(x_dev, 2), 1) : x_dev),
-                u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), fixed_x, geom) :
+                u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), fixed_x, geom;
+                weights = wts) :
         fixed_x ?
-            _launch_sf_tiled_2d_fixed!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), geom) :
-            _launch_sf_tiled_2d_varying!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), geom)
+            _launch_sf_tiled_2d_fixed!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), geom; weights = wts) :
+            _launch_sf_tiled_2d_varying!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), geom; weights = wts)
     D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : error("GPU 2D batch requires D ∈ {2,3} (got $D)")
     return nothing
 end
@@ -993,14 +1018,17 @@ end
 """Dispatch a 1D batch launch on runtime D ∈ {2,3} into the Val-specialized launchers.
 `out`/`cnt` are (NMOM, NB, B); x_dev/u_dev are (D,N,B) varying or x=(D,N),u=(D,N,B) fixed."""
 function _sf_launch_1d_batch!(backend, out, cnt, x_dev, u_dev, sf_type, dig,
-                              N, NB, B, D::Int, ::Val{NMOM}, fixed_x::Bool, geom) where {NMOM}
+                              N, NB, B, D::Int, ::Val{NMOM}, fixed_x::Bool, geom;
+                              weights = SFC.NoWeights()) where {NMOM}
     # CUDA fast path (N-body broadcast + static-shared privatized histogram,
     # TILE=256) when StructureFunctionsCUDAExt is active and NB fits.
-    SFC.gpu_fast_launch_1d_batch!(backend, out, cnt, x_dev, u_dev, sf_type, dig,
-                                  N, NB, B, D, NMOM, fixed_x, geom, nothing) && return nothing
+    weights isa SFC.NoWeights &&
+        SFC.gpu_fast_launch_1d_batch!(backend, out, cnt, x_dev, u_dev, sf_type, dig,
+                                      N, NB, B, D, NMOM, fixed_x, geom, nothing) && return nothing
+    wts = _sf_weights_to_device(backend, weights)
     go(Dv) = fixed_x ?
-        _launch_sf_tiled_1d_fixed!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM), geom) :
-        _launch_sf_tiled_1d_varying!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM), geom)
+        _launch_sf_tiled_1d_fixed!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM), geom; weights = wts) :
+        _launch_sf_tiled_1d_varying!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM), geom; weights = wts)
     D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : error("GPU 1D batch requires D ∈ {2,3} (got $D)")
     return nothing
 end

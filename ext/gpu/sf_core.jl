@@ -127,6 +127,30 @@ end
     @inbounds SA.SVector{3}(buf[k], buf[SF_GPU_TILE + k], buf[2 * SF_GPU_TILE + k])
 
 # -----------------------------------------------------------------------------
+# Pair weights
+# -----------------------------------------------------------------------------
+
+"""
+    _sf_count_type(weights, count_eltype, n_pairs) -> Type
+
+Element type a device count histogram accumulates in, shared and global alike. `UInt32` while the
+sweep is unweighted **and** `n_pairs` fits it, since a narrower count halves the shared histogram;
+the caller's count type otherwise — weights make a count a weighted pair mass, and `UInt32`
+addition wraps silently past `typemax(UInt32)` pairs. Chosen host-side at the allocation, and a
+kernel's shared histogram then follows `eltype` of the buffer it flushes into.
+"""
+@inline _sf_count_type(::SFC.NoWeights, ::Type{CT}, n_pairs::Integer) where {CT} =
+    n_pairs <= typemax(UInt32) ? UInt32 : CT
+@inline _sf_count_type(::AbstractVector, ::Type{CT}, ::Integer) where {CT} = CT
+
+"""Worst-case number of pairs an `N`-point sweep can put in one bin."""
+@inline _sf_worst_case_pairs(N::Integer) = (Int128(N) * (Int128(N) - 1)) ÷ 2
+
+"""Move pair weights to the device, leaving `NoWeights()` alone."""
+@inline _sf_weights_to_device(backend, w::SFC.NoWeights) = w
+@inline _sf_weights_to_device(backend, w::AbstractVector) = KA.adapt(backend, w)
+
+# -----------------------------------------------------------------------------
 # Moments
 # -----------------------------------------------------------------------------
 

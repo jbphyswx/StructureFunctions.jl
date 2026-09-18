@@ -31,55 +31,58 @@ function _launch_joint_2d_tiled_kernel!(
     n_val::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     NB2 = n_dist * n_val
     compile_cells = workspace === nothing ? NB2 : workspace.joint2d_compile_cells
     W = SFC._val_int(SFH.coordinate_width(geom))
     kernel! = _joint2d_tiled_kernel_for(backend, dist_bins, val_plan, compile_cells, W, ws)
+    wts = _sf_weights_to_device(backend, weights)
+    vcst = Val(eltype(out_cnts_dev))
 
     if dist_bins isa LinearBinEdges && val_plan isa GPUValueLinearShared
         lbe, vp = dist_bins, val_plan
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa LinearBinEdges && val_plan isa GPUValueInfLinearShared
         lbe, vp = dist_bins, val_plan
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
             vp.first, vp.last, vp.inv_step, vp.step,
             vp.n_inner_edges, vp.inner_last,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa LinearBinEdges && val_plan isa GPUValueLogLinearShared
         lbe, vp = dist_bins, val_plan
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa LinearBinEdges && val_plan === nothing
         lbe = dist_bins
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev, sf_type,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts, value_edges_dev, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa LogBinEdges && val_plan isa GPUValueLinearShared
@@ -87,11 +90,11 @@ function _launch_joint_2d_tiled_kernel!(
         d_f, d_l, d_inv, d_st = _dist_log_linear_fields(lbe)
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             d_f, d_l, d_inv, d_st,
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa LogBinEdges && val_plan isa GPUValueInfLinearShared
@@ -99,12 +102,12 @@ function _launch_joint_2d_tiled_kernel!(
         d_f, d_l, d_inv, d_st = _dist_log_linear_fields(lbe)
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             d_f, d_l, d_inv, d_st,
             vp.first, vp.last, vp.inv_step, vp.step,
             vp.n_inner_edges, vp.inner_last,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa LogBinEdges && val_plan isa GPUValueLogLinearShared
@@ -112,11 +115,11 @@ function _launch_joint_2d_tiled_kernel!(
         d_f, d_l, d_inv, d_st = _dist_log_linear_fields(lbe)
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             d_f, d_l, d_inv, d_st,
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa LogBinEdges && val_plan === nothing
@@ -124,10 +127,10 @@ function _launch_joint_2d_tiled_kernel!(
         d_f, d_l, d_inv, d_st = _dist_log_linear_fields(lbe)
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev, sf_type,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts, value_edges_dev, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             d_f, d_l, d_inv, d_st,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa Vector && val_plan isa GPUValueLinearShared
@@ -140,12 +143,12 @@ function _launch_joint_2d_tiled_kernel!(
         end : gen_e
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts,
             dist_dev, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             edges[1],
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa Vector && val_plan isa GPUValueInfLinearShared
@@ -158,13 +161,13 @@ function _launch_joint_2d_tiled_kernel!(
         end : gen_e
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts,
             dist_dev, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             edges[1],
             vp.first, vp.last, vp.inv_step, vp.step,
             vp.n_inner_edges, vp.inner_last,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa Vector && val_plan isa GPUValueLogLinearShared
@@ -177,12 +180,12 @@ function _launch_joint_2d_tiled_kernel!(
         end : gen_e
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts,
             dist_dev, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
             edges[1],
             vp.first, vp.last, vp.inv_step, vp.step,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     elseif dist_bins isa Vector && val_plan === nothing
@@ -196,10 +199,10 @@ function _launch_joint_2d_tiled_kernel!(
         end : gen_e
         _joint2d_invoke_kernel!(
             kernel!,
-            out_sums_dev, out_cnts_dev, x_dev, u_dev,
+            out_sums_dev, out_cnts_dev, x_dev, u_dev, wts,
             dist_dev, value_edges_dev, sf_type,
             N_points, n_dist_edges, n_val_edges, n_val, NB2,
-            edges[1], sched, n_tile_blocks, ws, geom;
+            edges[1], sched, n_tile_blocks, ws, vcst, geom;
             ndrange = ndrange,
         )
     else
@@ -249,7 +252,9 @@ flush loops over the shared layout — not the logical cell counts, which are wh
 actually contains. `D` follows as a `Val` so the kernel can size its tile staging and build its
 coordinate vectors at compile time.
 """
-@inline function _sp2d_strategy_kernel_tail_args(config::SP2DAccumulationStrategy, D::Int, geom)
+@inline function _sp2d_strategy_kernel_tail_args(config::SP2DAccumulationStrategy, D::Int, geom,
+                                                 cnt_eltype::Type, weights, backend)
+    wts = _sf_weights_to_device(backend, weights)
     return (
         config.shared_cells,
         config.plane_shared_cells,
@@ -257,6 +262,8 @@ coordinate vectors at compile time.
         config.n_type_passes,
         Val(_sp2d_sharedhist_compile_cells(config)),
         D == 3 ? Val(3) : Val(2),
+        Val(cnt_eltype),
+        wts,
         geom,
     )
 end
@@ -293,6 +300,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -303,7 +311,8 @@ function _sp2d_pair_launch_kernel!(
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
         vp.first, vp.last, vp.inv_step, vp.step,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -324,6 +333,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -334,7 +344,8 @@ function _sp2d_pair_launch_kernel!(
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
         vp.first, vp.last, vp.inv_step, vp.step,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -355,6 +366,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -366,7 +378,8 @@ function _sp2d_pair_launch_kernel!(
         vp.first, vp.last, vp.inv_step, vp.step,
         vp.n_inner_edges, vp.inner_last,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -387,6 +400,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -398,7 +412,8 @@ function _sp2d_pair_launch_kernel!(
         vp.first, vp.last, vp.inv_step, vp.step, vp.inner_last,
         vp.n_inner_edges,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -419,6 +434,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -429,7 +445,8 @@ function _sp2d_pair_launch_kernel!(
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
         vp.first, vp.last, vp.inv_step, vp.step,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -450,6 +467,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -460,7 +478,8 @@ function _sp2d_pair_launch_kernel!(
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
         vp.first, vp.last, vp.inv_step, vp.step,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -481,6 +500,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -492,7 +512,8 @@ function _sp2d_pair_launch_kernel!(
         d_f, d_l, d_inv, d_st,
         vp.first, vp.last, vp.inv_step, vp.step,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -513,6 +534,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -524,7 +546,8 @@ function _sp2d_pair_launch_kernel!(
         d_f, d_l, d_inv, d_st,
         vp.first, vp.last, vp.inv_step, vp.step,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -545,6 +568,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -557,7 +581,8 @@ function _sp2d_pair_launch_kernel!(
         vp.first, vp.last, vp.inv_step, vp.step,
         vp.n_inner_edges, vp.inner_last,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -578,6 +603,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -590,7 +616,8 @@ function _sp2d_pair_launch_kernel!(
         vp.first, vp.last, vp.inv_step, vp.step, vp.inner_last,
         vp.n_inner_edges,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -611,6 +638,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -622,7 +650,8 @@ function _sp2d_pair_launch_kernel!(
         d_f, d_l, d_inv, d_st,
         vp.first, vp.last, vp.inv_step, vp.step,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -643,6 +672,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -654,7 +684,8 @@ function _sp2d_pair_launch_kernel!(
         d_f, d_l, d_inv, d_st,
         vp.first, vp.last, vp.inv_step, vp.step,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -675,6 +706,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -686,7 +718,8 @@ function _sp2d_pair_launch_kernel!(
         d_f, d_l, d_inv, d_st,
         vp.edges_dev,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -732,6 +765,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 ) where {FT}
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -747,7 +781,8 @@ function _sp2d_pair_launch_kernel!(
         bins_dev,
         _sp2d_val_launch_fields(val_plan)...,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -768,6 +803,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     kernel! = _sp2d_resolve_pair_kernel(workspace, backend, dist_bins, val_plan, config, ws)
@@ -778,7 +814,8 @@ function _sp2d_pair_launch_kernel!(
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val,
         vp.edges_dev,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom)...;
+        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
+                                        eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -799,6 +836,7 @@ function _sp2d_pair_launch_kernel!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     throw(ArgumentError(
         "unsupported HTP-EJ single-pass 2D pair (dist=$(typeof(dist_bins)), value=$(typeof(val_plan)))",
@@ -820,18 +858,19 @@ function _launch_single_pass_2d_strategy!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     if config.needs_partition_merge
         return _launch_sp2d_direct_partitioned!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
             dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config, geom;
-            workspace = workspace,
+            workspace = workspace, weights = weights,
         )
     end
     return _launch_sp2d_onchip!(
         backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
         dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config, geom;
-        workspace = workspace,
+        workspace = workspace, weights = weights,
     )
 end
 
@@ -851,11 +890,12 @@ function _launch_sp2d_onchip!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     _sp2d_pair_launch_kernel!(
         backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
         dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config, geom;
-        workspace = workspace,
+        workspace = workspace, weights = weights,
     )
     return nothing
 end
@@ -876,13 +916,14 @@ function _launch_sp2d_direct_partitioned!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     config.needs_partition_merge ||
         throw(ArgumentError("_launch_sp2d_direct_partitioned! requires needs_partition_merge"))
     partition_sums, partition_counts, n_tb = _sp2d_partition_pair_bufs_and_launch!(
         backend, out_sums_dev, x_dev, u_dev, dist_bins, val_plan,
         N_points, n_dist_edges, n_val_edges, n_dist, config, geom;
-        workspace = workspace,
+        workspace = workspace, weights = weights,
     )
     _launch_merge_sp2d_partitions!(
         backend, out_sums_dev, out_cnts_dev, partition_sums, partition_counts,
@@ -906,6 +947,7 @@ function _sp2d_partition_pair_bufs_and_launch!(
     config::SP2DAccumulationStrategy,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     config.needs_partition_merge ||
         throw(ArgumentError("_sp2d_partition_pair_bufs_and_launch! requires needs_partition_merge (direct mode)"))
@@ -924,7 +966,7 @@ function _sp2d_partition_pair_bufs_and_launch!(
     n_tb = _sp2d_pair_launch_kernel!(
         backend, partition_sums, partition_counts, x_dev, u_dev,
         dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config, geom;
-        workspace = workspace,
+        workspace = workspace, weights = weights,
     )
     return partition_sums, partition_counts, n_tb
 end
@@ -944,6 +986,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -974,6 +1017,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1004,6 +1048,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1035,6 +1080,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1066,6 +1112,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1097,6 +1144,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1128,6 +1176,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1160,6 +1209,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1192,6 +1242,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1223,6 +1274,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1254,6 +1306,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1284,6 +1337,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1314,6 +1368,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
     lbe = dist_bins
@@ -1345,6 +1400,7 @@ function _launch_single_pass_2d_tiled!(
     n_dist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     throw(ArgumentError(
         "unsupported single-pass 2D GPU pair (dist=$(typeof(dist_bins)), value=$(typeof(val_plan)))",
@@ -1366,6 +1422,7 @@ function _launch_single_pass_2d_kernel!(
     n_val_edges::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     lbe = dist_bins
     vp = val_plan
@@ -1382,6 +1439,7 @@ function _launch_single_pass_2d_kernel!(
     kernel! = _sf_single_pass_2d_kernel_linear!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
+        _sf_weights_to_device(backend, weights),
         N_points, Val(N_dims), n_dist_edges, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val, geom;
         ndrange = (N_points, N_points),
@@ -1404,11 +1462,13 @@ function _launch_single_pass_2d_kernel!(
     n_val_edges::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     lbe = dist_bins
     kernel! = _sf_single_pass_2d_kernel_linear!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, val_plan.edges_dev,
+        _sf_weights_to_device(backend, weights),
         N_points, Val(N_dims), n_dist_edges, n_val_edges,
         lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val, geom;
         ndrange = (N_points, N_points),
@@ -1431,6 +1491,7 @@ function _launch_single_pass_2d_kernel!(
     n_val_edges::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     lbe = dist_bins
     vp = val_plan
@@ -1438,7 +1499,7 @@ function _launch_single_pass_2d_kernel!(
     kernel! = _sf_single_pass_2d_kernel_log!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
-        vp.edges_dev,
+        vp.edges_dev, _sf_weights_to_device(backend, weights),
         N_points, Val(N_dims), n_dist_edges, n_val_edges,
         d_f, d_l, d_inv, d_st, geom;
         ndrange = (N_points, N_points),
@@ -1461,6 +1522,7 @@ function _launch_single_pass_2d_kernel!(
     n_val_edges::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 ) where {FT}
     _, _, gen_e = _workspace_dist_edge_bufs(workspace)
     bins_dev = gen_e === nothing ? begin
@@ -1471,7 +1533,8 @@ function _launch_single_pass_2d_kernel!(
     kernel! = _sf_single_pass_2d_kernel!(backend, workgroup_size)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev,
-        bins_dev, val_plan.edges_dev, N_points, Val(N_dims), n_dist_edges, n_val_edges, geom;
+        bins_dev, val_plan.edges_dev, _sf_weights_to_device(backend, weights),
+        N_points, Val(N_dims), n_dist_edges, n_val_edges, geom;
         ndrange = (N_points, N_points),
     )
     return nothing
@@ -1492,12 +1555,13 @@ function _launch_single_pass_2d_kernel!(
     n_val_edges::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
 )
     if N_dims == 2 && _gpu_single_pass_2d_use_tiled(dist_bins, val_plan, n_dist_edges - 1)
         return _launch_single_pass_2d_tiled!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
             dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist_edges - 1, geom;
-            workspace = workspace,
+            workspace = workspace, weights = weights,
         )
     end
     throw(ArgumentError(
@@ -1539,16 +1603,18 @@ function _launch_single_pass_2d!(
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     force_global_atomic::Bool = false,
+    weights = SFC.NoWeights(),
 )
     n_dist = n_dist_edges - 1
     if force_global_atomic
         return _launch_single_pass_2d_kernel!(
             backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
             dist_bins, val_plan, N_points, N_dims, n_dist_edges, n_val_edges, geom;
-            workspace = workspace,
+            workspace = workspace, weights = weights,
         )
     end
-    _sp2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, dist_bins, val_plan,
+    weights isa SFC.NoWeights &&
+        _sp2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, dist_bins, val_plan,
                           N_points, N_dims, n_dist, n_val_edges - 1, geom,
                           _active_cull(workspace)) && return nothing
     # D ∈ {2,3}: the tiled kernel stages D components and builds D-vectors from `Val{D}`, and its
@@ -1569,14 +1635,14 @@ function _launch_single_pass_2d!(
             return _launch_single_pass_2d_strategy!(
                 backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
                 dist_bins, val_plan, N_points, n_dist_edges, n_val_edges, n_dist, config, geom;
-                workspace = workspace,
+                workspace = workspace, weights = weights,
             )
         end
     end
     return _launch_single_pass_2d_kernel!(
         backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
         dist_bins, val_plan, N_points, N_dims, n_dist_edges, n_val_edges, geom;
-        workspace = workspace,
+        workspace = workspace, weights = weights,
     )
 end
 # Production batch launch drivers — fixed-x and varying-x.

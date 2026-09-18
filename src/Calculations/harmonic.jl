@@ -72,26 +72,63 @@ by direct summation over the points: `O(N lmax²)`, and the reference every fast
 against. `θ` is colatitude and `φ` longitude, both in radians.
 """
 function pseudo_coefficients_direct(f::AbstractVector{<:Number}, θ::AbstractVector, φ::AbstractVector,
-                                    s::Integer, lmax::Integer)
+                                    s::Integer, lmax::Integer;
+                                    backend::CB.AbstractExecutionBackend = CB.SerialBackend())
     N = length(f)
     length(θ) == length(φ) == N || throw(DimensionMismatch("f, θ and φ must have one entry per point"))
+    return _direct_coefficients(backend, f, θ, φ, s, lmax)
+end
+
+"""
+    direct_coefficients_partial(f, θ, φ, s, lmax, ilist) -> Matrix{ComplexF64}
+
+The pseudo-coefficient sum of [`pseudo_coefficients_direct`](@ref) over the points in `ilist`.
+Partials over disjoint index lists add, which is what lets a backend split the point loop.
+"""
+function direct_coefficients_partial(f::AbstractVector{<:Number}, θ::AbstractVector,
+                                     φ::AbstractVector, s::Integer, lmax::Integer, ilist)
     out = zeros(ComplexF64, lmax + 1, 2lmax + 1)
     col = zeros(Float64, lmax + 1)
     lf = _log_factorials(2lmax + 2)
     norms = [sqrt((2l + 1) / (4π)) for l in 0:lmax]
-    @inbounds for i in 1:N
+    @inbounds for i in ilist
         fi = ComplexF64(f[i])
         iszero(fi) && continue
-        for m in -lmax:lmax
-            wigner_d_column!(col, m, -s, θ[i], lmax, lf)
-            ph = fi * cis(-m * φ[i])
-            for l in max(abs(m), abs(s)):lmax
-                out[l + 1, m + lmax + 1] += ph * norms[l + 1] * col[l + 1]
+        if iszero(s)
+            # d^l_{-m,0} = (-1)^m d^l_{m,0}, so one recurrence serves both signs of m
+            for m in 0:lmax
+                wigner_d_column!(col, m, 0, θ[i], lmax, lf)
+                ph = fi * cis(-m * φ[i])
+                phm = (iseven(m) ? fi : -fi) * cis(m * φ[i])
+                for l in m:lmax
+                    v = norms[l + 1] * col[l + 1]
+                    out[l + 1, m + lmax + 1] += ph * v
+                    iszero(m) || (out[l + 1, lmax + 1 - m] += phm * v)
+                end
+            end
+        else
+            for m in -lmax:lmax
+                wigner_d_column!(col, m, -s, θ[i], lmax, lf)
+                ph = fi * cis(-m * φ[i])
+                for l in max(abs(m), abs(s)):lmax
+                    out[l + 1, m + lmax + 1] += ph * norms[l + 1] * col[l + 1]
+                end
             end
         end
     end
     return out
 end
+
+_direct_coefficients(::CB.AbstractSerialBackend, f, θ, φ, s, lmax) =
+    direct_coefficients_partial(f, θ, φ, s, lmax, eachindex(f))
+
+_direct_coefficients(::CB.AbstractAutoBackend, f, θ, φ, s, lmax) =
+    _direct_coefficients(_auto_local_backend(), f, θ, φ, s, lmax)
+
+_direct_coefficients(backend::CB.AbstractExecutionBackend, f, θ, φ, s, lmax) = throw(ArgumentError(
+    "the harmonic direct sum has no method for $(typeof(backend)); its extension supplies one, so " *
+    "load the package that provides it or pass backend = SerialBackend().",
+))
 
 """
     direct_sum_provider(θ, φ, lmax) -> (f, s) -> coefficients
@@ -99,8 +136,9 @@ end
 The pseudo-coefficient provider of the direct sum, in the form every provider takes: a callable of a
 complex point field and a spin.
 """
-direct_sum_provider(θ::AbstractVector, φ::AbstractVector, lmax::Integer) =
-    (f, s) -> pseudo_coefficients_direct(f, θ, φ, s, lmax)
+direct_sum_provider(θ::AbstractVector, φ::AbstractVector, lmax::Integer;
+                    backend::CB.AbstractExecutionBackend = CB.SerialBackend()) =
+    (f, s) -> pseudo_coefficients_direct(f, θ, φ, s, lmax; backend)
 
 # Spin-(−s) pseudo-coefficients of `conj(f)` from the spin-`s` ones of `f`:
 # conj(ₛY_lm) = (−1)^{m+s} ₋ₛY_{l,−m}, so ₋ₛ[conj f]_lm = (−1)^{m+s} conj(ₛf_{l,−m}).
@@ -357,14 +395,20 @@ the hard-binned pair average.
 
 An operator odd in a scalar increment is refused: the kernel sum runs over both readings of every
 pair, so such a moment is identically zero here.
+
+`backend` splits the point loop this package owns, which is the direct sum's. A fast transform
+provider computes the pseudo-coefficients itself and parallelises them its own way, so `backend`
+reaches no loop of ours on that route.
 """
 harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::HarmonicNodes, ::Val{D}, ::Val{V}, ::Val{K},
-                ::SB.AbstractDirectSumSpectralBackend; valid = AllValid()) where {D, V, K} =
+                ::SB.AbstractDirectSumSpectralBackend; valid = AllValid(),
+                backend::CB.AbstractExecutionBackend = CB.AutoBackend()) where {D, V, K} =
     _harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes, Val(D), Val(V), Val(K), valid,
-                     direct_sum_provider)
+                     (θ, φ, L) -> direct_sum_provider(θ, φ, L; backend))
 
 harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::HarmonicNodes, ::Val{D}, ::Val{V}, ::Val{K},
-                spectral_backend; valid = AllValid()) where {D, V, K} = _no_harmonic_provider(spectral_backend)
+                spectral_backend; valid = AllValid(), kwargs...) where {D, V, K} =
+    _no_harmonic_provider(spectral_backend)
 
 _no_harmonic_provider(spectral_backend) = throw(ArgumentError(
     "no method computes spherical harmonic pseudo-coefficients with $(typeof(spectral_backend)). " *
@@ -477,6 +521,7 @@ function calculate_structure_function(
     nodes::HarmonicNodes, spectral_backend;
     distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing,
     output_type::Type{OT} = SFO.StructureFunction, verbose::Bool = true, show_progress::Bool = true,
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {OT}
     data, vD, vV, vK = _packed(u)
     D = SFC_val_int(vD)
@@ -493,7 +538,8 @@ function calculate_structure_function(
     sums = zeros(float(eltype(data)), nb)
     counts = zeros(Float64, nb)
     verbose && @info "harmonic structure function: $(nb) nodes, lmax = $(nodes.lmax), $(nameof(typeof(spectral_backend)))"
-    harmonic_sweep!(sums, counts, sf, geometry, x, w, data, nodes, vD, vV, vK, spectral_backend; valid = v)
+    harmonic_sweep!(sums, counts, sf, geometry, x, w, data, nodes, vD, vV, vK, spectral_backend;
+                    valid = v, backend)
     return _finalize(SFO.StructureFunctionSumsAndCounts(sf, nodes, sums, counts), OT)
 end
 
@@ -519,11 +565,14 @@ quadrature weights. On a masked or unevenly sampled sphere these are the pseudo-
 window and the field together, the input to the kernel-binned statistics.
 """
 harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, ::SB.AbstractDirectSumSpectralBackend;
-                 distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing) =
-    _harmonic_spectra(x, u, lmax, distance_metric, weights, valid, direct_sum_provider)
+                 distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing,
+                 backend::CB.AbstractExecutionBackend = CB.AutoBackend()) =
+    _harmonic_spectra(x, u, lmax, distance_metric, weights, valid,
+                      (θ, φ, L) -> direct_sum_provider(θ, φ, L; backend))
 
 harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, spectral_backend;
-                 distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing) =
+                 distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing,
+                 kwargs...) =
     _no_harmonic_provider(spectral_backend)
 
 function _harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, distance_metric, weights,

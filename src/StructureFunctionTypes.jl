@@ -374,9 +374,13 @@ const MixedSFType = MixedStructureFunctionType
     v = SFC_field_vector(δu, sf.vector_field)
     θ = SFC_field_scalar(δu, sf.scalar_field)
     l = SFH.mδu_l(v, r̂)
-    t2 = SFH.transverse_norm2(v, r̂)
-    return l^NL * sqrt(t2)^NT * θ^P
+    return l^NL * _transverse_magnitude_power(v, r̂, Val(NT)) * θ^P
 end
+
+"""``‖δu_T‖^NT``, with no transverse work at all when `NT` is zero."""
+@inline _transverse_magnitude_power(v, r̂, ::Val{0}) = one(eltype(v))
+@inline _transverse_magnitude_power(v, r̂, ::Val{NT}) where {NT} =
+    sqrt(SFH.transverse_norm2(v, r̂))^NT
 
 """
     ScalarDotStructureFunctionType(a, b)

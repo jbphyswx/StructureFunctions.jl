@@ -72,7 +72,7 @@ end
     while g <= C
         @inbounds begin
             shared_sums[g] = zero(FT)
-            shared_cnts[g] = zero(UInt32)
+            shared_cnts[g] = zero(eltype(shared_cnts))
         end
         g += workgroup_size
     end
@@ -98,7 +98,7 @@ end
         if vbin <= n_val
             @inbounds begin
                 partition_sums[t, dbin, vbin, block_id] += shared_sums[g]
-                if shared_cnts[g] != UInt32(0)
+                if shared_cnts[g] != zero(eltype(shared_cnts))
                     partition_counts[t, dbin, vbin, block_id] += shared_cnts[g]
                 end
             end
@@ -126,7 +126,7 @@ end
         if vbin <= n_val
             @inbounds begin
                 @atomic out_sums[t, dbin, vbin] += shared_sums[g]
-                if shared_cnts[g] != UInt32(0)
+                if shared_cnts[g] != zero(eltype(shared_cnts))
                     @atomic out_cnts[t, dbin, vbin] += shared_cnts[g]
                 end
             end
@@ -142,6 +142,7 @@ end
     shared_sums, shared_cnts, n_dist, n_val,
     dbin, du_L, du_n2, N_val_edges,
     val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -150,8 +151,8 @@ end
         )
         if 1 <= vbin < N_val_edges
             g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -161,6 +162,7 @@ end
     shared_sums, shared_cnts, n_dist, n_val,
     val_first, val_last, val_inv_step, val_step,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -170,8 +172,8 @@ end
         )
         if 1 <= vbin < N_val_edges
             g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -182,6 +184,7 @@ end
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
     n_inner_edges::Int, inner_last::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -191,8 +194,8 @@ end
         )
         if 1 <= vbin < N_val_edges
             g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -202,6 +205,7 @@ end
     shared_sums, shared_cnts, n_dist, n_val,
     val_first, val_last, val_inv_step, val_step, inner_last,
     dbin::Int, du_L, du_n2, n_inner_edges::Int, N_val_edges::Int,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -211,8 +215,8 @@ end
         )
         if 1 <= vbin < N_val_edges
             g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -222,6 +226,7 @@ end
     shared_sums, shared_cnts, n_dist, n_val,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -230,8 +235,8 @@ end
         )
         if 1 <= vbin < N_val_edges
             g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -241,6 +246,7 @@ end
     shared_sums, shared_cnts, n_dist, n_val,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first, val_last, val_inv_step, val_step,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -249,8 +255,8 @@ end
         )
         if 1 <= vbin < N_val_edges
             g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -260,14 +266,15 @@ end
     shared_sums, shared_cnts, n_dist, n_val,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     value_edges,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
             g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -358,6 +365,7 @@ end
     type_pass::Int, types_per_pass::Int,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     t_lo = (type_pass - 1) * types_per_pass + 1
@@ -369,8 +377,8 @@ end
         if 1 <= vbin < N_val_edges
             slot = t - t_lo
             g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -380,6 +388,7 @@ end
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
     val_first, val_last, val_inv_step, val_step,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     t_lo = (type_pass - 1) * types_per_pass + 1
@@ -393,8 +402,8 @@ end
         if 1 <= vbin < N_val_edges
             slot = t - t_lo
             g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -405,6 +414,7 @@ end
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
     n_inner_edges::Int, inner_last::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     t_lo = (type_pass - 1) * types_per_pass + 1
@@ -417,8 +427,8 @@ end
         if 1 <= vbin < N_val_edges
             slot = t - t_lo
             g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -428,6 +438,7 @@ end
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
     val_first, val_last, val_inv_step, val_step, inner_last,
     dbin::Int, du_L, du_n2, n_inner_edges::Int, N_val_edges::Int,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     t_lo = (type_pass - 1) * types_per_pass + 1
@@ -441,8 +452,8 @@ end
         if 1 <= vbin < N_val_edges
             slot = t - t_lo
             g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -452,6 +463,7 @@ end
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     t_lo = (type_pass - 1) * types_per_pass + 1
@@ -463,8 +475,8 @@ end
         if 1 <= vbin < N_val_edges
             slot = t - t_lo
             g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -474,6 +486,7 @@ end
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first, val_last, val_inv_step, val_step,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     t_lo = (type_pass - 1) * types_per_pass + 1
@@ -486,8 +499,8 @@ end
         if 1 <= vbin < N_val_edges
             slot = t - t_lo
             g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -497,6 +510,7 @@ end
     shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     value_edges,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     t_lo = (type_pass - 1) * types_per_pass + 1
@@ -506,8 +520,8 @@ end
         if 1 <= vbin < N_val_edges
             slot = t - t_lo
             g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += vals[t]
-            @atomic shared_cnts[g] += UInt32(1)
+            @atomic shared_sums[g] += w * vals[t]
+            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
         end
     end
     return nothing
@@ -519,6 +533,7 @@ end
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -526,8 +541,8 @@ end
             vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
         end
     end
     return nothing
@@ -537,6 +552,7 @@ end
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     val_first, val_last, val_inv_step, val_step,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -545,8 +561,8 @@ end
             N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
         end
     end
     return nothing
@@ -557,6 +573,7 @@ end
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
     n_inner_edges::Int, inner_last::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -565,8 +582,8 @@ end
             n_inner_edges, inner_last,
         )
         if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
         end
     end
     return nothing
@@ -576,6 +593,7 @@ end
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     val_first, val_last, val_inv_step, val_step, inner_last,
     dbin::Int, du_L, du_n2, n_inner_edges::Int, N_val_edges::Int,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -584,8 +602,8 @@ end
             n_inner_edges, inner_last[t],
         )
         if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
         end
     end
     return nothing
@@ -595,6 +613,7 @@ end
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
+    w,
 ) where {FT}
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -602,8 +621,8 @@ end
             vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
         end
     end
     return nothing
@@ -613,6 +632,7 @@ end
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     val_first, val_last, val_inv_step, val_step,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
@@ -620,8 +640,8 @@ end
             vals[t], val_first, val_last, val_inv_step, val_step, t, N_val_edges,
         )
         if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
         end
     end
     return nothing
@@ -631,13 +651,14 @@ end
     partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     value_edges,
+    w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
         vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
         if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += UInt32(1)
+            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
+            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
         end
     end
     return nothing
@@ -817,6 +838,7 @@ function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:shared})
             shared_sums, shared_cnts, NB, N_val_edges - 1,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step,
+            pw,
         )
     end
 end
@@ -826,6 +848,7 @@ function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:direct})
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step,
+            pw,
         )
     end
 end
@@ -836,6 +859,7 @@ function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:shared})
             shared_sums, shared_cnts, NB, N_val_edges - 1,
             val_first, val_last, val_inv_step, val_step,
             bin, du_L, du_n2, N_val_edges,
+            pw,
         )
     end
 end
@@ -845,6 +869,7 @@ function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:direct})
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             val_first, val_last, val_inv_step, val_step,
             bin, du_L, du_n2, N_val_edges,
+            pw,
         )
     end
 end
@@ -855,6 +880,7 @@ function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:shared})
             shared_sums, shared_cnts, NB, N_val_edges - 1,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
+            pw,
         )
     end
 end
@@ -864,6 +890,7 @@ function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:direct})
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
+            pw,
         )
     end
 end
@@ -874,6 +901,7 @@ function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:shared})
             shared_sums, shared_cnts, NB, N_val_edges - 1,
             val_first, val_last, val_inv_step, val_step, inner_last,
             bin, du_L, du_n2, n_inner_edges, N_val_edges,
+            pw,
         )
     end
 end
@@ -883,6 +911,7 @@ function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:direct})
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             val_first, val_last, val_inv_step, val_step, inner_last,
             bin, du_L, du_n2, n_inner_edges, N_val_edges,
+            pw,
         )
     end
 end
@@ -893,6 +922,7 @@ function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:shared})
             shared_sums, shared_cnts, NB, N_val_edges - 1,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step,
+            pw,
         )
     end
 end
@@ -902,6 +932,7 @@ function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:direct})
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step,
+            pw,
         )
     end
 end
@@ -912,6 +943,7 @@ function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:shared})
             shared_sums, shared_cnts, NB, N_val_edges - 1,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step,
+            pw,
         )
     end
 end
@@ -921,6 +953,7 @@ function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:direct})
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step,
+            pw,
         )
     end
 end
@@ -930,6 +963,7 @@ function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:shared})
         _gpu_accumulate_sp2d_sharedhist_vector_val_cols!(
             shared_sums, shared_cnts, NB, N_val_edges - 1,
             bin, du_L, du_n2, N_val_edges, value_edges,
+            pw,
         )
     end
 end
@@ -938,6 +972,7 @@ function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:direct})
         _gpu_accumulate_sp2d_partitioned_direct_vector_val_cols!(
             partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
             bin, du_L, du_n2, N_val_edges, value_edges,
+            pw,
         )
     end
 end
@@ -949,6 +984,7 @@ function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:typeplane})
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step,
+            pw,
         )
     end
 end
@@ -958,6 +994,7 @@ function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:typeplane})
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
             val_first, val_last, val_inv_step, val_step,
             bin, du_L, du_n2, N_val_edges,
+            pw,
         )
     end
 end
@@ -967,6 +1004,7 @@ function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:typeplane})
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
+            pw,
         )
     end
 end
@@ -976,6 +1014,7 @@ function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:typeplane})
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
             val_first, val_last, val_inv_step, val_step, inner_last,
             bin, du_L, du_n2, n_inner_edges, N_val_edges,
+            pw,
         )
     end
 end
@@ -985,6 +1024,7 @@ function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:typeplane})
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step,
+            pw,
         )
     end
 end
@@ -994,6 +1034,7 @@ function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:typeplane})
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
             bin, du_L, du_n2, N_val_edges,
             val_first, val_last, val_inv_step, val_step,
+            pw,
         )
     end
 end
@@ -1002,6 +1043,7 @@ function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:typeplane})
         _gpu_accumulate_sp2d_typeplane_vector_val_cols!(
             shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
             bin, du_L, du_n2, N_val_edges, value_edges,
+            pw,
         )
     end
 end
@@ -1060,7 +1102,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
     # for the largest one the budget allows.
     shared_hist_decl = uses_shared ? quote
         shared_sums = @localmem OT (HC,)
-        shared_cnts = @localmem UInt32 (HC,)
+        shared_cnts = @localmem CST (HC,)
     end : quote end
     type_pass_decl = accum_mode == :typeplane ? quote
         shared_type_pass = @localmem Int (1,)
@@ -1068,9 +1110,13 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
     kernel_tail_params = [
         :(sched), :(n_tile_blocks::Int), :(workgroup_size::Int),
         :(C::Int), :(plane::Int), :(types_per_pass::Int), :(n_type_passes::Int),
-        :(::Val{HC}), :(::Val{D}), :(geom),
+        :(::Val{HC}), :(::Val{D}), :(::Val{CST}), :(wts), :(geom),
     ]
     pair_loop = quote
+        # The pair loop reads its tile out of `shared_tile`, so the tiles' first global point
+        # indices are rebuilt here; a pair's weight is the product of its two points'.
+        i0w = (ti - 1) * SF_GPU_TILE + 1
+        jbw = ti < tj ? (tj - 1) * SF_GPU_TILE + 1 : i0w
         p = lid
         while p <= n_pairs
             if ti < tj
@@ -1094,6 +1140,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                 # the signed du_T, so n̂ = (r̂₂, -r̂₁) is never built and the kernel carries no
                 # 2-D-specific assumption. This is the CPU's formula, so the two sum one expression.
                 du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
+                pw = SFC._point_weight(wts, i0w + ia - 1) * SFC._point_weight(wts, jbw + jb - 1)
                 $(accum)
             end
             p += workgroup_size
@@ -1123,7 +1170,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                         while g_zero <= types_per_pass * plane
                             @inbounds begin
                                 shared_sums[g_zero] = zero(OT)
-                                shared_cnts[g_zero] = zero(UInt32)
+                                shared_cnts[g_zero] = zero(eltype(shared_cnts))
                             end
                             g_zero += workgroup_size
                         end
@@ -1215,7 +1262,7 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
             $(dist_params...),
             $(val_params...),
             $(kernel_tail_params...),
-        ) where {OT, FT, HC, D}
+        ) where {OT, FT, HC, D, CST}
             shared_xi = @localmem FT (D * SF_GPU_TILE,)
             shared_ui = @localmem FT (D * SF_GPU_TILE,)
             shared_xj = @localmem FT (D * SF_GPU_TILE,)

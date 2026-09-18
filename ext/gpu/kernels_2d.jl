@@ -35,7 +35,7 @@ function _joint2d_cooperative_zero_body()
         while b <= NB2
             @inbounds begin
                 shared_sums[b] = zero(FT)
-                shared_cnts[b] = UInt32(0)
+                shared_cnts[b] = zero(CST)
             end
             b += workgroup_size
         end
@@ -45,7 +45,7 @@ end
 
 """Kernel parameter list for `(dist_route, val_route)` joint tiled kernels."""
 function _joint2d_kernel_param_exprs(dist_route::Symbol, val_route::Symbol)
-    params = Any[:output_sums, :output_counts, :x_mat, :u_mat]
+    params = Any[:output_sums, :output_counts, :x_mat, :u_mat, :wts]
     if dist_route == :general
         push!(params, :( @Const(distance_edges) ))
     end
@@ -85,7 +85,8 @@ function _joint2d_kernel_param_exprs(dist_route::Symbol, val_route::Symbol)
             :(n_inner_edges::Int), :(inner_last::FT),
         ])
     end
-    append!(params, [:(sched), :(n_tile_blocks::Int), :(workgroup_size::Int), :(geom)])
+    append!(params, [:(sched), :(n_tile_blocks::Int), :(workgroup_size::Int),
+                     :(::Val{CST}), :(geom)])
     return params
 end
 
@@ -132,13 +133,13 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
     val_digitize = _joint2d_val_digitize_expr(val_route)
     params = _joint2d_kernel_param_exprs(dist_route, val_route)
     return quote
-        KA.@kernel unsafe_indices=true function $(fname)($(params...),) where {FT}
+        KA.@kernel unsafe_indices=true function $(fname)($(params...),) where {FT, CST}
             shared_xi = @localmem FT ($(W * SF_GPU_TILE),)
             shared_ui = @localmem FT ($(W * SF_GPU_TILE),)
             shared_xj = @localmem FT ($(W * SF_GPU_TILE),)
             shared_uj = @localmem FT ($(W * SF_GPU_TILE),)
             shared_sums = @localmem FT ($(hist),)
-            shared_cnts = @localmem UInt32 ($(hist),)
+            shared_cnts = @localmem CST ($(hist),)
 
             $(zero_body)
     lid = @index(Local, Linear)
@@ -183,6 +184,7 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                 nj = min(SF_GPU_TILE, N_points - j0 + 1)
                 if ni > 0 && nj > 0
                     n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
+                    jbase = ti < tj ? j0 : i0
                     p = lid
                     while p <= n_pairs
                         if ti < tj
@@ -207,8 +209,10 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                             $(val_digitize)
                             if 1 <= vbin < N_val_edges
                                 idx = (dbin - 1) * NV + vbin
-                                @atomic shared_sums[idx] += val
-                                @atomic shared_cnts[idx] += UInt32(1)
+                                pw = SFC._point_weight(wts, i0 + ia - 1) *
+                                     SFC._point_weight(wts, jbase + jb - 1)
+                                @atomic shared_sums[idx] += pw * val
+                                @atomic shared_cnts[idx] += convert(CST, pw)
                             end
                         end
                         p += workgroup_size
@@ -224,7 +228,7 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                     dbin = (b - 1) ÷ NV + 1
                     vbin = b - (dbin - 1) * NV
                     @atomic output_sums[dbin, vbin] += shared_sums[b]
-                    if shared_cnts[b] != UInt32(0)
+                    if shared_cnts[b] != zero(CST)
                         @atomic output_counts[dbin, vbin] += shared_cnts[b]
                     end
                     b += workgroup_size

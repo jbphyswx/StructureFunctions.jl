@@ -34,7 +34,8 @@ end
 
 SFC.harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::SFC.HarmonicNodes, ::Val{D}, ::Val{V},
                     ::Val{K}, ::SB.AbstractNonUniformFastSphericalHarmonicsTransformSpectralBackend;
-                    valid = SFC.AllValid()) where {D, V, K} =
+                    valid = SFC.AllValid(),
+                    backend::SFC.CB.AbstractExecutionBackend = SFC.CB.AutoBackend()) where {D, V, K} =
     SFC._harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes, Val(D), Val(V), Val(K), valid,
                          _nufsht_provider)
 

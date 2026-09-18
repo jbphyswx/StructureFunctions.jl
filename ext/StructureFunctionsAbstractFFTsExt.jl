@@ -134,7 +134,7 @@ moment_component(mt::MonomialTransforms, j::NTuple) = moment_component(mt, mt, j
 
 # Fill the columns for slab pair (I, J) from the two slabs' forward transforms and invert them all at
 # once; returns the `(lags, columns)` matrix of raw moments.
-function _pair_inverse!(scratch, fwdI::AbstractVector, fwdJ::AbstractVector, columns::AbstractVector, iplan)
+function _pair_inverse!(scratch, fwdI::AbstractVector, fwdJ::AbstractVector, columns::AbstractVector)
     specf = scratch.specf
     n = size(specf, 1)
     @inbounds for (c, terms) in enumerate(columns)
@@ -149,7 +149,7 @@ function _pair_inverse!(scratch, fwdI::AbstractVector, fwdJ::AbstractVector, col
             end
         end
     end
-    LA.mul!(scratch.out, iplan, scratch.spec)
+    LA.mul!(scratch.out, scratch.iplan, scratch.spec)
     return scratch.outf
 end
 
@@ -251,30 +251,31 @@ function _slab_transforms(
     return [SFC.nufft_monomial_transforms(tag, s, dp, vp, wp, keys, Val(Pm); to)], keys, nothing
 end
 
-# The batched inverse plan over `ncols` columns and the per-task scratch it fills, in the transforms'
-# array family.
+# The per-executor scratch for `ncols` columns, in the transforms' array family: the buffers and the
+# batched inverse plan that fills them. An FFTW plan holds a pointer into the process that created
+# it, so it is built here, by whichever process runs the work, and never sent to another one.
 function _inverse_plan(eng, ncols::Int)
     F1 = eng.fwd[1][1]
     CT = eltype(F1)
     FT = real(CT)
     P = eng.P
     Ph = size(F1)
-    proto = fill!(similar(F1, Ph..., ncols), zero(CT))
-    iplan = AbstractFFTs.plan_irfft(proto, P[1], 1:length(P))
-    make_scratch = () -> begin
-        spec = fill!(similar(F1, Ph..., ncols), zero(CT))
+    return () -> begin
+        spec = similar(F1, Ph..., ncols)
         out = fill!(similar(F1, FT, P..., ncols), zero(FT))
-        (spec = spec, specf = reshape(spec, :, ncols), out = out, outf = reshape(out, :, ncols))
+        iplan = AbstractFFTs.plan_irfft(spec, P[1], 1:length(P))
+        fill!(spec, zero(CT))
+        (iplan = iplan, spec = spec, specf = reshape(spec, :, ncols),
+         out = out, outf = reshape(out, :, ncols))
     end
-    return iplan, make_scratch
 end
 
 function _transform_item!(
-    sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, eng, iplan, item::NTuple{4, Int}, scratch, plan,
+    sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, eng, item::NTuple{4, Int}, scratch, plan,
     nb, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
 ) where {OT, CT, D, V, K, W, Po, N}
     I, J = item[1], item[2]
-    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns, iplan)
+    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns)
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
     strides = SFC._lag_strides(P)
@@ -298,11 +299,11 @@ function _transform_item!(
 end
 
 function _transform_item!(
-    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, eng, iplan, item::NTuple{4, Int}, scratch, plan,
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, eng, item::NTuple{4, Int}, scratch, plan,
     nb, axis_edges, na, second_axis, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
 ) where {OT, CT, D, V, K, W, Po, N}
     I, J = item[1], item[2]
-    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns, iplan)
+    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns)
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
     strides = SFC._lag_strides(P)
@@ -479,7 +480,7 @@ end
 
 # Fill every slice's columns for slab pair (I, J) and invert them all at once; returns one
 # `(lags, columns)` matrix per slice.
-function _pair_inverse_batch!(scratch, engs::AbstractVector, I::Int, J::Int, columns::AbstractVector, iplan)
+function _pair_inverse_batch!(scratch, engs::AbstractVector, I::Int, J::Int, columns::AbstractVector)
     specf = scratch.specf
     n = size(specf, 1)
     @inbounds for t in eachindex(engs)
@@ -498,17 +499,17 @@ function _pair_inverse_batch!(scratch, engs::AbstractVector, I::Int, J::Int, col
             end
         end
     end
-    LA.mul!(scratch.out, iplan, scratch.spec)
+    LA.mul!(scratch.out, scratch.iplan, scratch.spec)
     return scratch.outs
 end
 
 function _transform_item_batch!(
-    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, engs, iplan, item::NTuple{4, Int}, scratch, plan,
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, engs, item::NTuple{4, Int}, scratch, plan,
     nb, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
 ) where {OT, CT, D, V, K, W, Po, N}
     I, J = item[1], item[2]
     eng = engs[1]
-    outs = _pair_inverse_batch!(scratch, engs, I, J, eng.columns, iplan)
+    outs = _pair_inverse_batch!(scratch, engs, I, J, eng.columns)
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
     strides = SFC._lag_strides(P)
@@ -537,12 +538,12 @@ function _transform_item_batch!(
 end
 
 function _transform_item_batch!(
-    sums::AbstractArray{OT, 3}, counts::AbstractArray{CT, 3}, sf, engs, iplan, item::NTuple{4, Int}, scratch, plan,
+    sums::AbstractArray{OT, 3}, counts::AbstractArray{CT, 3}, sf, engs, item::NTuple{4, Int}, scratch, plan,
     nb, axis_edges, na, second_axis, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
 ) where {OT, CT, D, V, K, W, Po, N}
     I, J = item[1], item[2]
     eng = engs[1]
-    outs = _pair_inverse_batch!(scratch, engs, I, J, eng.columns, iplan)
+    outs = _pair_inverse_batch!(scratch, engs, I, J, eng.columns)
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
     strides = SFC._lag_strides(P)
@@ -604,35 +605,38 @@ function _transform_sweep_fused!(
 ) where {D, V, K}
     engs = _slice_engines(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag)
     eng = engs[1]
-    iplan, make_scratch = _inverse_plan_batch(eng, length(eng.columns), length(engs))
+    make_scratch = _inverse_plan_batch(eng, length(eng.columns), length(engs))
     items = SFC.sweep_items(s, eng.r_max, SFC.sweep_tasks(backend), false)
-    body! = _item_body_batch(sf, engs, iplan, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
+    body! = _item_body_batch(sf, engs, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
     SFC.sweep_reduce!(sums, counts, backend, items, make_scratch, body!)
     return nothing
 end
 
-# One slice at a time, each with the inverse scratch of a single slice: the arrangement a schedule
-# whose lag geometry is a displacement and a bin takes.
+# One slice per work item, each with the engine and inverse scratch of a single slice: the
+# arrangement a schedule whose lag geometry is a displacement and a bin takes. Slices are
+# independent and write disjoint output columns, so any backend can execute them, and no slice's
+# engine outlives its item. FFTW serialises plan creation behind its own lock.
 function _transform_sweep_slices!(
     sums, counts, backend::CB.AbstractExecutionBackend, sf, data, s, dist_be, plan, nb, vD::Val, vV::Val,
     vK::Val, valid, weights, tag, axis,
 )
-    for t in 1:size(data, 3)
-        _transform_sweep!(_slice_out(sums, t), _slice_out(counts, t), backend, sf, view(data, :, :, t), s,
-                          dist_be, plan, nb, vD, vV, vK, SFC._valid_slice(valid, t), weights, tag, axis)
-    end
+    body! = (ls, lc, t, _) -> _transform_sweep!(
+        _slice_out(ls, t), _slice_out(lc, t), CB.SerialBackend(), sf, view(data, :, :, t), s,
+        dist_be, plan, nb, vD, vV, vK, SFC._valid_slice(valid, t), weights, tag, axis,
+    )
+    SFC.sweep_reduce!(sums, counts, backend, 1:size(data, 3), () -> nothing, body!)
     return nothing
 end
 
 @inline _slice_out(a::AbstractMatrix, t::Int) = view(a, :, t)
 @inline _slice_out(a::AbstractArray{<:Any, 3}, t::Int) = view(a, :, :, t)
 
-_item_body_batch(sf, engs, iplan, plan, nb, ::Nothing, vD, vV, vK, vW, vP, vN) =
-    (ls, lc, it, scratch) -> _transform_item_batch!(ls, lc, sf, engs, iplan, it, scratch, plan, nb, vD, vV, vK, vW,
+_item_body_batch(sf, engs, plan, nb, ::Nothing, vD, vV, vK, vW, vP, vN) =
+    (ls, lc, it, scratch) -> _transform_item_batch!(ls, lc, sf, engs, it, scratch, plan, nb, vD, vV, vK, vW,
                                                     vP, vN)
 
-_item_body_batch(sf, engs, iplan, plan, nb, axis::Tuple, vD, vV, vK, vW, vP, vN) =
-    (ls, lc, it, scratch) -> _transform_item_batch!(ls, lc, sf, engs, iplan, it, scratch, plan, nb, axis[1],
+_item_body_batch(sf, engs, plan, nb, axis::Tuple, vD, vV, vK, vW, vP, vN) =
+    (ls, lc, it, scratch) -> _transform_item_batch!(ls, lc, sf, engs, it, scratch, plan, nb, axis[1],
                                                     axis[2], axis[3], vD, vV, vK, vW, vP, vN)
 
 _transform_sweep_batch!(
@@ -764,11 +768,11 @@ function SFC.gridded_tensor_sweep!(
         "sums must be $((ntuple(_ -> D, P)..., nb)) and counts of length $nb; got $(size(sums)) and $(length(counts))",
     ))
     eng, Ns = _tensor_engine(order, data, s, dist_be, Val(D), valid, weights, counts, tag)
-    iplan, make_scratch = _inverse_plan(eng, length(eng.columns))
+    make_scratch = _inverse_plan(eng, length(eng.columns))
     items = SFC.sweep_items(s, eng.r_max, SFC.sweep_tasks(backend), false)
     sf = SFT.MomentTensorOperator{P}()
     sym = zeros(OT, Ns, nb)
-    body! = (ls, lc, it, scratch) -> _transform_tensor_item!(ls, lc, sf, eng, iplan, it, scratch, plan, nb, nothing,
+    body! = (ls, lc, it, scratch) -> _transform_tensor_item!(ls, lc, sf, eng, it, scratch, plan, nb, nothing,
                                                              Val(D), eng.vW, eng.vP, eng.vN, Val(Ns))
     SFC.sweep_reduce!(sym, counts, backend, items, make_scratch, body!)
     SFC._expand_symmetric!(sums, sym, Val(D), Val(P))
@@ -790,11 +794,11 @@ function SFC.gridded_tensor_sweep!(
         "sums must be $((ntuple(_ -> D, P)..., nb, na)) and counts ($nb, $na); got $(size(sums)) and $(size(counts))",
     ))
     eng, Ns = _tensor_engine(order, data, s, dist_be, Val(D), valid, weights, counts, tag)
-    iplan, make_scratch = _inverse_plan(eng, length(eng.columns))
+    make_scratch = _inverse_plan(eng, length(eng.columns))
     items = SFC.sweep_items(s, eng.r_max, SFC.sweep_tasks(backend), false)
     sf = SFT.MomentTensorOperator{P}()
     sym = zeros(OT, Ns, nb, na)
-    body! = (ls, lc, it, scratch) -> _transform_tensor_item!(ls, lc, sf, eng, iplan, it, scratch, plan, nb,
+    body! = (ls, lc, it, scratch) -> _transform_tensor_item!(ls, lc, sf, eng, it, scratch, plan, nb,
                                                              (axis_edges, na, second_axis), Val(D), eng.vW, eng.vP,
                                                              eng.vN, Val(Ns))
     SFC.sweep_reduce!(sym, counts, backend, items, make_scratch, body!)
@@ -803,11 +807,11 @@ function SFC.gridded_tensor_sweep!(
 end
 
 function _transform_tensor_item!(
-    sym::AbstractMatrix{OT}, counts::AbstractVector{CT}, sf, eng, iplan, item::NTuple{4, Int}, scratch, plan, nb,
+    sym::AbstractMatrix{OT}, counts::AbstractVector{CT}, sf, eng, item::NTuple{4, Int}, scratch, plan, nb,
     ::Nothing, ::Val{D}, ::Val{W}, ::Val{Po}, ::Val{N}, ::Val{Ns},
 ) where {OT, CT, D, W, Po, N, Ns}
     I, J = item[1], item[2]
-    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns, iplan)
+    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns)
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
     strides = SFC._lag_strides(P)
@@ -831,12 +835,12 @@ function _transform_tensor_item!(
 end
 
 function _transform_tensor_item!(
-    sym::AbstractArray{OT, 3}, counts::AbstractMatrix{CT}, sf, eng, iplan, item::NTuple{4, Int}, scratch, plan, nb,
+    sym::AbstractArray{OT, 3}, counts::AbstractMatrix{CT}, sf, eng, item::NTuple{4, Int}, scratch, plan, nb,
     axis::Tuple, ::Val{D}, ::Val{W}, ::Val{Po}, ::Val{N}, ::Val{Ns},
 ) where {OT, CT, D, W, Po, N, Ns}
     axis_edges, na, second_axis = axis
     I, J = item[1], item[2]
-    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns, iplan)
+    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns)
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
     strides = SFC._lag_strides(P)
@@ -876,18 +880,18 @@ function _transform_sweep!(
     ::Val{K}, valid, weights, tag, axis,
 ) where {D, V, K}
     eng = _transform_prepare(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag)
-    iplan, make_scratch = _inverse_plan(eng, length(eng.columns))
+    make_scratch = _inverse_plan(eng, length(eng.columns))
     items = SFC.sweep_items(s, eng.r_max, SFC.sweep_tasks(backend), false)
-    body! = _item_body(sf, eng, iplan, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
+    body! = _item_body(sf, eng, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
     SFC.sweep_reduce!(sums, counts, backend, items, make_scratch, body!)
     return nothing
 end
 
-_item_body(sf, eng, iplan, plan, nb, ::Nothing, vD, vV, vK, vW, vP, vN) =
-    (ls, lc, it, scratch) -> _transform_item!(ls, lc, sf, eng, iplan, it, scratch, plan, nb, vD, vV, vK, vW, vP, vN)
+_item_body(sf, eng, plan, nb, ::Nothing, vD, vV, vK, vW, vP, vN) =
+    (ls, lc, it, scratch) -> _transform_item!(ls, lc, sf, eng, it, scratch, plan, nb, vD, vV, vK, vW, vP, vN)
 
-_item_body(sf, eng, iplan, plan, nb, axis::Tuple, vD, vV, vK, vW, vP, vN) =
-    (ls, lc, it, scratch) -> _transform_item!(ls, lc, sf, eng, iplan, it, scratch, plan, nb, axis[1], axis[2],
+_item_body(sf, eng, plan, nb, axis::Tuple, vD, vV, vK, vW, vP, vN) =
+    (ls, lc, it, scratch) -> _transform_item!(ls, lc, sf, eng, it, scratch, plan, nb, axis[1], axis[2],
                                               axis[3], vD, vV, vK, vW, vP, vN)
 
 # A device runs the engine through the KernelAbstractions extension.

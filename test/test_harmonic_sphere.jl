@@ -3,6 +3,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC, Structu
     StructureFunctionObjects as SFO, HelperFunctions as SFH, HarmonicNodes
 using StructureFunctions.MultiFields: Fields
 using SpectralBackends: SpectralBackends as SB
+using ComputationalBackends: ComputationalBackends as CB
+using OhMyThreads: OhMyThreads
 using NUFSHT: NUFSHT
 using NonuniformFFTs: NonuniformFFTs
 using FlowGeometries: FlowGeometries as FG
@@ -445,4 +447,46 @@ Test.@testset "kernel-binned results invert to the spectra they came from" begin
     Test.@test maximum(abs.(ratio[1:Lf] .- full[2:(Lf + 1)]) ./ (R .* truth)) < 0.1
     Test.@test all(pseudo[2:(Lf + 1)] ./ full[2:(Lf + 1)] .< 0.6)
     Test.@test maximum(abs, ratio[(Lf + 1):lmax]) < 0.05 * R * truth[end]
+end
+
+Test.@testset "the harmonic route splits its point loop across backends" begin
+    # `backend` reaches the direct sum, whose point loop is a reduction: every backend must return
+    # the serial answer, and the spin-0 columns are built from one recurrence per |m| by the
+    # symmetry d^l_{-m,0} = (-1)^m d^l_{m,0}.
+    Random.seed!(404)
+    N, lmax = 400, 12
+    θ = acos.(clamp.(2 .* rand(N) .- 1, -1, 1))
+    φ = 2π .* rand(N)
+    fr = randn(N)
+    fc = complex.(randn(N), randn(N))
+
+    for (f, s) in ((fr, 0), (fc, 1), (fc, 2))
+        ref = SFC.pseudo_coefficients_direct(f, θ, φ, s, lmax; backend = CB.SerialBackend())
+        for be in (CB.ThreadedBackend(), CB.AutoBackend())
+            got = SFC.pseudo_coefficients_direct(f, θ, φ, s, lmax; backend = be)
+            Test.@test maximum(abs, got .- ref) <= 1e-10 * max(maximum(abs, ref), 1e-10)
+        end
+    end
+
+    # the spin-0 symmetry against an independent per-m recurrence
+    lf = SFC._log_factorials(2lmax + 2)
+    for m in 1:lmax
+        plus = SFC.wigner_d_column(m, 0, 0.7, lmax)
+        minus = SFC.wigner_d_column(-m, 0, 0.7, lmax)
+        Test.@test maximum(abs, minus .- (iseven(m) ? 1 : -1) .* plus) < 1e-12
+    end
+
+    # and end to end through the public entry
+    x = permutedims(hcat(φ, π / 2 .- θ))
+    u = randn(2, N)
+    nodes = HarmonicNodes(collect(range(0.2, 2.5; length = 7)), lmax)
+    base = SFC.calculate_structure_function(SFT.L2SFType(), x, u, nodes, DS;
+        backend = CB.SerialBackend(), verbose = false,
+        output_type = SFO.StructureFunctionSumsAndCounts)
+    for be in (CB.ThreadedBackend(), CB.AutoBackend())
+        got = SFC.calculate_structure_function(SFT.L2SFType(), x, u, nodes, DS;
+            backend = be, verbose = false, output_type = SFO.StructureFunctionSumsAndCounts)
+        Test.@test maximum(abs, got.sums .- base.sums) <= 1e-9 * max(maximum(abs, base.sums), 1e-9)
+        Test.@test maximum(abs, got.counts .- base.counts) <= 1e-9 * max(maximum(abs, base.counts), 1e-9)
+    end
 end

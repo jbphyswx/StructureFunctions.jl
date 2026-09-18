@@ -14,13 +14,14 @@ Rows 3 (`T2`) and 6 (`L1T2`) are exact differences of the others (`T2 = S2 - L2`
     du_L,
     du_norm2,
     NB::Int,
+    w = true,
 )
     vals = SFC.single_pass_invariants(du_L, du_norm2)
-    @atomic shared_sums[bin] += vals[1]
-    @atomic shared_sums[NB + bin] += vals[2]
-    @atomic shared_sums[3NB + bin] += vals[4]
-    @atomic shared_sums[4NB + bin] += vals[5]
-    @atomic shared_cnts[bin] += UInt32(1)
+    @atomic shared_sums[bin] += w * vals[1]
+    @atomic shared_sums[NB + bin] += w * vals[2]
+    @atomic shared_sums[3NB + bin] += w * vals[4]
+    @atomic shared_sums[4NB + bin] += w * vals[5]
+    @atomic shared_cnts[bin] += convert(eltype(shared_cnts), w)
     return nothing
 end
 
@@ -39,14 +40,16 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_linear_
     sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    wts,                    # NoWeights(), or one weight per point
+    ::Val{CST},             # shared count element: UInt32 unweighted, the count type weighted
     geom,
-) where {FT}
+) where {FT, CST}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
     shared_sums = @localmem FT (SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS,)
-    shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
+    shared_cnts = @localmem CST (SF_GPU_MAX_BINS,)
     lid = @index(Local, Linear)
     k_init = lid
     while k_init <= SF_GPU_SINGLE_PASS_N * NB
@@ -55,7 +58,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_linear_
     end
     b_init = lid
     while b_init <= NB
-        @inbounds shared_cnts[b_init] = UInt32(0)
+        @inbounds shared_cnts[b_init] = zero(CST)
         b_init += workgroup_size
     end
     @synchronize
@@ -105,6 +108,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_linear_
         nj = min(SF_GPU_TILE, N_points - j0 + 1)
         if ni > 0 && nj > 0
             n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
+            jbase = ti < tj ? j0 : i0
             p = lid
             while p <= n_pairs
                 if ti < tj
@@ -127,8 +131,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_linear_
                 )
                 if ok && 1 <= bin < N_bins
                     du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
+                    pw = SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1)
                     _gpu_accumulate_single_pass_1d_shared!(
-                        shared_sums, shared_cnts, bin, du_L, du_norm2, NB,
+                        shared_sums, shared_cnts, bin, du_L, du_norm2, NB, pw,
                     )
                 end
                 p += workgroup_size
@@ -152,7 +157,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_linear_
         b = lid
         while b <= NB
             c = shared_cnts[b]
-            if c != UInt32(0)
+            if c != zero(CST)
                 for t in 1:SF_GPU_SINGLE_PASS_N
                     @atomic output_counts[t, b] += c
                 end
@@ -177,14 +182,16 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
     sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    wts,                    # NoWeights(), or one weight per point
+    ::Val{CST},             # shared count element: UInt32 unweighted, the count type weighted
     geom,
-) where {FT}
+) where {FT, CST}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
     shared_sums = @localmem FT (SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS,)
-    shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
+    shared_cnts = @localmem CST (SF_GPU_MAX_BINS,)
     lid = @index(Local, Linear)
     k_init = lid
     while k_init <= SF_GPU_SINGLE_PASS_N * NB
@@ -193,7 +200,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
     end
     b_init = lid
     while b_init <= NB
-        @inbounds shared_cnts[b_init] = UInt32(0)
+        @inbounds shared_cnts[b_init] = zero(CST)
         b_init += workgroup_size
     end
     @synchronize
@@ -243,6 +250,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
         nj = min(SF_GPU_TILE, N_points - j0 + 1)
         if ni > 0 && nj > 0
             n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
+            jbase = ti < tj ? j0 : i0
             p = lid
             while p <= n_pairs
                 if ti < tj
@@ -263,8 +271,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
                 bin = _gpu_digitize_log_spaced(dist, first_edge, last_edge, inv_step, step_val, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
+                    pw = SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1)
                     _gpu_accumulate_single_pass_1d_shared!(
-                        shared_sums, shared_cnts, bin, du_L, du_norm2, NB,
+                        shared_sums, shared_cnts, bin, du_L, du_norm2, NB, pw,
                     )
                 end
                 p += workgroup_size
@@ -288,7 +297,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_log_u32
         b = lid
         while b <= NB
             c = shared_cnts[b]
-            if c != UInt32(0)
+            if c != zero(CST)
                 for t in 1:SF_GPU_SINGLE_PASS_N
                     @atomic output_counts[t, b] += c
                 end
@@ -311,14 +320,16 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_general
     sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    wts,                    # NoWeights(), or one weight per point
+    ::Val{CST},             # shared count element: UInt32 unweighted, the count type weighted
     geom,
-) where {FT}
+) where {FT, CST}
     shared_xi = @localmem FT (256,)
     shared_ui = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_uj = @localmem FT (256,)
     shared_sums = @localmem FT (SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS,)
-    shared_cnts = @localmem UInt32 (SF_GPU_MAX_BINS,)
+    shared_cnts = @localmem CST (SF_GPU_MAX_BINS,)
     lid = @index(Local, Linear)
     k_init = lid
     while k_init <= SF_GPU_SINGLE_PASS_N * NB
@@ -327,7 +338,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_general
     end
     b_init = lid
     while b_init <= NB
-        @inbounds shared_cnts[b_init] = UInt32(0)
+        @inbounds shared_cnts[b_init] = zero(CST)
         b_init += workgroup_size
     end
     @synchronize
@@ -377,6 +388,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_general
         nj = min(SF_GPU_TILE, N_points - j0 + 1)
         if ni > 0 && nj > 0
             n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
+            jbase = ti < tj ? j0 : i0
             p = lid
             while p <= n_pairs
                 if ti < tj
@@ -397,8 +409,9 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_general
                 bin = _gpu_digitize_general(dist, bins, N_bins)
                 if ok && 1 <= bin < N_bins
                     du_L, du_norm2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
+                    pw = SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1)
                     _gpu_accumulate_single_pass_1d_shared!(
-                        shared_sums, shared_cnts, bin, du_L, du_norm2, NB,
+                        shared_sums, shared_cnts, bin, du_L, du_norm2, NB, pw,
                     )
                 end
                 p += workgroup_size
@@ -422,7 +435,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_general
         b = lid
         while b <= NB
             c = shared_cnts[b]
-            if c != UInt32(0)
+            if c != zero(CST)
                 for t in 1:SF_GPU_SINGLE_PASS_N
                     @atomic output_counts[t, b] += c
                 end

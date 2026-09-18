@@ -5,13 +5,15 @@
 # One thread owns an `i` and walks every `j > i`, accumulating into a global histogram.
 
 KA.@kernel unsafe_indices = true function _field_kernel!(
-    sums, counts, @Const(x_mat), @Const(data), sf, geom, plan,
+    sums, counts, @Const(x_mat), @Const(data), wts, sf, geom, plan,
     N_points::Int, N_bins::Int, ::Val{W}, ::Val{F}, ::Val{V}, ::Val{K},
 ) where {W, F, V, K}
     i = @index(Global)
     if i <= N_points - 1
         XT = eltype(x_mat)
+        CT = eltype(counts)
         X1 = SA.SVector{W, XT}(ntuple(d -> @inbounds(x_mat[d, i]), Val(W)))
+        wi = SFC._point_weight(wts, i)
         for j in (i + 1):N_points
             X2 = SA.SVector{W, XT}(ntuple(d -> @inbounds(x_mat[d, j]), Val(W)))
             ok, r, frame = SFH.pair_frame(geom, X1, X2)
@@ -19,8 +21,9 @@ KA.@kernel unsafe_indices = true function _field_kernel!(
                 bin = SFC.squared_digitize(plan, r * r)
                 if 1 <= bin <= N_bins
                     val = SFC._field_value(sf, Val(F), Val(V), Val(K), data, geom, frame, r, i, j)
-                    @atomic sums[bin] += val
-                    @atomic counts[bin] += one(eltype(counts))
+                    w = wi * SFC._point_weight(wts, j)
+                    @atomic sums[bin] += w * val
+                    @atomic counts[bin] += CT(w)
                 end
             end
         end
@@ -34,13 +37,16 @@ function SFC.gpu_calculate_structure_function_fields!(
     x::AbstractMatrix, f::SFC.MF.Fields{D, V, K}, distance_bins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling = SFC.AutoCulling(),
+    weights = SFC.NoWeights(),
     verbose::Bool = true, show_progress::Bool = true,
 ) where {D, V, K}
     _ = (verbose, show_progress)
     # Culling reorders the points on the host; the device sweep enumerates the full triangle, and
     # a permutation does not change a histogram, so the request is honoured by declining to permute.
-    geom, xk, data, vF, plan, _ = SFC.field_setup(f, x, distance_bins, distance_metric,
-                                                    SFC.NoCulling())
+    w = SFC._pair_weights(weights, size(SFC.MF.packed(f), 2), float(eltype(SFC.MF.packed(f))))
+    SFC._check_weighted_counts(w, eltype(counts))
+    geom, xk, data, vF, plan, _, wk = SFC.field_setup(f, x, distance_bins, distance_metric,
+                                                      SFC.NoCulling(), w)
     culling isa SFC.AlwaysCulling && throw(ArgumentError(
         "GPU multi-field sweeps do not build a cell grid on device; use AutoCulling (which " *
         "declines here) or a CPU backend to cull.",
@@ -57,9 +63,11 @@ function SFC.gpu_calculate_structure_function_fields!(
     s_dev = KA.adapt(ka, zeros(eltype(sums), nb))
     c_dev = KA.adapt(ka, zeros(eltype(counts), nb))
 
+    # The digitize plan carries its squared edges in a vector, so it reaches the kernel through
+    # `adapt` like every other array argument; passed as built it is a host pointer on the device.
     kernel = _field_kernel!(ka, 256)
-    kernel(s_dev, c_dev, x_dev, d_dev, sf, geom, plan, N, nb,
-           Val(W), Val(F), Val(V), Val(K); ndrange = N)
+    kernel(s_dev, c_dev, x_dev, d_dev, _sf_weights_to_device(ka, wk), sf, geom,
+           KA.adapt(ka, plan), N, nb, Val(W), Val(F), Val(V), Val(K); ndrange = N)
     KA.synchronize(ka)
 
     sums .+= Array(s_dev)

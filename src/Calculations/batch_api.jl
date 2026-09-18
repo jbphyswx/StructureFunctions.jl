@@ -19,7 +19,7 @@ grid form is supplied by the FlowGeometries extension and the schedule forms by
 """
 function calculate_structure_function_batch!(
     sums, counts, sf_type, x, u, distance_bins;
-    backend = CB.SerialBackend(), kwargs...
+    backend = CB.AutoBackend(), kwargs...
 )
     _dispatch_batch!(backend, sums, counts, sf_type, x, u, distance_bins; kwargs...)
     return nothing
@@ -55,13 +55,25 @@ function _dispatch_batch!(
 end
 
 function _dispatch_batch!(
+    ::CB.AbstractAutoBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...
+)
+    return _dispatch_batch!(_auto_local_backend(), sums, counts, sf_type, x, u, distance_bins; kwargs...)
+end
+
+function _dispatch_batch!(
     ::CB.AbstractDistributedBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...
 )
-    throw(
-        ArgumentError(
-            "Distributed slice batch driver is not implemented yet. Loop over time slices or use backend=CB.GPUBackend(...).",
-        ),
-    )
+    throw(ArgumentError(
+        "Distributed backend is unavailable for the slice batch driver. Load Distributed " *
+        "(`using Distributed`) to enable StructureFunctionsDistributedExt, or use a different backend.",
+    ))
+end
+
+function _dispatch_batch!(::CB.AbstractMPIBackend, args...; kwargs...)
+    throw(ArgumentError(
+        "MPI backend is unavailable for the slice batch driver. Load MPI (`using MPI`) to enable " *
+        "StructureFunctionsMPIExt, or use a different backend.",
+    ))
 end
 
 function _dispatch_batch!(
@@ -80,7 +92,7 @@ Batch 2D joint histograms over `(N_dims, N_points, T)`; outputs `(n_dist, n_val,
 """
 function calculate_structure_function_2d_batch!(
     sums, counts, sf_type, x, u, distance_bins, value_bins;
-    backend = CB.SerialBackend(), kwargs...
+    backend = CB.AutoBackend(), kwargs...
 )
     _dispatch_2d_batch!(backend, sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...)
     return nothing
@@ -102,9 +114,26 @@ function _dispatch_2d_batch!(
 end
 
 function _dispatch_2d_batch!(
+    ::CB.AbstractAutoBackend, sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...
+)
+    return _dispatch_2d_batch!(_auto_local_backend(), sums, counts, sf_type, x, u, distance_bins,
+                               value_bins; kwargs...)
+end
+
+function _dispatch_2d_batch!(
     ::CB.AbstractDistributedBackend, args...; kwargs...
 )
-    throw(ArgumentError("Distributed 2D joint slice batch not implemented yet; use GPUBackend or loop over t."))
+    throw(ArgumentError(
+        "Distributed backend is unavailable for the 2D joint slice batch driver. Load Distributed " *
+        "(`using Distributed`) to enable StructureFunctionsDistributedExt, or use a different backend.",
+    ))
+end
+
+function _dispatch_2d_batch!(::CB.AbstractMPIBackend, args...; kwargs...)
+    throw(ArgumentError(
+        "MPI backend is unavailable for the 2D joint slice batch driver. Load MPI (`using MPI`) to " *
+        "enable StructureFunctionsMPIExt, or use a different backend.",
+    ))
 end
 
 function _dispatch_2d_batch!(
@@ -195,7 +224,7 @@ outputs `(6, NB, T)`.
 """
 function calculate_structure_functions_single_pass_batch!(
     sums, counts, x, u, distance_bins;
-    backend = CB.SerialBackend(), kwargs...
+    backend = CB.AutoBackend(), kwargs...
 )
     _dispatch_single_pass_batch!(backend, sums, counts, x, u, distance_bins; kwargs...)
     return nothing
@@ -217,9 +246,25 @@ function _dispatch_single_pass_batch!(
 end
 
 function _dispatch_single_pass_batch!(
+    ::CB.AbstractAutoBackend, sums, counts, x, u, distance_bins; kwargs...
+)
+    return _dispatch_single_pass_batch!(_auto_local_backend(), sums, counts, x, u, distance_bins; kwargs...)
+end
+
+function _dispatch_single_pass_batch!(
     ::CB.AbstractDistributedBackend, args...; kwargs...
 )
-    throw(ArgumentError("Distributed single-pass slice batch not implemented yet; use GPUBackend or loop over t."))
+    throw(ArgumentError(
+        "Distributed backend is unavailable for the single-pass slice batch driver. Load Distributed " *
+        "(`using Distributed`) to enable StructureFunctionsDistributedExt, or use a different backend.",
+    ))
+end
+
+function _dispatch_single_pass_batch!(::CB.AbstractMPIBackend, args...; kwargs...)
+    throw(ArgumentError(
+        "MPI backend is unavailable for the single-pass slice batch driver. Load MPI (`using MPI`) " *
+        "to enable StructureFunctionsMPIExt, or use a different backend.",
+    ))
 end
 
 function _dispatch_single_pass_batch!(
@@ -240,7 +285,7 @@ if you have a length-6 vector of bin objects.
 """
 function calculate_structure_functions_single_pass_2d_batch!(
     sums, counts, x, u, distance_bins, value_bins::SinglePass2DValueBins;
-    backend = CB.SerialBackend(), kwargs...
+    backend = CB.AutoBackend(), kwargs...
 )
     _dispatch_single_pass_2d_batch!(
         backend, sums, counts, x, u, distance_bins, value_bins; kwargs...
@@ -264,9 +309,26 @@ function _dispatch_single_pass_2d_batch!(
 end
 
 function _dispatch_single_pass_2d_batch!(
+    ::CB.AbstractAutoBackend, sums, counts, x, u, distance_bins, value_bins::SinglePass2DValueBins; kwargs...
+)
+    return _dispatch_single_pass_2d_batch!(_auto_local_backend(), sums, counts, x, u, distance_bins,
+                                           value_bins; kwargs...)
+end
+
+function _dispatch_single_pass_2d_batch!(
     ::CB.AbstractDistributedBackend, args...; kwargs...
 )
-    throw(ArgumentError("Distributed single-pass 2D slice batch not implemented yet; use GPUBackend or loop over t."))
+    throw(ArgumentError(
+        "Distributed backend is unavailable for the single-pass 2D slice batch driver. Load Distributed " *
+        "(`using Distributed`) to enable StructureFunctionsDistributedExt, or use a different backend.",
+    ))
+end
+
+function _dispatch_single_pass_2d_batch!(::CB.AbstractMPIBackend, args...; kwargs...)
+    throw(ArgumentError(
+        "MPI backend is unavailable for the single-pass 2D slice batch driver. Load MPI (`using MPI`) " *
+        "to enable StructureFunctionsMPIExt, or use a different backend.",
+    ))
 end
 
 function _dispatch_single_pass_2d_batch!(

@@ -320,12 +320,16 @@ function field_partial(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
     count_eltype::Type{CT} = UInt32,
+    weights = NoWeights(),
 ) where {D, V, K, CT}
     N = size(MF.packed(f), 2)
     nb = n_histogram_bins(squared_digitize_plan(distance_bins))
-    sums = zeros(float(eltype(MF.packed(f))), nb)
+    OT = float(eltype(MF.packed(f)))
+    w = _pair_weights(weights, N, OT)
+    _check_weighted_counts(w, CT)
+    sums = zeros(OT, nb)
     counts = zeros(CT, nb)
-    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling)
+    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, w)
     _field_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan,
                          n_histogram_bins(plan), Val(SFC_val_int(SFH.coordinate_width(geom))),
                          outer, N, grid, wk)
@@ -367,14 +371,25 @@ end
 @inline _field_dispatch!(::CB.AbstractThreadedBackend, sums, counts, sf, x, f, bins; kwargs...) =
     threaded_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
 
+"""
+    mpi_calculate_structure_function!(sums, counts, sf, x, fields, bins; kwargs...)
+
+Accumulate a multi-field structure function across MPI ranks. Supplied by the MPI extension.
+"""
+function mpi_calculate_structure_function!(sums, counts, sf, x, f::MF.Fields, bins; kwargs...)
+    throw(ArgumentError("the MPI multi-field sweep needs MPI: run `using MPI` under `mpiexec`."))
+end
+
+@inline function _field_dispatch!(b::CB.AbstractMPIBackend, sums, counts, sf, x, f, bins; kwargs...)
+    return mpi_calculate_structure_function!(sums, counts, sf, x, f, bins; backend = b, kwargs...)
+end
+
 @inline function _field_dispatch!(::CB.AbstractDistributedBackend, sums, counts, sf, x, f, bins;
                                     kwargs...)
-    _refuse_weights(kwargs, "the distributed multi-field sweep")
     return distributed_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
 end
 
 @inline function _field_dispatch!(be::CB.AbstractGPUBackend, sums, counts, sf, x, f, bins; kwargs...)
-    _refuse_weights(kwargs, "the GPU multi-field sweep")
     return gpu_calculate_structure_function_fields!(be, sums, counts, sf, x, f, bins; kwargs...)
 end
 
@@ -392,7 +407,7 @@ Accumulate a multi-field's pairs into `sums`/`counts` on `backend`.
 """
 function calculate_structure_function!(
     sums, counts, sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::MF.Fields,
-    distance_bins; backend::CB.AbstractExecutionBackend = CB.SerialBackend(), kwargs...,
+    distance_bins; backend::CB.AbstractExecutionBackend = CB.AutoBackend(), kwargs...,
 )
     _assert_counts_representable(eltype(counts), size(MF.packed(f), 2))
     validate_fields(sf, f)

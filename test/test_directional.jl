@@ -1,6 +1,8 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using ComputationalBackends: ComputationalBackends as CB
+using KernelAbstractions: KernelAbstractions as KA
+using OhMyThreads: OhMyThreads
 using StaticArrays: StaticArrays as SA
 using Random: Random
 
@@ -115,6 +117,35 @@ Test.@testset "binning the operator value is unchanged" begin
     Test.@test with_source.counts == plain.counts
     Test.@test with_source.sums == plain.sums
     Test.@test sum(plain.counts) > 0
+end
+
+Test.@testset "the angle axis reaches every backend through the public entry" begin
+    # Every testset above calls the serial kernel directly, so none of them sees a backend that
+    # takes the keyword and bins something else. This one goes through the entry a user calls.
+    Random.seed!(7450)
+    N = 200
+    x = rand(2, N)
+    u = randn(2, N)
+    dist_bins = collect(range(0.0, 1.0; length = 7))
+    ax_bins = collect(range(prevfloat(0.0), π; length = 5))
+    src = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
+    through(backend) = SFC.calculate_structure_function(
+        SF2, x, u, dist_bins, ax_bins; backend = backend, verbose = false, second_axis = src)
+
+    ref = through(CB.SerialBackend())
+    Test.@test sum(ref.counts) > 0
+    # The control that makes the rows below mean something: binning the angle must not reproduce
+    # the default value binning, so a backend that drops the keyword cannot pass by accident.
+    value_binned = SFC.calculate_structure_function(
+        SF2, x, u, dist_bins, ax_bins; backend = CB.SerialBackend(), verbose = false)
+    Test.@test value_binned.counts != ref.counts
+
+    thr = through(CB.ThreadedBackend())
+    Test.@test thr.counts == ref.counts
+    Test.@test thr.sums ≈ ref.sums
+
+    # The device joint kernel bins each pair's own value, so it says so by name.
+    Test.@test_throws ArgumentError through(CB.GPUBackend(KA.CPU()))
 end
 
 Test.@testset "an angle axis is refused where the direction is not shared" begin

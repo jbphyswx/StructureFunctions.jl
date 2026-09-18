@@ -11,7 +11,12 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT, StructureFunctionObjects as SFO,
     AbstractBinEdges, LinearBinEdges, LogBinEdges
 
-SFC.distributed_workers_available(::Val{:distributed}) = Distributed.nworkers() > 1
+# A `LocalManager` worker is another process on this node, competing for the cores the threaded
+# backend already has; any other manager placed the worker somewhere this process cannot reach.
+SFC.distributed_adds_hardware(::Val{:distributed}) =
+    Distributed.nworkers() > 1 &&
+    any(w -> !(Distributed.worker_from_id(w).manager isa Distributed.LocalManager),
+        Distributed.workers())
 
 # --- Non-Mutating 1D Dispatch (returns the raw accumulator; public boundary finalizes) ---
 function SFC._dispatch_execution_backend(
@@ -64,6 +69,7 @@ function _parallel_calculate_structure_function_core(
     show_progress = true,
     count_eltype::Type{CT} = UInt32,
     inner::CB.AbstractLocalBackend = CB.SerialBackend(),
+    weights = nothing,
     kwargs...,
 ) where {CT}
     if verbose
@@ -79,10 +85,12 @@ function _parallel_calculate_structure_function_core(
     N = length(x_vecs[1])
     nw = max(1, Distributed.nworkers())
     chunks = SFC._balanced_index_chunks(N, nw)
+    OT0 = promote_type(float(eltype(x_vecs[1])), float(eltype(u_vecs[1])))
+    w = SFC._pair_weights(weights, N, OT0)
     partials = Distributed.pmap(chunks) do ch
         SFC._partial_sums_counts(
             inner, structure_function_type, x_vecs, u_vecs, distance_bins, ch;
-            geometry = geometry, count_eltype = count_eltype,
+            geometry = geometry, count_eltype = count_eltype, weights = w,
         )
     end
 
@@ -97,16 +105,76 @@ function _parallel_calculate_structure_function_core(
     return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
 end
 
-# --- Batched (auxiliary-axis) distributed dispatch ---
-# Distribute the BATCH axis across workers (per-b work is equal, so contiguous chunks are
-# balanced). Each worker computes complete b-slices via the `inner` backend (serial or
-# threaded batch kernels) and returns its slice; results are concatenated along the batch
-# axis (disjoint b's ⇒ no reduction). With one worker pinned per NUMA node this keeps each
-# process's velocity data socket-local, beating pure threading's single-socket bandwidth ceiling.
-# Matches ndims(u) >= 3 only (the AbstractMatrix point-field method above is more specific).
-@inline function _dist_batch_chunks(B::Int, nw::Int)
-    nw = clamp(nw, 1, max(B, 1))
-    return [(((w - 1) * B) ÷ nw + 1):((w * B) ÷ nw) for w in 1:nw]
+"""
+    _dist_bl_exec(inner_exec) -> executor
+
+The batch-leading executor for the Distributed backend: split the **outer pair index** across
+workers, run the batch-leading kernel on each share, and add the partials.
+
+Splitting the outer index rather than the slice axis is what keeps the amortisation the
+batch-leading kernels exist for — a pair's geometry is computed once and reused across all `B`
+slices inside the kernel. A slice-wise split recomputes every pair's frame, distance and bin once
+per slice, which costs `B` times the geometry and measured 6.4× the serial total at `B = 8`.
+Same shape as the MPI extension's `_mpi_bl_exec`, with `pmap` and a sum where that has an
+`Allreduce!`.
+"""
+function _dist_bl_exec(inner_exec)
+    return function (make_accum, run_chunk!, ifull, B, accum_bytes, ws)
+        nw = max(1, Distributed.nworkers())
+        chunks = SFC._balanced_index_chunks(length(ifull), nw)
+        shares = [ifull[c] for c in chunks if !isempty(c)]
+        length(shares) <= 1 && return inner_exec(make_accum, run_chunk!, ifull, B, accum_bytes, ws)
+        parts = Distributed.pmap(shares) do share
+            acc = inner_exec(make_accum, run_chunk!, share, B, accum_bytes, nothing)
+            (Array(acc[1]), Array(acc[2]))
+        end
+        total = parts[1]
+        for k in 2:length(parts)
+            total[1] .+= parts[k][1]
+            total[2] .+= parts[k][2]
+        end
+        return total
+    end
+end
+
+SFC._bl_executor(b::CB.AbstractDistributedBackend) = _dist_bl_exec(SFC._bl_executor(CB.local_backend(b)))
+
+# --- Auxiliary-axis, batch and single-pass entries ---
+# Every one runs the batch-leading kernel over an outer-index split through `_dist_bl_exec`.
+# Matches ndims(u) >= 3 only (the AbstractMatrix point-field methods above are more specific).
+
+"""Accumulate a distributed auxiliary-axis sweep into the `(n_bins, B)` reshape of `sums`/`counts`."""
+function _dist_accumulate_1d!(
+    sums, counts, db::CB.AbstractDistributedBackend,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector, B::Int;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
+    weights = SFC.NoWeights(),
+) where {CT}
+    # The batch-leading kernel over an outer-index split, not a slice split: a pair's geometry is
+    # computed once and reused across all `B` slices, which a slice-wise split would repeat `B`
+    # times. `sums`/`counts` arrive as the `(n_bins, B)` reshape `_bl_run_1d!` accumulates into.
+    SFC._bl_run_1d!(sums, counts, structure_function_type, x, u,
+        SFC.BinEdges(distance_bins), distance_metric, _dist_bl_exec(SFC._bl_executor(CB.local_backend(db)));
+        weights = weights)
+    return nothing
+end
+
+"""Accumulate a distributed joint slice sweep into the `(n_dist, n_val, B)` reshape."""
+function _dist_accumulate_2d!(
+    sums, counts, db::CB.AbstractDistributedBackend,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector, value_bins::AbstractVector,
+    B::Int;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    count_eltype::Type{CT} = UInt32,
+    weights = SFC.NoWeights(),
+) where {CT}
+    SFC._bl_run_joint2d!(sums, counts, structure_function_type, x, u,
+        SFC.BinEdges(distance_bins), SFC.BinEdges(value_bins), distance_metric,
+        _dist_bl_exec(SFC._bl_executor(CB.local_backend(db))); weights = weights)
+    return nothing
 end
 
 function SFC._dispatch_execution_backend(
@@ -122,39 +190,18 @@ function SFC._dispatch_execution_backend(
     backend = nothing,
     kwargs...,
 ) where {CT}
-    verbose && @info("calculating batched structure function (distributed over batch axis, inner=$(nameof(typeof(CB.local_backend(db)))))")
-    D, N = size(u, 1), size(u, 2)
+    verbose && @info("calculating batched structure function (distributed over slices, inner=$(nameof(typeof(CB.local_backend(db)))))")
     bdims = size(u)[3:end]
     B = prod(bdims)
-    fixed_x = ndims(x) == 2
-    u_flat = reshape(u, D, N, B)
-    x_flat = fixed_x ? x : reshape(x, D, N, B)
     nb = SFC.n_histogram_bins(distance_bins)
-    inner = CB.local_backend(db)
-
-    chunks = _dist_batch_chunks(B, Distributed.nworkers())
-    # Each worker computes its contiguous b-chunk locally via the inner backend, requesting the raw
-    # accumulator so partials can be concatenated; the public boundary finalizes. The b-slice is the
-    # pmap ITEM, not a closure capture: `pmap` re-serializes the closure on every `remotecall`, so a
-    # captured `u_flat` ships the whole batch to every worker, not its own 1/nw share.
-    items = [(fixed_x ? x_flat : x_flat[:, :, bc], u_flat[:, :, bc]) for bc in chunks]
-    parts = Distributed.pmap(items) do xu
-        r = SFC.calculate_structure_function(
-            structure_function_type, xu[1], xu[2], distance_bins, count_eltype;
-            backend = inner, output_type = SFO.StructureFunctionSumsAndCounts,
-            verbose = false, show_progress = false,
-            distance_metric = distance_metric,
-        )
-        (r.sums, r.counts)
-    end
-
     OT = promote_type(float(eltype(x)), float(eltype(u)))
     sums = zeros(OT, nb, B)
     counts = zeros(CT, nb, B)
-    for (w, bc) in enumerate(chunks)
-        @inbounds sums[:, bc] .= reshape(parts[w][1], nb, length(bc))
-        @inbounds counts[:, bc] .= reshape(parts[w][2], nb, length(bc))
-    end
+    _dist_accumulate_1d!(
+        sums, counts, db, structure_function_type, x, u, distance_bins, B;
+        distance_metric = distance_metric, count_eltype = CT,
+        weights = get(kwargs, :weights, SFC.NoWeights()),
+    )
 
     return SFO.StructureFunctionSumsAndCounts(
         structure_function_type, distance_bins,
@@ -246,10 +293,13 @@ function SFC._dispatch_execution_backend(
     OT = promote_type(float(eltype(x_vecs[1])), float(eltype(u_vecs[1])))
     inner = CB.local_backend(db)
 
+    geom = get(kwargs, :geometry, SFC.default_geometry(u_vecs))
+    w2 = SFC._pair_weights(get(kwargs, :weights, nothing), N, OT)
+    axis2 = get(kwargs, :second_axis, SFC.InvariantValueAxis())
     partials = Distributed.pmap(chunks) do ichunk
         SFC._partial_2d_sums_counts(
             inner, structure_function_type, x_vecs, u_vecs, distance_bins, value_bins, ichunk;
-            distance_metric = distance_metric, count_eltype = CT,
+            geometry = geom, count_eltype = CT, weights = w2, second_axis = axis2,
         )
     end
 
@@ -351,7 +401,7 @@ function SFC._dispatch_single_pass_2d(
         sums .+= s
         counts .+= c
     end
-    return sums, counts
+    return (sums = sums, counts = counts)
 end
 
 # --- Mutating 1D Dispatch ---
@@ -458,6 +508,238 @@ function SFC._dispatch_execution_backend!(
 end
 
 
+# --- Non-mutating joint dispatch over auxiliary axes ---
+function SFC._dispatch_execution_backend(
+    db::CB.AbstractDistributedBackend,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x::AbstractArray,
+    u::AbstractArray,
+    distance_bins::AbstractVector,
+    value_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    verbose = true,
+    show_progress = true,
+    count_eltype::Type{CT} = UInt32,
+    backend = nothing,
+    kwargs...,
+) where {CT}
+    verbose && @info("calculating batched 2D joint structure function (distributed over slices, inner=$(nameof(typeof(CB.local_backend(db)))))")
+    bdims = size(u)[3:end]
+    B = prod(bdims)
+    nd = SFC.n_histogram_bins(distance_bins)
+    nv = SFC.n_histogram_bins(value_bins)
+    OT = promote_type(float(eltype(x)), float(eltype(u)))
+    sums = zeros(OT, nd, nv, B)
+    counts = zeros(CT, nd, nv, B)
+    _dist_accumulate_2d!(
+        sums, counts, db, structure_function_type, x, u, distance_bins, value_bins, B;
+        distance_metric = distance_metric, count_eltype = CT,
+        weights = get(kwargs, :weights, SFC.NoWeights()),
+    )
+    return SFO.StructureFunction2DSumsAndCounts(
+        structure_function_type, distance_bins, value_bins,
+        reshape(sums, nd, nv, bdims...), reshape(counts, nd, nv, bdims...),
+    )
+end
+
+# --- Mutating dispatch over auxiliary axes ---
+function SFC._dispatch_execution_backend!(
+    db::CB.AbstractDistributedBackend,
+    sums::AbstractArray, counts::AbstractArray,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x::AbstractArray, u::AbstractArray,
+    distance_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    kwargs...,
+)
+    B = prod(size(u)[3:end])
+    nb = SFC.n_histogram_bins(distance_bins)
+    _dist_accumulate_1d!(
+        reshape(sums, nb, B), reshape(counts, nb, B), db, structure_function_type, x, u,
+        distance_bins, B; distance_metric = distance_metric, count_eltype = eltype(counts),
+        weights = get(kwargs, :weights, SFC.NoWeights()),
+    )
+    return nothing
+end
+
+function SFC._dispatch_execution_backend!(
+    db::CB.AbstractDistributedBackend,
+    sums::AbstractArray, counts::AbstractArray,
+    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
+    x::AbstractArray, u::AbstractArray,
+    distance_bins::AbstractVector, value_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    kwargs...,
+)
+    B = prod(size(u)[3:end])
+    nd = SFC.n_histogram_bins(distance_bins)
+    nv = SFC.n_histogram_bins(value_bins)
+    _dist_accumulate_2d!(
+        reshape(sums, nd, nv, B), reshape(counts, nd, nv, B), db, structure_function_type, x, u,
+        distance_bins, value_bins, B; distance_metric = distance_metric,
+        count_eltype = eltype(counts), weights = get(kwargs, :weights, SFC.NoWeights()),
+    )
+    return nothing
+end
+
+# --- Slice batch drivers ---
+function SFC._dispatch_batch!(
+    db::CB.AbstractDistributedBackend, sums::AbstractArray, counts::AbstractArray,
+    sf_type::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
+    distance_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(), kwargs...,
+)
+    B = prod(size(u)[3:end])
+    nb = SFC.n_histogram_bins(distance_bins)
+    _dist_accumulate_1d!(
+        reshape(sums, nb, B), reshape(counts, nb, B), db, sf_type, x, u, distance_bins, B;
+        distance_metric = distance_metric, count_eltype = eltype(counts),
+        weights = get(kwargs, :weights, SFC.NoWeights()),
+    )
+    return nothing
+end
+
+function SFC._dispatch_2d_batch!(
+    db::CB.AbstractDistributedBackend, sums, counts, sf_type, x, u, distance_bins, value_bins;
+    distance_metric::DI.PreMetric = DI.Euclidean(), kwargs...,
+)
+    B = prod(size(u)[3:end])
+    nd = SFC.n_histogram_bins(distance_bins)
+    nv = SFC.n_histogram_bins(value_bins)
+    _dist_accumulate_2d!(
+        reshape(sums, nd, nv, B), reshape(counts, nd, nv, B), db, sf_type, x, u,
+        distance_bins, value_bins, B; distance_metric = distance_metric,
+        count_eltype = eltype(counts), weights = get(kwargs, :weights, SFC.NoWeights()),
+    )
+    return nothing
+end
+
+function SFC._dispatch_single_pass_batch!(
+    db::CB.AbstractDistributedBackend, sums, counts, x, u, distance_bins;
+    distance_metric::DI.PreMetric = DI.Euclidean(), kwargs...,
+)
+    # Outer-index split through the batch-leading kernel, so a pair's geometry is computed once
+    # and reused across the slices; see `_dist_bl_exec`.
+    SFC._bl_run_sp1d!(sums, counts, x, u, SFC.BinEdges(distance_bins), distance_metric,
+        _dist_bl_exec(SFC._bl_executor(CB.local_backend(db)));
+        weights = get(kwargs, :weights, SFC.NoWeights()))
+    return nothing
+end
+
+function SFC._dispatch_single_pass_2d_batch!(
+    db::CB.AbstractDistributedBackend, sums, counts, x, u, distance_bins,
+    value_bins::SFC.SinglePass2DValueBins;
+    distance_metric::DI.PreMetric = DI.Euclidean(), kwargs...,
+)
+    SFC._bl_run_sp2d!(sums, counts, x, u, SFC.BinEdges(distance_bins), value_bins,
+        distance_metric, _dist_bl_exec(SFC._bl_executor(CB.local_backend(db)));
+        weights = get(kwargs, :weights, SFC.NoWeights()))
+    return nothing
+end
+
+# --- Mutating single-pass over a point list ---
+function SFC._dispatch_single_pass!(
+    db::CB.AbstractDistributedBackend, sums::AbstractMatrix, counts::AbstractMatrix,
+    x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...,
+)
+    r = SFC._dispatch_single_pass(db, x, u, distance_bins; count_eltype = eltype(counts), kwargs...)
+    sums .+= r.sums
+    counts .+= r.counts
+    return sums, counts
+end
+
+function SFC._dispatch_single_pass_2d!(
+    db::CB.AbstractDistributedBackend, sums_3d::AbstractArray, counts_3d::AbstractArray,
+    x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector,
+    value_bins::SFC.SinglePass2DValueBins; kwargs...,
+)
+    r = SFC._dispatch_single_pass_2d(
+        db, x, u, distance_bins, value_bins; count_eltype = eltype(counts_3d), kwargs...,
+    )
+    sums_3d .+= r.sums
+    counts_3d .+= r.counts
+    return sums_3d, counts_3d
+end
+
+# --- Single pass over auxiliary axes ---
+# One slice per work item, like every other auxiliary-axis entry here, so `AutoBackend` has a
+# distributed method to choose and never has to refuse.
+function SFC._dispatch_single_pass(
+    db::CB.AbstractDistributedBackend,
+    ::Union{SFC.SharedPositionField, SFC.VaryingPositionField},
+    x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(), count_eltype::Type{CT} = UInt32, kwargs...,
+) where {CT}
+    bdims = size(u)[3:end]
+    B = prod(bdims)
+    nb = SFC.n_histogram_bins(distance_bins)
+    OT = promote_type(float(eltype(x)), float(eltype(u)))
+    sums = zeros(OT, SFC.SINGLE_PASS_N, nb, B)
+    counts = zeros(CT, SFC.SINGLE_PASS_N, nb, B)
+    SFC._bl_run_sp1d!(sums, counts, x, u, SFC.BinEdges(distance_bins), distance_metric,
+        _dist_bl_exec(SFC._bl_executor(CB.local_backend(db)));
+        weights = get(kwargs, :weights, SFC.NoWeights()))
+    return (sums = reshape(sums, SFC.SINGLE_PASS_N, nb, bdims...),
+            counts = reshape(counts, SFC.SINGLE_PASS_N, nb, bdims...))
+end
+
+function SFC._dispatch_single_pass_2d(
+    db::CB.AbstractDistributedBackend,
+    ::Union{SFC.SharedPositionField, SFC.VaryingPositionField},
+    x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector,
+    value_bins::SFC.SinglePass2DValueBins;
+    distance_metric::DI.PreMetric = DI.Euclidean(), count_eltype::Type{CT} = UInt32, kwargs...,
+) where {CT}
+    bdims = size(u)[3:end]
+    B = prod(bdims)
+    nb = SFC.n_histogram_bins(distance_bins)
+    nv = length(SFC._sp2d_value_bin_at(value_bins, 1)) - 1
+    OT = promote_type(float(eltype(x)), float(eltype(u)))
+    sums = zeros(OT, SFC.SINGLE_PASS_N, nb, nv, B)
+    counts = zeros(CT, SFC.SINGLE_PASS_N, nb, nv, B)
+    SFC._bl_run_sp2d!(sums, counts, x, u, SFC.BinEdges(distance_bins), value_bins,
+        distance_metric, _dist_bl_exec(SFC._bl_executor(CB.local_backend(db)));
+        weights = get(kwargs, :weights, SFC.NoWeights()))
+    return (sums = reshape(sums, SFC.SINGLE_PASS_N, nb, nv, bdims...),
+            counts = reshape(counts, SFC.SINGLE_PASS_N, nb, nv, bdims...))
+end
+
+# --- Harmonic pseudo-coefficients ---
+function SFC._direct_coefficients(db::CB.AbstractDistributedBackend, f, θ, φ, s, lmax)
+    chunks = SFC._balanced_index_chunks(length(f), max(1, Distributed.nworkers()))
+    parts = Distributed.pmap(chunks) do ch
+        SFC.direct_coefficients_partial(f, θ, φ, s, lmax, ch)
+    end
+    return reduce(+, parts)
+end
+
+# --- Gridded sweeps ---
+# Each worker takes a balanced share of the sweep's work items into its own histograms, which add
+# because a histogram is order-independent. `sweep_items` is asked for enough parts to feed every
+# worker and, under a threaded inner backend, every task inside one, so a one-slab schedule splits
+# its lags rather than leaving all but one worker idle.
+SFC.sweep_tasks(db::CB.AbstractDistributedBackend) =
+    max(1, Distributed.nworkers()) * SFC.sweep_tasks(CB.local_backend(db))
+
+function SFC.sweep_reduce!(
+    sums, counts, db::CB.AbstractDistributedBackend, items, make_scratch, body!,
+)
+    inner = CB.local_backend(db)
+    chunks = SFC._balanced_index_chunks(length(items), max(1, Distributed.nworkers()))
+    partials = Distributed.pmap(chunks) do ch
+        local_sums = zero(sums)
+        local_counts = zero(counts)
+        SFC.sweep_reduce!(local_sums, local_counts, inner, [items[i] for i in ch],
+                          make_scratch, body!)
+        (local_sums, local_counts)
+    end
+    for (ls, lc) in partials
+        sums .+= ls
+        counts .+= lc
+    end
+    return nothing
+end
+
 # --- Tensor structure functions ---
 
 # Each worker takes a balanced share of the outer index and returns its own accumulators, which add
@@ -468,13 +750,14 @@ function SFC.distributed_calculate_structure_function_tensor!(
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
+    weights = SFC.NoWeights(),
 ) where {P, D}
     N = size(u, 2)
     chunks = SFC._balanced_index_chunks(N, max(Distributed.nworkers(), 1))
     CT = eltype(counts)
     partials = Distributed.pmap(chunks) do chunk
         SFC.tensor_partial(order, shape, x, u, distance_bins, chunk;
-                           distance_metric, count_eltype = CT, axis)
+                           distance_metric, count_eltype = CT, axis, weights)
     end
     for (ps, pc) in partials
         sums .+= ps
