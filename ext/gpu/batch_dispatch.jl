@@ -82,9 +82,14 @@ function _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins,
                                    NB::Int, B::Int, fixed_x::Bool, ::Type{OT}, geom;
                                    weights = SFC.NoWeights(),
                                    count_eltype::Type{CT} = UInt32) where {OT, CT}
-    # The warp-replica fixed-x kernel has no weighted form, so a weighted call takes the unified
-    # kernel, which does. Both are exact; this is a route choice inside one backend.
-    lbe = (fixed_x && weights isa SFC.NoWeights) ? _fma_distance_bins(distance_bins) : nothing
+    # The warp-replica fixed-x kernel has no weighted form, and it stages exactly two field
+    # components per point and evaluates the operator from two, so a weighted call or a wider
+    # field takes the unified kernel, which reads both widths off the geometry. Both are exact;
+    # this is a route choice inside one backend.
+    two_wide = SFC._val_int(SFH.coordinate_width(geom)) == 2 &&
+               SFC._val_int(SFH.field_width(geom)) == 2
+    lbe = (fixed_x && two_wide && weights isa SFC.NoWeights) ?
+        _fma_distance_bins(distance_bins) : nothing
     if lbe !== nothing
         N = size(x, 2)
         sums_dev = KA.adapt(backend, zeros(OT, NB, B))

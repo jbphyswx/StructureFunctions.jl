@@ -3,9 +3,8 @@
 """
     joint2d_smem_max()
 
-Compile-time `@localmem` width `SF_GPU_MAX_2D_HIST` (4096). Reuses one GPU kernel for
-any joint grid with `n_dist × n_val ≤ 4096`, which is useful when many bin shapes are
-tried in one Julia session.
+Compile-time `@localmem` width `SF_GPU_MAX_2D_HIST`. Reuses one GPU kernel for every joint grid
+within that cap, which is useful when many bin shapes are tried in one Julia session.
 """
 function SFC.joint2d_smem_max()
     return SF_GPU_MAX_2D_HIST

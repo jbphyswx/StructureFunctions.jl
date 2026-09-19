@@ -217,10 +217,6 @@ function SFC.threaded_calculate_structure_function!(
     distance_bins = BinEdges(distance_bins)
 
     N = size(x_arr, 1)
-    if !(N in (1, 2, 3))
-        throw(ArgumentError("Threaded array backend supports only 1D, 2D, or 3D inputs."))
-    end
-
     geom = SFH.pair_geometry_for(distance_metric, Val(size(u_arr, 1)))
 
     if SFC._on_a_line(geom, structure_function_type)
@@ -365,7 +361,7 @@ function SFC.threaded_calculate_structure_function!(
         return nothing
     end
 
-    SFC._require_value_axis(second_axis, geometry, D)
+    SFC._require_value_axis(second_axis, geometry)
     # Chunked tmapreduce: O(n_tasks) allocations, not O(N_points)
     result = OMT.tmapreduce(+, _triangle_outer_chunks(eachindex(x_vecs[1]), Threads.nthreads())) do chunk
         local_sums = zeros(OT, N3, N4)
@@ -373,7 +369,7 @@ function SFC.threaded_calculate_structure_function!(
         for i in chunk
             SFC.calculate_structure_function_2d_i!(
                 local_sums, local_counts, geometry, structure_function_type, i,
-                x_vecs, u_vecs, distance_bins, value_bins, w,
+                x_vecs, u_vecs, distance_bins, value_bins, w, second_axis,
             )
         end
         SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, local_sums, local_counts)

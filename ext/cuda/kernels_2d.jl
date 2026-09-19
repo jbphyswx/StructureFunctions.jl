@@ -169,13 +169,14 @@ function _cuda_2d_pick_tile(::Type{FT}, D::Int, NMOM::Int, n_dist::Int, n_val::I
     return 0, dynb
 end
 
-"""Launch the CUDA 2D fast kernel. Returns `true` if launched, `false` if the
-histogram doesn't fit any supported TILE (caller uses the KA fallback).
-`out`/`cnt` are `(NMOM, n_dist, n_val, B)`. `x` is `(D,N,B)` varying or `(D,N)`/
+"""Launch the CUDA 2D fast kernel. Returns `true` if launched, `false` if the histogram doesn't
+fit any supported TILE or the width is not one this kernel is compiled for (caller uses the KA
+fallback). `out`/`cnt` are `(NMOM, n_dist, n_val, B)`. `x` is `(D,N,B)` varying or `(D,N)`/
 `(D,N,1)` fixed; `u` is `(D,N,B)`."""
 function _cuda_launch_2d!(out, cnt, x, u, sf_type, ddig, vplan,
                           N::Int, n_dist::Int, n_val::Int, B::Int,
                           D::Int, NMOM::Int, fixed_x::Bool, geom, cull)
+    (D == 2 || D == 3) || return false
     FT = eltype(out)
     TILE, dynb = _cuda_2d_pick_tile(FT, D, NMOM, n_dist, n_val)
     TILE == 0 && return false
@@ -192,7 +193,9 @@ end
 function _cuda_launch_2d_specialized!(out, cnt, x, u, sf_type, ddig, vplan,
                                       N, n_dist, n_val, B, D, NMOM, fixed_x, TILE, hcells, dynb, geom,
                                       cull)
-    Dv = D == 3 ? Val(3) : Val(2)
+    Dv = D == 2 ? Val(2) : D == 3 ? Val(3) : error(
+        "CUDA 2D fast kernel is compiled for D ∈ {2,3}; a caller must decline other widths " *
+        "rather than reach here (got D=$D)")
     Mv = NMOM == 6 ? Val(6) : Val(1)
     Fv = fixed_x ? Val(true) : Val(false)
     Tv = TILE == 1024 ? Val(1024) : TILE == 512 ? Val(512) : Val(256)

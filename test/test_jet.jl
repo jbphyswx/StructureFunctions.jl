@@ -4,6 +4,7 @@ using StructureFunctions: StructureFunctions as SF, HelperFunctions as SFH,
 using JET: JET
 using Test: Test
 using StaticArrays: StaticArrays as SA
+using Random: Random
 
 Test.@testset "JET Stability Audit" begin
     # Use explicit qualification for functions to ensure JET finds them
@@ -88,6 +89,29 @@ Test.@testset "JET Stability Audit" begin
             verbose = false,
             show_progress = false,
         )
+    end
+
+    Test.@testset "the per-worker reduction kernels carry no runtime dispatch" begin
+        # These are the hot loops every backend calls with concrete arguments, so zero is the
+        # right assertion — unlike a whole entry, which has by-design dispatch barriers at
+        # `_finalize` and at backend selection and whose count would only be a number to pin.
+        # This is the check for the defect class that has cost the most here: a captured and
+        # reassigned variable boxes to `Any`, which is merely slow on the host and a compile
+        # failure on a device.
+        Random.seed!(3)
+        Np = 60
+        xp = rand(2, Np)
+        up = randn(2, Np)
+        xv = (collect(view(xp, 1, :)), collect(view(xp, 2, :)))
+        uv = (collect(view(up, 1, :)), collect(view(up, 2, :)))
+        dbins = collect(range(0.0, 1.0; length = 7))
+        vbins = collect(range(-3.0, 3.0; length = 6))
+        op = SFT.L2SFType()
+
+        JET.@test_opt target_modules = (SF,) SFC._partial_sums_counts(
+            CB.SerialBackend(), op, xv, uv, dbins, 1:Np)
+        JET.@test_opt target_modules = (SF,) SFC._partial_2d_sums_counts(
+            CB.SerialBackend(), op, xv, uv, dbins, vbins, 1:Np)
     end
 
     Test.@testset "HelperFunctions" begin

@@ -38,13 +38,16 @@ function SFC.nufft_monomial_transforms(
     neg = ntuple(d -> to([_grid_index(-SFC._mode_integer(i, s.modes[d], d == 1), grid[d]) for i in 1:half[d]]),
                  Val(Dg))
     taper = SFC.mode_taper_weights(s, FT, half, to)
+    # The two gathers stay lazy and the combination writes once: materialising `F[pos]`, `F[neg]`,
+    # their conjugate and the difference separately costs four arrays of the half spectrum per key.
     return map(1:nkeys) do n
         F = view(full, ntuple(_ -> Colon(), Val(Dg))..., cld(n, 2))
-        Fp = F[pos...]
-        Fm = conj.(F[neg...])
-        û = isodd(n) ? (Fp .+ Fm) ./ 2 : (Fp .- Fm) ./ (2im)
-        taper === nothing || (û .*= taper)
-        û
+        Fp = view(F, pos...)
+        Fm = view(F, neg...)
+        if isodd(n)
+            return taper === nothing ? @.((Fp + conj(Fm)) / 2) : @.((Fp + conj(Fm)) * taper / 2)
+        end
+        return taper === nothing ? @.((Fp - conj(Fm)) / (2im)) : @.((Fp - conj(Fm)) * taper / (2im))
     end
 end
 

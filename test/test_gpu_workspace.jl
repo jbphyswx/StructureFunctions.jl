@@ -2,7 +2,8 @@ using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    StructureFunctionObjects as SFO
 using Random: Random
 
 Random.seed!(42)
@@ -250,10 +251,9 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
 end
 
 Test.@testset "three-dimensional slice batches (KA.CPU)" begin
-    # The slice-batch drivers dispatch their launchers on a runtime `D`, and those launchers
-    # specialize on `Val(2)` and `Val(3)`, so a `(3, N, T)` batch is a supported shape and must
-    # equal the same slices computed one at a time. A width the launchers do not specialize for
-    # is refused by name.
+    # The slice-batch drivers dispatch their launchers on a runtime `D`, so a batch of any width
+    # must equal the same slices computed one at a time. 2 and 3 are the widths compiled ahead of
+    # time; a wider one is one more kernel instantiation and has to give the same answer.
     N, T, FT = 40, 4, Float64
     backend = KA.CPU()
     sft = SFT.L2SFType()
@@ -291,9 +291,54 @@ Test.@testset "three-dimensional slice batches (KA.CPU)" begin
         Test.@test sp_c[1, :, t] == one_c[1, :]
     end
 
-    # a width the launchers do not specialize for is refused, and says so
+    # a width outside the compiled set takes the same route and must give the same answer
     x4 = rand(FT, 4, N, T)
     u4 = rand(FT, 4, N, T)
-    Test.@test_throws ErrorException SFC.gpu_calculate_structure_function_batch!(
-        got_s, got_c, sft, backend, x4, u4, bins)
+    ref4_s = zeros(FT, NB, T)
+    ref4_c = zeros(UInt32, NB, T)
+    for t in 1:T
+        r = SFC.calculate_structure_function(sft, x4[:, :, t], u4[:, :, t], bins, UInt32;
+            backend = CB.SerialBackend(), verbose = false,
+            output_type = SFO.StructureFunctionSumsAndCounts)
+        ref4_s[:, t] .= r.sums
+        ref4_c[:, t] .= r.counts
+    end
+    got4_s = zeros(FT, NB, T)
+    got4_c = zeros(UInt32, NB, T)
+    SFC.gpu_calculate_structure_function_batch!(got4_s, got4_c, sft, backend, x4, u4, bins)
+    Test.@test sum(Int.(ref4_c)) > 0
+    Test.@test got4_c == ref4_c
+    Test.@test isapprox(got4_s, ref4_s; rtol = 1e-10, atol = 1e-12)
+end
+
+Test.@testset "a fixed-position slice batch agrees at every width and bin spelling (KA.CPU)" begin
+    # Shared positions take a different device route from a varying-x batch, and the bin *type*
+    # selects within it: `LinearBinEdges` reaches the warp-replica kernel, a raw edge vector the
+    # unified one. Both must give the serial answer at both widths, or the answer depends on how
+    # the caller spelled the bins.
+    N, T, FT = 60, 3, Float64
+    backend = KA.CPU()
+    sft = SFT.L2SFType()
+    NB = 8
+    Random.seed!(8802)
+    for D in (2, 3)
+        x = rand(FT, D, N)
+        u = rand(FT, D, N, T)
+        ref_s = zeros(FT, NB, T)
+        ref_c = zeros(Int, NB, T)
+        for t in 1:T
+            r = SFC.calculate_structure_function(sft, x, u[:, :, t],
+                collect(range(0.0, 1.0; length = NB + 1)), FT;
+                backend = CB.SerialBackend(), verbose = false,
+                output_type = SF.StructureFunctionSumsAndCounts)
+            ref_s[:, t] .= r.sums
+            ref_c[:, t] .= r.counts
+        end
+        for bins in (SF.LinearBinEdges(range(0.0, 1.0; length = NB + 1)),
+                     collect(range(0.0, 1.0; length = NB + 1)))
+            g = SFC.gpu_calculate_structure_function_batch(sft, backend, x, u, bins)
+            Test.@test reshape(collect(g.counts), NB, T) == ref_c
+            Test.@test isapprox(reshape(collect(g.sums), NB, T), ref_s; rtol = 1e-10)
+        end
+    end
 end

@@ -29,7 +29,7 @@ and the sphere, with the spectra, fluxes and fits derived from them.**
 
 ## Quick start
 
-```julia
+```@example index
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, LogBinEdges
 using ComputationalBackends: ComputationalBackends as CB
 
@@ -38,10 +38,14 @@ u = randn(2, 2048)                  # (D, N) velocity components
 bins = LogBinEdges(collect(exp10.(range(log10(50.0), log10(5.0e3); length = 41))))
 
 sf = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.AutoBackend())
-sf.distance, sf.values              # the bin edges and the averaged ⟨δu_L²⟩ per bin
+sf.values[1:5]                      # the averaged ⟨δu_L²⟩ in the first five bins
+```
 
+One pair pass also gives every second- and third-order invariant and the Helmholtz split:
+
+```@example index
 res = SFC.calculate_structure_functions_single_pass(x, u, bins)
-res.L2, res.T2, res.helmholtz       # all six invariants and the Helmholtz split in one pass
+propertynames(res)
 ```
 
 ## Where to next

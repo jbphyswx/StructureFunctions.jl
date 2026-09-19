@@ -127,12 +127,14 @@ function _cuda_sf_1d_kernel!(
 end
 
 
-"""Launch the CUDA 1D fast kernel. Returns `true` if launched, `false` if NB
-exceeds the static-shared cap (caller uses the KA fallback). `out`/`cnt` are
-`(NMOM, NB, B)`; `x` is `(D,N,B)` varying or `(D,N)`/`(D,N,1)` fixed; `u` is `(D,N,B)`."""
+"""Launch the CUDA 1D fast kernel. Returns `true` if launched, `false` if NB exceeds the
+static-shared cap or the width is not one this kernel is compiled for (caller uses the KA
+fallback). `out`/`cnt` are `(NMOM, NB, B)`; `x` is `(D,N,B)` varying or `(D,N)`/`(D,N,1)` fixed;
+`u` is `(D,N,B)`."""
 function _cuda_launch_1d!(out, cnt, x, u, sf_type, ddig,
                           N::Int, NB::Int, B::Int, D::Int, NMOM::Int, fixed_x::Bool, geom, cull)
     NB > CU_MAX_BINS && return false
+    (D == 2 || D == 3) || return false
     xv = fixed_x ? reshape(x, D, N, 1) : reshape(x, D, N, B)
     uv = reshape(u, D, N, B)
     _cuda_launch_1d_specialized!(out, cnt, xv, uv, sf_type, ddig, N, NB, B, D, NMOM, fixed_x, geom,
@@ -143,7 +145,9 @@ end
 
 function _cuda_launch_1d_specialized!(out, cnt, x, u, sf_type, ddig, N, NB, B, D, NMOM, fixed_x, geom,
                                       cull)
-    Dv = D == 3 ? Val(3) : Val(2)
+    Dv = D == 2 ? Val(2) : D == 3 ? Val(3) : error(
+        "CUDA 1D fast kernel is compiled for D ∈ {2,3}; a caller must decline other widths " *
+        "rather than reach here (got D=$D)")
     Mv = NMOM == 6 ? Val(6) : Val(1)
     Fv = fixed_x ? Val(true) : Val(false)
     _cuda_launch_1d_valed!(out, cnt, x, u, sf_type, ddig, N, NB, B, Dv, Mv, Fv, Val(CU_TILE_1D), geom,

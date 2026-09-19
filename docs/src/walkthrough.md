@@ -1,19 +1,18 @@
-# Walkthrough: from a velocity field to a cascade diagnostic
+# Walkthrough: from a velocity field to a spectrum
 
 This page runs one analysis end to end: six structure-function invariants, the Helmholtz split, the
 directional signal and the spectral slope. The fields are ones whose answers are known in advance,
 so every number below can be compared against a value derived independently.
 
-Two acts, because the two data layouts take different algorithms. Scattered points go through the
-pair loop; a uniform grid goes through the transform, which is exact and about two orders of
-magnitude faster.
+The two data layouts take different algorithms: scattered points go through the pair loop, a
+uniform grid through the transform, which is exact and evaluates every lag at once.
 
-## Act 1 — scattered points
+## Scattered points
 
 A superposition of Fourier modes whose polarisations are perpendicular to their wavevectors is
 divergence-free by construction, so we know its divergent part is zero before computing anything.
 
-```julia
+```@example walkthrough
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT
 using ComputationalBackends: ComputationalBackends as CB
@@ -47,14 +46,14 @@ u = solenoidal_field(x)
 A point list carries no mask. A non-finite sample makes every bin it pairs into `NaN`, as any sum
 does, so drop such points before the call: `keep = vec(all(isfinite, u; dims = 1))`, then
 `x[:, keep]` and `u[:, keep]`. Grids are different, because their lags and transforms need every cell
-in place; there the mask travels with the data (Act 2).
+in place; there the mask travels with the data, as the grid section below shows.
 
 ### Six invariants in one pass
 
 The six second- and third-order invariants share a pair loop, a separation and a bin, so computing
 them together costs one pass rather than six.
 
-```julia
+```@example walkthrough
 bins = collect(10 .^ range(log10(0.05), log10(2.0); length = 25))
 # the entries return raw sums and counts by default, which is what adds across slices and
 # processes; `output_type` asks for the bin averages instead
@@ -65,32 +64,30 @@ keys(res)
 # (:S2, :L2, :T2, :S3, :L3, :L1T2, :helmholtz)
 ```
 
-That is 18.0 million pairs. Culling is on by default, so pairs beyond the last bin edge are never
-enumerated.
+Culling is on by default, so pairs beyond the last bin edge are never enumerated.
 
 ### The Helmholtz split
 
 The rotational and divergent parts of the second-order structure function come from the
 longitudinal and transverse components, and arrive with the single pass.
 
-```julia
+```@example walkthrough
 h = res.helmholtz
 D_rot = h.rotational_sums ./ max.(h.rotational_counts, 1)
 D_div = h.divergent_sums ./ max.(h.divergent_counts, 1)
 
 occ = isfinite.(res.L2.values) .& (h.rotational_counts .> 0)
-maximum(abs, D_div[occ]) / maximum(res.L2.values[occ])   # 0.1195
-maximum(abs, (D_rot .+ D_div .- (res.L2.values .+ res.T2.values))[occ])   # 2.2e-16
+maximum(abs, D_div[occ]) / maximum(res.L2.values[occ])
+maximum(abs, (D_rot .+ D_div .- (res.L2.values .+ res.T2.values))[occ])
 ```
 
-The field is solenoidal, so the true divergent part is zero and the residual `0.1195` is the
-decomposition's own quadrature floor. It comes from the integral's lower limit: the cumulative
+The field is solenoidal, so the true divergent part is zero and whatever the first line prints is
+the decomposition's own quadrature floor. It comes from the integral's lower limit: the cumulative
 integral starts at the first bin's abscissa rather than at zero, and the omitted segment carries
-real weight when the integrand rises at small separation. Narrowing the first bin shrinks it —
-running the same field over `log10(0.05)` to `log10(2.0)` with a band of `kmin = 4, kmax = 20`
-instead gives `0.0317`.
+real weight when the integrand rises at small separation. Narrowing the first bin shrinks it.
 
-The energy identity `D_rot + D_div = D_LL + D_TT` holds to `2.2e-16`. Note that this identity is
+The second line is the energy identity `D_rot + D_div = D_LL + D_TT`, which holds to round-off.
+Note that this identity is
 **not** a check on the split: it is preserved by a whole family of errors in it, including a
 factor-of-`r` defect this package once carried. See [Validation](validation.md).
 
@@ -99,7 +96,7 @@ factor-of-`r` defect this package once carried. See [Validation](validation.md).
 The second histogram axis can bin the angle between the separation and a reference direction
 instead of the operator's value, which turns `S(r)` into `S(r, θ)` without touching the kernel.
 
-```julia
+```@example walkthrough
 ua = zeros(2, size(x, 2))
 ua[1, :] .= sin.(6 .* x[1, :])          # varies along x only
 
@@ -113,15 +110,12 @@ j = SFC.serial_calculate_structure_function(
 
 Averaged over separation, the four angular bins give
 
-| θ | ⟨δu_L²⟩ |
-|---|---|
-| [0, π/4) | 0.806 |
-| [π/4, π/2) | 0.250 |
-| [π/2, 3π/4) | 0.252 |
-| [3π/4, π) | 0.801 |
+```@example walkthrough
+vec(sum(j.sums; dims = 1) ./ max.(sum(j.counts; dims = 1), 1))   # one value per angular bin
+```
 
-a 3.2× anisotropy, in the right sense: the field varies only along `x`, so separations aligned with
-`x` see the full increment. The perpendicular bin is not zero because it spans 45°–90°, and only
+an anisotropy in the right sense: the field varies only along `x`, so separations aligned with `x`
+see the full increment. The perpendicular bin is not zero because it spans 45°–90°, and only
 *exactly* perpendicular separations have an identically zero increment.
 
 The angle folds to `[0, π)` because swapping a pair's ends flips both the separation and the
@@ -132,14 +126,14 @@ increment, and no structure function distinguishes the two.
 The inertial-range laws are inversions of a measured moment. Each takes the specific moment it is
 stated for, and they are not interchangeable:
 
-```julia
+```@example walkthrough
 r = collect(range(0.2, 3.0; length = 8))
-SF.KHM.epsilon_from_four_fifths(r, -(4 / 5) * 0.85 .* r)[1]    # 0.850000
+SF.KHM.epsilon_from_four_fifths(r, -(4 / 5) * 0.85 .* r)[1]    # recovers the prescribed ε
 ```
 
 Applied to this field, though, the answer is that there is nothing to recover: a synthetic Gaussian
-field has no energy cascade, so its third-order moments are consistent with zero
-(`⟨δu_L³⟩ = 1.3e-2` against `⟨δu_L²⟩ ≈ 1`, i.e. sampling noise). A meaningful `ε` needs data with a
+field has no energy cascade, so its third-order moments are consistent with zero — sampling noise
+against a second-order moment of order one. A meaningful `ε` needs data with a
 genuine flux — a forced simulation or an observational record.
 
 ### Pair weights
@@ -147,7 +141,7 @@ genuine flux — a forced simulation or an observational record.
 A weight per point turns every statistic into `Σ w_i w_j v_ij / Σ w_i w_j` and the counts into a
 weighted pair mass, which is why weighted results take floating-point counts:
 
-```julia
+```@example walkthrough
 w = 0.5 .+ rand(size(x, 2))
 sfw = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Float64; weights = w,
                                        backend = CB.SerialBackend())
@@ -169,26 +163,26 @@ range are prefix-sum differences of the monomials. The CPU backends take this ro
 for every polynomial operator, arrays and multi-fields alike, and its cost is
 `O(N log N + N n_bins)`:
 
-```julia
-xl = reshape(sort(rand(100_000)) .* 100.0, 1, :)
-ul = randn(1, 100_000)
+```@example walkthrough
+xl = reshape(sort(rand(20_000)) .* 100.0, 1, :)
+ul = randn(1, 20_000)
 sfl = SFC.calculate_structure_function(SFT.L3SFType(), xl, ul, collect(range(0.0, 0.5; length = 21)), Int64)
 ```
 
-On eight cores a million points — five billion pairs binned — take `0.4 s`; the pair loop on the same
-data would take an hour. Counts are bit for bit the pair loop's, because the route bins each pair with
-the same `digitize` call on the same coordinate difference.
+Counts are bit for bit the pair loop's, because the route bins each pair with the same `digitize`
+call on the same coordinate difference, and the cost is linear in the points where the pair loop's is
+quadratic — the figure below shows both.
 
 ![The sorted route on a line](assets/sf_sorted_line.png)
 
 *Left: the sorted route's cost grows with the points, the pair loop's with their square. Right: it is
 the pair loop's answer, not an approximation of it.*
 
-## Act 2 — a uniform grid
+## A uniform grid
 
 On a grid the same quantity is available by transform, exactly, for every lag at once.
 
-```julia
+```@example walkthrough
 using SpectralBackends: SpectralBackends as SB
 using FFTW: FFTW
 
@@ -214,48 +208,41 @@ end
 
 n = 256
 dx = 2π / n
-u = spectral_field(n; kmin = 2, kmax = 100)
+ugrid = spectral_field(n; kmin = 2, kmax = 100)
 
-bins = collect(10 .^ range(log10(1.5 * dx), log10(2.6); length = 33))
-plan = SFC.squared_digitize_plan(bins)
+gbins = collect(10 .^ range(log10(1.5 * dx), log10(2.6); length = 33))
+plan = SFC.squared_digitize_plan(gbins)
 sums = zeros(Float64, SFC.n_histogram_bins(plan))
 counts = zeros(Int, length(sums))
 sched = SFC.UniformLagSchedule((n, n), (dx, dx), (true, true))
 
-SFC.gridded_sweep!(sums, counts, SFT.L2SFType(), u, sched, bins, Val(2),
+SFC.gridded_sweep!(sums, counts, SFT.L2SFType(), ugrid, sched, gbins, Val(2),
                    SB.FastFourierTransformSpectralBackend())
 ```
 
-This bins **1.154 billion pairs**. On eight dedicated cores the transform takes `0.014 s`; the
-direct lag sweep over the identical configuration takes `1.767 s`, a factor of 126, and the two
-agree to round-off. Passing `SB.AutoSpectralBackend()` costs both and picks the cheaper one, which
-is not always the transform — at small cutoffs the sweep wins.
+The transform evaluates every lag at once, so its cost follows the grid rather than the pair count,
+while the direct lag sweep over the identical configuration reduces over cells per lag; the two agree
+to round-off. Passing `SB.AutoSpectralBackend()` costs both and picks the cheaper one, which is not
+always the transform — at small cutoffs the sweep wins.
 
 ### The spectral slope
 
-```julia
-mids = SF.midpoints(bins)
+```@example walkthrough
+mids = SF.midpoints(gbins)
 D = sums ./ max.(counts, 1)
 slope(i) = (log(D[i+1]) - log(D[i-1])) / (log(mids[i+1]) - log(mids[i-1]))
 ```
 
-| r | D_LL | local slope |
-|---|---|---|
-| 0.088 | 0.882 | 1.02 |
-| 0.130 | 1.241 | 1.05 |
-| 0.195 | 1.766 | 0.72 |
-| 0.222 | 1.941 | 0.74 |
-| 0.254 | 2.149 | 0.74 |
-| 0.290 | 2.366 | 0.73 |
-| 0.331 | 2.610 | 0.71 |
-| 0.379 | 2.858 | 0.66 |
-| 0.841 | 4.536 | 0.47 |
-| 2.134 | 5.778 | 0.01 |
+```@example walkthrough
+held = [i for i in 2:(length(D) - 1) if all(>(0), counts[(i - 1):(i + 1)])]
+[slope(i) for i in held]
+```
 
-The three limbs are all physical: `r²` below the smallest excited eddy, a plateau near `2/3` across
-the excited band, and saturation at `0` beyond the largest. A prescribed `E(k) ~ k^(-5/3)` implies
-`D_LL ~ r^(2/3)`, and the measured plateau sits at `0.71 ± 0.03` — the excess is the finite width of
-the band, which leaves the plateau squeezed between the two limbs rather than flat.
+Three limbs are visible and all are physical: a steep slope below the smallest excited eddy, the
+neighbourhood of `2/3` across the excited band, and a fall toward `0` beyond the largest. A
+prescribed `E(k) ~ k^(-5/3)` implies `D_LL ~ r^(2/3)`. One realisation of a band of finite width
+does not give a flat plateau — the excited range is squeezed between the two limbs and neighbouring
+bins scatter — so read the trend across bins, not any single one.
 
 A scattered-point sample cannot show this at all. Its small-scale end is capped by the mean point
 spacing, so a
@@ -272,31 +259,30 @@ the same holds for a Cartesian grid with a stretched axis beside a uniform one. 
 call site: the grid's axis **types** decide the route (a range is uniform, a vector of coordinates is
 not), the routes are exact, and `verbose = true` names the one chosen.
 
-```julia
+```@example walkthrough
 using FlowGeometries: FlowGeometries as FG
 using ComputationalBackends: ComputationalBackends as CB
+using OhMyThreads                       # an explicit ThreadedBackend() raises without it
 
-n_lon, n_lat = 1440, 720
+n_lon, n_lat = 180, 90
 geo = FG.Geometry.SphericalGeometry(6.371e6)
 grid = FG.Grids.StructuredGrid(geo, range(0.0, step = 2π / n_lon, length = n_lon),
                                range(-π / 2 + π / (2n_lat), π / 2 - π / (2n_lat); length = n_lat))
-u = randn(2, n_lon, n_lat)                                   # (east, north) at every cell
-bins = 6.371e6 .* collect(range(0.0, π; length = 41))       # metres, as the radius is
+usph = randn(2, n_lon, n_lat)                                # (east, north) at every cell
+sbins = 6.371e6 .* collect(range(0.0, π; length = 41))      # metres, as the radius is
 
-sf = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, UInt64,
-                                     SB.FastFourierTransformSpectralBackend();
-                                     backend = CB.ThreadedBackend())
+sf = SFC.calculate_structure_function(SFT.L2SFType(), grid, usph, sbins, UInt64,
+                                      SB.FastFourierTransformSpectralBackend();
+                                      backend = CB.ThreadedBackend())
 ```
 
 Separations come out in the unit of the geometry's radius on every route, the threaded backend
 splits the row pairs across tasks, and a field of several fields (`Fields`) rides along, so a
 scalar's odd moments and the mixed moments of a Yaglom-type relation come from the same transform.
 
-On eight dedicated cores the transform above bins `5.4 × 10¹¹` pairs in `10.5 s` (`54 s` on one core).
-Against the direct row-by-row sweep of the same grid at 180 latitude rows the transform is `62×`
-faster for `L2` and `16×` for `L3`, with counts identical and sums agreeing to `10⁻¹⁵`; the gap
-narrows at third order because the frame algebra per lag grows with the moment's rank while the
-transforms do not.
+Against the direct row-by-row sweep of the same grid the transform gives identical counts and sums
+agreeing to round-off, for a fraction of the work; the gap narrows at third order, because the frame
+algebra per lag grows with the moment's rank while the transforms do not.
 
 ### The same engine on a device
 
@@ -304,7 +290,7 @@ The transform engine takes the hardware from the same `backend` keyword the poin
 `using KernelAbstractions` and a device package loaded, `backend = CB.GPUBackend(CUDA.CUDABackend())`
 moves the masked monomials to the device, takes their transforms there through the device's own
 AbstractFFTs implementation, and bins every lag of every slab pair in one kernel with a privatized
-histogram. Nothing about the schedule changes: uniform, stretched and lat-lon grids, masks, field
+histogram. Nothing about the schedule changes: uniform, stretched and lat-lon grids, masks,
 multi-fields and every polynomial order run through the same code, and the counts are exactly the CPU
 engine's. `CB.GPUBackend(KernelAbstractions.CPU())` runs the identical kernel on the host, which is
 how the suite checks it without a device.
@@ -314,12 +300,12 @@ how the suite checks it without a device.
 A grid fixes every pair, so a time series of one grid pays for the pair enumeration once. Stack the
 snapshots on a trailing axis and ask for the batch:
 
-```julia
-u = randn(2, n_lon, n_lat, 24)
-sums = zeros(length(bins) - 1, 24)
-counts = zeros(Int, length(bins) - 1, 24)
+```@example walkthrough
+useries = randn(2, n_lon, n_lat, 3)
+sums = zeros(length(sbins) - 1, 3)
+counts = zeros(Int, length(sbins) - 1, 3)
 
-SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), grid, u, bins,
+SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), grid, useries, sbins,
                                         SB.FastFourierTransformSpectralBackend())
 ```
 
@@ -349,11 +335,22 @@ The transform forms the whole increment moment tensor at every lag before contra
 operator, so the tensor itself is available on a grid, at any order, in the pair frame — and jointly
 in separation and angle:
 
-```julia
-T3 = SFC.calculate_structure_function_tensor(Val(3), grid, u, bins, SB.FastFourierTransformSpectralBackend())
-T3.values                                     # (2, 2, 2, n_bins): ⟨δu_a δu_b δu_c⟩ per bin
-T2θ = SFC.calculate_structure_function_tensor(Val(2), grid, u, bins, ang, SB.FastFourierTransformSpectralBackend();
-                                             second_axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0)))
+```@example walkthrough
+T3 = SFC.calculate_structure_function_tensor(Val(3), grid, usph, sbins,
+                                             SB.FastFourierTransformSpectralBackend())
+size(T3.values)                               # (2, 2, 2, n_bins): ⟨δu_a δu_b δu_c⟩ per bin
+
+# the angle is measured from one fixed axis, which a sphere has no shared notion of, so the joint
+# tensor over angle takes a flat grid
+flat = FG.Grids.StructuredGrid(FG.Geometry.CartesianGeometry(),
+                               range(0.0, step = 0.1, length = 24),
+                               range(0.0, step = 0.1, length = 24))
+uflat = randn(2, 24, 24)
+fbins = collect(range(0.0, 1.2; length = 9))
+T2θ = SFC.calculate_structure_function_tensor(Val(2), flat, uflat, fbins, ang,
+                                              SB.FastFourierTransformSpectralBackend();
+                                              second_axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0)))
+size(T2θ.sums)
 ```
 
 An odd-rank tensor changes sign when a pair is read from its other end, so in a fixed frame it takes
@@ -385,11 +382,12 @@ non-uniform FFT of its masked monomials is exactly the forward transform the gri
 The inverse products are then pair sums with a periodic Dirichlet kernel in place of a delta at each
 lag: **soft bins** of about one mode cell, sidelobes and all.
 
-```julia
+```@example walkthrough
 using NonuniformFFTs: NonuniformFFTs                           # or FINUFFT, or both
-s = SFC.ScatteredModesSchedule(x, 2.0, (128, 128); taper = GaussianTaper(0.05))   # r_max = 2, 128² modes
-soft = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, NonuniformFFTsSpectralBackend())
-soft.distance                                  # a ModeBinEdges: soft-binned, not pair counts
+sm = SFC.ScatteredModesSchedule(x, 2.0, (128, 128); taper = SF.GaussianTaper(0.05))  # r_max = 2, 128² modes
+soft = SFC.calculate_structure_function(SFT.L2SFType(), sm, u, bins,
+                                        SFC.NonuniformFFTsSpectralBackend())
+typeof(soft.distance)                          # a ModeBinEdges: soft-binned, not pair counts
 ```
 
 Two libraries serve the route, each named by its own tag with the tolerance asked of its transforms:
@@ -401,8 +399,8 @@ NUFFT tag names no library and is refused.
 This route is **not exact** and is selected only by passing the tag. Its statistic converges to the
 hard-binned pair sum as the mode count grows; the tests pin it on a lattice, where it is exact, and
 measure the convergence off one. The result carries `ModeBinEdges`, and its counts are a
-kernel-weighted pair mass. It pays at size: 20 000 points onto 256×192 modes bin in `0.014 s` on
-eight cores and `0.008 s` on an A100, independent of the pair count.
+kernel-weighted pair mass. It pays at size, because its cost follows the mode count rather than the
+pair count.
 
 ![Scattered points by non-uniform FFT](assets/sf_scattered_modes.png)
 
@@ -424,11 +422,14 @@ Vectors ride the same identity through their spin-1 quantity `u_θ + i u_φ`, wi
 kernels for the spin-weighted monomials the operator's polynomial expands into. The "bin" is the node
 set: separations, the truncation degree and a taper on the series.
 
-```julia
-nodes = HarmonicNodes(32, 64; taper = GaussianTaper(0.02))   # 32 Gauss–Legendre nodes, lmax = 64
-res = SFC.calculate_structure_function(SFT.L3SFType(), x, u, nodes, SB.NUFSHTSpectralBackend();
-                                      distance_metric = DI.SphericalAngle())
-res.values                                                    # the kernel-binned ⟨δu_L³⟩ at the nodes
+```@example walkthrough
+nodes = SF.HarmonicNodes(32, 64; taper = SF.GaussianTaper(0.02))  # 32 Gauss–Legendre nodes, lmax = 64
+xsph = permutedims(hcat(2π .* rand(1500), asin.(2 .* rand(1500) .- 1)))
+usp = randn(2, 1500)
+hres = SFC.calculate_structure_function(SFT.L3SFType(), xsph, usp, nodes,
+                                        SB.DirectSumSpectralBackend();
+                                        distance_metric = SFC.DI.SphericalAngle())
+hres.values[1:4]                                              # the kernel-binned ⟨δu_L³⟩ at the nodes
 ```
 
 `SB.DirectSumSpectralBackend()` computes the same coefficients by direct summation, `O(N lmax²)`, and
@@ -441,7 +442,7 @@ kernel-binned result inverts to `C_l` through `isotropic_spectrum(res, g, lmax)`
 quadrature weights: on a masked field that ratio of kernel-binned sums to kernel-binned counts follows
 the spectrum of the complete field where the pseudo-spectrum of the masked field does not.
 
-## Act 3 — into spectral space
+## Spectra
 
 A structure function and a spectrum carry the same second-order information, and the package
 converts between them. Which route to use depends on the data, and the difference is not cosmetic.
@@ -451,34 +452,34 @@ converts between them. Which route to use depends on the data, and the differenc
 On a grid the transform runs over the whole lag space, so no direction is averaged over and no
 separation is binned.
 
-```julia
+```@example walkthrough
 using SpectralBackends: SpectralBackends as SB
 using FFTW: FFTW
 
-kaxes, density = SFC.gridded_spectrum(u, sched, Val(2),
+kaxes, density = SFC.gridded_spectrum(ugrid, sched, Val(2),
                                       SB.FastFourierTransformSpectralBackend())
 
 edges = collect(10 .^ range(log10(1.0), log10(100.0); length = 25))
-mids, E = SFC.shell_average(kaxes, density, edges)
+mids2, E = SFC.shell_average(kaxes, density, edges)
 ```
 
-That takes `0.024 s` on the 256² field, and the variance it implies matches the field's own to every
-digit printed — `5.63136` either way. The recovered spectrum has the slope it was built with:
+The variance the density implies matches the field's own to every digit printed, and the recovered
+spectrum has the slope it was built with:
 
-| k | E(k) | local slope |
-|---|---|---|
-| 2.89 | 6.50e-01 | −2.02 |
-| 5.13 | 3.40e-01 | −1.84 |
-| 9.13 | 1.32e-01 | **−1.65** |
-| 16.23 | 6.06e-02 | −1.53 |
-| 28.86 | 2.29e-02 | −1.60 |
-| 51.33 | 8.87e-03 | **−1.65** |
+```@example walkthrough
+# a shell outside the excited band holds no energy, and round-off can leave it slightly negative,
+# so the local slope is read only where the three shells it uses are positive
+inner = [i for i in 2:(length(E) - 1) if all(>(0), E[(i - 1):(i + 1)])]
+[(log(E[i+1]) - log(E[i-1])) / (log(mids2[i+1]) - log(mids2[i-1])) for i in inner]
+```
 
 ![Spectra from structure functions](assets/sf_spectra.png)
 
-against the prescribed `k^(-5/3) = k^(-1.667)`. Note this is the *same information* as Act 2's
-`D_LL ~ r^0.71`: the two routes are consistent statements about one field, and `ζ` and the spectral
-slope are related by `E(k) ~ k^(-(ζ+1))`.
+The shell slopes scatter about the prescribed `k^(-5/3) = k^(-1.667)`: a single realisation gives
+each shell a finite sample, so the estimate is noisy shell to shell even though the field was built
+with one exponent. This is the *same information* as the grid section's `D_LL ~ r^ζ` — the two
+routes are consistent statements about one field, and `ζ` and the spectral slope are related by
+`E(k) ~ k^(-(ζ+1))`.
 
 The reason to reach a spectrum through the structure function — rather than just transforming the
 field — is **missing data**. With cells absent the field's own transform is meaningless, while the
@@ -500,8 +501,8 @@ transform, on a padded lag grid, of the unbiased autocovariance `C(h) = σ² −
 counts give at every lag `|h| < n`. The same call serves it; `wavenumbers` has the padded length along
 a bounded direction, and the density still integrates to the variance of the held cells.
 
-```julia
-kaxes, density = SFC.gridded_spectrum(u, sched, Val(2), SB.FastFourierTransformSpectralBackend();
+```@example walkthrough
+kaxes, density = SFC.gridded_spectrum(ugrid, sched, Val(2), SB.FastFourierTransformSpectralBackend();
                                       taper = SFC.Bartlett())
 ```
 
@@ -518,11 +519,11 @@ Scattered data has no lag grid, so the transform integrates against a dimension-
 `cos` on a line, `J₀` on a plane, `sin(x)/x` in a volume — and averages over the directions of the
 separation:
 
-```julia
+```@example walkthrough
 using Bessels: Bessels      # only the 2-D kernel needs it; 1-D and 3-D are elementary
 
 kq = collect(range(1.0, 30.0; length = 200))
-P = SFC.isotropic_spectrum(res.S2, kq, Val(2))     # res.S2 is the trace, from Act 1
+P = SFC.isotropic_spectrum(res.S2, kq, Val(2))     # res.S2 is the trace, from the point list above
 ```
 
 That assumes the pairs behind each bin sample direction uniformly. Scattered points do. A
@@ -531,16 +532,16 @@ gridded data should take the lag-space route above rather than this one.
 
 ### Splitting the spectrum
 
-The Helmholtz decomposition from Act 1 transforms the same way, giving the rotational and divergent
+The Helmholtz decomposition of the point list transforms the same way, giving the rotational and divergent
 kinetic-energy spectra separately — the reason the package carries the decomposition at all:
 
-```julia
+```@example walkthrough
 spec = SFC.helmholtz_spectra(res.helmholtz, kq)
-maximum(abs, spec.divergent) / maximum(abs, spec.rotational)   # 0.0669
+maximum(abs, spec.divergent) / maximum(abs, spec.rotational)
 ```
 
-The Act 1 field is solenoidal by construction, so its divergent spectrum should vanish; 6.7 % of the
-rotational is the decomposition's own quadrature floor carried through the transform.
+That field is solenoidal by construction, so its divergent spectrum should vanish; what remains
+is the decomposition's own quadrature floor carried through the transform.
 
 Because `D_rot + D_div = D_LL + D_TT` exactly and the transform is linear, the two spectra sum to the
 spectrum of the trace — an identity that holds whatever the field is, and the one the tests assert.
@@ -551,7 +552,7 @@ The same split follows directly from the two projections, without the real-space
 its cumulative integral: the sum `D_LL + D_TT` transforms with `J₀` as the trace does, and the
 difference `D_LL − D_TT` with `J₂`, so
 
-```julia
+```@example walkthrough
 spec = SFC.helmholtz_spectra(res.L2, res.T2, kq)       # (rotational, divergent), by J₀ and J₂
 ```
 
@@ -562,7 +563,7 @@ spectra `C^E_l`, `C^B_l` by `SFC.helmholtz_spectra(L2, T2, geometry, lmax; varia
 two needs the field's mean square, which no structure function carries, while their difference does
 not.
 
-## Act 4 — fitting instead of inverting
+## Fitting instead of inverting
 
 The transforms above are the exact relations. On sparse or noisy data — drifters, a short record —
 an oscillatory Bessel kernel amplifies the noise and the finite range truncates the integral, and the
@@ -571,7 +572,7 @@ bins to the structure function at the measured separations, inverted with a stat
 package carries three forward models and three inversions, and holds the models to the transforms:
 the flux fitted from a synthetic `S3` is the flux the `J₂` transform recovers from the same `S3`.
 
-```julia
+```@example walkthrough
 using LsqFit                                              # only the segmented power law needs it
 k_edges = exp.(range(log(0.5), log(20.0); length = 13))   # 12 log-spaced wavenumber bins
 
@@ -602,7 +603,7 @@ curve = SFC.tradeoff_curve(SFC.FluxForwardModel(SF.midpoints(res.S3.distance), k
 Every fit returns what it fitted and, where the method gives one, the posterior covariance. The
 forward models themselves are exposed (`forward_matrix(model)`), so a different prior, a different
 solver or a bootstrap over `W` is a few lines on top. These are estimators with stated priors; the
-transforms of Act 3 are the exact relations they approximate.
+transforms of the previous section are the exact relations they approximate.
 
 ![Fitting instead of inverting](assets/sf_fits.png)
 

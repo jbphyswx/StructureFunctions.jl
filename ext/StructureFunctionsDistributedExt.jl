@@ -87,6 +87,23 @@ function _parallel_calculate_structure_function_core(
     chunks = SFC._balanced_index_chunks(N, nw)
     OT0 = promote_type(float(eltype(x_vecs[1])), float(eltype(u_vecs[1])))
     w = SFC._pair_weights(weights, N, OT0)
+
+    # A polynomial operator on a line has the exact `O(N log N)` route, and that sweep executes
+    # through `sweep_reduce!`, which this extension implements — so it distributes here without a
+    # second decomposition. Reaching it through the pair loop instead costs `O(N²)`.
+    if SFC._on_a_line(geometry, structure_function_type)
+        SFC._cull_reject_unsupported(get(kwargs, :culling, SFC.AutoCulling()),
+                                     "the sorted line route")
+        nb0 = SFC.n_histogram_bins(distance_bins)
+        lsums = zeros(OT0, nb0)
+        lcounts = zeros(CT, nb0)
+        SFC.sorted_line_sweep!(lsums, lcounts, structure_function_type, x_vecs[1],
+            reshape(collect(u_vecs[1]), 1, :), distance_bins, Val(1), Val(1), Val(0);
+            weights = w, backend = CB.DistributedBackend(inner))
+        return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins,
+                                                  lsums, lcounts)
+    end
+
     partials = Distributed.pmap(chunks) do ch
         SFC._partial_sums_counts(
             inner, structure_function_type, x_vecs, u_vecs, distance_bins, ch;

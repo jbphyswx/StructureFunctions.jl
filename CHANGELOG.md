@@ -79,7 +79,7 @@ All notable changes to this project will be documented in this file.
   (with `S3`) and `MixedSFType{1,0,2}`, and `enstrophy_flux` from the velocity's advective structure
   function; the `J₁` route on cross-field moments.
 - `covariance`, `covariance_matrix` with a positive-definiteness check.
-- Regularised fits (issue #37): `SpectrumForwardModel`, `HelmholtzForwardModel`, `FluxForwardModel`;
+- Regularised fits (issue #18): `SpectrumForwardModel`, `HelmholtzForwardModel`, `FluxForwardModel`;
   `RegularizedLeastSquares(prior)` with a posterior covariance, `NonNegativeLeastSquares()`,
   `SegmentedPowerLaw(S)` through the LsqFit extension; `fit_spectrum`, `fit_helmholtz_spectra`,
   `fit_flux`, `tradeoff_curve`, `select_segments`, `independent_pair_variance`.

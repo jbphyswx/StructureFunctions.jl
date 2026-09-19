@@ -1,17 +1,17 @@
 # Serial 2D CPU Joint Reduction Kernels
 
 """
-    _require_value_axis(second_axis, geometry, D)
+    _require_value_axis(second_axis, geometry)
 
-Refuse a second axis the scalar per-`i` kernel cannot read. That kernel serves the curved
-geometries, where an angle to a fixed reference axis is not a property of the pair alone, so only
-the pair's own value is available there.
+Refuse a second axis a curved geometry cannot read. An angle to a fixed reference axis needs a
+separation direction shared by every pair; on a curved metric that direction lives in each pair's
+own geodesic frame, so only the pair's own value is available.
 """
-@inline function _require_value_axis(second_axis, geometry, D)
-    second_axis isa InvariantValueAxis || throw(ArgumentError(
-        "$(typeof(second_axis)) is supported on the flat D ∈ {2,3} path; this call has " *
-        "$(nameof(typeof(geometry))) with D = $D, whose separation direction lives in each pair's " *
-        "own frame, not in a shared one.",
+@inline function _require_value_axis(second_axis, geometry)
+    geometry isa SFH.FlatGeometry || second_axis isa InvariantValueAxis || throw(ArgumentError(
+        "$(typeof(second_axis)) needs a separation direction shared by every pair; this call has " *
+        "$(nameof(typeof(geometry))), whose separation direction lives in each pair's own geodesic " *
+        "frame. Bin the pair's own value with InvariantValueAxis(), or use a flat metric.",
     ))
     return nothing
 end
@@ -49,11 +49,11 @@ function serial_calculate_structure_function!(
         return nothing
     end
 
-    _require_value_axis(second_axis, geometry, D)
+    _require_value_axis(second_axis, geometry)
     PM.@showprogress enabled = show_progress for i in eachindex(x_vecs[1])
         calculate_structure_function_2d_i!(
             sums_2d, counts_2d, geometry, structure_function_type, i, x_vecs, u_vecs,
-            distance_bins, value_bins, w,
+            distance_bins, value_bins, w, second_axis,
         )
     end
     return nothing
@@ -224,10 +224,11 @@ function _partial_2d_sums_counts(
         return sums, counts
     end
 
-    _require_value_axis(second_axis, geometry, D)
+    _require_value_axis(second_axis, geometry)
     for i in ilist
         calculate_structure_function_2d_i!(
-            sums, counts, geometry, structure_function_type, i, x_vecs, u_vecs, dist_be, val_be, weights,
+            sums, counts, geometry, structure_function_type, i, x_vecs, u_vecs, dist_be, val_be,
+            weights, second_axis,
         )
     end
     return sums, counts
@@ -347,6 +348,7 @@ function calculate_structure_function_2d_i!(
     distance_bins::AbstractVector,
     value_bins::AbstractVector,
     weights = NoWeights(),
+    second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
 ) where {OT, T1, T2}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
@@ -373,7 +375,7 @@ function calculate_structure_function_2d_i!(
         if ok && 1 <= dist_bin < N3
             δu, rh = SFH.pair_increments(geom, frame, distance, X1, X2, U1, U2)
             val = structure_function_type(δu, rh)
-            val_bin = SFH.digitize(val, value_bins)
+            val_bin = SFH.digitize(pair_axis_key(second_axis, val, X1, X2, distance), value_bins)
 
             if 1 <= val_bin < N4
                 w = wi * _point_weight(weights, j)

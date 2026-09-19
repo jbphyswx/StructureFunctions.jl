@@ -115,6 +115,14 @@ function main()
     check_route("point joint 2D", joint2d, x, u; failures)
     check_route("point single-pass 1D", single_pass, x, u; failures)
 
+    # A one-dimensional point list has an exact O(N log N) route. A backend that reaches it
+    # through the pair loop instead is not merely slower, it is asymptotically slower, and the
+    # not-slower-than-serial floor is what says so: this row read 37.8x before the distributed
+    # and MPI point paths were given the route.
+    x1 = reshape(sort(rand(n) .* 100), 1, n)
+    u1 = randn(1, n)
+    check_route("point sorted line 1D", sf1d, x1, u1; failures)
+
     # The auxiliary-axis routes are the ones a slice-wise split silently ruins: the batch-leading
     # kernels amortise a pair's geometry over the slices, so any decomposition that splits slices
     # instead of the outer index pays it B times over.

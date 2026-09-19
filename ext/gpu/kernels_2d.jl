@@ -207,7 +207,7 @@ function _joint2d_kernel_def(dist_route::Symbol, val_route::Symbol, compile_cell
                         if ok && 1 <= dbin < N_dist_edges
                             dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
                             val = sf_type(dU, r̂)
-                            akey = _gpu_axis_key(second_axis, val, X1, X2, dist)
+                            akey = SFC.pair_axis_key(second_axis, val, X1, X2, dist)
                             $(val_digitize)
                             if 1 <= vbin < N_val_edges
                                 idx = (dbin - 1) * NV + vbin

@@ -233,11 +233,15 @@ Maximum flat joint histogram cells ``n_dist × n_val`` for tiled128 2D joint SF
 """
 const SF_GPU_MAX_2D_HIST = SF_GPU_MAX_BINS * SF_GPU_MAX_BINS
 
-"""True when the 2D joint histogram fits the tiled128 block-local path."""
-@inline function _gpu_joint_2d_tiled_eligible(n_dist::Int, n_val::Int)
+"""True when the 2D joint histogram and the four coordinate tiles of width `D` fit the tiled128
+block-local path. A width whose tiles do not fit takes the global-atomic kernel, which stages
+nothing."""
+@inline function _gpu_joint_2d_tiled_eligible(n_dist::Int, n_val::Int, D::Int,
+                                              ::Type{FT}) where {FT}
     return n_dist <= SF_GPU_MAX_BINS &&
            n_val <= SF_GPU_MAX_BINS &&
-           n_dist * n_val <= SF_GPU_MAX_2D_HIST
+           n_dist * n_val <= SF_GPU_MAX_2D_HIST &&
+           4 * D * SF_GPU_TILE * sizeof(FT) <= 44 * 1024
 end
 
 """Map 1-based upper-triangle pair index within a tile to `(ia, jb)` with `ia < jb`."""
@@ -523,19 +527,21 @@ function _launch_sf_kernel!(
     weights = SFC.NoWeights(),
 )
     NB = N_bins - 1
-    _sf_tiled_1d_check_nb(NB)
     dig = _sf_point_dist_digitizer(backend, bins, workspace)
     D = N_dims
-    _launch_sf_tiled_1d_varying!(
+    go = Dv -> _launch_sf_tiled_1d_varying!(
         backend,
         reshape(out_dev, 1, NB, 1),
         reshape(cnt_dev, 1, NB, 1),
         reshape(x_dev, D, N_points, 1),
         reshape(u_dev, D, N_points, 1),
         sf_type, dig, N_points, NB, 1,
-        D == 2 ? Val(2) : Val(3), Val(1), geom;
-        weights = weights,
+        Dv, Val(1), geom;
+        weights = weights, workspace = workspace,
     )
+    # 2 and 3 are the widths the package compiles ahead of time; any other is one more kernel
+    # instantiation, paid once on its first launch.
+    D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : go(Val(D))
     return nothing
 end
 
@@ -612,12 +618,7 @@ function _launch_gpu_structure_function!(
     dist_bins = _gpu_normalize_bins(distance_bins)
     N_bins = _gpu_n_edges(distance_bins)
 
-    if N_dims ∉ (2, 3)
-        error("GPUExt: GPU structure functions require N_dims ∈ {2, 3} (got N_dims=$N_dims)")
-    end
     NB = N_bins - 1
-    NB > SF_GPU_MAX_BINS &&
-        error("GPUExt: at most $SF_GPU_MAX_BINS distance bins on GPU (got NB=$NB)")
 
     geom, x_dev, u_dev, w_dev = _gpu_prepare_and_stage(backend, x_mat, u_mat, distance_metric, N_points;
         workspace = workspace, distance_bins = distance_bins, culling = culling, weights = weights)
@@ -820,20 +821,6 @@ function _gpu_calculate_structure_function_core(
             "use the in-place gpu_calculate_structure_function! for synchronize=false.",
         ),
     )
-    # The tiled kernels stage a fixed number of coordinate components per point, so they cover the
-    # widths they were written for. A width outside that set goes through the width-generic pair
-    # kernel instead, which reads its widths from `Val` parameters.
-    if size(x_mat, 1) ∉ (2, 3)
-        nb = SFC.n_histogram_bins(distance_bins)
-        sums = zeros(promote_type(float(FT), Float64), nb)
-        counts = zeros(CT, nb)
-        SFC.gpu_calculate_structure_function_fields!(
-            CB.GPUBackend(backend), sums, counts, sf_type, x_mat,
-            SFC.MF.Fields(vectors = (u_mat,)), distance_bins;
-            distance_metric, culling, verbose, show_progress,
-        )
-        return SF.StructureFunctionSumsAndCounts(sf_type, distance_bins, sums, counts)
-    end
     w = SFC._pair_weights(weights, size(x_mat, 2), float(FT))
     SFC._check_weighted_counts(w, CT)
     out_dev, cnt_dev, edges_host = _launch_gpu_structure_function!(
@@ -966,32 +953,14 @@ end
     u_mat,
     i::Int,
     j::Int,
-    ::Val{2},
+    ::Val{W},
     ::Type{FT},
     geom,
-) where {FT}
+) where {W, FT}
     X1 = _gpu_ld_col(x_mat, i, SFH.coordinate_width(geom), FT)
     X2 = _gpu_ld_col(x_mat, j, SFH.coordinate_width(geom), FT)
-    U1 = _gpu_ld_col(u_mat, i, Val(2), FT)
-    U2 = _gpu_ld_col(u_mat, j, Val(2), FT)
-    ok, dist, frame = SFH.pair_frame(geom, X1, X2)
-    du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
-    return ok, dist, du_L, du_n2
-end
-
-@inline function _gpu_single_pass_pair_invariants(
-    x_mat,
-    u_mat,
-    i::Int,
-    j::Int,
-    ::Val{3},
-    ::Type{FT},
-    geom,
-) where {FT}
-    X1 = _gpu_ld_col(x_mat, i, SFH.coordinate_width(geom), FT)
-    X2 = _gpu_ld_col(x_mat, j, SFH.coordinate_width(geom), FT)
-    U1 = _gpu_ld_col(u_mat, i, Val(3), FT)
-    U2 = _gpu_ld_col(u_mat, j, Val(3), FT)
+    U1 = _gpu_ld_col(u_mat, i, Val(W), FT)
+    U2 = _gpu_ld_col(u_mat, j, Val(W), FT)
     ok, dist, frame = SFH.pair_frame(geom, X1, X2)
     du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
     return ok, dist, du_L, du_n2
@@ -1281,7 +1250,7 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel_linear!(
         if ok && 1 <= dbin < N_dist_bins
             dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
             val = sf_type(dU, r̂)
-            akey = _gpu_axis_key(second_axis, val, X1, X2, dist)
+            akey = SFC.pair_axis_key(second_axis, val, X1, X2, dist)
             vbin = _gpu_digitize_general(akey, value_edges, N_val_edges)
             if 1 <= vbin < N_val_edges
                 pw = SFC._point_weight(wts, i) * SFC._point_weight(wts, j)
@@ -1325,7 +1294,7 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel_log!(
         if ok && 1 <= dbin < N_dist_bins
             dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
             val = sf_type(dU, r̂)
-            akey = _gpu_axis_key(second_axis, val, X1, X2, dist)
+            akey = SFC.pair_axis_key(second_axis, val, X1, X2, dist)
             vbin = _gpu_digitize_general(akey, value_edges, N_val_edges)
             if 1 <= vbin < N_val_edges
                 pw = SFC._point_weight(wts, i) * SFC._point_weight(wts, j)
@@ -1366,7 +1335,7 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel!(
         if ok && 1 <= dbin < N_dist_bins
             dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
             val = sf_type(dU, r̂)
-            akey = _gpu_axis_key(second_axis, val, X1, X2, dist)
+            akey = SFC.pair_axis_key(second_axis, val, X1, X2, dist)
             vbin = _gpu_digitize_general(akey, value_edges, N_val_edges)
             if 1 <= vbin < N_val_edges
                 pw = SFC._point_weight(wts, i) * SFC._point_weight(wts, j)
@@ -1425,7 +1394,9 @@ function _launch_joint_2d_kernel!(
         _joint2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
                              dist_bins, vp, N_points, n_dist, n_val, geom,
                              _active_cull(workspace)) && return nothing
-    if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
+    if _gpu_joint_2d_tiled_eligible(n_dist, n_val,
+                                    SFC._val_int(SFH.coordinate_width(geom)),
+                                    eltype(out_sums_dev))
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
             sf_type, dist_bins, vp, N_points, n_dist_edges, n_val_edges, n_dist, n_val, geom;
@@ -1465,7 +1436,9 @@ function _launch_joint_2d_kernel!(
         _joint2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
                              dist_bins, vp, N_points, n_dist, n_val, geom,
                              _active_cull(workspace)) && return nothing
-    if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
+    if _gpu_joint_2d_tiled_eligible(n_dist, n_val,
+                                    SFC._val_int(SFH.coordinate_width(geom)),
+                                    eltype(out_sums_dev))
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
             sf_type, dist_bins, vp, N_points, n_dist_edges, n_val_edges, n_dist, n_val, geom;
@@ -1505,7 +1478,9 @@ function _launch_joint_2d_kernel!(
         _joint2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
                              dist_bins, vp, N_points, n_dist, n_val, geom,
                              _active_cull(workspace)) && return nothing
-    if _gpu_joint_2d_tiled_eligible(n_dist, n_val)
+    if _gpu_joint_2d_tiled_eligible(n_dist, n_val,
+                                    SFC._val_int(SFH.coordinate_width(geom)),
+                                    eltype(out_sums_dev))
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, value_edges_dev,
             sf_type, dist_bins, vp, N_points, n_dist_edges, n_val_edges, n_dist, n_val, geom;
@@ -1640,8 +1615,6 @@ function _launch_gpu_joint2d!(
         throw(DimensionMismatch(
             "x_mat and u_mat must share the point count; got $(size(x_mat)) and $(size(u_mat))",
         ))
-    N_dims in (2, 3) ||
-        error("GPUExt: 2D joint structure functions require N_dims ∈ (2, 3) (got N_dims=$N_dims)")
 
     dist_bins = _gpu_normalize_bins(distance_bins)
     val_bins = _gpu_normalize_bins(value_bins)
@@ -1742,13 +1715,9 @@ function _gpu_calculate_structure_function_2d_snapshot(
     show_progress::Bool = true,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, FT4 <: Number, CT}
     SFC._check_weighted_counts(weights, CT)
-    # The angle reads `X2 - X1`, which is the separation only on a flat metric; on a curved one
-    # each pair's direction lives in its own frame, as the CPU kernels say.
-    if !(second_axis isa SFC.InvariantValueAxis)
-        axis_geom = SFH.pair_geometry_for(distance_metric, Val(size(u_mat, 1)))
-        axis_geom isa SFH.FlatGeometry ||
-            SFC._require_value_axis(second_axis, axis_geom, size(u_mat, 1))
-    end
+    SFC._require_value_axis(
+        second_axis, SFH.pair_geometry_for(distance_metric, Val(size(u_mat, 1))),
+    )
     out_sums_dev, out_cnts_dev = _launch_gpu_joint2d!(
         sf_type, backend, x_mat, u_mat, distance_bins, value_bins;
         workgroup_size = workgroup_size, workspace = workspace,
@@ -1911,8 +1880,6 @@ function _gpu_run_single_pass_2d!(
     backend = gpu_backend.backend
     FT = _sp2d_value_eltype(value_bins, promote_type(float(FT1), float(FT2), float(FT3)))
     N_dims, N_points = size(x)
-    N_dims in (2, 3) ||
-        error("GPUExt: single-pass 2D calculation requires N_dims ∈ (2, 3) (got N_dims=$N_dims)")
 
     n_bins = _gpu_n_edges(distance_bins) - 1
     n_val = size(sums_3d, 3)
@@ -2081,8 +2048,6 @@ function SFC._dispatch_single_pass(
     n_edges = _gpu_n_edges(distance_bins)
     n_bins = n_edges - 1
 
-    N_dims in (2, 3) ||
-        error("GPUExt: single-pass calculation requires N_dims ∈ (2, 3) (got N_dims=$N_dims)")
 
     w = SFC._pair_weights(weights, N_points, FT)
     SFC._check_weighted_counts(w, CT)
@@ -2217,8 +2182,6 @@ function SFC.gpu_calculate_structure_function_batch!(
         throw(DimensionMismatch("sums must have shape ($NB, $T); got $(size(sums))"))
     size(counts) == (NB, T) ||
         throw(DimensionMismatch("counts must have shape ($NB, $T); got $(size(counts))"))
-    N_dims == 2 || N_dims == 3 ||
-        error("GPUExt: slice batch requires N_dims ∈ {2,3} (got N_dims=$N_dims)")
     # Fused varying-x batch (B = T) through the unified N-body path: one launch for every slice.
     # `size(u, 1)` is the velocity dimension only before the conversion.
     geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
@@ -2293,8 +2256,6 @@ function SFC.gpu_calculate_structure_functions_single_pass_batch!(
         throw(DimensionMismatch("sums must have shape ($(SFC.SINGLE_PASS_N), $n_bins, $T); got $(size(sums))"))
     size(counts) == size(sums) ||
         throw(DimensionMismatch("counts must match sums shape $(size(sums))"))
-    N_dims == 2 || N_dims == 3 ||
-        error("GPUExt: single-pass slice batch requires N_dims ∈ {2,3} (got N_dims=$N_dims)")
     # Fused varying-x batch (B = T) through the unified N-body single-pass path.
     # `size(u, 1)` is the velocity dimension only before the conversion.
     geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
@@ -2334,8 +2295,6 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d_batch!(
         throw(DimensionMismatch("sums must have shape ($(SFC.SINGLE_PASS_N), $n_bins, $n_val, $T); got $(size(sums))"))
     size(counts) == size(sums) ||
         throw(DimensionMismatch("counts must match sums shape $(size(sums))"))
-    N_dims == 2 || N_dims == 3 ||
-        error("GPUExt: SP2D slice batch requires N_dims ∈ {2,3} (got N_dims=$N_dims)")
     # Fused varying-x batch (B = T) through the unified single-pass-2D path: N-body with a
     # dynamic-shared privatized histogram, one launch for every slice.
     # `size(u, 1)` is the velocity dimension only before the conversion.
@@ -2377,8 +2336,6 @@ function SFC._dispatch_single_pass!(
         throw(DimensionMismatch("sums must have shape ($(SFC.SINGLE_PASS_N), $n_bins); got $(size(sums))"))
     size(counts) == size(sums) ||
         throw(DimensionMismatch("counts must match sums shape $(size(sums))"))
-    N_dims in (2, 3) ||
-        error("GPUExt: single-pass calculation requires N_dims ∈ (2, 3) (got N_dims=$N_dims)")
 
     w = SFC._pair_weights(weights, N_points, FT)
     SFC._check_weighted_counts(w, CT)

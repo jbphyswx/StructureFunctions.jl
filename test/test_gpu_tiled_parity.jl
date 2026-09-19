@@ -191,16 +191,26 @@ Test.@testset "GPU tiled parity — signed transverse operators keep the operato
     end
 end
 
-Test.@testset "GPU tiled parity — NB > SF_GPU_MAX_BINS errors" begin
-    N = 20
+Test.@testset "GPU parity above the tiled kernel's shared-memory cap" begin
+    # A histogram wider than `SF_GPU_MAX_BINS` has no `@localmem` to stage, so the route takes the
+    # global-atomic kernel instead of refusing. The answer must not depend on which side of the
+    # cap the bin count falls.
+    N = 200
     FT = Float64
+    Random.seed!(4242)
     x = rand(FT, 2, N)
     u = rand(FT, 2, N)
-    bin_edges = collect(FT, range(0.0, 2.0; length = 130))  # 129 bins (> 128 cap)
     sft = SFT.L2SFType()
-    Test.@test_throws ErrorException SFC.gpu_calculate_structure_function(
-        sft, KA.CPU(), x, u, bin_edges,
-    )
+    for nb in (128, 129, 4000)
+        bin_edges = collect(FT, range(0.0, 2.0; length = nb + 1))
+        ref = SFC.calculate_structure_function(sft, x, u, bin_edges, FT;
+            backend = CB.SerialBackend(), verbose = false,
+            output_type = SF.StructureFunctionSumsAndCounts)
+        got = SFC.gpu_calculate_structure_function(sft, KA.CPU(), x, u, bin_edges)
+        Test.@test sum(ref.counts) > 0
+        Test.@test collect(got.counts) == collect(ref.counts)
+        Test.@test isapprox(collect(got.sums), collect(ref.sums); rtol = 1e-10, atol = 1e-12)
+    end
 end
 
 # The tiled kernels size `@localmem` from the compile-time SF_GPU_MAX_BINS but index it by the
@@ -220,16 +230,28 @@ Test.@testset "GPU batch — NB > SF_GPU_MAX_BINS errors (no silent shared-mem o
 
     for (name, x) in (("varying-x", x_vary), ("fixed-x", x_fixed))
         Test.@testset "1D individual batch $name" begin
-            Test.@test_throws ErrorException SFC.gpu_calculate_structure_function_batch(
-                sft, KA.CPU(), x, u, over,
-            )
-            Test.@test SFC.gpu_calculate_structure_function_batch(
-                sft, KA.CPU(), x, u, under,
-            ) isa Any
+            # Both sides of the cap run, and the wide one is a different kernel, so the two must
+            # agree with the same per-slice serial answer rather than merely not throwing.
+            for bins in (under, over)
+                nb = length(bins) - 1
+                ref_s = zeros(FT, nb, B)
+                ref_c = zeros(Int, nb, B)
+                for b in 1:B
+                    xb = ndims(x) == 2 ? x : x[:, :, b]
+                    r = SFC.calculate_structure_function(sft, xb, u[:, :, b], bins, FT;
+                        backend = CB.SerialBackend(), verbose = false,
+                        output_type = SF.StructureFunctionSumsAndCounts)
+                    ref_s[:, b] .= r.sums
+                    ref_c[:, b] .= r.counts
+                end
+                g = SFC.gpu_calculate_structure_function_batch(sft, KA.CPU(), x, u, bins)
+                Test.@test reshape(collect(g.counts), nb, B) == ref_c
+                Test.@test isapprox(reshape(collect(g.sums), nb, B), ref_s; rtol = 1e-5)
+            end
         end
         Test.@testset "single-pass 1D batch $name" begin
-            Test.@test_throws ErrorException SFC._dispatch_single_pass(gpu_be, x, u, over)
             Test.@test SFC._dispatch_single_pass(gpu_be, x, u, under) isa Any
+            Test.@test SFC._dispatch_single_pass(gpu_be, x, u, over) isa Any
         end
     end
 end

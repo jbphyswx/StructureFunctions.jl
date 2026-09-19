@@ -11,6 +11,7 @@ using ..MultiFields: MultiFields as MF
 using ..StructureFunctionTypes: StructureFunctionTypes as SFT
 using ..StructureFunctionObjects: StructureFunctionObjects as SFO
 using ..StructureFunctions: AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges,
+    LogBinEdges_from_log_edges,
     InfPaddedBinEdges, ModeBinEdges, n_histogram_bins, midpoints,
     AbstractTaper, NoTaper, Bartlett, GaussianTaper, taper_weight, harmonic_taper, mode_taper, HarmonicNodes,
     gauss_legendre,

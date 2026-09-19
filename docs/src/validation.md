@@ -16,7 +16,8 @@ were of exactly that kind — a plausible number that was wrong by a constant fa
 | 3 | Gridded vs unstructured pair loop | exact counts | the whole gridded path against the reference loop | `test/test_gridded.jl` |
 | 3b | Separable transform vs sweep vs pair loop | exact counts, round-off | lat-lon and stretched grids on both algorithms and every backend | `test/test_gridded_separable.jl` |
 | 4 | Culled vs uncalled | exact counts | culling changes cost, never results | `test/test_cpu_pair_blocking.jl` |
-| 5 | Backend agreement | round-off | serial, threaded, distributed, MPI, GPU | `test/test_parallel_equivalence.jl` |
+| 5 | Backend agreement | round-off | serial, threaded, distributed and the distributed+threaded hybrid | `test/test_parallel_equivalence.jl` |
+| 5b | MPI agreement across ranks | round-off | every entry family on two ranks, with a serial and a threaded inner backend | `test/test_mpi.jl` |
 | 6 | Unit invariance | round-off | quantities that may not depend on a choice of unit | `test/test_known_truth.jl` |
 | 7 | Frame invariance | round-off | the tensor trace against the second-order SF | `test/test_known_truth.jl` |
 | 8 | Analytic zeros | machine zero | solid-body rotation, angular folding | `test/test_spherical_geometry.jl` |
@@ -42,7 +43,8 @@ were of exactly that kind — a plausible number that was wrong by a constant fa
 | 28 | Slice batch against the single-slice entry | counts exact, 10⁻¹² | a batch over a trailing slice axis equals the single-slice entry run once per slice, on the lag sweep, the transform and the device engine: uniform periodic, bounded and mixed grids, lat-lon, a stretched axis with permuted axis order, a mask that differs per slice, cell weights, the joint histogram over angle, and both answers of `batch_shares_lag_geometry` | `test/test_gridded_batch.jl`, `gpu/test_cuda_gridded_parity.jl` |
 
 Every route with a device kernel — the point kernels, the transform engine on every schedule, the
-non-uniform FFT route and the tensor kernel — is also run on an A100 against the CPU by
+gridded direct lag sweep, the harmonic direct sum, the non-uniform FFT route and the tensor
+kernel — is also run on an A100 against the CPU by
 `gpu/test_cuda_gridded_parity.jl` and `gpu/runtests.jl`, counts exact and sums to round-off; the
 tolerance policy below says what "round-off" means there.
 
@@ -301,7 +303,7 @@ the two cannot be confused.
 
 Each oracle lives in a targeted test file that can be run on its own:
 
-```julia
+```bash
 julia --project=test test/test_known_truth.jl
 julia --project=test test/test_gridded_fft.jl
 julia --project=test test/test_spherical_geometry.jl

@@ -262,7 +262,9 @@ coordinate vectors at compile time.
         config.types_per_pass,
         config.n_type_passes,
         Val(_sp2d_sharedhist_compile_cells(config)),
-        D == 3 ? Val(3) : Val(2),
+        D == 2 ? Val(2) : D == 3 ? Val(3) : error(
+            "the SP2D strategy kernels stage D components from `Val{D}` at D ∈ {2,3}; a caller " *
+            "must route another width elsewhere rather than reach here (got D=$D)"),
         Val(cnt_eltype),
         wts,
         geom,

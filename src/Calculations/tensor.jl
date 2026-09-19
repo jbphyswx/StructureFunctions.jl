@@ -358,10 +358,19 @@ is order-independent. With a second axis in `s` the pair's angle picks the secon
 """
 function _tensor_pairs!(sums_flat, counts_flat, order::Val{P}, s, outer) where {P}
     s.axis === nothing || return _tensor_pairs_joint!(sums_flat, counts_flat, order, s, outer)
-    vW, vF, W, F = s.vW, s.vF, s.W, s.F
+    # `s` carries the widths and the staging choice as values. They become type parameters here so
+    # the `SVector`s below are statically sized and the branch is resolved at compile time; read
+    # off `s` they make every pair's coordinate load a heap allocation.
+    return _tensor_pairs_inner!(sums_flat, counts_flat, order, s, outer, s.vW, s.vF,
+                                Val(s.fixed_x))
+end
+
+function _tensor_pairs_inner!(sums_flat, counts_flat, order::Val{P}, s, outer,
+                              ::Val{W}, ::Val{F}, ::Val{FX}) where {P, W, F, FX}
+    vW, vF = Val(W), Val(F)
     geom, dist_be, n_bins, N, B = s.geom, s.dist_be, s.n_bins, s.N, s.B
-    x_fixed = s.fixed_x ? reshape(s.xk, W, N) : nothing
-    x_flat = s.fixed_x ? nothing : reshape(s.xk, W, N, B)
+    x_fixed = FX ? reshape(s.xk, W, N) : nothing
+    x_flat = FX ? nothing : reshape(s.xk, W, N, B)
     u_flat = reshape(s.uk, F, N, B)
     XT, UT = eltype(s.xk), eltype(s.uk)
 
@@ -373,7 +382,7 @@ function _tensor_pairs!(sums_flat, counts_flat, order::Val{P}, s, outer) where {
         wi = _point_weight(wts, i)
         for j in (i + 1):N
             w = wi * _point_weight(wts, j)
-            if s.fixed_x
+            if FX
                 X1 = SA.SVector{W, XT}(ntuple(d -> x_fixed[d, i], vW))
                 X2 = SA.SVector{W, XT}(ntuple(d -> x_fixed[d, j], vW))
                 ok, dist, frame = SFH.pair_frame(geom, X1, X2)
@@ -422,8 +431,12 @@ end, so no sign is taken. An even rank takes none.
 
 # One field on a flat metric: the pair's displacement gives its angle to the reference axis, which
 # picks the second bin in place of the auxiliary slot.
-function _tensor_pairs_joint!(sums, counts, order::Val{P}, s, outer) where {P}
-    vW, vF, W, F = s.vW, s.vF, s.W, s.F
+_tensor_pairs_joint!(sums, counts, order::Val, s, outer) =
+    _tensor_pairs_joint_inner!(sums, counts, order, s, outer, s.vW, s.vF)
+
+function _tensor_pairs_joint_inner!(sums, counts, order::Val{P}, s, outer,
+                                    ::Val{W}, ::Val{F}) where {P, W, F}
+    vW, vF = Val(W), Val(F)
     geom, dist_be, n_bins, N = s.geom, s.dist_be, s.n_bins, s.N
     axis_edges, na, second_axis = s.axis
     x_fixed = reshape(s.xk, W, N)

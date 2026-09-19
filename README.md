@@ -25,7 +25,8 @@ transverse projections, scalars, mixed and cross-field moments, and the moment t
 ```julia
 using Pkg; Pkg.add(url = "https://github.com/jbphyswx/StructureFunctions.jl.git")
 
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, LogBinEdges
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, LogBinEdges,
+    StructureFunctionObjects as SFO
 using ComputationalBackends: ComputationalBackends as CB
 
 x = rand(2, 4096) .* 1.0e4          # (D, N) coordinates
@@ -34,7 +35,8 @@ bins = LogBinEdges(collect(exp10.(range(log10(50.0), log10(5.0e3); length = 41))
 
 sf = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins)     # ⟨δu_L²⟩ per bin, AutoBackend
 sf.values                                                             # NaN where a bin holds no pair
-raw = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; output_type = SFC.StructureFunctionObjects.StructureFunctionSumsAndCounts)
+raw = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
+                                       output_type = SFO.StructureFunctionSumsAndCounts)
 raw.sums, raw.counts                                                  # the accumulator, adds across processes and time
 
 res = SFC.calculate_structure_functions_single_pass(x, u, bins)       # S2, L2, T2, S3, L3, L1T2 and the Helmholtz split in one pass
@@ -95,7 +97,7 @@ pair in its canonical orientation, so nothing depends on the order of the input.
   sphere `C_l`, `C^E_l`, `C^B_l`.
 - Fluxes: `spectral_flux` from the advective moment (`J₁`) and from `S3`, `L3` with their boundary
   terms; `enstrophy_flux`.
-- Fits (issue #37): `fit_spectrum`, `fit_helmholtz_spectra`, `fit_flux` through
+- Fits (issue #18): `fit_spectrum`, `fit_helmholtz_spectra`, `fit_flux` through
   `SpectrumForwardModel`, `HelmholtzForwardModel`, `FluxForwardModel` with `RegularizedLeastSquares`
   (posterior covariance), `NonNegativeLeastSquares` or a `SegmentedPowerLaw`; `tradeoff_curve`,
   `select_segments`, `independent_pair_variance`.
@@ -106,22 +108,23 @@ pair in its canonical orientation, so nothing depends on the order of the input.
 ```julia
 using FlowGeometries: FlowGeometries as FG
 using SpectralBackends: SpectralBackends as SB
-using FFTW
+using FFTW, OhMyThreads
 
-n_lon, n_lat = 1440, 720
+n_lon, n_lat = 360, 180
 grid = FG.Grids.StructuredGrid(FG.Geometry.SphericalGeometry(6.371e6),
                                range(0.0, step = 2π / n_lon, length = n_lon),
                                range(-π / 2 + π / (2n_lat), π / 2 - π / (2n_lat); length = n_lat))
 u = randn(2, n_lon, n_lat)                                  # (east, north) at every cell
 bins = 6.371e6 .* collect(range(0.0, π; length = 41))       # metres, like the radius
 
-sf = calculate_structure_function(SFT.L3SFType(), grid, u, bins, UInt64,
-                                  SB.FastFourierTransformSpectralBackend(); backend = CB.ThreadedBackend())
+sf = SFC.calculate_structure_function(SFT.L3SFType(), grid, u, bins, UInt64,
+                                      SB.FastFourierTransformSpectralBackend();
+                                      backend = CB.ThreadedBackend())
 ```
 
-That bins `5.4 × 10¹¹` pairs in about ten seconds on eight cores; the direct sweep of the same grid
-takes 60× longer and returns the same counts. The same call with `backend = CB.GPUBackend(...)` runs
-the engine on a device.
+The transform evaluates every lag at once, so its cost follows the grid rather than the pair count;
+the direct sweep of the same grid returns the same counts for more work. The same call with
+`backend = CB.GPUBackend(...)` runs the engine on a device.
 
 ### The same grid at many times
 
@@ -189,12 +192,12 @@ forward-cascade field (bottom). The signed third-order panels skew negative only
 
 *Left: a field built with `E(k) ~ k^(-5/3)`, binned into `S₂` and transformed back with
 `gridded_spectrum` + `shell_average`. Right: the isotropic transform against a closed-form Gaussian
-density in 1-, 2- and 3-D, to `6.6e-05`, `2.3e-09` and `9.9e-14`.*
+density in 1-, 2- and 3-D.*
 
 ![Spectrum with missing data](docs/src/assets/sf_missing_data.png)
 
-*With half the grid missing, the spectrum recovered through `S₂` is within a few percent of the
-complete-field answer. Zero-filling the gaps and transforming directly is off by about 80 %.*
+*With half the grid missing, the spectrum recovered through `S₂` stays close to the complete-field
+answer, while zero-filling the gaps and transforming directly does not.*
 
 ![Directional structure functions](docs/src/assets/sf_directional.png)
 

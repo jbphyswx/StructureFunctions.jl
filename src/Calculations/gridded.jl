@@ -330,6 +330,15 @@ The slab pairs `(I, J)`, `I ≤ J`, whose cells can come within `r_max` of each 
 function enumerated_pairs end
 
 """
+    n_enumerated_pairs(schedule, r_max) -> Int
+
+How many pairs [`enumerated_pairs`](@ref) yields, without building them. The cost model asks this of
+a schedule it has not decided to sweep yet, so materialising the pairs there would allocate the
+whole `O(n_slabs²)` list to read one number off it.
+"""
+n_enumerated_pairs(s, r_max) = count(_ -> true, enumerated_pairs(s, r_max))
+
+"""
     separable_layout(schedule, data, valid, weights) -> (data, valid, weights)
 
 The packed field, its validity and its pair weights with slab `I` occupying columns
@@ -459,6 +468,7 @@ end
 @inline uniform_axes(s::UniformLagSchedule) = s
 @inline n_slabs(::UniformLagSchedule) = 1
 @inline enumerated_pairs(::UniformLagSchedule, r_max) = ((1, 1),)
+@inline n_enumerated_pairs(::UniformLagSchedule, r_max) = 1
 @inline separable_layout(::UniformLagSchedule, data, valid, weights) = (data, valid, weights)
 @inline lag_limits(s::UniformLagSchedule{Dg}, r_max) where {Dg} =
     ntuple(d -> _lag_limit(s, d, r_max), Val(Dg))
@@ -708,8 +718,11 @@ end
 
 sweep_reduce!(sums, counts, backend::CB.AbstractExecutionBackend, items, make_scratch, body!) =
     throw(ArgumentError(
-        "a gridded sweep runs on the serial and threaded CPU backends; $(typeof(backend)) has no " *
-        "gridded method",
+        "$(typeof(backend)) supplies no `sweep_reduce!`. The serial and threaded backends define " *
+        "one here, the Distributed and MPI extensions define theirs, and a device backend does not " *
+        "take this path at all: a gridded route reaches a device through its own hook " *
+        "(`device_transform_sweep!`, `device_lag_sweep!`), so reaching here with one means this " *
+        "route has no device kernel yet",
     ))
 
 """Threaded gridded sweep over work items; the OhMyThreads extension supplies the method."""
@@ -739,7 +752,7 @@ device_transform_sweep!(sums, counts, backend, args...) = throw(ArgumentError(
 
 """Tasks a backend sweeps with, which is how far the work is split."""
 @inline sweep_tasks(::CB.AbstractSerialBackend) = 1
-@inline sweep_tasks(::CB.AbstractThreadedBackend) = Threads.nthreads()
+@inline sweep_tasks(::CB.AbstractThreadedBackend) = _gridded_threads()
 @inline sweep_tasks(::CB.AbstractAutoBackend) = _gridded_threads()
 @inline sweep_tasks(::CB.AbstractExecutionBackend) = 1
 

@@ -199,6 +199,84 @@ and silently corrupt the histogram. Must be called by every launcher of those ke
     return nothing
 end
 
+"""Whether `sf_tiled_1d_varying!`'s shared memory fits in 44 KiB: four staged coordinate tiles,
+which grow with the width, plus the `R`-replicated histogram it sizes from `SF_GPU_MAX_BINS`."""
+@inline function _sf_1d_varying_shared_fits(::Type{FT}, ::Type{CST}, D::Int, NMOM::Int,
+                                            R::Int) where {FT, CST}
+    staging = 4 * D * SF_GPU_TILE * sizeof(FT)
+    hist = SF_GPU_MAX_BINS * R * (NMOM * sizeof(FT) + sizeof(CST))
+    return staging + hist <= 44 * 1024
+end
+
+"""Whether `sf_tiled_1d_fixed!`'s shared memory fits in 44 KiB: two coordinate tiles plus `W`
+field tiles at each end, and the `W`-replicated histogram."""
+@inline function _sf_1d_fixed_shared_fits(::Type{FT}, ::Type{CST}, D::Int, NMOM::Int,
+                                          W::Int) where {FT, CST}
+    staging = 2 * (1 + W) * D * SF_GPU_TILE * sizeof(FT)
+    hist = SF_GPU_MAX_BINS * W * (NMOM * sizeof(FT) + sizeof(CST))
+    return staging + hist <= 44 * 1024
+end
+
+# A histogram wider than the shared-memory cap has no `@localmem` to stage, so this sibling drops
+# the tiling entirely: one thread owns one `(i, b)`, walks every `j > i`, and accumulates straight
+# into the global histogram. It is the arrangement the joint-2D and gridded device routes already
+# take above their own caps, so every device route now widens the same way.
+KA.@kernel unsafe_indices = true function sf_wide_1d_varying!(
+    output,                 # (NMOM, NB, B)
+    counts,                 # (NMOM, NB, B)
+    @Const(x),              # (D, N, B)
+    @Const(u),              # (D, N, B)
+    wts,                    # NoWeights(), or one weight per point
+    sf_type,
+    digitizer,
+    N::Int,
+    NB::Int,
+    B::Int,
+    ::Val{D},
+    ::Val{NMOM},
+    geom,
+) where {D, NMOM}
+    g = @index(Global)
+    if g <= N * B
+        i = (g - 1) % N + 1
+        b = (g - 1) ÷ N + 1
+        if i <= N - 1
+            XT = eltype(x)
+            UT = eltype(u)
+            Xi = SA.SVector{D, XT}(ntuple(d -> @inbounds(x[d, i, b]), Val(D)))
+            Ui = SA.SVector{D, UT}(ntuple(d -> @inbounds(u[d, i, b]), Val(D)))
+            wi = SFC._point_weight(wts, i)
+            for j in (i + 1):N
+                Xj = SA.SVector{D, XT}(ntuple(d -> @inbounds(x[d, j, b]), Val(D)))
+                Uj = SA.SVector{D, UT}(ntuple(d -> @inbounds(u[d, j, b]), Val(D)))
+                ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
+                bin = digitizer(dist)
+                if ok && 1 <= bin <= NB
+                    dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
+                    moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
+                    pw = wi * SFC._point_weight(wts, j)
+                    @inbounds for m in 1:NMOM
+                        @atomic output[m, bin, b] += pw * moments[m]
+                        @atomic counts[m, bin, b] += convert(eltype(counts), pw)
+                    end
+                end
+            end
+        end
+    end
+end
+
+"""Launch `sf_wide_1d_varying!`: the global-atomic route for `NB > SF_GPU_MAX_BINS`."""
+function _launch_sf_wide_1d_varying!(
+    backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer,
+    N::Int, NB::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
+    weights = SFC.NoWeights(),
+) where {D, NMOM}
+    kernel! = sf_wide_1d_varying!(backend, SF_GPU_TILED_WS)
+    kernel!(out_dev, cnt_dev, x_dev, u_dev, _sf_weights_to_device(backend, weights),
+            sf_type, digitizer, N, NB, B, Val(D), Val(NMOM), geom; ndrange = N * B)
+    return nothing
+end
+
 """Replication factor R for the 1D varying-x shared histogram, by regime:
 - individual (NMOM = 1): the histogram is small and per-bin contention high, so a second replica
   pays for itself at small bin counts and a third costs more occupancy than it returns;
@@ -212,11 +290,18 @@ function _launch_sf_tiled_1d_varying!(
     N::Int, NB::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
     R::Int = _sf_tiled_1d_replication(eltype(out_dev), D, NMOM),
     weights = SFC.NoWeights(),
+    workspace = nothing,
 ) where {D, NMOM}
+    if NB > SF_GPU_MAX_BINS ||
+       !_sf_1d_varying_shared_fits(eltype(out_dev), eltype(cnt_dev), D, NMOM, R)
+        return _launch_sf_wide_1d_varying!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type,
+                                           digitizer, N, NB, B, Val(D), Val(NMOM), geom;
+                                           weights = weights)
+    end
     _sf_tiled_1d_check_nb(NB)
-    sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
-    n_tile_blocks = n_pair_blocks(sched)
-    ws = SF_GPU_TILED_WS
+    # The cull memo the prologue published names the tile pairs that can hold a pair within
+    # `r_max`; taking the full triangle instead is correct and enumerates tile pairs that cannot.
+    sched, n_tile_blocks, ws, _ = _tiled_launch_params(N, workspace)
     ndrange = n_tile_blocks * ws * B
     kernel! = sf_tiled_1d_varying!(backend, ws)
     wts = _sf_weights_to_device(backend, weights)
@@ -423,11 +508,9 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
     end
 end
 
-"""Load field `w`'s D-vector for local point `k` from a strip-staged u buffer."""
-@inline _sf_load_field(::Val{2}, buf, w::Int, k::Int) =
-    @inbounds SA.SVector{2}(buf[(w - 1) * 2 * SF_GPU_TILE + k], buf[((w - 1) * 2 + 1) * SF_GPU_TILE + k])
-@inline _sf_load_field(::Val{3}, buf, w::Int, k::Int) =
-    @inbounds SA.SVector{3}(buf[(w - 1) * 3 * SF_GPU_TILE + k], buf[((w - 1) * 3 + 1) * SF_GPU_TILE + k], buf[((w - 1) * 3 + 2) * SF_GPU_TILE + k])
+"""Load field `w`'s `W`-vector for local point `k` from a strip-staged u buffer."""
+@inline _sf_load_field(::Val{W}, buf, w::Int, k::Int) where {W} =
+    SA.SVector{W}(ntuple(d -> @inbounds(buf[((w - 1) * W + (d - 1)) * SF_GPU_TILE + k]), Val(W)))
 
 """Strip width W for fixed-x 1D, by regime:
 - individual (NMOM = 1): a 4-wide strip amortizes one pair's geometry over four fields;
@@ -442,6 +525,15 @@ function _launch_sf_tiled_1d_fixed!(
     W::Int = _sf_tiled_1d_fixed_strip(eltype(out_dev), D, NMOM),
     weights = SFC.NoWeights(),
 ) where {D, NMOM}
+    # The shared position set is broadcast to the (D, N, B) the global-atomic kernel reads, which
+    # stages nothing and so carries no width or bin limit.
+    if NB > SF_GPU_MAX_BINS ||
+       !_sf_1d_fixed_shared_fits(eltype(out_dev), eltype(cnt_dev), D, NMOM, W)
+        return _launch_sf_wide_1d_varying!(
+            backend, out_dev, cnt_dev, repeat(reshape(x_dev, D, N, 1), 1, 1, B), u_dev,
+            sf_type, digitizer, N, NB, B, Val(D), Val(NMOM), geom; weights = weights,
+        )
+    end
     _sf_tiled_1d_check_nb(NB)
     sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
     n_tile_blocks = n_pair_blocks(sched)
@@ -930,6 +1022,10 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
     end
 end
 
+"""The widest point the 2D tiled kernels can stage: every one of them holds four coordinate tiles
+in shared memory, so unlike the 1D family they have no unstaged sibling to widen into."""
+@inline _sf_2d_max_width(::Type{FT}) where {FT} = (46 * 1024) ÷ (4 * SF_GPU_TILE * sizeof(FT))
+
 """Strip width W for fixed-x 2D (only x/u staged in shared; no shared hist)."""
 @inline function _sf_tiled_2d_fixed_strip(::Type{FT}, D::Int) where {FT}
     budget = 46 * 1024
@@ -989,7 +1085,7 @@ function _sf_batch_dist_digitizer(backend, distance_bins)
     error("unsupported distance_bins type $(typeof(distance_bins))")
 end
 
-"""Dispatch a 2D batch launch on runtime D ∈ {2,3} into the Val-specialized launchers."""
+"""Dispatch a 2D batch launch on a runtime width into the Val-specialized launchers."""
 function _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
                               N, n_dist, n_val, B, D::Int, ::Val{NMOM}, fixed_x::Bool, geom;
                               weights = SFC.NoWeights()) where {NMOM}
@@ -1011,24 +1107,33 @@ function _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, 
         fixed_x ?
             _launch_sf_tiled_2d_fixed!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), geom; weights = wts) :
             _launch_sf_tiled_2d_varying!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), geom; weights = wts)
-    D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : error("GPU 2D batch requires D ∈ {2,3} (got $D)")
+    dmax = _sf_2d_max_width(eltype(out_dev))
+    D <= dmax || error(
+        "GPUExt: the 2D tiled kernels stage four coordinate tiles of width D in shared memory, " *
+        "which admits D ≤ $dmax at $(eltype(out_dev)) (got D=$D)",
+    )
+    # 2 and 3 are the widths the package compiles ahead of time; any other is one more kernel
+    # instantiation, paid once on its first launch.
+    D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : go(Val(D))
     return nothing
 end
 
-"""Dispatch a 1D batch launch on runtime D ∈ {2,3} into the Val-specialized launchers.
+"""Dispatch a 1D batch launch on a runtime width into the Val-specialized launchers.
 `out`/`cnt` are (NMOM, NB, B); x_dev/u_dev are (D,N,B) varying or x=(D,N),u=(D,N,B) fixed."""
 function _sf_launch_1d_batch!(backend, out, cnt, x_dev, u_dev, sf_type, dig,
                               N, NB, B, D::Int, ::Val{NMOM}, fixed_x::Bool, geom;
                               weights = SFC.NoWeights()) where {NMOM}
     # CUDA fast path (N-body broadcast + static-shared privatized histogram,
     # TILE=256) when StructureFunctionsCUDAExt is active and NB fits.
-    weights isa SFC.NoWeights &&
+    weights isa SFC.NoWeights && NB <= SF_GPU_MAX_BINS &&
         SFC.gpu_fast_launch_1d_batch!(backend, out, cnt, x_dev, u_dev, sf_type, dig,
                                       N, NB, B, D, NMOM, fixed_x, geom, nothing) && return nothing
     wts = _sf_weights_to_device(backend, weights)
     go(Dv) = fixed_x ?
         _launch_sf_tiled_1d_fixed!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM), geom; weights = wts) :
         _launch_sf_tiled_1d_varying!(backend, out, cnt, x_dev, u_dev, sf_type, dig, N, NB, B, Dv, Val(NMOM), geom; weights = wts)
-    D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : error("GPU 1D batch requires D ∈ {2,3} (got $D)")
+    # 2 and 3 are the widths the package compiles ahead of time; any other is one more kernel
+    # instantiation, paid once on its first launch.
+    D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : go(Val(D))
     return nothing
 end

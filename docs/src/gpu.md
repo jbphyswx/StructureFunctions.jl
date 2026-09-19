@@ -9,6 +9,10 @@ For backend selection across serial / threaded / distributed / GPU see [Backends
 CUDA validation and benchmark scripts are in the repository's
 [`gpu/`](https://github.com/jbphyswx/StructureFunctions.jl/tree/main/gpu) directory.
 
+Every code block on this page needs a CUDA device, so the documentation build shows them without
+running them; the pages that do not need one have their blocks executed on every build. The same
+calls run on `KernelAbstractions.CPU()` by swapping the device, which is what the test suite does.
+
 ## When to use the GPU
 
 - **Problem size.** Pair histograms pay off from a few thousand points up; the crossover depends on
@@ -86,16 +90,20 @@ one work item still owns one `(lag, slab pair)` and loops the slices inside.
 
 | call | shapes | `D` | bins | device route |
 |---|---|---|---|---|
-| `calculate_structure_function(sf, x, u, bins; backend)` | `(D, N)` | 2, 3 | linear, log, general | tiled pair blocks with a block-local histogram |
-| shared positions | `x::(D, N)`, `u::(D, N, aux...)` | 2 (fused), any | linear for the fused route | fixed-position batch kernels |
-| varying positions | `x, u::(D, N, aux...)` | 2 (fused), any | linear for the fused route | varying-position batch kernels |
-| `calculate_structure_function(sf, x, u, bins, value_bins; backend)` | `(2, N)` or batches | 2 | typed or vector value bins | shared-memory joint histogram when it fits, global atomics otherwise |
-| `calculate_structure_functions_single_pass(x, u, bins; backend)` | `(D, N)` or batches | 2, 3 | linear, log, general | tiled six-row histogram |
-| `calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend)` | `(D, N)` or batches | 2, 3 | typed or vector value bins | shared, type-plane or direct strategy, frozen when the workspace is built |
+| `calculate_structure_function(sf, x, u, bins; backend)` | `(D, N)` | any | linear, log, general | tiled pair blocks with a block-local histogram; above the shared-memory budget, global atomics |
+| shared positions | `x::(D, N)`, `u::(D, N, aux...)` | any | linear for the fused route | fixed-position batch kernels |
+| varying positions | `x, u::(D, N, aux...)` | any | linear for the fused route | varying-position batch kernels |
+| `calculate_structure_function(sf, x, u, bins, value_bins; backend)` | `(D, N)` or batches | any | typed or vector value bins | shared-memory joint histogram when it fits, global atomics otherwise |
+| `calculate_structure_functions_single_pass(x, u, bins; backend)` | `(D, N)` or batches | any | linear, log, general | tiled six-row histogram |
+| `calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend)` | `(D, N)` or batches | any | typed or vector value bins | shared, type-plane or direct strategy, frozen when the workspace is built |
 | `calculate_structure_function_tensor(order, x, u, bins; backend)` | `(D, N)` or shared positions | flat and spherical | any | one thread per point, global atomics per tensor component (orders 2 and 3) |
 
 `D = size(u, 1)` is the velocity width and `N = size(x, 2) = size(u, 2)`; trailing axes are
-independent auxiliary calculations.
+independent auxiliary calculations. Widths 2 and 3 are compiled ahead of time; any other width is
+one more kernel instantiation, compiled the first time it is launched. Where a width's staged
+coordinate tiles exceed a kernel's shared-memory budget the 1-D routes take their global-atomic
+sibling, which stages nothing; the 2-D tiled kernels stage at every route, so they refuse above the
+width that budget admits and say what it is.
 
 ## Grids: the transform engine on a device
 
@@ -109,15 +117,24 @@ joint histogram over angle and the soft-binned non-uniform FFT route run through
 exactly the CPU engine's.
 
 ```julia
-using FFTW, FlowGeometries
+using FFTW
+using FlowGeometries: FlowGeometries as FG
 using SpectralBackends: SpectralBackends as SB
-sf = calculate_structure_function(SFT.L3SFType(), grid, u, bins, SB.FastFourierTransformSpectralBackend();
-                                  backend = CB.GPUBackend(CUDA.CUDABackend()))
+
+geo = FG.Geometry.CartesianGeometry()
+grid = FG.Grids.StructuredGrid(geo, range(0.0, step = 0.1, length = 64),
+                               range(0.0, step = 0.1, length = 64))
+ug = randn(Float32, 2, 64, 64)
+gbins = collect(Float32, range(0.0f0, 3.0f0; length = 31))
+sf = SFC.calculate_structure_function(SFT.L3SFType(), grid, ug, gbins, UInt64,
+                                      SB.FastFourierTransformSpectralBackend();
+                                      backend = CB.GPUBackend(CUDA.CUDABackend()))
 ```
 
-`AutoSpectralBackend()` on a device always takes the transform, since the direct lag sweep has no
-device method. On an A100 the 720×360 lat-lon `L2` transform runs 28× faster than the 8-thread CPU
-(`0.045 s` against `1.28 s`), and a stretched 256×128 grid 3.6× (`0.0027 s` against `0.0098 s`).
+`AutoSpectralBackend()` on a device takes the transform wherever the transform can express the
+operator. The direct lag sweep has a device kernel of its own,
+`Calculations.device_lag_sweep!`, which is the route a non-polynomial operator takes on a grid, since the transform computes polynomial moments and cannot
+express one.
 
 A schedule with many slabs transforms many short monomials, so the *number* of operations rather than
 their size sets the cost. Each monomial is built for every slab in one broadcast, the slabs are
@@ -153,9 +170,11 @@ transverse convention.
 | gridded parity table | `sbatch gpu/run_cuda_gridded_parity.sh` | counts exact and sums to round-off against the 8-thread CPU on every schedule, the non-uniform FFT route and the tensor kernel, with timings |
 | benchmarks | `julia --project=gpu gpu/benchmark_suite.jl` | release-performance gates and timing JSON |
 
-`KA.CPU()` does not prove CUDA correctness: five device-only compile faults (a runtime-length tuple, a
-boxed capture, a runtime-value branch, an `@index` inside a branch, a formatted throw message) and two
-CUDA library accuracy issues were found only on the device, which is why the CUDA tier exists.
+`KA.CPU()` does not prove CUDA correctness, and that is why the CUDA tier exists. It compiles no
+kernels, so a construct that a device compiler rejects — a runtime-length tuple, a boxed capture, a
+runtime-value branch, an `@index` inside a branch, a formatted throw message — passes there and fails
+only on a device; and it runs none of the CUDA-specific launch routes, so a defect confined to one of
+those is invisible to it.
 
 ## Benchmarks and figures
 

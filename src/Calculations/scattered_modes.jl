@@ -53,6 +53,7 @@ end
     UniformLagSchedule(s.modes, ntuple(d -> s.box[d] / s.modes[d], Val(Dg)), ntuple(_ -> true, Val(Dg)))
 @inline n_slabs(::ScatteredModesSchedule) = 1
 @inline enumerated_pairs(::ScatteredModesSchedule, r_max) = ((1, 1),)
+@inline n_enumerated_pairs(::ScatteredModesSchedule, r_max) = 1
 @inline separable_layout(::ScatteredModesSchedule, data, valid, weights) = (data, valid, weights)
 @inline lag_limits(s::ScatteredModesSchedule, r_max) = lag_limits(uniform_axes(s), r_max)
 @inline lag_limits(s::ScatteredModesSchedule, I, J, r_max) = lag_limits(uniform_axes(s), r_max)
@@ -230,8 +231,9 @@ gridded_sweep!(::AbstractMatrix, ::AbstractMatrix, sf, ::AbstractMatrix, schedul
 The monomial `w_k Π_c data[c, k]` over the cells, zero where the cell holds nothing: selected by the
 mask, never multiplied by it, since an empty cell may hold NaN. The weights are finite.
 """
-function _held_monomial_vector(data::AbstractMatrix, valid, weights, key::Tuple, ::Type{FT}) where {FT}
-    out = fill!(similar(parent(data), FT, size(data, 2)), one(FT))
+function _held_monomial_vector!(out::AbstractVector{FT}, data::AbstractMatrix, valid, weights,
+                               key::Tuple) where {FT}
+    fill!(out, one(FT))
     for c in key
         c == 0 && continue
         out .*= view(data, c, :)
@@ -240,6 +242,9 @@ function _held_monomial_vector(data::AbstractMatrix, valid, weights, key::Tuple,
     valid isa AllValid || (out .= ifelse.(valid, out, zero(FT)))
     return out
 end
+
+_held_monomial_vector(data::AbstractMatrix, valid, weights, key::Tuple, ::Type{FT}) where {FT} =
+    _held_monomial_vector!(similar(parent(data), FT, size(data, 2)), data, valid, weights, key)
 
 """
     calculate_structure_function(sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend; weights, backend, output_type, verbose)

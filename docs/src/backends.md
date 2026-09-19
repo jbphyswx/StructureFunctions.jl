@@ -9,23 +9,25 @@ backends to that (see [Validation](validation.md) for the tolerance policy).
 | `SerialBackend()` | nothing | every route, on one thread; the reference the others are checked against |
 | `ThreadedBackend()` | `using OhMyThreads`, `julia -t N` | point lists, multi-fields, tensors, the gridded sweeps and transforms, the sorted line route |
 | `DistributedBackend()` | `using Distributed`, `addprocs` | point lists, multi-fields and tensors, each worker taking a share of the outer index; `DistributedBackend(ThreadedBackend())` threads inside each worker |
-| `MPIBackend()` | `using MPI` | point lists across ranks |
-| `GPUBackend(device)` | `using KernelAbstractions` and a device package | point lists, joint histograms, single-pass invariants, batches over auxiliary axes, tensors, multi-fields, and the gridded transform engine; `GPUBackend(KernelAbstractions.CPU())` runs the same kernels on the host |
-| `AutoBackend()` | — | the default: the distributed backend when workers are present, the threaded one when Julia has more than one thread and its extension is loaded, the serial one otherwise |
+| `MPIBackend()` | `using MPI` | every entry family across ranks: point lists, multi-fields, tensors, single-pass invariants, the batch drivers and the gridded sweeps |
+| `GPUBackend(device)` | `using KernelAbstractions` and a device package | point lists, joint histograms, single-pass invariants, batches over auxiliary axes, tensors, multi-fields, the gridded transform engine, the gridded direct lag sweep and the harmonic direct sum; `GPUBackend(KernelAbstractions.CPU())` runs the same kernels on the host |
+| `AutoBackend()` | — | the default: the distributed backend when the worker pool reaches hardware the driver cannot — workers that are not all local — the threaded one when Julia has more than one thread and its extension is loaded, the serial one otherwise |
 
 The backend types come from `ComputationalBackends`:
 
-```julia
+```@example backends
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+using OhMyThreads                     # an explicit ThreadedBackend() raises without it
 
-x = rand(2, 50_000) .* 100.0          # (D, N) coordinates
-u = randn(2, 50_000)                  # (D, N) velocities
+x = rand(2, 4_000) .* 100.0           # (D, N) coordinates
+u = randn(2, 4_000)                   # (D, N) velocities
 bins = range(0.0, 20.0; length = 41)  # a range is wrapped as LinearBinEdges, O(1) digitizing
 
-SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.SerialBackend())
-SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.ThreadedBackend())
-SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins)   # AutoBackend()
+s = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.SerialBackend())
+t = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.ThreadedBackend())
+a = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins)   # AutoBackend()
+s.values ≈ t.values ≈ a.values        # the backend never changes the answer
 ```
 
 ## In place
@@ -33,10 +35,11 @@ SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins)   # AutoBackend()
 Every entry has a mutating form that accumulates into caller-owned buffers, for loops over time
 steps or for adding partial results across processes:
 
-```julia
+```@example backends
 sums = zeros(Float64, length(bins) - 1)
 counts = zeros(UInt32, length(bins) - 1)
 SFC.calculate_structure_function!(sums, counts, SFT.L2SFType(), x, u, bins; backend = CB.ThreadedBackend())
+Int(sum(counts))                     # pairs that landed in a bin
 ```
 
 The mutating entries add into the buffers they are given; zero them first. The count element type
@@ -59,11 +62,13 @@ histograms, and the partials are added. Throughput saturates near one socket's m
 the batched paths; `JULIA_EXCLUSIVE=1` pins threads.
 
 The gridded routes split **slab pairs** across tasks, and the direct lag sweep additionally splits a
-single slab's lags, so a one-slab schedule still threads. A transform splits slab pairs only: its
-unit of work is a pair, because the pair's inverse transform must finish before any of that pair's
-lags can be read. On a [`UniformLagSchedule`](@ref StructureFunctions.Calculations.UniformLagSchedule) or a
-[`ScatteredModesSchedule`](@ref StructureFunctions.Calculations.ScatteredModesSchedule), which have exactly one slab
-pair, a transform therefore sweeps its lags on one task whatever backend is asked for.
+single slab's lags. A transform has two feeds for one lag loop, because a pair's inverse transform
+must finish before any of that pair's lags can be read: with at least as many slab pairs as tasks
+its unit of work is the pair; with fewer — a
+[`UniformLagSchedule`](@ref StructureFunctions.Calculations.UniformLagSchedule) or a
+[`ScatteredModesSchedule`](@ref StructureFunctions.Calculations.ScatteredModesSchedule) has exactly one — each
+pair's inverse is computed once on the driver and the tasks take shares of that pair's lags,
+reading the inverted columns read-only. Either way a one-slab schedule threads.
 
 Most of a one-slab transform is the transforms themselves rather than the lag sweep, and those are
 FFTW's to parallelise. FFTW keeps its own thread count, defaulting to one, and the package never sets
@@ -73,8 +78,8 @@ threading over many slab pairs oversubscribes the cores and loses badly. Raise o
 FFTW's for a one-slab schedule, the package's for a many-slab one — and measure on your own grid,
 since which is larger depends on the grid, the operator and the FFTW build.
 
-**Distributed.** Each worker receives a balanced share of the outer index (`w:k:N`) and computes its
-partial sums and counts with the serial kernel — or the threaded one under
+**Distributed.** Every entry family runs distributed. Each worker receives a balanced share of the
+outer index (`w:k:N`) and computes its partial sums and counts with the serial kernel — or the threaded one under
 `DistributedBackend(ThreadedBackend())`, one process per NUMA node being the way past a single
 socket's bandwidth. The partials are reduced on the caller.
 

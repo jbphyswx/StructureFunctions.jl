@@ -98,7 +98,15 @@ struct LinearBinEdges{T, RT <: AbstractRange{T}} <: AbstractBinEdges{T}
     step_val::T
 end
 
-@inline LinearBinEdges(edges::AbstractVector{T}) where {T} = LinearBinEdges(range(first(edges), last(edges); length = length(edges))) # no checks, assumes valid input, shouldnt really use this, should just pass a valid abstract range
+"""
+    LinearBinEdges(edges::AbstractVector)
+
+Uniform bins spanning `first(edges)` to `last(edges)` with `length(edges)` edges. The interior of
+`edges` is **not read**: the type asserts uniform spacing and the digitizer computes each edge from
+the two ends. Pass a `BinEdges` for edges that are not uniform.
+"""
+@inline LinearBinEdges(edges::AbstractVector{T}) where {T} =
+    LinearBinEdges(range(first(edges), last(edges); length = length(edges)))
 
 function LinearBinEdges(edges::AbstractRange{T}) where {T}
     inv_step = inv(step(edges))
@@ -177,6 +185,13 @@ function _LogBinEdges_core(log_edges::AbstractRange{T}) where {T}
     return LogBinEdges{T, typeof(log_edges), typeof(log_linear)}(log_edges, log_linear)
 end
 
+"""
+    LogBinEdges(edges::AbstractVector)
+
+Log-uniform bins spanning `first(edges)` to `last(edges)` with `length(edges)` edges. The interior
+of `edges` is **not read**: the type asserts log-uniform spacing and the digitizer computes each
+edge from the two ends. Pass a `BinEdges` for edges that are not log-uniform.
+"""
 function LogBinEdges(edges::AbstractVector{T}) where {T}
     any(x -> x <= zero(T), edges) && throw(ArgumentError("Log-spaced bin edges must be strictly positive."))
     log_edges = range(log(first(edges)), log(last(edges)); length=length(edges))

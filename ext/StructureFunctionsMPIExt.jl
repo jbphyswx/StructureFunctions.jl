@@ -96,6 +96,23 @@ function _mpi_point_1d(
     geom, x_vecs, u_vecs = SFC._prepared_tuples(distance_metric, x, u)
     w = SFC._pair_weights(weights, N, promote_type(float(eltype(x)), float(eltype(u))))
 
+    # A polynomial operator on a line has the exact `O(N log N)` route, and that sweep executes
+    # through `sweep_reduce!`, which this extension implements — so it splits across ranks here
+    # without a second decomposition. The pair loop below would cost `O(N²)`.
+    if SFC._on_a_line(geom, structure_function_type)
+        SFC._cull_reject_unsupported(get(kwargs, :culling, SFC.AutoCulling()),
+                                     "the sorted line route")
+        nb0 = SFC.n_histogram_bins(distance_bins)
+        OT0 = promote_type(float(eltype(x)), float(eltype(u)))
+        lsums = zeros(OT0, nb0)
+        lcounts = zeros(CT, nb0)
+        SFC.sorted_line_sweep!(lsums, lcounts, structure_function_type, x_vecs[1],
+            reshape(collect(u_vecs[1]), 1, :), distance_bins, Val(1), Val(1), Val(0);
+            weights = w, backend = b)
+        return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins,
+                                                  lsums, lcounts)
+    end
+
     part = SFC._partial_sums_counts(
         CB.local_backend(b), structure_function_type, x_vecs, u_vecs, distance_bins,
         _rank_share(comm, 1:(N - 1));

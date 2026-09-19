@@ -79,7 +79,7 @@ function main()
     n_val = length(value_bins) - 1
     NB2 = n_dist * n_val
     C = 8 * NB2
-    joint_eligible = _GPUExt._gpu_joint_2d_tiled_eligible(n_dist, n_val)
+    joint_eligible = _GPUExt._gpu_joint_2d_tiled_eligible(n_dist, n_val, 2, FT)
     dist_route = _GPUExt._joint2d_dist_route(_GPUExt._gpu_normalize_bins(dist))
 
     log_dir = joinpath(@__DIR__, "..", "test", "debug")

@@ -33,6 +33,8 @@ const SCRIPT_SUITES = (
     "test_cuda_second_axis.jl",
     "test_cuda_lag_sweep.jl",
     "test_cuda_harmonic.jl",
+    "test_cuda_batch_widths.jl",
+    "test_cuda_widths.jl",
 )
 
 Test.@testset "StructureFunctions GPU" begin

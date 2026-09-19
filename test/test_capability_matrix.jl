@@ -111,6 +111,9 @@ const CM_ROUTES = (
     ("gridded transform batch", (be -> (s = zeros(CM_NB, 2); c = zeros(Int, CM_NB, 2);
         SFC.gridded_sweep_batch!(s, c, CM_OP, CM_GUB, CM_GS, CM_GB, Val(2), Val(1), Val(0), CM_FFT;
             backend = be); (s, c)))),
+    ("gridded tensor", (be -> (s = zeros(2, 2, CM_NB); c = zeros(Int, CM_NB);
+        SFC.gridded_tensor_sweep!(s, c, Val(2), CM_GU, CM_GS, CM_GB, Val(2), CM_FFT;
+            backend = be); (s, c)))),
     ("harmonic direct sum", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_HX, CM_HU,
         CM_NODES, SB.DirectSumSpectralBackend(); backend = be, verbose = false,
         output_type = CM_RAW); (r.sums, r.counts)))),
@@ -136,7 +139,17 @@ A cell added here must carry a reason, and a cell whose refusal is later impleme
 removed, or the matrix stops asserting anything about it.
 """
 const CM_REFUSED = Dict{Tuple{String, String},
-                        @NamedTuple{message::String, reason::String}}()
+                        @NamedTuple{message::String, reason::String}}(
+    ("gridded tensor", "gpu") => (
+        message = "supplies no `sweep_reduce!`",
+        reason = "the gridded tensor has no device kernel. Every other gridded route reaches a " *
+                 "device through its own hook — `device_transform_sweep!` for the transform, " *
+                 "`device_lag_sweep!` for the direct sweep — and no `device_tensor_sweep!` is " *
+                 "written, so the tensor falls through to the `sweep_reduce!` catch-all. The " *
+                 "kernel differs from the transform's only in accumulating the symmetric moment " *
+                 "store instead of contracting it, so this is unwritten work, not an impossibility.",
+    ),
+)
 
 """Counts exactly when both are integer; a kernel-weighted count is a mass, compared like a sum."""
 function cm_agrees(got, ref)
@@ -224,11 +237,7 @@ const CM_WORK_UNITS = (
      run = (be -> (s = zeros(4); c = zeros(Int, 4);
         SFC.gridded_sweep!(s, c, CM_OP, CM_WU_U, CM_WU_S, CM_WU_B, Val(2), Val(1), Val(0), CM_FFT;
             backend = be); (s, c))),
-     expect = (units = 1,
-               reason = "gap G — every transform site passes `split_lags = false`, so a one-slab \
-                         schedule is a single work item at any thread count; a pair's inverse must \
-                         finish before its lags can be read, so splitting it needs the inverse \
-                         hoisted and shared read-only. Owner: G30.1")),
+     expect = :at_least_tasks),
 )
 
 Test.@testset "a route decomposes into as many work units as it has tasks" begin

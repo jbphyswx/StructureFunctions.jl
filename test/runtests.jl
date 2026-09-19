@@ -117,8 +117,17 @@ Test.@testset "StructureFunctions.jl" begin
     include("test_no_silent_fallback.jl")
 
 
+    println("--- Running Dispatch Axis Coverage Test ---")
+    include("test_dispatch_axes.jl")
+
+    println("--- Running Allocation Scaling Test ---")
+    include("test_allocations.jl")
+
     println("--- Running Capability Matrix Test ---")
     include("test_capability_matrix.jl")
+
+    println("--- Running README Sample Test ---")
+    include("test_readme.jl")
 
     # Enable Parallel/Distributed Test
     println("--- Running Parallel Equivalence Test ---")

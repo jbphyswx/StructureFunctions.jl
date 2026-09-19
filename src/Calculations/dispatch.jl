@@ -233,11 +233,9 @@ function _auto_distance_bins(min_distance, max_distance, distance_bins::Int, ::T
 end
 
 function _auto_distance_bins(min_distance, max_distance, distance_bins::Int, ::Type{LogBinEdges})
-    min_distance = prevfloat(min_distance)
-    edge_vec = 10 .^ range(log10(min_distance), log10(max_distance), length = distance_bins + 1)
-    edge_vec[1] = min_distance
-    edge_vec[end] = max_distance
-    return LogBinEdges(edge_vec)
+    return LogBinEdges_from_log_edges(
+        range(log(prevfloat(min_distance)), log(max_distance); length = distance_bins + 1),
+    )
 end
 
 function _auto_distance_bins(min_distance, max_distance, distance_bins::Int, bin_spacing)

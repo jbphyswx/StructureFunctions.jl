@@ -16,13 +16,17 @@ interchangeable: applying the four-fifths law to `S3SF` returns a number that is
 | four-thirds | ``⟨δu_L ‖δu‖²⟩`` | `S3SFType` | ``⟨δu_L ‖δu‖²⟩ = -\tfrac{4}{3} ε r`` | [`KHM.epsilon_from_four_thirds`](@ref) |
 | Yaglom | ``⟨δu_L (δθ)²⟩`` | `MixedSFType{1,0,2}` | ``⟨δu_L (δθ)²⟩ = -\tfrac{4}{3} ε_θ r`` | [`KHM.epsilon_theta_from_yaglom`](@ref) |
 
-```julia
+```@example khm
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+
+x = rand(2, 2_000) .* 100.0
+u = randn(2, 2_000)
+bins = collect(range(0.0, 20.0; length = 21))
 
 res = SFC.calculate_structure_function(SFT.L3SFType(), x, u, bins)
 r = SF.midpoints(res.distance)
 ε = SF.KHM.epsilon_from_four_fifths(r, res.values)          # one estimate per bin; flat in the inertial range
-SF.KHM.four_fifths_residual(r, res.values, ε[5])              # how far each bin is from the law at that ε
+SF.KHM.four_fifths_residual(r, res.values, ε[5])[1:5]       # how far each bin is from the law at that ε
 ```
 
 The residual of the planar isotropy relation between the longitudinal and transverse second-order

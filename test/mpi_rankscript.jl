@@ -19,6 +19,7 @@ Random.seed!(123)                      # same data on every rank
 N, B = 120, 4
 x2 = rand(2, N); u2 = rand(2, N)
 x3 = rand(3, N); u3 = rand(3, N)
+x4 = rand(4, N); u4 = rand(4, N)       # a width outside the set the SIMD kernels specialize for
 ub = rand(2, N, B)                     # shared positions
 xv = rand(2, N, B); uv = rand(2, N, B) # varying positions
 bins = collect(range(0.0, 1.5, 21))
@@ -55,14 +56,20 @@ function cases(be)
     d = Dict{String, Any}()
     d["pf1d_D2"] = sc(SFC.calculate_structure_function(sft, x2, u2, bins; backend = be, output_type = raw, kw...))
     d["pf1d_D3"] = sc(SFC.calculate_structure_function(sft, x3, u3, bins; backend = be, output_type = raw, kw...))
+    d["pf1d_D4"] = sc(SFC.calculate_structure_function(sft, x4, u4, bins; backend = be, output_type = raw, kw...))
     d["pf2d"] = sc(SFC.calculate_structure_function(sft, x2, u2, bins, vbins; backend = be, kw...))
+    d["pf2d_D4"] = sc(SFC.calculate_structure_function(sft, x4, u4, bins, vbins; backend = be, kw...))
     d["batch1d_fixed"] = sc(SFC.calculate_structure_function(sft, x2, ub, bins; backend = be, output_type = raw, kw...))
     d["batch1d_vary"] = sc(SFC.calculate_structure_function(sft, xv, uv, bins; backend = be, output_type = raw, kw...))
     d["batch2d_fixed"] = sc(SFC.calculate_structure_function(sft, x2, ub, bins, vbins; backend = be, kw...))
     sp1 = SFC.calculate_structure_functions_single_pass(x2, u2, bins; backend = be)
     d["sp1d"] = (sp1.S2.sums, sp1.L1T2.sums)
+    sp1w = SFC.calculate_structure_functions_single_pass(x4, u4, bins; backend = be)
+    d["sp1d_D4"] = (sp1w.S2.sums, sp1w.L1T2.sums)
     sp2 = SFC.calculate_structure_functions_single_pass_2d(x2, u2, bins, vbins; backend = be)
     d["sp2d"] = (sp2.S2.sums, sp2.L1T2.sums)
+    sp2w = SFC.calculate_structure_functions_single_pass_2d(x4, u4, bins, vbins; backend = be)
+    d["sp2d_D4"] = (sp2w.S2.sums, sp2w.L1T2.sums)
     sp1b = SFC.calculate_structure_functions_single_pass(x2, ub, bins; backend = be)
     d["sp1d_batch"] = (sp1b.S2.sums, sp1b.L1T2.sums)
     sp2b = SFC.calculate_structure_functions_single_pass_2d(x2, ub, bins, vbins; backend = be)

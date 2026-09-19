@@ -6,11 +6,6 @@
 #
 # Included from StructureFunctionsKernelAbstractionsExt.jl.
 
-"""Load point `k`'s D-vector from a tile buffer staged as `(d-1)*SF_GPU_TILE + k`."""
-@inline _sp2d_ld_tile(buf, ::Val{2}, k) =
-    @inbounds SA.SVector{2}(buf[k], buf[SF_GPU_TILE + k])
-@inline _sp2d_ld_tile(buf, ::Val{3}, k) =
-    @inbounds SA.SVector{3}(buf[k], buf[SF_GPU_TILE + k], buf[2 * SF_GPU_TILE + k])
 
 @inline function _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
     return (t - 1) * n_dist * n_val + (dbin - 1) * n_val + vbin
@@ -1122,16 +1117,16 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
             if ti < tj
                 ia = (p - 1) ÷ nj + 1
                 jb = (p - 1) - (ia - 1) * nj + 1
-                X1 = _sp2d_ld_tile(shared_xi, Val(D), ia)
-                X2 = _sp2d_ld_tile(shared_xj, Val(D), jb)
-                U1 = _sp2d_ld_tile(shared_ui, Val(D), ia)
-                U2 = _sp2d_ld_tile(shared_uj, Val(D), jb)
+                X1 = _sf_load_pt(Val(D), shared_xi, ia)
+                X2 = _sf_load_pt(Val(D), shared_xj, jb)
+                U1 = _sf_load_pt(Val(D), shared_ui, ia)
+                U2 = _sf_load_pt(Val(D), shared_uj, jb)
             else
                 ia, jb = _pair_from_linear(p, ni)
-                X1 = _sp2d_ld_tile(shared_xi, Val(D), ia)
-                X2 = _sp2d_ld_tile(shared_xi, Val(D), jb)
-                U1 = _sp2d_ld_tile(shared_ui, Val(D), ia)
-                U2 = _sp2d_ld_tile(shared_ui, Val(D), jb)
+                X1 = _sf_load_pt(Val(D), shared_xi, ia)
+                X2 = _sf_load_pt(Val(D), shared_xi, jb)
+                U1 = _sf_load_pt(Val(D), shared_ui, ia)
+                U2 = _sf_load_pt(Val(D), shared_ui, jb)
             end
             ok, dist, frame = SFH.pair_frame(geom, X1, X2)
             bin = $(dist_bin)

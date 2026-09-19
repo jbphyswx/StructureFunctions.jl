@@ -5,41 +5,41 @@ This is the authoritative spec for `searchsortedfirst` on uniformly spaced edges
 
 ## Problem
 
-Sorted edges \(u_i = u_1 + (i-1)\delta\) for \(i = 1,\ldots,n\).  
+Sorted edges ``u_i = u_1 + (i-1)\delta`` for ``i = 1,\ldots,n``.
 Julia `searchsortedfirst(u, x)` with forward order returns
 
-\[
+```math
 i^*(x) = \min\{\, i \in \{1,\ldots,n\} : u_i \ge x \,\}.
-\]
+```
 
-Half-open histogram bins \((u_i, u_{i+1}]\) use the same index for interior points.
+Half-open histogram bins ``(u_i, u_{i+1}]`` use the same index for interior points.
 
 ## Exact discrete formula (not `round`)
 
-Solve \(u_1 + (i-1)\delta \ge x\):
+Solve ``u_1 + (i-1)\delta \ge x``:
 
-\[
+```math
 i - 1 \ge \frac{x - u_1}{\delta}
 \quad\Rightarrow\quad
 i^* = \left\lfloor \frac{x - u_1}{\delta} \right\rfloor + 1
      = \left\lceil \frac{x - u_1}{\delta} + 1 \right\rceil.
-\]
+```
 
-**`round` is the wrong operator** — it answers “nearest integer,” not “smallest \(i\) with \(u_i \ge x\).”
+**`round` is the wrong operator** — it answers “nearest integer,” not “smallest ``i`` with ``u_i \ge x``.”
 
 ### Why both `floor` and `ceil` appear in conversation
 
 They are the **same identity** for this problem:
 
-\[
+```math
 \left\lceil t + 1 \right\rceil = \lfloor t \rfloor + 1
 \quad\text{where}\quad
 t = \frac{x - u_1}{\delta}.
-\]
+```
 
-Implementation preference: compute \(t\) directly and use **`floor(Int, t) + 1`**, not
-`ceil(Int, muladd(x, inv_step, offset))` with `offset = 1 - u_1/\delta`.  
-That avoids forming \(t+1\) before rounding and matches standard FP binning practice.
+Implementation preference: compute ``t`` directly and use **`floor(Int, t) + 1`**, not
+`ceil(Int, muladd(x, inv_step, offset))` with `offset = 1 - u_1/\delta`.
+That avoids forming ``t+1`` before rounding and matches standard FP binning practice.
 
 ## Fast path (one FMA + one correction)
 
@@ -52,24 +52,17 @@ u   = muladd(eltype(step)(idx - 1), step, first)  # reconstructed u_idx
 return u < x ? idx + 1 : idx
 ```
 
-### Is there “no correction”?
+### The correction is not optional
 
-**No.** The correction is required. Floating-point \(t\) and reconstructed \(u\) are
-inexact; the guess can be off by one bin. The single test `u < x ? idx + 1 : idx`
-is the minimal fix and yields **0** parity errors vs this spec on the benchmark verify set.
+Floating-point ``t`` and the reconstructed ``u`` are both inexact, so the guess can be off by one
+bin in either direction. The single test `u < x ? idx + 1 : idx` is the minimal fix: it compares the
+guess against the edge it claims and steps once if the edge is below the query.
 
-| Guess only | err_lin (F64, N=1000, ~13k verify pts) |
-|------------|----------------------------------------|
-| `round`, no correction | ~5315 (~41%) |
-| `ceil(g)`, no correction | ~422 (~3%) |
-| `floor(t)+1`, no correction | ~10548 (~81%) — **downward FP bias, worst** |
-| `floor(t)+1` + correction (shipped P5) | **0** |
-
-`round` + the same one-sided correction was a **paired hack** (round biases low;
-`+1` fixes undershoot). It happened to reach 0 errors but is not the correct discrete map.
-`ceil(g)` + one-sided correction still fails (~422 errors) because ceil biases high.
-`floor(t)+1` without correction is worst because `floor` amplifies downward FP error in \(t\).
-**Correction is mandatory**; cost ~1.8 ns/query vs guess-only (see benchmark log).
+Each guess errs in its own direction, so none of them is correct without it. `floor(t) + 1`
+amplifies downward error in ``t``; `ceil` biases high; `round` biases low, which is why pairing
+`round` with a one-sided `+1` correction can reach zero errors on a sample while still being the
+wrong discrete map — it is two errors cancelling, not one answer. `test/test_bin_edges.jl` holds
+the shipped form to `searchsortedfirst` on the same edges.
 
 ## Log-spaced edges (unified)
 

@@ -31,7 +31,11 @@ end
 
 """Embed `src` at the origin of a zero array of size `P`, in `src`'s array family."""
 function _embed(src::AbstractArray{FT, Dg}, P::NTuple{Dg, Int}) where {FT, Dg}
-    out = fill!(similar(src, P), zero(FT))
+    out = similar(src, P)
+    # Only the padding has to be zeroed. A fully periodic schedule pads nothing, so `src` covers
+    # `out` and zeroing it first would write every element twice.
+    size(src) == P && return copyto!(out, src)
+    fill!(out, zero(FT))
     view(out, map(n -> 1:n, size(src))...) .= src
     return out
 end
@@ -221,8 +225,12 @@ function _slab_transforms(
     # Scratch for a last batch shorter than the plan, which transforms full width and is copied across;
     # a whole batch writes its spectra in place. Empty when the batches divide the slabs.
     short = similar(spec, half..., nslabs % chunk == 0 ? 0 : chunk)
+    # One monomial buffer for the whole key loop: `m` is scratch that the batch loop below reads
+    # and nothing keeps, and at 1024 x 1024 a fresh one per key is 8 MiB of page traffic on a
+    # route whose cost is memory.
+    mbuf = similar(parent(dp), FT, size(dp, 2))
     for k in 1:nkeys
-        m = reshape(SFC._held_monomial_vector(dp, vp, wp, keys[k], FT), su.dims..., nslabs)
+        m = reshape(SFC._held_monomial_vector!(mbuf, dp, vp, wp, keys[k]), su.dims..., nslabs)
         base = (k - 1) * nslabs
         for lo in 1:chunk:nslabs
             hi = min(lo + chunk - 1, nslabs)
@@ -260,11 +268,12 @@ function _inverse_plan(eng, ncols::Int)
     FT = real(CT)
     P = eng.P
     Ph = size(F1)
+    # Neither buffer is zeroed: `_pair_inverse!` writes every element of `spec` before reading it,
+    # and the inverse transform writes `out` whole. The batch sibling has always relied on that.
     return () -> begin
         spec = similar(F1, Ph..., ncols)
-        out = fill!(similar(F1, FT, P..., ncols), zero(FT))
+        out = similar(F1, FT, P..., ncols)
         iplan = AbstractFFTs.plan_irfft(spec, P[1], 1:length(P))
-        fill!(spec, zero(CT))
         (iplan = iplan, spec = spec, specf = reshape(spec, :, ncols),
          out = out, outf = reshape(out, :, ncols))
     end
@@ -274,14 +283,26 @@ function _transform_item!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, eng, item::NTuple{4, Int}, scratch, plan,
     nb, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
 ) where {OT, CT, D, V, K, W, Po, N}
-    I, J = item[1], item[2]
-    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns)
+    out = _pair_inverse!(scratch, eng.fwd[item[1]], eng.fwd[item[2]], eng.columns)
+    return _transform_lags!(sums, counts, sf, eng, out, item, plan, nb,
+                            Val(D), Val(V), Val(K), Val(W), Val(Po), Val(N))
+end
+
+# The lag loop, fed either a whole pair (`part = n_parts = 1`) or the `part`-th share of that
+# pair's lags. A share reads `out` and never writes it, so the pair's inverse is computed once and
+# the shares run concurrently over it.
+function _transform_lags!(
+    sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, eng, out, item::NTuple{4, Int}, plan,
+    nb, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
+) where {OT, CT, D, V, K, W, Po, N}
+    I, J, part, n_parts = item
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
     strides = SFC._lag_strides(P)
     tr = eng.transport
-    @inbounds for H in SFC._pair_lags(s, su, I, J, eng.r_max)
-        h = Tuple(H)
+    lags = SFC._pair_lags(s, su, I, J, eng.r_max)
+    @inbounds for li in part:n_parts:length(lags)
+        h = Tuple(lags[li])
         v = SFC._lag_visit(sf, s, su, I, J, h, plan, nb, Val(D), Val(V), Val(K))
         v === nothing && continue
         b, r2, factor, geometry, self_reverse = v
@@ -302,14 +323,23 @@ function _transform_item!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, eng, item::NTuple{4, Int}, scratch, plan,
     nb, axis_edges, na, second_axis, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
 ) where {OT, CT, D, V, K, W, Po, N}
-    I, J = item[1], item[2]
-    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns)
+    out = _pair_inverse!(scratch, eng.fwd[item[1]], eng.fwd[item[2]], eng.columns)
+    return _transform_lags!(sums, counts, sf, eng, out, item, plan, nb, axis_edges, na, second_axis,
+                            Val(D), Val(V), Val(K), Val(W), Val(Po), Val(N))
+end
+
+function _transform_lags!(
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, eng, out, item::NTuple{4, Int}, plan,
+    nb, axis_edges, na, second_axis, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
+) where {OT, CT, D, V, K, W, Po, N}
+    I, J, part, n_parts = item
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
     strides = SFC._lag_strides(P)
     tr = eng.transport
-    @inbounds for H in SFC._pair_lags(s, su, I, J, eng.r_max)
-        h = Tuple(H)
+    lags = SFC._pair_lags(s, su, I, J, eng.r_max)
+    @inbounds for li in part:n_parts:length(lags)
+        h = Tuple(lags[li])
         v = SFC._lag_visit(sf, s, su, I, J, h, plan, nb, Val(D), Val(V), Val(K))
         v === nothing && continue
         b, r2, factor, geometry, self_reverse = v
@@ -879,9 +909,23 @@ function _transform_sweep!(
 ) where {D, V, K}
     eng = _transform_prepare(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag)
     make_scratch = _inverse_plan(eng, length(eng.columns))
-    items = SFC.sweep_items(s, eng.r_max, SFC.sweep_tasks(backend), false)
-    body! = _item_body(sf, eng, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
-    SFC.sweep_reduce!(sums, counts, backend, items, make_scratch, body!)
+    n_tasks = SFC.sweep_tasks(backend)
+    pairs = SFC.sweep_items(s, eng.r_max, 1, false)
+    if length(pairs) >= n_tasks
+        body! = _item_body(sf, eng, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
+        SFC.sweep_reduce!(sums, counts, backend, pairs, make_scratch, body!)
+        return nothing
+    end
+    # Fewer slab pairs than tasks: a pair's lags cannot be read until its inverse is done, so the
+    # inverse runs once here and the tasks split that pair's lags over the columns it produced.
+    scratch = make_scratch()
+    for it in pairs
+        out = _pair_inverse!(scratch, eng.fwd[it[1]], eng.fwd[it[2]], eng.columns)
+        shares = [(it[1], it[2], p, n_tasks) for p in 1:n_tasks]
+        share! = _lag_body(sf, eng, out, plan, nb, axis, Val(D), Val(V), Val(K),
+                           eng.vW, eng.vP, eng.vN)
+        SFC.sweep_reduce!(sums, counts, backend, shares, () -> nothing, share!)
+    end
     return nothing
 end
 
@@ -891,6 +935,13 @@ _item_body(sf, eng, plan, nb, ::Nothing, vD, vV, vK, vW, vP, vN) =
 _item_body(sf, eng, plan, nb, axis::Tuple, vD, vV, vK, vW, vP, vN) =
     (ls, lc, it, scratch) -> _transform_item!(ls, lc, sf, eng, it, scratch, plan, nb, axis[1], axis[2],
                                               axis[3], vD, vV, vK, vW, vP, vN)
+
+_lag_body(sf, eng, out, plan, nb, ::Nothing, vD, vV, vK, vW, vP, vN) =
+    (ls, lc, it, _) -> _transform_lags!(ls, lc, sf, eng, out, it, plan, nb, vD, vV, vK, vW, vP, vN)
+
+_lag_body(sf, eng, out, plan, nb, axis::Tuple, vD, vV, vK, vW, vP, vN) =
+    (ls, lc, it, _) -> _transform_lags!(ls, lc, sf, eng, out, it, plan, nb, axis[1], axis[2],
+                                        axis[3], vD, vV, vK, vW, vP, vN)
 
 # A device runs the engine through the KernelAbstractions extension.
 _transform_sweep!(
@@ -919,7 +970,7 @@ function _prefers_transform(sf, s::SFC.AbstractSeparableSchedule, dist_be, W::In
     n_lags = prod(ntuple(d -> length(SFC.lag_range(su, d, lims[d])), Dg))
     n = prod(_pad_dims(s, r_max))
     p = SFT.order(sf)
-    n_pairs = length(SFC.sweep_items(s, r_max, 1, false))
+    n_pairs = SFC.n_enumerated_pairs(s, r_max)
     count_column = (valid isa SFC.AllValid && weights === nothing) ? 0 : 1
     per_pair = SFC._inverse_count(SFC.lag_transport(s), W, p) + count_column
     transforms = SFC.n_slabs(s) * binomial(W + p, p) + n_pairs * per_pair

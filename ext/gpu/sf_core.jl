@@ -117,14 +117,18 @@ end
 # Geometry (NDIMS-generic, via StaticArrays — unrolls for D = 2, 3)
 # -----------------------------------------------------------------------------
 
-@inline _sf_dot(a::SA.SVector{2,T}, b::SA.SVector{2,T}) where {T} = a[1] * b[1] + a[2] * b[2]
-@inline _sf_dot(a::SA.SVector{3,T}, b::SA.SVector{3,T}) where {T} = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+@inline function _sf_dot(a::SA.SVector{W, T}, b::SA.SVector{W, T}) where {W, T}
+    s = zero(T)
+    @inbounds for d in 1:W
+        s += a[d] * b[d]
+    end
+    return s
+end
 
-"""Load local point `k` (D components) from a staged `@localmem` tile buffer."""
-@inline _sf_load_pt(::Val{2}, buf, k::Int) =
-    @inbounds SA.SVector{2}(buf[k], buf[SF_GPU_TILE + k])
-@inline _sf_load_pt(::Val{3}, buf, k::Int) =
-    @inbounds SA.SVector{3}(buf[k], buf[SF_GPU_TILE + k], buf[2 * SF_GPU_TILE + k])
+"""Load local point `k` (`W` components) from a `@localmem` tile staged as
+`(d - 1) * SF_GPU_TILE + k`."""
+@inline _sf_load_pt(::Val{W}, buf, k::Int) where {W} =
+    SA.SVector{W}(ntuple(d -> @inbounds(buf[(d - 1) * SF_GPU_TILE + k]), Val(W)))
 
 # -----------------------------------------------------------------------------
 # Pair weights
@@ -149,18 +153,6 @@ kernel's shared histogram then follows `eltype` of the buffer it flushes into.
 """Move pair weights to the device, leaving `NoWeights()` alone."""
 @inline _sf_weights_to_device(backend, w::SFC.NoWeights) = w
 @inline _sf_weights_to_device(backend, w::AbstractVector) = KA.adapt(backend, w)
-
-"""
-    _gpu_axis_key(second_axis, val, X1, X2, dist)
-
-The quantity a joint kernel digitizes onto its second axis: the operator value the kernel just
-computed, or the pair's own separation angle. Dispatch on an isbits source, so the value axis
-compiles to `val`. The angle reads `X2 - X1`, which is the separation only on a flat metric; the
-launcher admits no other.
-"""
-@inline _gpu_axis_key(::SFC.InvariantValueAxis, val, X1, X2, dist) = val
-@inline _gpu_axis_key(s::SFC.SeparationAngleAxis, val, X1, X2, dist) =
-    SFC.axis_quantity(s, X2 - X1, dist * dist)
 
 # -----------------------------------------------------------------------------
 # Moments

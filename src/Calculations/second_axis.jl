@@ -75,6 +75,17 @@ end
 end
 
 """
+    pair_axis_key(source, val, x1, x2, dist) -> value
+
+The quantity to digitize onto the second axis for one pair, from the operator value a kernel has
+just computed and the pair's two positions. `x2 - x1` is the separation on a flat metric; a caller
+that reaches this with a curved geometry must have refused the angle source first.
+"""
+@inline pair_axis_key(::InvariantValueAxis, val, x1, x2, dist) = val
+@inline pair_axis_key(s::SeparationAngleAxis, val, x1, x2, dist) =
+    axis_quantity(s, x2 - x1, dist * dist)
+
+"""
     axis_key(source, valbuf, axbuf, j) -> value
 
 The quantity to digitize onto the second axis for pair `j`: the operator value the kernel already

@@ -7,7 +7,7 @@ How the package is organised and how a call becomes a kernel.
 Every calculation is a product of three independent choices, each a type:
 
 ```
-what to accumulate        an operator      L2SFType(), MixedSFType{1,0,2}(), MomentTensorOperator{3}(), …
+what to accumulate        an operator      SFT.L2SFType(), SFT.MixedSFType{1,0,2}(), SFT.MomentTensorOperator{3}(), …
 over which pairs          the input's shape and schedule: a point list, a multi-field, a grid's
                           UniformLagSchedule / RectilinearLagSchedule / ZonalLagSchedule / ScatteredPairs,
                           a ScatteredModesSchedule, HarmonicNodes
@@ -46,9 +46,10 @@ Extensions supply what needs another package: see [Extensions](extensions.md).
    is an array axis length, so the entry branches on it once and re-enters with a literal
    `Val{D}`; below that point every type is concrete.
 2. **Backend.** `_dispatch_execution_backend(backend, shape, …)` selects the serial, threaded,
-   distributed, MPI or device implementation; `AutoBackend` takes the threaded one when Julia has
-   more than one thread and the OhMyThreads extension is loaded. Paths with no implementation for a
-   request (weights on the GPU point kernels, in-place auxiliary axes on a device) refuse by name.
+   distributed, MPI or device implementation; `AutoBackend` takes the distributed one when the worker
+   pool is not all local, otherwise the threaded one when Julia has more than one thread and the
+   OhMyThreads extension is loaded. Paths with no implementation for a request (an in-place
+   auxiliary-axis call on a device, an angle axis on a curved metric) refuse by name.
 3. **Geometry.** `pair_geometry_for(metric, Val(D))` fixes a `FlatGeometry{D}` or
    `SphericalGeometry{D}`; `prepare_pair_inputs` widens spherical input to ambient 3-vectors once.
 4. **Kernel.** Flat two- and three-dimensional point lists take the SIMD compute/scatter kernel over

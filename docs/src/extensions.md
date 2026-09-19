@@ -1,9 +1,10 @@
 # Extensions
 
 The core package computes structure functions of arrays and multi-fields on the serial backend
-and depends on nothing but `ComputationalBackends`, `Distances`, `LinearAlgebra`, `ProgressMeter`,
-`SpectralBackends` and `StaticArrays`. Everything else — parallel execution, transforms, grids,
-spectral providers, fits — is a package extension that loads when its trigger packages are loaded. A
+and depends on nothing but `ComputationalBackends`, `Distances`, `LinearAlgebra`,
+`PrecompileTools`, `ProgressMeter`, `SpectralBackends` and `StaticArrays`. Everything else —
+parallel execution, transforms, grids, spectral providers, fits — is a package extension that loads
+when its trigger packages are loaded. A
 method that needs an extension which is not loaded throws an `ArgumentError` naming the package to
 load: an explicit request never falls back silently. The `Auto` choices are the exception, and only
 because choosing is what they are for — `AutoBackend()` runs serially when the OhMyThreads extension
@@ -20,9 +21,9 @@ package's own. A tag whose transform is not loaded refuses by name.
 | Extension | Load | Adds |
 |---|---|---|
 | `StructureFunctionsOhMyThreadsExt` | `using OhMyThreads` | `ThreadedBackend()` on every CPU path: point lists, multi-fields, gridded sweeps and transforms, tensors, the sorted line route |
-| `StructureFunctionsDistributedExt` | `using Distributed` | `DistributedBackend()` for point lists, multi-fields and tensors across worker processes |
-| `StructureFunctionsMPIExt` | `using MPI` | the MPI backend for point lists |
-| `StructureFunctionsKernelAbstractionsExt` | `using KernelAbstractions` | `GPUBackend(device)` kernels: point lists, joint histograms, single-pass invariants, batches over auxiliary axes, tensors, multi-fields; `KernelAbstractions.CPU()` runs them on the host |
+| `StructureFunctionsDistributedExt` | `using Distributed` | `DistributedBackend()` for every entry family across worker processes: point lists, multi-fields, tensors, single-pass invariants, the batch drivers and the gridded sweeps |
+| `StructureFunctionsMPIExt` | `using MPI` | `MPIBackend()` for every entry family across ranks, each rank taking a share and the partials reduced with `Allreduce!` |
+| `StructureFunctionsKernelAbstractionsExt` | `using KernelAbstractions` | `GPUBackend(device)` kernels: point lists, joint histograms, single-pass invariants, batches over auxiliary axes, tensors, multi-fields, the gridded direct lag sweep and the harmonic direct sum; `KernelAbstractions.CPU()` runs them on the host |
 | `StructureFunctionsCUDAExt` | `using CUDA` with `KernelAbstractions` | CUDA-specific launch configuration and shared-memory routes for the device kernels |
 | `StructureFunctionsAbstractFFTsExt` | `using FFTW` (any `AbstractFFTs` implementation) | the transform engine: every polynomial operator on every separable schedule, masks, weights, joint histograms over angle, moment tensors, `gridded_spectrum`, and the `Auto` cost model |
 | `StructureFunctionsAbstractFFTsKernelAbstractionsExt` | the one above with `KernelAbstractions` | the transform engine on a device: monomial transforms through the device's `AbstractFFTs` and one lag kernel for the binning |
@@ -39,15 +40,19 @@ package's own. A tag whose transform is not loaded refuses by name.
 
 Threads:
 
-```julia
+```@example extensions
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads
 
+x = rand(2, 2_000)
+u = randn(2, 2_000)
+bins = range(0.0, 0.5; length = 21)
 res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.ThreadedBackend())
+res.values[1:4]
 ```
 
-A device:
+A device. This block needs a CUDA device, so the documentation build shows it without running it:
 
 ```julia
 using KernelAbstractions, CUDA
@@ -59,10 +64,19 @@ suite covers them without a device.
 
 The transform on a grid:
 
-```julia
-using FFTW, FlowGeometries
+```@example extensions
+using FFTW
+using FlowGeometries: FlowGeometries as FG
 using SpectralBackends: SpectralBackends as SB
-sf = calculate_structure_function(SFT.L3SFType(), grid, u, bins, SB.FastFourierTransformSpectralBackend())
+
+geo = FG.Geometry.CartesianGeometry()
+grid = FG.Grids.StructuredGrid(geo, range(0.0, step = 0.1, length = 16),
+                               range(0.0, step = 0.1, length = 16))
+ug = randn(2, 16, 16)
+gbins = collect(range(0.0, 0.8; length = 9))
+sf = SFC.calculate_structure_function(SFT.L3SFType(), grid, ug, gbins, UInt64,
+                                      SB.FastFourierTransformSpectralBackend())
+sf.values
 ```
 
 `SB.AutoSpectralBackend()` costs the transform and the direct sweep and takes the cheaper; the direct

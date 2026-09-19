@@ -864,8 +864,11 @@ function gridded_spectrum(u, schedule, ::Val{D}, spectral_backend; valid = AllVa
                           taper::AbstractTaper = NoTaper(),
                           missing_lags::AbstractMissingLagPolicy = RefuseMissingLags()) where {D}
     throw(ArgumentError(
-        "no method transforms a gridded structure function with $(typeof(spectral_backend)). " *
-        "Load an AbstractFFTs implementation — `using FFTW` on CPU.",
+        "no method computes a gridded spectrum for $(nameof(typeof(schedule))) with " *
+        "$(nameof(typeof(spectral_backend))). The AbstractFFTs extension supplies one " *
+        "combination, `UniformLagSchedule` with a fast-Fourier tag: reaching this message with " *
+        "that schedule means the extension is not loaded (`using FFTW` on CPU), and reaching it " *
+        "with any other means the spectrum has no method for that schedule.",
     ))
 end
 
