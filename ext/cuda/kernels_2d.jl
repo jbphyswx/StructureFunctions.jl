@@ -39,8 +39,8 @@ function _cuda_sf_2d_kernel!(
     x,                      # (D, N, B) varying  /  (D, N, 1) fixed (reshaped by launcher)
     u,                      # (D, N, B)
     sf_type,
-    ddig,                   # distance digitizer functor (isbits, callable on device)
-    vplan,                  # value digitize plan (per-moment)
+    ddig,                   # device digitize plan of the distance bins
+    vplan,                  # device value plan: one digitize plan, or one per moment
     N::Int, n_dist::Int, n_val::Int,
     sched, ntb::Int,
     ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, ::Val{HCELLS},
@@ -109,12 +109,12 @@ function _cuda_sf_2d_kernel!(
                 Uj = _cuda_ld(suj, Val(D), Val(TILE), jj)
             end
             ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
-            dbin = ddig(dist)
+            dbin = SFH.digitize(dist, ddig)
             if ok && 1 <= dbin <= n_dist
                 dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                 moments = GE._sf_moments(Val(NMOM), sf_type, dU, rhat)
                 @inbounds for m in 1:NMOM
-                    vb = GE._gpu_digitize_value_plan(moments[m], vplan, m, n_val + 1)
+                    vb = GE._sf_value_bin(vplan, moments[m], m)
                     if 1 <= vb <= n_val
                         cell = (m - 1) * HCELLS + (dbin - 1) * vstride + vb
                         CUDA.@atomic sums[cell] += moments[m]

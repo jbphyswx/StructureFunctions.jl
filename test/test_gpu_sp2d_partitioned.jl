@@ -144,7 +144,6 @@ Test.@testset "GPU sp2d HTP-EJ partitioned (KA.CPU)" begin
     Test.@test sums_ws ≈ sums_lin_ref atol = 1e-11
     Test.@test cnts_ws == cnts_lin_ref
     Test.@test ws2.lazy.partition_sums_dev === nothing
-    Test.@test ws2.sp2d_pair_kernel !== nothing
     Test.@test !ws2.sp2d_accumulation_strategy.needs_partition_merge
 end
 
@@ -292,16 +291,13 @@ end
 
 Test.@testset "GPU sp2d general distance edges take the tiled path (KA.CPU)" begin
     # Arbitrary (neither uniform nor log-uniform) distance edges digitize by device binary
-    # search. Before the :general route existed these fell through to the global-atomic
-    # kernel; the tiled shared-histogram path must agree with the CPU reference for every
-    # combination of value-bin form and dimensionality it now covers.
+    # search; the tiled shared-histogram path must agree with the CPU reference for every
+    # combination of value-bin form and dimensionality.
     backend = KA.CPU()
     FT = Float32
     N, nd, nv = 96, 16, 8
     # r^1.7 on a uniform grid: strictly increasing, and neither spacing family matches it.
     dist_edges = collect(FT, range(FT(0), FT(1.5); length = nd + 1)) .^ FT(1.7)
-    GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-    Test.@test GPUExt._sp2d_dist_variant(dist_edges) == :general
 
     typed_val = LinearBinEdges(range(FT(-1), FT(2); length = nv + 1))
     raw_val = collect(FT, range(FT(-1), FT(2); length = nv + 1))
@@ -327,8 +323,6 @@ Test.@testset "GPU sp2d general distance edges take the tiled path (KA.CPU)" beg
             sums_gpu, cnts_gpu, x, u, dist_edges, vb;
             backend = CB.GPUBackend(backend), workspace = ws,
         )
-        # A resolved pair kernel is what distinguishes the tiled route from the fallback.
-        Test.@test ws.sp2d_pair_kernel !== nothing
         Test.@test cnts_gpu == cnts_ref
         Test.@test sums_gpu ≈ sums_ref rtol = 1e-5 atol = 1e-6
     end
@@ -362,11 +356,8 @@ Test.@testset "GPU sp2d keeps data precision when bins are narrower (KA.CPU)" be
 end
 
 Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
-    # The GPU batch entry points route through the unified device path, whose
-    # _sf_batch_dist_digitizer handles linear, log, and general edges. Guard
-    # against regressing to the old linear-only host check (which rejected the
-    # production LogBinEdges + InfPaddedBinEdges shape used by varying-x
-    # conditioned batches). Varying-x (2, N, T) with per-slice coordinates.
+    # The GPU batch entry points take the production LogBinEdges + InfPaddedBinEdges shape used by
+    # varying-x conditioned batches. Varying-x (2, N, T) with per-slice coordinates.
     backend = KA.CPU()
     FT = Float32
     N = 40
@@ -429,15 +420,7 @@ Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
     Test.@test sumsi_gpu ≈ sumsi_ref rtol = 1e-5 atol = 1e-6
     Test.@test cntsi_gpu == cntsi_ref
 
-    # Typed FMA fast-path routing: linear AND log qualify (same 5-param FMA
-    # digitize, log in log space); raw vectors take the exact general digitizer.
-    GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-    Test.@test GPUExt._fma_distance_bins(log_dist) === log_dist
-    lin = LinearBinEdges(range(FT(0.0), FT(1.5); length = n_dist_bins + 1))
-    Test.@test GPUExt._fma_distance_bins(lin) === lin
-    Test.@test GPUExt._fma_distance_bins(collect(range(0.0, 1.5; length = 11))) === nothing
-
-    # fixed-x individual 1D with log bins → the tiled FMA fast kernel (Val{LOG}=true)
+    # fixed-x individual 1D with log bins → the fixed-x strip kernel
     x_fixed = x[:, :, 1]
     sumsf_ref = zeros(FT, n_dist_bins, T)
     cntsf_ref = zeros(UInt32, n_dist_bins, T)

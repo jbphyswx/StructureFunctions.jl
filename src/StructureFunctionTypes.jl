@@ -34,21 +34,6 @@ abstract type AbstractDerivedStructureFunctionType <: AbstractStructureFunctionT
 # Utilities
 # ---------------------------------------------------------------------------
 
-"""
-    norm2(x)
-
-Compute the sum of squares of elements of `x`. Faster than `norm(x)^2`
-for small vectors, used for transverse components.
-"""
-@inline function norm2(x)
-    @fastmath @inbounds begin
-        out = zero(eltype(x))
-        for i in eachindex(x)
-            out += x[i]^2
-        end
-        return out
-    end
-end
 
 # ---------------------------------------------------------------------------
 # Parametric Types
@@ -172,15 +157,15 @@ const FullVectorStructureFunction = FullVectorStructureFunctionType
 
 FullVectorStructureFunctionType(NF::Integer) = FullVectorStructureFunctionType{NF}()
 
-@inline (::SecondOrderStructureFunctionType)(δu, r̂) = norm2(SFC_field_vector(δu, 1))
+@inline (::SecondOrderStructureFunctionType)(δu, r̂) = SFH.norm2(SFC_field_vector(δu, 1))
 
 @inline function (::ThirdOrderStructureFunctionType)(δu, r̂)
     v = SFC_field_vector(δu, 1)
-    return SFH.mδu_l(v, r̂) * norm2(v)
+    return SFH.mδu_l(v, r̂) * SFH.norm2(v)
 end
 
 @generated function (::FullVectorStructureFunctionType{NF})(δu, r̂) where {NF}
-    NF == 2 && return :(norm2(SFC_field_vector(δu, 1)))
+    NF == 2 && return :(SFH.norm2(SFC_field_vector(δu, 1)))
     return :(LA.norm(SFC_field_vector(δu, 1))^$NF)
 end
 
@@ -313,16 +298,16 @@ odd transverse orders need `r̂` and fall through to the generic method.
 """
 @inline _sf_raw(sf::AbstractStructureFunctionType, δu, dx, r2) = sf(δu, dx / sqrt(r2))
 
-@inline _sf_raw(::SecondOrderStructureFunctionType, δu, dx, r2) = norm2(δu)
+@inline _sf_raw(::SecondOrderStructureFunctionType, δu, dx, r2) = SFH.norm2(δu)
 
 @inline function _sf_raw(::ProjectedStructureFunctionType{2, 0}, δu, dx, r2)
-    p = LA.dot(δu, dx)
+    p = SFH.fma_dot(δu, dx)
     return p * p / r2
 end
 
 @inline function _sf_raw(::ProjectedStructureFunctionType{0, 2}, δu, dx, r2)
-    p = LA.dot(δu, dx)
-    return norm2(δu) - p * p / r2
+    p = SFH.fma_dot(δu, dx)
+    return SFH.norm2(δu) - p * p / r2
 end
 
 @inline function _sf_raw(::TransverseComponentSecondOrderStructureFunctionType, δu, dx, r2)
@@ -330,8 +315,8 @@ end
     D > 1 || throw(ArgumentError(
         "T2ComponentSF averages over the transverse directions, of which there are none at D = 1",
     ))
-    p = LA.dot(δu, dx)
-    return (norm2(δu) - p * p / r2) / (D - 1)
+    p = SFH.fma_dot(δu, dx)
+    return (SFH.norm2(δu) - p * p / r2) / (D - 1)
 end
 
 """
@@ -417,7 +402,7 @@ end
 const VectorDotSFType = VectorDotStructureFunctionType
 
 @inline (sf::VectorDotStructureFunctionType)(δu, r̂) =
-    LA.dot(SFC_field_vector(δu, sf.a), SFC_field_vector(δu, sf.b))
+    SFH.fma_dot(SFC_field_vector(δu, sf.a), SFC_field_vector(δu, sf.b))
 
 # How an operator reaches a field of an increment. A single-field increment is the plain
 # vector every existing operator takes, so naming field 1 of it is the vector itself — that is what

@@ -28,7 +28,7 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     x = rand(n_points, 2)' .* 50000.0
     u = randn(2, n_points) .* 0.5
 
-    distance_bins = LogBinEdges(collect(exp.(range(log(1000.0), log(50000.0), length = 6))))
+    distance_bins = LogBinEdges(1000.0, 50000.0, 6)
     value_bins = _synthetic_value_bins(10; pad_infinite = true)
     n_val = length(value_bins) - 1
     n_bins = length(distance_bins) - 1
@@ -139,7 +139,7 @@ Test.@testset "Single-Pass 2D value bins with 3D point fields" begin
     u = Float32[0.0 0.5 0.0 0.1;
                 0.0 0.0 0.5 0.2;
                 0.0 0.0 0.0 0.5]
-    distance_bins = LinearBinEdges(Float32[0.1, 1.0, 2.0])
+    distance_bins = SF.BinEdges(Float32[0.1, 1.0, 2.0])
     value_bins = range(-2.0f0, 2.0f0; length = 9)
 
     sp_ref = SFC.calculate_structure_functions_single_pass_2d(
@@ -159,7 +159,7 @@ Test.@testset "Single-Pass 2D GPU (KA.CPU) parity vs Serial" begin
     n_points = 40
     x = rand(n_points, 2)' .* 50000.0
     u = randn(2, n_points) .* 0.5
-    distance_bins = LogBinEdges(collect(exp.(range(log(1000.0), log(50000.0), length = 6))))
+    distance_bins = LogBinEdges(1000.0, 50000.0, 6)
     value_bins = _synthetic_value_bins(10; pad_infinite = true)
     n_val = length(value_bins) - 1
     n_bins = length(distance_bins) - 1
@@ -205,7 +205,7 @@ Test.@testset "Single-Pass 2D heterogeneous value-bin tuple" begin
     nd = length(db) - 1
 
     lin = LinearBinEdges(range(FT(-10), FT(10); length = nv + 1))
-    lg = LogBinEdges(collect(FT, 10 .^ range(-4, 1; length = nv + 1)))
+    lg = LogBinEdges(FT(1e-4), FT(10), nv + 1)
     raw = collect(FT, range(FT(-10), FT(10); length = nv + 1))
     het = (lg, lg, lg, lin, raw, lin)
 

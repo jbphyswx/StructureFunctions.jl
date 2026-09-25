@@ -5,6 +5,9 @@ include("test_synthetic_data.jl")
 using .SyntheticData: SyntheticData
 
 Test.@testset "StructureFunctions.jl" begin
+    include("test_repair_regressions.jl")
+    include("test_examples.jl")
+    include("test_result_buffers.jl")
     println("--- Running Baseline Correctness Test ---")
     include("baseline_correctness.jl")
 
@@ -13,6 +16,7 @@ Test.@testset "StructureFunctions.jl" begin
 
     println("--- Running BinEdges Test ---")
     include("test_bin_edges.jl")
+    include("test_bin_constructors.jl")
 
     println("--- Running Core Correctness Test ---")
     include("test_core_correctness.jl")
@@ -106,6 +110,7 @@ Test.@testset "StructureFunctions.jl" begin
 
     println("--- Running Regularised Fits Test ---")
     include("test_fits.jl")
+    include("test_fit_numerics.jl")
 
     println("--- Running Triangle Outer Chunks Test ---")
     include("test_triangle_outer_chunks.jl")

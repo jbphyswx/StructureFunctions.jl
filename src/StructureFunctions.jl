@@ -20,7 +20,7 @@ import .StructureFunctionObjects:
     StructureFunction2DSumsAndCounts,
     StructureFunctionTensor,
     StructureFunctionTensorSumsAndCounts,
-    HelmholtzDecomposition2D
+    HelmholtzDecomposition2D, to_host
 
 using .MultiFields: MultiFields # what is a field
 using .HelperFunctions: HelperFunctions
@@ -33,11 +33,11 @@ using .KHM: KHM
 # `Calculations` for the entries, `StructureFunctionTypes` for the operators, `HelperFunctions` for
 # the geometry, `MultiFields` for `Fields`.
 export AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges, LogBinEdges_from_log_edges,
-    InfPaddedBinEdges, ModeBinEdges, physical_edges_vector, n_histogram_bins, midpoints
+    InfPaddedBinEdges, ModeBinEdges, n_histogram_bins, midpoints
 export AbstractTaper, NoTaper, Bartlett, GaussianTaper, HarmonicNodes, gauss_legendre
 export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCounts,
     StructureFunction2DSumsAndCounts, StructureFunctionTensor, StructureFunctionTensorSumsAndCounts,
-    HelmholtzDecomposition2D
+    HelmholtzDecomposition2D, to_host
 export KHM
 
 # ---------------------------------------------------------------------------

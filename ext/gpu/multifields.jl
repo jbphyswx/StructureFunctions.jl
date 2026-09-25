@@ -43,10 +43,8 @@ function SFC.gpu_calculate_structure_function_fields!(
     _ = (verbose, show_progress)
     # Culling reorders the points on the host; the device sweep enumerates the full triangle, and
     # a permutation does not change a histogram, so the request is honoured by declining to permute.
-    w = SFC._pair_weights(weights, size(SFC.MF.packed(f), 2), float(eltype(SFC.MF.packed(f))))
-    SFC._check_weighted_counts(w, eltype(counts))
     geom, xk, data, vF, plan, _, wk = SFC.field_setup(f, x, distance_bins, distance_metric,
-                                                      SFC.NoCulling(), w)
+                                                      SFC.NoCulling(), weights)
     culling isa SFC.AlwaysCulling && throw(ArgumentError(
         "GPU multi-field sweeps do not build a cell grid on device; use AutoCulling (which " *
         "declines here) or a CPU backend to cull.",

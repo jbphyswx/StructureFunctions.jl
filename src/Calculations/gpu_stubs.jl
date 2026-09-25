@@ -24,6 +24,19 @@ Returns `true` if handled, `false` to fall back to the portable KA tiled kernel.
 gpu_fast_launch_1d_batch!(backend, out, cnt, x, u, sf_type, dist_dig,
                           N, NB, B, D, nmom, fixed_x, geom, cull) = false
 
+"""Count type the native 1D route can accumulate directly, or `nothing` when the
+portable planner must choose its local/global representation. A provider method
+must return only types supported by its global atomic flush."""
+gpu_fast_1d_count_type(backend, weights, requested_type, n_pairs, D, NB, nmom) = nothing
+
+"""Build an exact culling grid from device-resident kernel coordinates.
+
+Backends with device sort and compaction support return a [`CellGrid`](@ref) whose permutation
+stays on that backend. `nothing` means the backend has no device implementation; callers retain
+the uncullled route for `AutoCulling` and reject an explicit `AlwaysCulling` request.
+"""
+gpu_device_cull_grid(backend, x, cutoff, policy) = nothing
+
 
 """
     GPUDeviceCaps
@@ -108,6 +121,9 @@ function reset_histogram! end
 """Release device buffers held by a [`GPUSFWorkspace`](@ref) (optional explicit free)."""
 function release! end
 
+"""Invalidate prepared geometry and input caches held by a [`GPUSFWorkspace`](@ref)."""
+function refresh! end
+
 """Compile-time joint 2D shared-histogram width `SF_GPU_MAX_2D_HIST` (4096). Implemented in GPU extension."""
 function joint2d_smem_max end
 
@@ -119,35 +135,30 @@ function joint2d_smem_align256 end
 
 
 """
-    gpu_calculate_structure_function(...)
+    gpu_calculate_structure_function(sf, backend, x, u, distance_bins, CT; kwargs...)
 
-GPU-accelerated structure function calculation. Requires loading `KernelAbstractions.jl`
-to activate the `GPUExt` extension. The backend can be `KernelAbstractions.CPU()`
-(for testing parity) or any GPU backend like `CUDABackend()` from `CUDA.jl`.
-
-Device histogram buffers are `UInt32`; `count_eltype` (default `UInt32`) selects the
-host count type after download. Pass `workspace=GPUSFWorkspace(...)` to reuse device
-histogram buffers across repeated calls (see [`GPUSFWorkspace`](@ref)).
-
-This stub exists so the extension can legally extend this function.
+The 1-D pair histogram on the KernelAbstractions backend `backend`, with device-resident sums and
+counts of element type `CT`. Requires loading `KernelAbstractions.jl` to activate the `GPUExt`
+extension. Pass `workspace=GPUSFWorkspace(...)` to reuse device histogram buffers across repeated
+calls (see [`GPUSFWorkspace`](@ref)).
 """
 function gpu_calculate_structure_function end
 
 """
-    gpu_calculate_structure_function_2d(sf_type, backend, x_mat, u_mat, distance_bins, value_bins; kwargs...)
+    gpu_calculate_structure_function_2d(sf_type, backend, x_mat, u_mat, distance_bins, value_bins, CT; kwargs...)
 
-GPU 2D joint structure function (distance × SF value histogram) for one `sf_type`.
-Requires loading `KernelAbstractions.jl` to activate the `GPUExt` extension.
-Device counts are `UInt32`; `count_eltype` selects the host matrix type after download.
+GPU 2D joint structure function (distance × SF value histogram) for one `sf_type`, with
+device-resident counts of element type `CT`. Requires loading `KernelAbstractions.jl` to activate the
+`GPUExt` extension.
 """
 function gpu_calculate_structure_function_2d end
 
 """
-    gpu_calculate_structure_functions_single_pass_2d(backend, x, u, distance_bins, value_bins; kwargs...)
+    gpu_calculate_structure_functions_single_pass_2d(backend, x, u, distance_bins, value_bins, CT; kwargs...)
 
-Six invariant native distance × value joint histograms on a KernelAbstractions backend.
-Requires loading `KernelAbstractions.jl` to activate the `GPUExt` extension.
-Device counts are `UInt32`; `count_eltype` selects the host array type after download.
+Six invariant native distance × value joint histograms on a KernelAbstractions backend, with
+device-resident counts of element type `CT`. Requires loading `KernelAbstractions.jl` to activate the
+`GPUExt` extension.
 """
 function gpu_calculate_structure_functions_single_pass_2d end
 
@@ -241,4 +252,8 @@ function gpu_calculate_structure_functions_single_pass_2d_batch!(args...; kwargs
             "GPU single-pass 2D slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
         ),
     )
+end
+
+function gpu_calculate_structure_function_2d!(args...; kwargs...)
+    throw(ArgumentError("GPU joint histograms require KernelAbstractions; load it before calculation"))
 end

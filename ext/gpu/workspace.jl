@@ -1,21 +1,16 @@
-# GPUSFWorkspace — device-resident histogram buffers and cached bin edges for GPU SF paths.
-# Included from StructureFunctionsKernelAbstractionsExt.jl (uses _gpu_normalize_bins, etc.).
+# GPUSFWorkspace — device-resident histogram buffers and digitizers for GPU SF paths.
 
+"""The workspace's device digitizer for the distance bins, or one built for this call's pass `kind`."""
+_dist_digitizer(::Nothing, backend, bins, kind::Val) = _gpu_digitizer(backend, bins, kind)
+_dist_digitizer(ws::GPUSFWorkspace, backend, bins, ::Val) = ws.dist_digitizer
 
-"""Log-spaced and linear distance bins carry host-side FMA params only; no device edge upload."""
-_workspace_dist_edges(::KA.Backend, ::LogBinEdges, ::Int) = nothing
-_workspace_dist_edges(::KA.Backend, ::LinearBinEdges, ::Int) = nothing
-
-function _workspace_dist_edges(backend::KA.Backend, bins::Vector{FT}, n_edges::Int) where {FT}
-    bins_dev = KA.allocate(backend, FT, n_edges)
-    copyto!(bins_dev, bins)
-    return bins_dev
-end
+"""The workspace's device value plan, or one built for this call."""
+_value_digitizer(::Nothing, backend, value_bins) = _gpu_digitizer(backend, value_bins, Val(:value))
+_value_digitizer(ws::GPUSFWorkspace, backend, value_bins) = ws.val_plan
 
 function _workspace_check_nb!(n_bins::Int)
     NB = n_bins - 1
-    NB > SF_GPU_MAX_BINS &&
-        error("GPUSFWorkspace: at most $SF_GPU_MAX_BINS distance bins (got NB=$NB)")
+    NB > 0 || throw(ArgumentError("distance_bins must contain at least two edges"))
     return NB, n_bins
 end
 
@@ -32,9 +27,7 @@ function SFC.GPUSFWorkspace(
 ) where {FT}
     kind in (:sf1d, :single_pass) ||
         throw(ArgumentError("GPUSFWorkspace(...; kind=:sf1d|:single_pass); got kind=$kind"))
-    n_bins = _gpu_n_edges(distance_bins)
-    dist_bins = _gpu_normalize_bins(distance_bins)
-    NB, n_bins = _workspace_check_nb!(n_bins)
+    NB, n_bins = _workspace_check_nb!(length(distance_bins))
 
     if kind == :sf1d
         out_sums_dev = KA.zeros(backend, FT, NB)
@@ -43,17 +36,17 @@ function SFC.GPUSFWorkspace(
         out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, NB)
         out_cnts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, NB)
     end
-    dist_edges_dev = _workspace_dist_edges(backend, dist_bins, n_bins)
+    dig = _gpu_digitizer(backend, distance_bins, Val(kind))
 
-    return GPUSFWorkspace{kind, FT, typeof(backend), typeof(dist_bins), Nothing,
-        typeof(out_sums_dev), typeof(out_cnts_dev), Nothing, typeof(dist_edges_dev),
-        Nothing, Nothing, Nothing, GPUSFLazyBuffers}(
-        backend, dist_bins, nothing,
+    return GPUSFWorkspace{kind, FT, typeof(backend), typeof(distance_bins), Nothing,
+        typeof(out_sums_dev), typeof(out_cnts_dev), typeof(dig), Nothing, Nothing,
+        GPUSFLazyBuffers}(
+        backend, distance_bins, nothing,
         out_sums_dev, out_cnts_dev,
-        nothing, dist_edges_dev,
+        dig, nothing,
         NB, n_bins, NB, 0, 0,
         Vector{FT}(undef, NB), Vector{UInt32}(undef, NB),
-        nothing, nothing, nothing,
+        nothing,
         0, 0, GPUSFLazyBuffers(),
     )
 end
@@ -102,15 +95,13 @@ exact `n_dist × n_val`). See [`joint2d_smem_max`](@ref), [`joint2d_smem_align25
 """
 function _gpusf_workspace_joint2d!(
     backend::KA.Backend,
-    distance_bins::Union{AbstractVector{FT1}, LinearBinEdges, LogBinEdges, InfPaddedBinEdges},
-    value_bins::Union{AbstractVector{FT2}, LinearBinEdges, LogBinEdges, InfPaddedBinEdges};
+    distance_bins::AbstractVector{FT1},
+    value_bins::AbstractVector{FT2};
     joint2d_compile_cells::Union{Nothing, Int} = nothing,
 ) where {FT1, FT2}
     FT = promote_type(FT1, FT2)
-    n_dist_edges = _gpu_n_edges(distance_bins)
-    n_val_edges = _gpu_n_edges(value_bins)
-    dist_bins = _gpu_normalize_bins(distance_bins)
-    val_bins = _gpu_normalize_bins(value_bins)
+    n_dist_edges = length(distance_bins)
+    n_val_edges = length(value_bins)
     NB, n_bins = _workspace_check_nb!(n_dist_edges)
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
@@ -118,90 +109,62 @@ function _gpusf_workspace_joint2d!(
         throw(ArgumentError("distance_bins and value_bins must each have at least two edges"))
     nb2 = n_dist * n_val
     compile_cells = _joint2d_resolve_compile_cells(nb2, joint2d_compile_cells)
-    val_plan = _joint2d_build_val_plan(backend, value_bins)
-
-    value_host = _gpu_host_edge_vector(value_bins)
-    value_edges_dev = KA.allocate(backend, FT, n_val_edges)
-    copyto!(value_edges_dev, value_host)
+    dig = _gpu_digitizer(backend, distance_bins, Val(:joint2d))
+    val_plan = _gpu_digitizer(backend, value_bins, Val(:value))
 
     out_sums_dev = KA.zeros(backend, FT, n_dist, n_val)
     out_cnts_dev = KA.zeros(backend, UInt32, n_dist, n_val)
 
-    dist_edges_dev = _workspace_dist_edges(backend, dist_bins, n_dist_edges)
-
-    return GPUSFWorkspace{:joint2d, FT, typeof(backend), typeof(dist_bins), typeof(val_bins),
-        typeof(out_sums_dev), typeof(out_cnts_dev), typeof(value_edges_dev),
-        typeof(dist_edges_dev), typeof(val_plan), Nothing, Nothing, GPUSFLazyBuffers}(
-        backend, dist_bins, val_bins,
+    return GPUSFWorkspace{:joint2d, FT, typeof(backend), typeof(distance_bins), typeof(value_bins),
+        typeof(out_sums_dev), typeof(out_cnts_dev), typeof(dig), typeof(val_plan), Nothing,
+        GPUSFLazyBuffers}(
+        backend, distance_bins, value_bins,
         out_sums_dev, out_cnts_dev,
-        value_edges_dev, dist_edges_dev,
+        dig, val_plan,
         NB, n_bins, n_dist, n_val, n_val_edges,
         Vector{FT}(undef, n_dist * n_val), Vector{UInt32}(undef, n_dist * n_val),
-        val_plan, nothing, nothing,
+        nothing,
         nb2, compile_cells, GPUSFLazyBuffers(),
     )
 end
+
+"""Sum precision of a single-pass 2D histogram: the distance precision promoted by every value column's."""
+_sp2d_value_eltype(value_bins::AbstractVector, FT3) = promote_type(FT3, eltype(value_bins))
+_sp2d_value_eltype(value_bins::Tuple, FT3) = promote_type(FT3, map(eltype, value_bins)...)
 
 """
 Build a `:single_pass_2d` workspace (six invariant distance × value joint histograms).
 Pass one shared edge object or `NTuple{6,...}` when columns may differ.
 """
-function _sp2d_value_eltype(value_bins::LinearBinEdges, FT3)
-    return promote_type(FT3, eltype(value_bins.edges))
-end
-function _sp2d_value_eltype(value_bins::LogBinEdges, FT3)
-    return promote_type(FT3, eltype(value_bins.log_edges))
-end
-function _sp2d_value_eltype(value_bins::InfPaddedBinEdges, FT3)
-    return _sp2d_value_eltype(value_bins.edges, FT3)
-end
-function _sp2d_value_eltype(value_bins::Tuple, FT3)
-    return promote_type(FT3, (_sp2d_value_eltype(value_bins[t], FT3) for t in eachindex(value_bins))...)
-end
-function _sp2d_value_eltype(v::AbstractVector{FT}, FT3) where {FT <: Number}
-    return promote_type(FT3, FT)
-end
-
 function _gpusf_workspace_sp2d!(
     backend::KA.Backend,
-    distance_bins::Union{AbstractVector{FT3}, LinearBinEdges, LogBinEdges},
+    distance_bins::AbstractVector{FT3},
     value_bins::SFC.SinglePass2DValueBins;
     n_val::Union{Nothing, Int} = nothing,
 ) where {FT3}
-    n_dist_edges = _gpu_n_edges(distance_bins)
-    dist_bins = _gpu_normalize_bins(distance_bins)
+    n_dist_edges = length(distance_bins)
     NB, n_bins = _workspace_check_nb!(n_dist_edges)
-    edge_n_val = _sp2d_n_val_edges(value_bins) - 1
-    hist_n_val = n_val === nothing ? edge_n_val : n_val
-    _validate_gpu_value_bins!(value_bins, hist_n_val)
-    n_val_edges = _sp2d_n_val_edges(value_bins)
+    n_val_edges = _n_value_edges(value_bins)
+    hist_n_val = n_val === nothing ? n_val_edges - 1 : n_val
+    SFC._validate_value_bins!(value_bins, hist_n_val)
     FT = _sp2d_value_eltype(value_bins, FT3)
-    val_plan = _gpu_build_value_digitize_plan(backend, value_bins)
-    value_edges_dev = _gpu_build_value_vector_cols_plan(backend, value_bins).edges_dev
+    dig = _gpu_digitizer(backend, distance_bins, Val(:single_pass_2d))
+    val_plan = _gpu_digitizer(backend, value_bins, Val(:value))
 
     out_sums_dev = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, NB, hist_n_val)
     out_cnts_dev = KA.zeros(backend, UInt32, SF_GPU_SINGLE_PASS_N, NB, hist_n_val)
     strategy = _sp2d_accumulation_strategy(NB, hist_n_val, FT, SFC.gpu_device_caps(backend))
 
-    dist_edges_dev = _workspace_dist_edges(backend, dist_bins, n_dist_edges)
-    # The pair kernel is keyed only on (dist variant, value variant, accum mode), all fixed here,
-    # so it is resolved once and held immutably.
-    pair_kernel = _sp2d_partition_kernel_fn(
-        _sp2d_dist_variant(dist_bins), _sp2d_val_variant(val_plan),
-        strategy.accum_mode, backend, SF_GPU_TILED_WS,
-    )
-
-    return GPUSFWorkspace{:single_pass_2d, FT, typeof(backend), typeof(dist_bins),
-        typeof(value_bins), typeof(out_sums_dev), typeof(out_cnts_dev),
-        typeof(value_edges_dev), typeof(dist_edges_dev), typeof(val_plan),
-        typeof(strategy), typeof(pair_kernel), GPUSFLazyBuffers}(
-        backend, dist_bins, value_bins,
+    return GPUSFWorkspace{:single_pass_2d, FT, typeof(backend), typeof(distance_bins),
+        typeof(value_bins), typeof(out_sums_dev), typeof(out_cnts_dev), typeof(dig),
+        typeof(val_plan), typeof(strategy), GPUSFLazyBuffers}(
+        backend, distance_bins, value_bins,
         out_sums_dev, out_cnts_dev,
-        value_edges_dev, dist_edges_dev,
+        dig, val_plan,
         NB, n_bins, NB, hist_n_val, n_val_edges,
         Vector{FT}(undef, SF_GPU_SINGLE_PASS_N * NB * hist_n_val),
         Vector{UInt32}(undef, SF_GPU_SINGLE_PASS_N * NB * hist_n_val),
-        val_plan, strategy, pair_kernel,
+        strategy,
         0, 0, GPUSFLazyBuffers(),
     )
 end
@@ -238,16 +201,29 @@ function _alloc_sp2d_partition_bufs(
   return partition_sums, partition_counts
 end
 
-"""Zero device histogram buffers in `ws` (call before each kernel launch)."""
+function _reset_batch_histogram!(::Nothing)
+    return nothing
+end
+function _reset_batch_histogram!(buffers::SFC.GPUBatchBuffers)
+    fill!(buffers.sums, zero(eltype(buffers.sums)))
+    fill!(buffers.counts, zero(eltype(buffers.counts)))
+    return nothing
+end
+
+"""Zero snapshot, batch, and allocated partition histograms owned by `ws`."""
 function SFC.reset_histogram!(ws::GPUSFWorkspace{<:Any, FT}) where {FT}
     fill!(ws.out_sums_dev, zero(FT))
-    fill!(ws.out_cnts_dev, zero(UInt32))
+    fill!(ws.out_cnts_dev, zero(eltype(ws.out_cnts_dev)))
+    ws.lazy.snapshot_counts_dev === nothing ||
+        fill!(ws.lazy.snapshot_counts_dev, zero(eltype(ws.lazy.snapshot_counts_dev)))
+    _reset_batch_histogram!(ws.lazy.batch)
     return ws
 end
 
 function SFC.reset_histogram!(ws::GPUSFWorkspace{:single_pass_2d, FT}) where {FT}
     fill!(ws.out_sums_dev, zero(FT))
-    fill!(ws.out_cnts_dev, zero(UInt32))
+    fill!(ws.out_cnts_dev, zero(eltype(ws.out_cnts_dev)))
+    _reset_batch_histogram!(ws.lazy.batch)
     if ws.sp2d_accumulation_strategy.needs_partition_merge && ws.lazy.partition_sums_dev !== nothing
         fill!(ws.lazy.partition_sums_dev, zero(FT))
         fill!(ws.lazy.partition_counts_dev, zero(UInt32))
@@ -262,9 +238,30 @@ function SFC.release!(ws::GPUSFWorkspace)
     lazy.partition_counts_dev = nothing
     lazy.x_dev_cache = nothing
     lazy.u_dev_cache = nothing
+    lazy.snapshot_counts_dev = nothing
+    lazy.batch = nothing
     lazy.active = nothing
     lazy.cull = nothing
     return nothing
+end
+
+"""Invalidate prepared inputs and culling decisions while retaining histogram storage."""
+function SFC.refresh!(ws::GPUSFWorkspace)
+    lazy = ws.lazy
+    lazy.x_dev_cache = nothing
+    lazy.u_dev_cache = nothing
+    lazy.active = nothing
+    lazy.cull = nothing
+    return ws
+end
+
+function _workspace_snapshot_counts!(ws::GPUSFWorkspace, backend, ::Type{CT}, shape) where {CT}
+    buf = ws.lazy.snapshot_counts_dev
+    if buf === nothing || eltype(buf) !== CT || size(buf) != shape
+        buf = KA.zeros(backend, CT, shape...)
+        ws.lazy.snapshot_counts_dev = buf
+    end
+    return buf
 end
 
 function _validate_gpu_workspace!(
@@ -273,6 +270,9 @@ function _validate_gpu_workspace!(
     requested_kind::Symbol,
     NB::Int;
     n_val::Union{Nothing, Int} = nothing,
+    distance_bins = nothing,
+    value_bins = nothing,
+    sum_type = nothing,
 ) where {kind}
     ws.backend == backend ||
         throw(ArgumentError("GPUSFWorkspace belongs to a different backend"))
@@ -283,13 +283,26 @@ function _validate_gpu_workspace!(
     if n_val !== nothing && ws.n_val != n_val
         throw(ArgumentError("GPUSFWorkspace n_val=$(ws.n_val) incompatible with requested n_val=$n_val"))
     end
+    sum_type === nothing || sum_type === eltype(ws.out_sums_dev) ||
+        throw(ArgumentError("GPUSFWorkspace sum precision differs from the requested precision"))
+    distance_bins === nothing || _workspace_bins_equal(ws.dist_bins, distance_bins) ||
+        throw(ArgumentError("GPUSFWorkspace distance edges differ from the requested edges"))
+    value_bins === nothing || _workspace_bins_equal(ws.val_bins, value_bins) ||
+        throw(ArgumentError("GPUSFWorkspace value edges differ from the requested edges"))
     return ws
 end
 
-"""Return cached general distance edge device buffer for tiled launches."""
-function _workspace_dist_edge_bufs(ws::Union{GPUSFWorkspace, Nothing})
-    ws === nothing && return nothing, nothing, nothing
-    return nothing, nothing, ws.dist_general_edges_dev
+_workspace_bins_equal(a, b) = a == b
+_workspace_bins_equal(a::Tuple, b::Tuple) = length(a) == length(b) && all(map(_workspace_bins_equal, a, b))
+_workspace_bins_equal(a::Tuple, b) = all(x -> _workspace_bins_equal(x, b), a)
+_workspace_bins_equal(a, b::Tuple) = all(x -> _workspace_bins_equal(a, x), b)
+
+function _validate_batch_workspace!(workspace, backend, kind, bins, ::Type{FT}; value_bins=nothing) where {FT}
+    workspace === nothing && return nothing
+    n_val = value_bins === nothing ? nothing : _n_value_edges(value_bins) - 1
+    _validate_gpu_workspace!(workspace, backend, kind, length(bins)-1;
+        n_val, distance_bins=bins, value_bins, sum_type=FT)
+    return nothing
 end
 # Reusable GPU buffers for batched structure-function launches (production).
 

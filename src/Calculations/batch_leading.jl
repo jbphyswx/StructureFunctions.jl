@@ -307,7 +307,7 @@ function _bl_sp1d_shared!(
             w = wi * _point_weight(weights, j)
             @simd for b in brange
                 du = SFH.pair_delta(geom, frame, Xi, Xj, _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
-                _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, LA.dot(du, rh), LA.dot(du, du), CT, w)
+                _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, SFH.fma_dot(du, rh), SFH.fma_dot(du, du), CT, w)
             end
         end
     end
@@ -335,7 +335,7 @@ function _bl_sp1d_varying!(
                 if ok && 1 <= bin <= nb
                     du, rh = SFH.pair_increments(geom, frame, dist, Xi, Xj,
                         _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
-                    _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, LA.dot(du, rh), LA.dot(du, du), CT, w)
+                    _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, SFH.fma_dot(du, rh), SFH.fma_dot(du, du), CT, w)
                 end
             end
         end
@@ -382,7 +382,7 @@ function _bl_sp2d_shared!(
             w = wi * _point_weight(weights, j)
             for b in brange
                 du = SFH.pair_delta(geom, frame, Xi, Xj, _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
-                vals = _sp1d_vals(LA.dot(du, rh), LA.dot(du, du))
+                vals = _sp1d_vals(SFH.fma_dot(du, rh), SFH.fma_dot(du, du))
                 _bl_sp2d_write!(sums_bl, counts_bl, b - boff, dbin, vals, value_bins, n_val, CT, w)
             end
         end
@@ -411,7 +411,7 @@ function _bl_sp2d_varying!(
                 (ok && 1 <= dbin <= nb) || continue
                 du, rh = SFH.pair_increments(geom, frame, dist, Xi, Xj,
                     _bl_vel(ub, b, i, vD), _bl_vel(ub, b, j, vD))
-                vals = _sp1d_vals(LA.dot(du, rh), LA.dot(du, du))
+                vals = _sp1d_vals(SFH.fma_dot(du, rh), SFH.fma_dot(du, du))
                 _bl_sp2d_write!(sums_bl, counts_bl, b - boff, dbin, vals, value_bins, n_val, CT, w)
             end
         end
@@ -534,13 +534,11 @@ function _bl_run_1d!(sums, counts, sf_type, x, u, dist_be, distance_metric, exec
     xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
     _validate_bl_geometry(geom, W, D)
-    _validate_ws_layout(workspace, :sf1d, (n_bins,))
-    _check_weighted_counts(weights, CT)
-    w = _pair_weights(weights, N, OT)
+    _validate_ws_layout(workspace, :sf1d, (n_bins,), OT, CT)
     make_accum(bw) = (zeros(OT, bw, n_bins), zeros(CT, bw, n_bins))
     run_chunk! = fixed_x ?
-        ((acc, isub, br) -> _bl_shared_1d!(acc[1], acc[2], xb, ub, sf_type, dist_be, geom, vD, isub, br, w)) :
-        ((acc, isub, br) -> _bl_varying_1d!(acc[1], acc[2], xb, ub, sf_type, dist_be, geom, vD, isub, br, w))
+        ((acc, isub, br) -> _bl_shared_1d!(acc[1], acc[2], xb, ub, sf_type, dist_be, geom, vD, isub, br, weights)) :
+        ((acc, isub, br) -> _bl_varying_1d!(acc[1], acc[2], xb, ub, sf_type, dist_be, geom, vD, isub, br, weights))
     sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, n_bins), workspace)
     _bl_add_permuted!(reshape(sums, n_bins, B), sums_bl, (2, 1))
     _bl_add_permuted!(reshape(counts, n_bins, B), counts_bl, (2, 1))
@@ -554,13 +552,11 @@ function _bl_run_joint2d!(sums, counts, sf_type, x, u, dist_be, val_be, distance
     xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
     _validate_bl_geometry(geom, W, D)
-    _validate_ws_layout(workspace, :joint2d, (n_dist, n_val))
-    _check_weighted_counts(weights, CT)
-    w = _pair_weights(weights, N, OT)
+    _validate_ws_layout(workspace, :joint2d, (n_dist, n_val), OT, CT)
     make_accum(bw) = (zeros(OT, bw, n_dist, n_val), zeros(CT, bw, n_dist, n_val))
     run_chunk! = fixed_x ?
-        ((acc, isub, br) -> _bl_joint2d_shared!(acc[1], acc[2], xb, ub, sf_type, dist_be, val_be, geom, vD, isub, br, w)) :
-        ((acc, isub, br) -> _bl_joint2d_varying!(acc[1], acc[2], xb, ub, sf_type, dist_be, val_be, geom, vD, isub, br, w))
+        ((acc, isub, br) -> _bl_joint2d_shared!(acc[1], acc[2], xb, ub, sf_type, dist_be, val_be, geom, vD, isub, br, weights)) :
+        ((acc, isub, br) -> _bl_joint2d_varying!(acc[1], acc[2], xb, ub, sf_type, dist_be, val_be, geom, vD, isub, br, weights))
     sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, n_dist, n_val), workspace)
     _bl_add_permuted!(reshape(sums, n_dist, n_val, B), sums_bl, (2, 3, 1))
     _bl_add_permuted!(reshape(counts, n_dist, n_val, B), counts_bl, (2, 3, 1))
@@ -574,13 +570,11 @@ function _bl_run_sp1d!(sums, counts, x, u, dist_be, distance_metric, executor, w
     xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
     _validate_bl_geometry(geom, W, D)
-    _validate_ws_layout(workspace, :single_pass, (SINGLE_PASS_N, n_bins))
-    _check_weighted_counts(weights, CT)
-    w = _pair_weights(weights, N, OT)
+    _validate_ws_layout(workspace, :single_pass, (SINGLE_PASS_N, n_bins), OT, CT)
     make_accum(bw) = (zeros(OT, bw, SINGLE_PASS_N, n_bins), zeros(CT, bw, SINGLE_PASS_N, n_bins))
     run_chunk! = fixed_x ?
-        ((acc, isub, br) -> _bl_sp1d_shared!(acc[1], acc[2], xb, ub, dist_be, geom, vD, isub, br, w)) :
-        ((acc, isub, br) -> _bl_sp1d_varying!(acc[1], acc[2], xb, ub, dist_be, geom, vD, isub, br, w))
+        ((acc, isub, br) -> _bl_sp1d_shared!(acc[1], acc[2], xb, ub, dist_be, geom, vD, isub, br, weights)) :
+        ((acc, isub, br) -> _bl_sp1d_varying!(acc[1], acc[2], xb, ub, dist_be, geom, vD, isub, br, weights))
     sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins), workspace)
     _bl_add_permuted!(reshape(sums, SINGLE_PASS_N, n_bins, B), sums_bl, (2, 3, 1))
     _bl_add_permuted!(reshape(counts, SINGLE_PASS_N, n_bins, B), counts_bl, (2, 3, 1))
@@ -596,13 +590,11 @@ function _bl_run_sp2d!(sums, counts, x, u, dist_be, value_bins, distance_metric,
     xb, ub, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
     vD = Val(D)
     _validate_bl_geometry(geom, W, D)
-    _validate_ws_layout(workspace, :single_pass_2d, (SINGLE_PASS_N, n_bins, n_val))
-    _check_weighted_counts(weights, CT)
-    w = _pair_weights(weights, N, OT)
+    _validate_ws_layout(workspace, :single_pass_2d, (SINGLE_PASS_N, n_bins, n_val), OT, CT)
     make_accum(bw) = (zeros(OT, bw, SINGLE_PASS_N, n_bins, n_val), zeros(CT, bw, SINGLE_PASS_N, n_bins, n_val))
     run_chunk! = fixed_x ?
-        ((acc, isub, br) -> _bl_sp2d_shared!(acc[1], acc[2], xb, ub, dist_be, value_bins, geom, vD, isub, br, w)) :
-        ((acc, isub, br) -> _bl_sp2d_varying!(acc[1], acc[2], xb, ub, dist_be, value_bins, geom, vD, isub, br, w))
+        ((acc, isub, br) -> _bl_sp2d_shared!(acc[1], acc[2], xb, ub, dist_be, value_bins, geom, vD, isub, br, weights)) :
+        ((acc, isub, br) -> _bl_sp2d_varying!(acc[1], acc[2], xb, ub, dist_be, value_bins, geom, vD, isub, br, weights))
     sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins, n_val), workspace)
     _bl_add_permuted!(reshape(sums, SINGLE_PASS_N, n_bins, n_val, B), sums_bl, (2, 3, 4, 1))
     _bl_add_permuted!(reshape(counts, SINGLE_PASS_N, n_bins, n_val, B), counts_bl, (2, 3, 4, 1))

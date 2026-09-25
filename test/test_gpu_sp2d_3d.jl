@@ -39,7 +39,7 @@ Test.@testset "GPU single-pass 2D, D = 3" begin
         N, nd, nv = 256, 16, 8
         x = rand(FT, 3, N) .+ FT(0.5)
         u = rand(FT, 3, N)
-        db = LogBinEdges(FT.(10 .^ range(-1.5, 0.3; length = nd + 1)))
+        db = LogBinEdges(FT(10^-1.5), FT(10^0.3), nd + 1)
         vb = LinearBinEdges(range(FT(-1), FT(2); length = nv + 1))
 
         gs, gc = SFC.gpu_calculate_structure_functions_single_pass_2d(backend, x, u, db, vb)

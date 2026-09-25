@@ -40,7 +40,7 @@ function auxiliary_shared_positions!(sums, counts, x_mat::AbstractMatrix, u_batc
         workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
         weights = NoWeights(), verbose::Bool = true, show_progress::Bool = true)
     verbose && @info("calculating batched structure function (serial, shared positions)")
-    _bl_run_1d!(sums, counts, sf_type, x_mat, u_batch, BinEdges(distance_bins), distance_metric,
+    _bl_run_1d!(sums, counts, sf_type, x_mat, u_batch, digitize_plan(distance_bins), distance_metric,
         _bl_serial_exec, workspace; weights)
 end
 
@@ -54,7 +54,7 @@ function auxiliary_varying_positions!(sums, counts, x_batch, u_batch,
         workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
         weights = NoWeights(), verbose::Bool = true, show_progress::Bool = true)
     verbose && @info("calculating batched structure function (serial, varying positions)")
-    _bl_run_1d!(sums, counts, sf_type, x_batch, u_batch, BinEdges(distance_bins), distance_metric,
+    _bl_run_1d!(sums, counts, sf_type, x_batch, u_batch, digitize_plan(distance_bins), distance_metric,
         _bl_serial_exec, workspace; weights)
 end
 
@@ -67,7 +67,7 @@ function serial_calculate_structure_functions_single_pass!(sums, counts, x, u, d
         workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
         weights = NoWeights(), verbose::Bool = true, show_progress::Bool = true)
     verbose && @info("calculating batched single-pass invariants (serial)")
-    _bl_run_sp1d!(sums, counts, x, u, BinEdges(distance_bins), distance_metric, _bl_serial_exec, workspace;
+    _bl_run_sp1d!(sums, counts, x, u, digitize_plan(distance_bins), distance_metric, _bl_serial_exec, workspace;
         weights)
 end
 
@@ -81,8 +81,8 @@ function serial_calculate_structure_functions_single_pass_2d!(sums, counts, x, u
         distance_metric::DI.PreMetric = DI.Euclidean(),
         weights = NoWeights(), verbose::Bool = true, show_progress::Bool = true)
     verbose && @info("calculating batched single-pass joint invariants (serial)")
-    _bl_run_sp2d!(sums, counts, x, u, BinEdges(distance_bins), value_bins, distance_metric,
-        _bl_serial_exec, workspace; weights)
+    _bl_run_sp2d!(sums, counts, x, u, digitize_plan(distance_bins), digitize_plan(value_bins),
+        distance_metric, _bl_serial_exec, workspace; weights)
 end
 
 """
@@ -95,8 +95,8 @@ function auxiliary_joint2d!(sums, counts, sf_type::SFT.AbstractPairwiseStructure
         distance_metric::DI.PreMetric = DI.Euclidean(),
         weights = NoWeights(), verbose::Bool = true, show_progress::Bool = true)
     verbose && @info("calculating batched joint structure function (serial)")
-    _bl_run_joint2d!(sums, counts, sf_type, x, u, BinEdges(distance_bins), BinEdges(value_bins),
-        distance_metric, _bl_serial_exec, workspace; weights)
+    _bl_run_joint2d!(sums, counts, sf_type, x, u, digitize_plan(distance_bins),
+        digitize_plan(value_bins), distance_metric, _bl_serial_exec, workspace; weights)
 end
 
 """Loop-over-slice gold reference for batch parity."""
@@ -196,11 +196,10 @@ function _serial_calculate_structure_function_point(
     ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
-    weights = nothing,
+    weights = NoWeights(),
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {FT1, FT2, D, CT}
-    _assert_counts_representable(CT, size(x, 2))
     geom = SFH.pair_geometry_for(distance_metric, vD)
     xk, uk = SFH.prepare_pair_inputs(geom, x, u)
     x_tuple = _component_vector_views(xk, SFH.coordinate_width(geom))
@@ -236,12 +235,11 @@ function serial_calculate_structure_function(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector,
-    count_eltype::Type{CT} = UInt32;
+    ::Type{CT};
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, CT}
     if ndims(u) >= 3
-        dist_be = BinEdges(distance_bins)
-        n_bins = n_histogram_bins(dist_be)
+        n_bins = n_histogram_bins(distance_bins)
         bdims = batch_dims(u)
         FT = promote_type(float(FT1), float(FT2))
         sums = zeros(FT, n_bins, bdims...)
@@ -252,17 +250,17 @@ function serial_calculate_structure_function(
     # Point-field route:
     D = size(u, 1)
     D == 1 && return _serial_calculate_structure_function_point(
-        structure_function_type, x, u, distance_bins, Val(1), count_eltype; kwargs...,
+        structure_function_type, x, u, distance_bins, Val(1), CT; kwargs...,
     )
     D == 2 && return _serial_calculate_structure_function_point(
-        structure_function_type, x, u, distance_bins, Val(2), count_eltype; kwargs...,
+        structure_function_type, x, u, distance_bins, Val(2), CT; kwargs...,
     )
     D == 3 && return _serial_calculate_structure_function_point(
-        structure_function_type, x, u, distance_bins, Val(3), count_eltype; kwargs...,
+        structure_function_type, x, u, distance_bins, Val(3), CT; kwargs...,
     )
     _validate_spatial_dimension(D)
     return _serial_calculate_structure_function_point(
-        structure_function_type, x, u, distance_bins, Val(D), count_eltype; kwargs...,
+        structure_function_type, x, u, distance_bins, Val(D), CT; kwargs...,
     )
 end
 
@@ -271,13 +269,12 @@ function threaded_calculate_structure_function(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector,
-    count_eltype::Type{CT} = UInt32;
+    ::Type{CT};
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, CT}
     if ndims(u) >= 3
         _require_threading("the auxiliary-axis batch driver")
-        dist_be = BinEdges(distance_bins)
-        n_bins = n_histogram_bins(dist_be)
+        n_bins = n_histogram_bins(distance_bins)
         bdims = batch_dims(u)
         FT = promote_type(float(FT1), float(FT2))
         sums = zeros(FT, n_bins, bdims...)

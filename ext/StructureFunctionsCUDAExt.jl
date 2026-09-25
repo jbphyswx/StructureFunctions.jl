@@ -12,10 +12,9 @@ These kernels use CUDA-only intrinsics not exposed by KernelAbstractions:
 `GPUBackend{B}` wrapper is parametric precisely so the CUDA backend can take this
 specialized path while the CPU backend stays on the KA kernels.
 
-The pure, device-callable building blocks (`_sf_moments`, `_sf_dot`,
-`_gpu_digitize_value_plan`, digitizer functors, value plans) live in
-`StructureFunctionsKernelAbstractionsExt`; this extension reuses them via `GE` so there is a
-single source of truth for the per-pair math and binning.
+The pure, device-callable building blocks (`_sf_moments`, `_sf_dot`, `_sf_value_bin`) live in
+`StructureFunctionsKernelAbstractionsExt`; this extension reuses them via `GE`, and bins with the
+host's `SFH.digitize`, so there is a single source of truth for the per-pair math and binning.
 """
 module StructureFunctionsCUDAExt
 
@@ -27,7 +26,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     HelperFunctions as SFH
 
 # The GPU (KernelAbstractions) extension owns the shared device-callable building
-# blocks and the digitizer / value-plan types. It is triggered by
+# blocks. It is triggered by
 # KernelAbstractions alone, so it is loaded whenever this extension's triggers
 # (KernelAbstractions + CUDA) are satisfied.
 const GE = let m = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
@@ -39,6 +38,7 @@ end
 
 include(joinpath(@__DIR__, "cuda", "kernels_2d.jl"))
 include(joinpath(@__DIR__, "cuda", "kernels_1d.jl"))
+include(joinpath(@__DIR__, "cuda", "culling.jl"))
 
 # ---------------------------------------------------------------------------
 # Dispatch hooks (override the package stubs in src/Calculations/gpu_stubs.jl).
@@ -60,6 +60,13 @@ function SFC.gpu_fast_launch_1d_batch!(
 )
     return _cuda_launch_1d!(out, cnt, x, u, sf_type, dist_dig,
                             Int(N), Int(NB), Int(B), Int(D), Int(nmom), fixed_x, geom, cull)
+end
+
+function SFC.gpu_fast_1d_count_type(::CUDA.CUDABackend, ::SFC.NoWeights,
+                                    ::Type{CT}, n_pairs, D, NB, nmom) where {CT}
+    supported = NB <= CU_MAX_BINS && D in (2, 3) && nmom in (1, 6) &&
+                CT in (UInt32, UInt64)
+    return supported ? CT : nothing
 end
 
 SFC.gpu_free_memory(::CUDA.CUDABackend) = Int(CUDA.free_memory())

@@ -191,9 +191,9 @@ end
 
     # (c) tensor
     ts1, tc1 = zeros(FT, 2, 2, nb), zeros(UInt32, nb)
-    SFC.calculate_structure_function_tensor!(ts1, tc1, Val(2), x2, u2, bins; verbose = false, show_progress = false)
+    SFC.calculate_structure_function_tensor!(ts1, tc1, Val(2), x2, u2, bins)
     ts2, tc2 = copy(ts1), copy(tc1)
-    SFC.calculate_structure_function_tensor!(ts2, tc2, Val(2), x2, u2, bins; verbose = false, show_progress = false)
+    SFC.calculate_structure_function_tensor!(ts2, tc2, Val(2), x2, u2, bins)
     @test ts2 ≈ 2 .* ts1
     @test tc2 == 2 .* tc1
 

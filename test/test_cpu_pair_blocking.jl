@@ -25,7 +25,7 @@ Test.@testset "CPU pair loop is invariant to the block schedule" begin
         x = rand(FT, D, N); u = randn(FT, D, N)
         xc, uc = _comp(x, D), _comp(u, D)
         for bins in (LinearBinEdges(range(FT(0.0), FT(1.6); length = 17)),
-                     LogBinEdges(exp.(range(log(FT(0.02)), log(FT(1.6)); length = 17))))
+                     LogBinEdges(FT(0.02), FT(1.6), 17))
             ilist = 1:(N - 1)
             sref, cref = _run_blocks(sf, xc, uc, bins, Val(D),
                 SFC.pair_blocks(N, ilist; tile = N), N, FT)

@@ -180,8 +180,7 @@ function _transform_prepare(
     P = _pad_dims(s, r_max)
     W = V * D + K
     p = SFT.order(sf)
-    w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
-    dp0, vp0, wp0 = SFC.separable_layout(s, data, valid, w)
+    dp0, vp0, wp0 = SFC.separable_layout(s, data, valid, weights)
     dp = to(dp0)
     vp = vp0 isa SFC.AllValid ? vp0 : to(Vector{Bool}(vp0))
     wp = wp0 isa SFC.NoWeights ? wp0 : to(wp0)
@@ -222,9 +221,9 @@ function _slab_transforms(
     spec = similar(parent(dp), Complex{FT}, half..., nkeys * nslabs)
     held = similar(parent(dp), FT, P..., chunk)
     plan = AbstractFFTs.plan_rfft(held, 1:Dg)
-    # Scratch for a last batch shorter than the plan, which transforms full width and is copied across;
-    # a whole batch writes its spectra in place. Empty when the batches divide the slabs.
-    short = similar(spec, half..., nslabs % chunk == 0 ? 0 : chunk)
+    # Execute every transform into the same allocation so FFTW sees the plan's
+    # alignment class even when a destination slab begins at an odd complex offset.
+    transformed = similar(spec, half..., chunk)
     # One monomial buffer for the whole key loop: `m` is scratch that the batch loop below reads
     # and nothing keeps, and at 1024 x 1024 a fresh one per key is 8 MiB of page traffic on a
     # route whose cost is memory.
@@ -237,12 +236,8 @@ function _slab_transforms(
             nb = hi - lo + 1
             fill!(held, zero(FT))   # the padding, and the unused slabs of a short last batch
             view(held, cells..., 1:nb) .= view(m, colons..., lo:hi)
-            if nb == chunk
-                LA.mul!(view(spec, colons..., (base + lo):(base + hi)), plan, held)
-            else
-                LA.mul!(short, plan, held)
-                view(spec, colons..., (base + lo):(base + hi)) .= view(short, colons..., 1:nb)
-            end
+            LA.mul!(transformed, plan, held)
+            view(spec, colons..., (base + lo):(base + hi)) .= view(transformed, colons..., 1:nb)
         end
     end
     fwd = map(1:nslabs) do I
@@ -350,10 +345,6 @@ function _transform_lags!(
         Mo = SFC._lag_moments(tr, out, idx, scale, nothing, nothing, Val(W), Val(Po), Val(N))
         SFC.with_frames(tr, geometry) do frames
             Mi = length(frames)
-            Mi > 1 && CT <: Integer && throw(ArgumentError(
-                "a lag that half-turns a periodic direction splits each pair between its two " *
-                "directions, so a joint histogram over angle needs a floating-point count type; got $CT",
-            ))
             for f in frames
                 bθ = SFH.digitize(SFC.axis_quantity(second_axis, f.dir, r2), axis_edges)
                 1 <= bθ <= na || continue
@@ -377,7 +368,7 @@ function SFC.gridded_sweep!(
         "sums and counts must have length $nb; got $(length(sums)) and $(length(counts))",
     ))
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
-    SFC._check_weighted_counts(w, eltype(counts))
+    SFC._assert_grid_counts(s, counts, size(data, 2), w)
     _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w, tag,
                       nothing)
     return sums, counts
@@ -391,15 +382,16 @@ function SFC.gridded_sweep!(
     second_axis::SFC.SeparationAngleAxis,
 ) where {D, V, K}
     SFC._require_directional(s)
+    SFC._check_half_turn_counts(eltype(counts), s, dist_be)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
-    axis_edges = SFC.BinEdges(axis_be)
+    axis_edges = SFC.digitize_plan(axis_be)
     na = SFC.n_histogram_bins(axis_edges)
     size(sums) == (nb, na) && size(counts) == (nb, na) || throw(DimensionMismatch(
         "sums and counts must be ($nb, $na); got $(size(sums)) and $(size(counts))",
     ))
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
-    SFC._check_weighted_counts(w, eltype(counts))
+    SFC._assert_grid_counts(s, counts, size(data, 2), w)
     _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w, tag,
                       (axis_edges, na, second_axis))
     return sums, counts
@@ -410,17 +402,13 @@ end
 # a NUFFT provider. Counts are a kernel-weighted pair mass and need a floating-point type.
 # ---------------------------------------------------------------------------------------------------
 
-_soft_counts(::Type{CT}) where {CT} = CT <: AbstractFloat ? nothing : throw(ArgumentError(
-    "the non-uniform FFT route's counts are a kernel-weighted pair mass; pass Float64 counts",
-))
-
 function SFC.gridded_sweep!(
     sums::AbstractVector, counts::AbstractVector{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::SFC.ScatteredModesSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K},
     tag::SB.AbstractNonUniformFastFourierTransformSpectralBackend;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
 ) where {CT, D, V, K}
-    _soft_counts(CT)
+    SFC._assert_mass_counts(CT)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
     length(sums) == nb && length(counts) == nb || throw(DimensionMismatch(
@@ -439,10 +427,10 @@ function SFC.gridded_sweep!(
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
     second_axis::SFC.SeparationAngleAxis,
 ) where {CT, D, V, K}
-    _soft_counts(CT)
+    SFC._assert_mass_counts(CT)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
-    axis_edges = SFC.BinEdges(axis_be)
+    axis_edges = SFC.digitize_plan(axis_be)
     na = SFC.n_histogram_bins(axis_edges)
     size(sums) == (nb, na) && size(counts) == (nb, na) || throw(DimensionMismatch(
         "sums and counts must be ($nb, $na); got $(size(sums)) and $(size(counts))",
@@ -587,10 +575,6 @@ function _transform_item_batch!(
         inv_r = inv(sqrt(r2))
         SFC.with_frames(tr, geometry) do frames
             Mi = length(frames)
-            Mi > 1 && CT <: Integer && throw(ArgumentError(
-                "a lag that half-turns a periodic direction splits each pair between its two " *
-                "directions, so a joint histogram over angle needs a floating-point count type; got $CT",
-            ))
             bins = map(f -> SFH.digitize(SFC.axis_quantity(second_axis, f.dir, r2), axis_edges), frames)
             for t in eachindex(outs)
                 out = outs[t]
@@ -683,7 +667,6 @@ function SFC.gridded_sweep_batch!(
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
 ) where {CT, D, V, K}
     _batch_tag_schedule(tag, s)
-    SFC._soft_binned(s) && _soft_counts(CT)
     nt = SFC._check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
@@ -691,7 +674,7 @@ function SFC.gridded_sweep_batch!(
         "sums and counts must be ($nb, $nt); got $(size(sums)) and $(size(counts))",
     ))
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
-    SFC._check_weighted_counts(w, CT)
+    SFC._assert_grid_counts(s, counts, size(data, 2), w)
     _transform_sweep_batch!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w,
                             tag, nothing)
     return sums, counts
@@ -705,18 +688,18 @@ function SFC.gridded_sweep_batch!(
     second_axis::SFC.SeparationAngleAxis,
 ) where {CT, D, V, K}
     _batch_tag_schedule(tag, s)
-    SFC._soft_binned(s) && _soft_counts(CT)
     SFC._require_directional(s)
+    SFC._check_half_turn_counts(CT, s, dist_be)
     nt = SFC._check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
-    axis_edges = SFC.BinEdges(axis_be)
+    axis_edges = SFC.digitize_plan(axis_be)
     na = SFC.n_histogram_bins(axis_edges)
     size(sums) == (nb, na, nt) && size(counts) == (nb, na, nt) || throw(DimensionMismatch(
         "sums and counts must be ($nb, $na, $nt); got $(size(sums)) and $(size(counts))",
     ))
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
-    SFC._check_weighted_counts(w, CT)
+    SFC._assert_grid_counts(s, counts, size(data, 2), w)
     _transform_sweep_batch!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w,
                             tag, (axis_edges, na, second_axis))
     return sums, counts
@@ -779,8 +762,7 @@ const TensorTag = Union{SB.AbstractFastFourierTransformSpectralBackend, SB.Abstr
 function _tensor_engine(order::Val{P}, data, s, dist_be, ::Val{D}, valid, weights, counts, tag) where {P, D}
     tag = _tensor_tag(tag, s)
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
-    SFC._check_weighted_counts(w, eltype(counts))
-    SFC._soft_binned(s) && _soft_counts(eltype(counts))
+    SFC._assert_grid_counts(s, counts, size(data, 2), w)
     eng = _transform_prepare(SFT.MomentTensorOperator{P}(), data, s, dist_be, Val(D), Val(1), Val(0), valid, w, tag)
     return eng, binomial(D + P - 1, P)
 end
@@ -814,9 +796,10 @@ function SFC.gridded_tensor_sweep!(
     second_axis::SFC.SeparationAngleAxis,
 ) where {OT, CT, P, D}
     SFC._require_directional(s)
+    SFC._check_half_turn_counts(CT, s, dist_be)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
-    axis_edges = SFC.BinEdges(axis_be)
+    axis_edges = SFC.digitize_plan(axis_be)
     na = SFC.n_histogram_bins(axis_edges)
     size(sums) == (ntuple(_ -> D, P)..., nb, na) && size(counts) == (nb, na) || throw(DimensionMismatch(
         "sums must be $((ntuple(_ -> D, P)..., nb, na)) and counts ($nb, $na); got $(size(sums)) and $(size(counts))",
@@ -885,10 +868,6 @@ function _transform_tensor_item!(
         fac = SFC._tensor_factor(tr, factor)
         SFC.with_frames(tr, geometry) do frames
             Mi = length(frames)
-            Mi > 1 && CT <: Integer && throw(ArgumentError(
-                "a lag that half-turns a periodic direction splits each pair between its two " *
-                "directions, so a joint histogram over angle needs a floating-point count type; got $CT",
-            ))
             for f in frames
                 bθ = SFH.digitize(SFC.axis_quantity(second_axis, f.dir, r2), axis_edges)
                 1 <= bθ <= na || continue

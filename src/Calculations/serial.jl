@@ -9,14 +9,10 @@ function serial_calculate_structure_function!(
     distance_bins::AbstractVector;
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     culling::CullingPolicy = AutoCulling(),
-    weights = nothing,
+    weights = NoWeights(),
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {OT, CT, T1, T2}
-    distance_bins = BinEdges(distance_bins)
-    w = _pair_weights(weights, length(x_vecs[1]), OT)
-    _check_weighted_counts(w, CT)
-
     if verbose
         @info("calculating structure function (serial reduction)")
     end
@@ -26,23 +22,24 @@ function serial_calculate_structure_function!(
     if _on_a_line(geometry, structure_function_type)
         _cull_reject_unsupported(culling, "the sorted line route")
         return sorted_line_sweep!(output, counts, structure_function_type, x_vecs[1],
-            reshape(collect(u_vecs[1]), 1, :), distance_bins, Val(1), Val(1), Val(0); weights = w)
+            reshape(collect(u_vecs[1]), 1, :), distance_bins, Val(1), Val(1), Val(0); weights)
     end
     # Fast path: flat D ∈ (2,3) uses the SIMD compute/scatter-split kernel (vectorizes the per-pair
     # compute over j; only the histogram scatter is scalar). Curved geometries take the scalar
     # per-i kernel, which forms the frame through `pair_frame`.
     if geometry isa SFH.FlatGeometry && D == 2
         return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs,
-            distance_bins, Val(2); culling = culling, weights = w)
+            distance_bins, Val(2); culling, weights)
     elseif geometry isa SFH.FlatGeometry && D == 3
         return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs,
-            distance_bins, Val(3); culling = culling, weights = w)
+            distance_bins, Val(3); culling, weights)
     end
     _cull_reject_unsupported(culling, "the scalar per-point kernel that this geometry uses")
 
+    be = digitize_plan(distance_bins)
     PM.@showprogress enabled = show_progress for i in eachindex(x_vecs[1])
         calculate_structure_function_i!(
-            output, counts, geometry, structure_function_type, i, x_vecs, u_vecs, distance_bins, w,
+            output, counts, geometry, structure_function_type, i, x_vecs, u_vecs, be, weights,
         )
     end
     return nothing
@@ -115,7 +112,7 @@ function _pf_simd_pairs!(
             @simd for j in jlo:j_last
                 Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
                 dx = Xj - Xi
-                r2 = LA.dot(dx, dx)
+                r2 = SFH.norm2(dx)
                 Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
                 r2buf[j] = digitize_key(plan, r2)
                 valbuf[j] = SFT._sf_raw(sf, Uj - Ui, dx, r2)
@@ -137,6 +134,13 @@ function _pf_simd_pairs!(
     return nothing
 end
 
+"""The unordered pair count `n(n-1)÷2` of `n` points, in `UInt128`, which holds it for every `Int` `n`."""
+function _pair_count_bound(n::Int)
+    n >= 0 || throw(ArgumentError("point count must be nonnegative"))
+    wide = UInt128(n)
+    return n < 2 ? UInt128(0) : wide * (wide - 1) ÷ 2
+end
+
 """
     _assert_counts_representable(CT, n_points)
 
@@ -145,12 +149,12 @@ Throw unless the worst-case pair count `n_points*(n_points-1)÷2` fits in `CT`.
 Every pair can land in one bin, so that product is the only safe bound. `UInt32` saturates at
 `N = 92682`, past which the counter wraps silently.
 """
-@inline function _assert_counts_representable(::Type{CT}, n_points::Integer) where {CT <: Integer}
-    n_pairs = (Int128(n_points) * (Int128(n_points) - 1)) ÷ 2
-    n_pairs <= Int128(typemax(CT)) || throw(
+@inline function _assert_counts_representable(::Type{CT}, n_points::Int) where {CT <: Integer}
+    n_pairs = _pair_count_bound(n_points)
+    n_pairs <= typemax(CT) || throw(
         ArgumentError(
-            "count_eltype=$CT cannot represent the worst-case pair count $n_pairs for N=$n_points " *
-            "(typemax($CT) = $(typemax(CT))); pass count_eltype=UInt64 or Int64.",
+            "the count type $CT cannot represent the worst-case pair count $n_pairs for N=$n_points " *
+            "(typemax($CT) = $(typemax(CT))); pass UInt64 or Int64 as the count type.",
         ),
     )
     return nothing
@@ -158,14 +162,55 @@ end
 
 # A floating-point count (a joint histogram over angle splits pairs between bins) is exact up to
 # `maxintfloat`.
-@inline function _assert_counts_representable(::Type{CT}, n_points::Integer) where {CT <: AbstractFloat}
-    n_pairs = (Int128(n_points) * (Int128(n_points) - 1)) ÷ 2
-    n_pairs <= Int128(maxintfloat(CT)) || throw(
+@inline function _assert_counts_representable(::Type{CT}, n_points::Int) where {CT <: AbstractFloat}
+    n_pairs = _pair_count_bound(n_points)
+    n_pairs <= maxintfloat(CT) || throw(
         ArgumentError(
-            "count_eltype=$CT counts exactly only up to $(maxintfloat(CT)), below the worst-case pair " *
-            "count $n_pairs for N=$n_points; pass count_eltype=Float64.",
+            "the count type $CT counts exactly only up to $(maxintfloat(CT)), below the worst-case pair " *
+            "count $n_pairs for N=$n_points; pass Float64 as the count type.",
         ),
     )
+    return nothing
+end
+
+"""
+    _assert_mass_counts(CT)
+
+The count check of a soft-binned entry, whose counts are a kernel-weighted pair mass: a real number,
+negative in a kernel's sidelobes, which only a floating-point `CT` holds.
+"""
+_assert_mass_counts(::Type{CT}) where {CT} = CT <: AbstractFloat ? nothing : throw(ArgumentError(
+    "a soft-binned count is a kernel-weighted pair mass, which the count type $CT cannot hold; pass a " *
+    "floating-point count type"))
+
+"""
+    _assert_count_type(CT, n_points, weights)
+
+The count check of an allocating entry: weighted pairs need a floating-point `CT`, and an unweighted
+sweep's worst case must fit it.
+"""
+@inline function _assert_count_type(::Type{CT}, n_points::Int, weights) where {CT}
+    _check_weighted_counts(weights, CT)
+    weights isa NoWeights && _assert_counts_representable(CT, n_points)
+    return nothing
+end
+
+"""
+    _assert_counts_can_accumulate(counts, n_points, weights)
+
+The count check of a mutating entry: [`_assert_count_type`](@ref), then room in `counts` for every
+pair on top of what it holds.
+"""
+function _assert_counts_can_accumulate(counts::AbstractArray{CT}, n_points::Int, weights) where {CT}
+    _assert_count_type(CT, n_points, weights)
+    (weights isa NoWeights && !isempty(counts)) || return nothing
+    current = maximum(counts)
+    limit = CT <: Integer ? typemax(CT) : maxintfloat(CT)
+    n_pairs = _pair_count_bound(n_points)
+    (CT <: Unsigned || minimum(counts) >= 0) && current <= limit && n_pairs <= limit - current ||
+        throw(ArgumentError(
+            "count accumulator cannot represent existing counts plus $n_pairs possible pairs; use a wider " *
+            "count type or reset the accumulator"))
     return nothing
 end
 
@@ -180,10 +225,8 @@ shape. The allocating form returns a fresh array of `eltype(sums)`. This is the 
 canonical averaging used by `_finalize`.
 """
 function _bin_average!(out::AbstractArray{T}, sums::AbstractArray, counts::AbstractArray) where {T}
-    @inbounds for k in eachindex(out, sums, counts)
-        c = counts[k]
-        out[k] = iszero(c) ? T(NaN) : sums[k] / c
-    end
+    axes(out) == axes(sums) == axes(counts) || throw(DimensionMismatch("mean buffers must have matching axes"))
+    out .= ifelse.(iszero.(counts), T(NaN), sums ./ counts)
     return out
 end
 
@@ -200,63 +243,9 @@ the `P` leading component axes of `sums` (shape `(D×P..., n_bins, aux...)`). Sa
 function _tensor_bin_average(sums::AbstractArray, counts::AbstractArray, ::Val{P}) where {P}
     T = eltype(sums)
     out = similar(sums, T)
-    comp = CartesianIndices(ntuple(d -> axes(sums, d), Val(P)))   # D^P component indices
-    rest = CartesianIndices(axes(sums)[(P + 1):end])              # (n_bins, aux...)
-    @inbounds for r in rest
-        c = counts[r]
-        if iszero(c)
-            for ci in comp
-                out[ci, r] = T(NaN)
-            end
-        else
-            for ci in comp
-                out[ci, r] = sums[ci, r] / c
-            end
-        end
-    end
+    expanded_counts = reshape(counts, ntuple(_ -> 1, Val(P))..., size(counts)...)
+    out .= ifelse.(iszero.(expanded_counts), T(NaN), sums ./ expanded_counts)
     return out
-end
-
-"""
-    serial_calculate_structure_function(sf, x, u, distance_bins[, value_bins][, count_eltype]; kwargs...)
-
-The point-list structure function on the serial CPU backend, returning the raw
-[`StructureFunctionSumsAndCounts`](@ref StructureFunctions.StructureFunctionObjects.StructureFunctionSumsAndCounts)
-(or the joint `StructureFunction2DSumsAndCounts` with `value_bins`). Takes the arguments of
-[`calculate_structure_function`](@ref) without `backend`; the public entry picks the output type.
-"""
-function serial_calculate_structure_function(
-    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
-    x_vecs::Tuple{T1, Vararg{T1}},
-    u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector;
-    count_eltype::Type{CT} = UInt32,
-    kwargs...,
-) where {T1, T2, CT}
-    _assert_counts_representable(CT, length(x_vecs[1]))
-    FT1 = eltype(T1)
-    FT2 = eltype(T2)
-    OT = promote_type(float(FT1), float(FT2))
-    N3 = n_histogram_bins(distance_bins)
-    output = zeros(OT, N3)
-    counts = zeros(CT, N3)
-
-    serial_calculate_structure_function!(
-        output,
-        counts,
-        structure_function_type,
-        x_vecs,
-        u_vecs,
-        distance_bins;
-        kwargs...,
-    )
-
-    return SFO.StructureFunctionSumsAndCounts(
-        structure_function_type,
-        distance_bins,
-        output,
-        counts,
-    )
 end
 
 function serial_calculate_structure_function!(
@@ -351,34 +340,8 @@ function calculate_structure_function_i!(
     return nothing
 end
 
-function calculate_structure_function_i(
-    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
-    i::Int,
-    x_vecs::Tuple,
-    u_vecs::Tuple,
-    distance_bins::AbstractVector;
-    geometry = SFH.FlatGeometry{length(u_vecs)}(),
-    count_eltype::Type{CT} = UInt32,
-) where {CT}
-    _assert_counts_representable(CT, length(x_vecs[1]))
-    OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
-    N3 = n_histogram_bins(distance_bins)
-    local_output = zeros(OT, N3)
-    local_counts = zeros(CT, N3)
-    calculate_structure_function_i!(
-        local_output, local_counts, geometry,
-        structure_function_type, i, x_vecs, u_vecs, BinEdges(distance_bins),
-    )
-    return SFO.StructureFunctionSumsAndCounts(
-        structure_function_type,
-        distance_bins,
-        local_output,
-        local_counts,
-    )
-end
-
 """
-    _partial_sums_counts(inner, sf_type, x_vecs, u_vecs, distance_bins, ilist; kwargs...)
+    _partial_sums_counts(inner, sf_type, x_vecs, u_vecs, distance_bins, ilist, CT; kwargs...)
 
 Partial 1D sums/counts over an explicit outer-index list `ilist` (each `i` contributes pairs
 `(i, j>i)`). Used by the distributed driver to give each worker a balanced share; `inner`
@@ -392,31 +355,29 @@ function _partial_sums_counts(
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector,
-    ilist;
+    ilist,
+    ::Type{CT};
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     culling::CullingPolicy = AutoCulling(),
-    count_eltype::Type{CT} = UInt32,
     weights = NoWeights(),
 ) where {CT}
-    _assert_counts_representable(CT, length(x_vecs[1]))
-    _check_weighted_counts(weights, CT)
     OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
     nb = n_histogram_bins(distance_bins)
     sums = zeros(OT, nb)
     counts = zeros(CT, nb)
-    be = BinEdges(distance_bins)
     D = length(u_vecs)
     # Flat D ∈ {2,3} takes the SIMD compute/scatter kernel, the same one the serial and threaded
     # drivers use; `_pf_simd_pairs!` accepts an arbitrary `irange`. Curved geometries take the
     # scalar per-`i` kernel.
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         vD = D == 2 ? Val(2) : Val(3)
-        _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, be, vD, ilist, culling;
-                          geometry = geometry, weights = weights)
+        _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, distance_bins, vD, ilist,
+                          culling; geometry = geometry, weights = weights)
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
     _cull_reject_unsupported(culling, "the scalar per-point kernel that this geometry uses")
 
+    be = digitize_plan(distance_bins)
     for i in ilist
         calculate_structure_function_i!(
             sums, counts, geometry, structure_function_type, i, x_vecs, u_vecs, be, weights,

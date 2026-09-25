@@ -26,14 +26,11 @@ function serial_calculate_structure_function!(
     value_bins::AbstractVector;
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
-    weights = nothing,
+    weights = NoWeights(),
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {OT, CT, T1, T2}
-    distance_bins = BinEdges(distance_bins)
-    value_bins = BinEdges(value_bins)
-    w = _pair_weights(weights, length(x_vecs[1]), OT)
-    _check_weighted_counts(w, CT)
+    val_be = digitize_plan(value_bins)
 
     if verbose
         @info("calculating 2D joint structure function (serial reduction)")
@@ -44,16 +41,17 @@ function serial_calculate_structure_function!(
     D = length(u_vecs)
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         _pf_2d_simd_run!(sums_2d, counts_2d, structure_function_type, x_vecs, u_vecs,
-                         distance_bins, value_bins, D == 2 ? Val(2) : Val(3);
-                         second_axis, weights = w)
+                         distance_bins, val_be, D == 2 ? Val(2) : Val(3);
+                         second_axis, weights)
         return nothing
     end
 
     _require_value_axis(second_axis, geometry)
+    dist_be = digitize_plan(distance_bins)
     PM.@showprogress enabled = show_progress for i in eachindex(x_vecs[1])
         calculate_structure_function_2d_i!(
             sums_2d, counts_2d, geometry, structure_function_type, i, x_vecs, u_vecs,
-            distance_bins, value_bins, w, second_axis,
+            dist_be, val_be, weights, second_axis,
         )
     end
     return nothing
@@ -94,7 +92,7 @@ function _pf_2d_simd_pairs!(
             @simd for j in jlo:j_last
                 Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
                 dx = Xj - Xi
-                r2 = LA.dot(dx, dx)
+                r2 = SFH.norm2(dx)
                 Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
                 keybuf[j] = digitize_key(plan, r2)
                 valbuf[j] = SFT._sf_raw(sf, Uj - Ui, dx, r2)
@@ -187,7 +185,7 @@ function _pf_2d_simd_partial!(
 end
 
 """
-    _partial_2d_sums_counts(inner, sf_type, x_vecs, u_vecs, distance_bins, value_bins, ilist; kwargs...)
+    _partial_2d_sums_counts(inner, sf_type, x_vecs, u_vecs, distance_bins, value_bins, ilist, CT; kwargs...)
 
 Partial 2D-joint sums/counts over an explicit outer-index list `ilist`, the 2D analogue of
 [`_partial_sums_counts`](@ref). Euclidean `D ∈ {2,3}` takes the SIMD compute/scatter kernel; other
@@ -200,31 +198,29 @@ function _partial_2d_sums_counts(
     u_vecs::Tuple,
     distance_bins::AbstractVector,
     value_bins::AbstractVector,
-    ilist;
+    ilist,
+    ::Type{CT};
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
-    count_eltype::Type{CT} = UInt32,
     weights = NoWeights(),
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
 ) where {CT}
-    _assert_counts_representable(CT, length(x_vecs[1]))
-    _check_weighted_counts(weights, CT)
     OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
     nd = n_histogram_bins(distance_bins)
     nv = n_histogram_bins(value_bins)
     sums = zeros(OT, nd, nv)
     counts = zeros(CT, nd, nv)
-    dist_be = BinEdges(distance_bins)
-    val_be = BinEdges(value_bins)
+    val_be = digitize_plan(value_bins)
     D = length(u_vecs)
 
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         vD = D == 2 ? Val(2) : Val(3)
-        _pf_2d_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, dist_be, val_be, vD,
-                             ilist; weights = weights, second_axis = second_axis)
+        _pf_2d_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, distance_bins, val_be,
+                             vD, ilist; weights = weights, second_axis = second_axis)
         return sums, counts
     end
 
     _require_value_axis(second_axis, geometry)
+    dist_be = digitize_plan(distance_bins)
     for i in ilist
         calculate_structure_function_2d_i!(
             sums, counts, geometry, structure_function_type, i, x_vecs, u_vecs, dist_be, val_be,
@@ -232,45 +228,6 @@ function _partial_2d_sums_counts(
         )
     end
     return sums, counts
-end
-
-function serial_calculate_structure_function(
-    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
-    x_vecs::Tuple{T1, Vararg{T1}},
-    u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector,
-    value_bins::AbstractVector;
-    count_eltype::Type{CT} = UInt32,
-    kwargs...,
-) where {T1, T2, CT}
-    _assert_counts_representable(CT, length(x_vecs[1]))
-    FT1 = eltype(T1)
-    FT2 = eltype(T2)
-    OT = promote_type(float(FT1), float(FT2))
-    N3 = n_histogram_bins(distance_bins)
-    N4 = n_histogram_bins(value_bins)
-
-    sums_2d = zeros(OT, N3, N4)
-    counts_2d = zeros(CT, N3, N4)
-
-    serial_calculate_structure_function!(
-        sums_2d,
-        counts_2d,
-        structure_function_type,
-        x_vecs,
-        u_vecs,
-        distance_bins,
-        value_bins;
-        kwargs...,
-    )
-
-    return SFO.StructureFunction2DSumsAndCounts(
-        structure_function_type,
-        distance_bins,
-        value_bins,
-        sums_2d,
-        counts_2d,
-    )
 end
 
 function serial_calculate_structure_function!(
@@ -306,35 +263,25 @@ function serial_calculate_structure_function(
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector,
-    value_bins::AbstractVector;
-    count_eltype::Type{CT} = UInt32,
+    value_bins::AbstractVector,
+    ::Type{CT};
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, CT}
+    FT = promote_type(float(FT1), float(FT2))
+    n_dist = n_histogram_bins(distance_bins)
+    n_val = n_histogram_bins(value_bins)
     if ndims(u_arr) >= 3
-        FT = promote_type(float(FT1), float(FT2))
-        n_dist = length(distance_bins) - 1
-        n_val = length(value_bins) - 1
         bdims = batch_dims(u_arr)
         sums = zeros(FT, n_dist, n_val, bdims...)
-        # Consumed here, where `counts` is allocated. `auxiliary_joint2d!` takes already-allocated
-        # buffers, so forwarding `count_eltype` into it is a MethodError.
         counts = zeros(CT, n_dist, n_val, bdims...)
         auxiliary_joint2d!(sums, counts, structure_function_type, x_arr, u_arr, distance_bins, value_bins; kwargs...)
         return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts)
     end
-    geom = SFH.pair_geometry_for(get(kwargs, :distance_metric, DI.Euclidean()), Val(size(u_arr, 1)))
-    xk, uk = SFH.prepare_pair_inputs(geom, x_arr, u_arr)
-    rest = Base.structdiff(NamedTuple(kwargs), NamedTuple{(:distance_metric,)})
-    return serial_calculate_structure_function(
-        structure_function_type,
-        _component_vector_views(xk, SFH.coordinate_width(geom)),
-        _component_vector_views(uk, SFH.field_width(geom)),
-        distance_bins,
-        value_bins;
-        count_eltype = count_eltype,
-        geometry = geom,
-        rest...,
-    )
+    sums_2d = zeros(FT, n_dist, n_val)
+    counts_2d = zeros(CT, n_dist, n_val)
+    serial_calculate_structure_function!(sums_2d, counts_2d, structure_function_type, x_arr, u_arr, distance_bins,
+                                         value_bins; kwargs...)
+    return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums_2d, counts_2d)
 end
 
 function calculate_structure_function_2d_i!(
@@ -385,43 +332,4 @@ function calculate_structure_function_2d_i!(
         end
     end
     return nothing
-end
-
-function calculate_structure_function_2d_i(
-    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
-    i::Int,
-    x_vecs::Tuple,
-    u_vecs::Tuple,
-    distance_bins::AbstractVector,
-    value_bins::AbstractVector;
-    geometry = SFH.FlatGeometry{length(u_vecs)}(),
-    count_eltype::Type{CT} = UInt32,
-) where {CT}
-    FT1 = eltype(x_vecs[1])
-    FT2 = eltype(u_vecs[1])
-    N3 = n_histogram_bins(distance_bins)
-    N4 = n_histogram_bins(value_bins)
-    OT = promote_type(float(FT1), float(FT2))
-    local_sums = zeros(OT, N3, N4)
-    local_counts = zeros(CT, N3, N4)
-
-    calculate_structure_function_2d_i!(
-        local_sums,
-        local_counts,
-        geometry,
-        structure_function_type,
-        i,
-        x_vecs,
-        u_vecs,
-        BinEdges(distance_bins),
-        BinEdges(value_bins),
-    )
-
-    return SFO.StructureFunction2DSumsAndCounts(
-        structure_function_type,
-        distance_bins,
-        value_bins,
-        local_sums,
-        local_counts,
-    )
 end

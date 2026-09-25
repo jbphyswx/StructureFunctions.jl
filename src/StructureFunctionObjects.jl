@@ -15,7 +15,8 @@ export AbstractStructureFunction,
     StructureFunctionTensorSumsAndCounts,
     StructureFunctionTensor2DSumsAndCounts,
     HelmholtzDecomposition2D,
-    marginalize
+    marginalize,
+    to_host
 
 """
     AbstractStructureFunction
@@ -27,11 +28,13 @@ abstract type AbstractStructureFunction end
 """
     StructureFunction{FT, OT, BT, VT}
 
-Metadata-rich result object for structure function calculations.
+Mean pair statistic for `operator`. For distance-bin edges of length `B+1`,
+`values` has shape `(B, batch...)`. For `HarmonicNodes`, its leading axis has
+one value per node. Empty pair bins contain `NaN`.
 
-- `operator`: The specific operator used (e.g., `L2SF`).
-- `distance`: The coordinate container (can be bin midpoints, edges, or point distances).
-- `values`: The computed structure function values.
+`distance` holds the original bin edges or harmonic nodes. Use `midpoints` to
+obtain representative separations for bins. Value arrays retain their execution
+backend; `to_host` copies their numerical buffers to host memory.
 """
 struct StructureFunction{FT, OT <: SFT.AbstractStructureFunctionType, BT, VT} <:
        AbstractStructureFunction
@@ -50,8 +53,11 @@ end
 """
     StructureFunctionSumsAndCounts{FT, OT, BT, VT}
 
-Intermediate result object containing raw sums and per-bin pair counts (integer).
-Useful for aggregating measurements before final averaging.
+Raw pair sums and normalization with matching shape `(B, batch...)`. Distance
+edges have length `B+1`; harmonic results have one slot per node. Unweighted
+pair counts are integers. Weighted calculations store floating-point pair mass.
+Add compatible results before dividing sums by counts. Integer addition checks
+for overflow. `to_host` copies both numerical arrays to the host.
 """
 struct StructureFunctionSumsAndCounts{
     FT,
@@ -82,14 +88,15 @@ end
 """
     StructureFunction2DSumsAndCounts{FT, OT, BT, VT, MT}
 
-2D Joint-Probability intermediate result container containing raw sums and counts matrices.
-Useful for analyzing the PDF of structure function values across separation distance bins.
+Joint histogram of separation and a second bin coordinate. `sums` and `counts`
+have matching shape `(B_distance, B_second, batch...)`; each edge vector has one
+more element than its corresponding histogram axis. The second coordinate is
+the operator value or the directional coordinate selected by the calculation.
 
-- `operator`: The specific operator used (e.g., `L2SF`).
-- `distance_bins`: 1D container of distance bin edges.
-- `value_bins`: 1D container of structure function value bin edges.
-- `sums`: 2D matrix of accumulated exact values of shape (N_distance_bins, N_value_bins).
-- `counts`: 2D matrix of accumulated contribution counts of shape (N_distance_bins, N_value_bins).
+`sums` accumulates actual pair values, including weights when supplied. `counts`
+stores integer pair counts or floating-point mass for weighted or split
+contributions. Divide by the appropriate total and bin widths explicitly when
+constructing a probability density.
 """
 struct StructureFunction2DSumsAndCounts{
     FT,
@@ -194,7 +201,7 @@ Averaged binned tensor structure function — the mean tensor ``D_{i…}(r)`` pe
 empty-bin guard `count == 0 → NaN`). For tensor order `P` and spatial dimension `D`, `values`
 has leading axes `(D, D, ..., D, n_bins, auxiliary...)` with `P` repeated component axes. This
 is the default result of `calculate_structure_function_tensor`; pass
-`output_type = StructureFunctionTensorSumsAndCounts` for the raw accumulator.
+`StructureFunctionTensorSumsAndCounts` as its result type for the raw accumulator.
 """
 struct StructureFunctionTensor{P, FT, BT, VT} <: AbstractStructureFunction
     order::Val{P}
@@ -281,6 +288,17 @@ Base.length(sf::StructureFunctionTensorSumsAndCounts) = length(sf.distance_bins)
 Base.length(sf::StructureFunctionTensor) = length(sf.distance_bins) - 1
 Base.length(sf::HelmholtzDecomposition2D) = length(sf.distance_bins) - 1
 
+"""Add count arrays without integer wraparound; weighted masses use ordinary addition."""
+function _add_counts(a::AbstractArray, b::AbstractArray)
+    size(a) == size(b) || throw(DimensionMismatch("count arrays must have the same shape"))
+    T = promote_type(eltype(a), eltype(b))
+    if T <: Integer
+        any(a .< 0) || any(b .< 0) ? throw(ArgumentError("pair counts must be nonnegative")) : nothing
+        any(b .> typemax(T) .- a) && throw(ArgumentError("sum of pair counts exceeds $T; convert counts to a wider type"))
+    end
+    return a + b
+end
+
 function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSumsAndCounts)
     (sf1.operator == sf2.operator) || throw(ArgumentError("Cannot add results with different operators: got $(sf1.operator) and $(sf2.operator)"))
     (sf1.distance == sf2.distance) || throw(ArgumentError("Cannot add results with different binning"))
@@ -288,7 +306,7 @@ function Base.:+(sf1::StructureFunctionSumsAndCounts, sf2::StructureFunctionSums
         sf1.operator,
         sf1.distance,
         sf1.sums + sf2.sums,
-        sf1.counts + sf2.counts,
+        _add_counts(sf1.counts, sf2.counts),
     )
 end
 
@@ -299,7 +317,7 @@ function Base.:+(sf1::StructureFunctionTensorSumsAndCounts{P}, sf2::StructureFun
         sf1.order,
         sf1.distance_bins,
         sf1.sums + sf2.sums,
-        sf1.counts + sf2.counts,
+        _add_counts(sf1.counts, sf2.counts),
     )
 end
 
@@ -312,9 +330,33 @@ function Base.:+(sf1::StructureFunction2DSumsAndCounts, sf2::StructureFunction2D
         sf1.distance_bins,
         sf1.value_bins,
         sf1.sums + sf2.sums,
-        sf1.counts + sf2.counts,
+        _add_counts(sf1.counts, sf2.counts),
     )
 end
+
+"""
+    to_host(result)
+
+Copy numerical result buffers to host `Array`s while preserving operators, bin
+metadata, tensor order, and batch axes. Device-to-host copies complete before
+this call returns. Host input buffers are copied as well.
+
+Named tuples of results, including single-pass calculations, are converted recursively.
+"""
+to_host(r::StructureFunction) = StructureFunction(r.operator, r.distance, Array(r.values))
+to_host(r::StructureFunctionSumsAndCounts) =
+    StructureFunctionSumsAndCounts(r.operator, r.distance, Array(r.sums), Array(r.counts))
+to_host(r::StructureFunction2DSumsAndCounts) =
+    StructureFunction2DSumsAndCounts(r.operator, r.distance_bins, r.value_bins, Array(r.sums), Array(r.counts))
+to_host(r::StructureFunctionTensor) = StructureFunctionTensor(r.order, r.distance_bins, Array(r.values))
+to_host(r::StructureFunctionTensorSumsAndCounts) =
+    StructureFunctionTensorSumsAndCounts(r.order, r.distance_bins, Array(r.sums), Array(r.counts))
+to_host(r::StructureFunctionTensor2DSumsAndCounts) =
+    StructureFunctionTensor2DSumsAndCounts(r.order, r.distance_bins, r.axis_bins, Array(r.sums), Array(r.counts))
+to_host(r::HelmholtzDecomposition2D) = HelmholtzDecomposition2D(r.distance_bins,
+    Array(r.rotational_sums), Array(r.rotational_counts), Array(r.divergent_sums),
+    Array(r.divergent_counts), Array(r.longitudinal_values), Array(r.transverse_values))
+to_host(r::NamedTuple) = map(to_host, r)
 
 # Delegation to primary data container
 Base.getindex(sf::StructureFunction, i...) = getindex(sf.values, i...)

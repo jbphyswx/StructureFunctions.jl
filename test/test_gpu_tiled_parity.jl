@@ -59,10 +59,9 @@ Test.@testset "GPU tiled parity — log bins 2D" begin
     FT = Float64
     x = rand(FT, 2, N) .+ FT(0.01)
     u = rand(FT, 2, N)
-    log_vec = exp.(range(log(FT(0.05)), log(FT(1.4)); length = 11))
-    bin_edges = LogBinEdges(log_vec)
+    bin_edges = LogBinEdges(FT(0.05), FT(1.4), 11)
     sft = SFT.L2SFType()
-    ref = _cpu_ref(sft, x, u, log_vec)
+    ref = _cpu_ref(sft, x, u, collect(bin_edges))
     gpu = _gpu_tiled(sft, x, u, bin_edges)
     Test.@test gpu.counts ≈ ref.counts atol = 0.0
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -86,18 +85,34 @@ end
 # "KernelError: passing non-bitstype argument" on CUDA. KA.CPU cannot reach that failure — adapt is
 # a no-op there — so assert the rule itself recurses.
 struct _EdgeAdaptProbe end
-KA.Adapt.adapt_storage(::_EdgeAdaptProbe, ::AbstractArray) = :adapted
+KA.Adapt.adapt_storage(::_EdgeAdaptProbe, a::Array) = view(a, :)
 
-Test.@testset "device-array kernel args recurse through adapt" begin
+Test.@testset "device digitizers recurse through adapt" begin
     GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-
-    dig = GPUExt.SFGeneralDigitizer(rand(Float32, 6), 6)
-    adapted = KA.Adapt.adapt(_EdgeAdaptProbe(), dig)
-    Test.@test adapted.edges === :adapted
-    Test.@test adapted.n_edges == 6
-
-    vcols = GPUExt.GPUValueVectorCols{Float32}(rand(Float32, 6, 6))
-    Test.@test KA.Adapt.adapt(_EdgeAdaptProbe(), vcols).edges_dev === :adapted
+    to = _EdgeAdaptProbe()
+    gen = SF.BinEdges(Float32[0, 0.2, 0.5, 1])
+    bucket = SF.digitize_plan(LogBinEdges(0.01f0, 1.0f0, 9))
+    table = GPUExt._device_plan(LogBinEdges(0.01f0, 1.0f0, 9), Val(:sf1d))
+    padded_table = GPUExt._device_plan(SF.InfPaddedBinEdges(LogBinEdges(0.01f0, 1.0f0, 9)), Val(:sf1d))
+    Test.@test table isa SF.LogTableBinEdges
+    Test.@test padded_table.edges isa SF.LogTableBinEdges
+    logb = LogBinEdges(0.01f0, 1.0f0, 9)
+    Test.@test SFC.GPUSFWorkspace(KA.CPU(), logb; kind = :sf1d).dist_digitizer isa SF.LogTableBinEdges
+    Test.@test SFC.GPUSFWorkspace(KA.CPU(), logb; kind = :single_pass).dist_digitizer isa SF.BucketedBinEdges
+    for plan in (gen, bucket, table, SF.InfPaddedBinEdges(gen), SF.InfPaddedBinEdges(bucket), padded_table)
+        adapted = KA.Adapt.adapt(to, plan)
+        inner = adapted isa SF.InfPaddedBinEdges ? adapted.edges : adapted
+        Test.@test inner.edges isa SubArray
+        inner isa SF.BucketedBinEdges && Test.@test inner.cells isa SubArray
+        Test.@test collect(adapted) == collect(plan)
+        Test.@test all(x -> searchsortedfirst(adapted, x) == searchsortedfirst(plan, x), 0.0f0:0.01f0:1.1f0)
+    end
+    lin = LinearBinEdges(0.0f0, 1.0f0, 5)
+    Test.@test KA.Adapt.adapt(to, lin) === lin
+    per_moment = GPUExt._gpu_digitizer(KA.CPU(), (gen, LogBinEdges(0.01f0, 1.0f0, 9), lin, gen, lin, gen), Val(:value))
+    Test.@test per_moment[1] isa SF.BucketedBinEdges
+    Test.@test per_moment[2] isa SF.BucketedBinEdges
+    Test.@test per_moment[3] === lin
 end
 
 Test.@testset "GPU tiled parity — medium N linear 2D" begin

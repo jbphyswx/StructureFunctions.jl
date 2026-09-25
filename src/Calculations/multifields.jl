@@ -95,7 +95,7 @@ function serial_calculate_structure_function!(
     x::AbstractMatrix, f::MF.Fields{D, V, K}, distance_bins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
-    weights = nothing,
+    weights = NoWeights(),
     verbose::Bool = true,
     show_progress::Bool = true,
 ) where {OT, CT, D, V, K}
@@ -103,14 +103,12 @@ function serial_calculate_structure_function!(
     size(x, 2) == N || throw(DimensionMismatch(
         "x covers $(size(x, 2)) points and the field $N",
     ))
-    w = _pair_weights(weights, N, float(eltype(MF.packed(f))))
-    _check_weighted_counts(w, CT)
     if _on_a_line(_field_geometry(distance_metric, Val(D), Val(V), x), sf)
         _cull_reject_unsupported(culling, "the sorted line route")
         return sorted_line_sweep!(sums, counts, sf, _line_coordinates(x), MF.packed(f), distance_bins,
-                                  Val(D), Val(V), Val(K); weights = w)
+                                  Val(D), Val(V), Val(K); weights)
     end
-    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, w)
+    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, weights)
     _field_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan,
                          n_histogram_bins(plan), Val(SFC_val_int(SFH.coordinate_width(geom))),
                          1:(N - 1), N, grid, wk)
@@ -206,7 +204,7 @@ function _field_pairs!(
             @simd for j in jlo:j_last
                 Xj = SA.SVector{W, FTx}(ntuple(d -> xk[d, j], Val(W)))
                 dx = Xj - Xi
-                r2 = LA.dot(dx, dx)
+                r2 = SFH.norm2(dx)
                 vectors = ntuple(Val(V)) do c
                     o = (c - 1) * F
                     SA.SVector{F, T}(ntuple(d -> data[o + d, j] - data[o + d, i], Val(F)))
@@ -305,7 +303,7 @@ function validate_fields(sf::SFT.AbstractPairwiseStructureFunctionType, ::Val{V}
 end
 
 """
-    field_partial(sf, x, fields, distance_bins, outer; kwargs...) -> (sums, counts)
+    field_partial(sf, x, fields, distance_bins, outer, CT; distance_metric, culling, weights) -> (sums, counts)
 
 A worker's share of a multi-field sweep: the pairs whose lower index is in `outer`, in freshly
 allocated accumulators.
@@ -316,20 +314,17 @@ therefore still a partition.
 """
 function field_partial(
     sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::MF.Fields{D, V, K},
-    distance_bins, outer;
+    distance_bins, outer, ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
-    count_eltype::Type{CT} = UInt32,
     weights = NoWeights(),
 ) where {D, V, K, CT}
     N = size(MF.packed(f), 2)
-    nb = n_histogram_bins(squared_digitize_plan(distance_bins))
+    nb = n_histogram_bins(distance_bins)
     OT = float(eltype(MF.packed(f)))
-    w = _pair_weights(weights, N, OT)
-    _check_weighted_counts(w, CT)
     sums = zeros(OT, nb)
     counts = zeros(CT, nb)
-    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, w)
+    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, weights)
     _field_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan,
                          n_histogram_bins(plan), Val(SFC_val_int(SFH.coordinate_width(geom))),
                          outer, N, grid, wk)
@@ -407,16 +402,17 @@ Accumulate a multi-field's pairs into `sums`/`counts` on `backend`.
 """
 function calculate_structure_function!(
     sums, counts, sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::MF.Fields,
-    distance_bins; backend::CB.AbstractExecutionBackend = CB.AutoBackend(), kwargs...,
+    distance_bins; backend::CB.AbstractExecutionBackend = CB.AutoBackend(), weights = nothing, kwargs...,
 )
-    _assert_counts_representable(eltype(counts), size(MF.packed(f), 2))
+    w = _pair_weights(weights, size(MF.packed(f), 2), eltype(sums))
+    _assert_counts_can_accumulate(counts, size(MF.packed(f), 2), w)
     validate_fields(sf, f)
-    _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; kwargs...)
+    _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; weights = w, kwargs...)
     return nothing
 end
 
 """
-    calculate_structure_function(sf, x, fields, distance_bins[, count_eltype]; kwargs...)
+    calculate_structure_function(sf, x, fields, distance_bins[, CT][, OT]; backend, weights, kwargs...)
 
 Structure function of a multi-field: several quantities sampled at the same points, swept
 together in one pass, so a mixed moment reads every field at each pair.
@@ -426,18 +422,31 @@ function calculate_structure_function(
     x::AbstractMatrix,
     f::MF.Fields,
     distance_bins::AbstractVector,
-    count_eltype::Type{CT} = UInt32;
+    ::Type{CT},
+    ::Type{OT};
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-    output_type::Type{OT} = SFO.StructureFunction,
+    weights = nothing,
     kwargs...,
-) where {OT, CT}
+) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     N = size(MF.packed(f), 2)
-    _assert_counts_representable(CT, N)
-    nb = n_histogram_bins(squared_digitize_plan(distance_bins))
+    ST = float(eltype(MF.packed(f)))
+    w = _pair_weights(weights, N, ST)
+    _assert_count_type(CT, N, w)
+    nb = n_histogram_bins(distance_bins)
     validate_fields(sf, f)
-    sums = zeros(float(eltype(MF.packed(f))), nb)
+    sums = zeros(ST, nb)
     counts = zeros(CT, nb)
-    _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; kwargs...)
+    _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; weights = w, kwargs...)
     raw = SFO.StructureFunctionSumsAndCounts(sf, distance_bins, sums, counts)
-    return _finalize(raw, output_type)
+    return _finalize(raw, OT)
 end
+
+calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::MF.Fields,
+                             distance_bins::AbstractVector; kwargs...) =
+    calculate_structure_function(sf, x, f, distance_bins, DEFAULT_COUNT_TYPE, SFO.StructureFunction; kwargs...)
+calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::MF.Fields,
+                             distance_bins::AbstractVector, ::Type{CT}; kwargs...) where {CT <: Real} =
+    calculate_structure_function(sf, x, f, distance_bins, CT, SFO.StructureFunction; kwargs...)
+calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::MF.Fields,
+                             distance_bins::AbstractVector, ::Type{OT}; kwargs...) where {OT <: SFO.AbstractStructureFunction} =
+    calculate_structure_function(sf, x, f, distance_bins, DEFAULT_COUNT_TYPE, OT; kwargs...)

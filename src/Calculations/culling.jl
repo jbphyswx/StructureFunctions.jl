@@ -26,7 +26,7 @@ a method — it is never required to have one.
 end
 
 """
-    CellGrid{D, FT, IV, OV}
+    CellGrid{D, FT, IV, PV, OV}
 
 Uniform cell decomposition of a point set, with points sorted by cell id, so every cell is one
 contiguous run: `cell_run(grid, c)` in the permuted order.
@@ -40,13 +40,13 @@ resolution.
 The index and offset arrays are type parameters, not `Vector`s, so one type serves a host build and
 a device-resident copy.
 """
-struct CellGrid{D, FT, IV, OV}
+struct CellGrid{D, FT, IV, PV, OV}
     origin::NTuple{D, FT}
     inv_h::FT
     dims::NTuple{D, Int}
     cell_ids::IV      # sorted ids of the occupied cells
     run_starts::IV    # length(cell_ids)+1; cell_ids[k] occupies run_starts[k]:run_starts[k+1]-1
-    perm::IV          # permuted index -> caller's original index
+    perm::PV          # permuted index -> caller's original index; may remain on a device
     offsets::OV       # row offsets over dims 2:D, shared by every point
     cutoff::FT
     span::Int
@@ -202,7 +202,7 @@ function build_cell_grid(
     @inbounds run_starts[n_occ + 1] = N + 1
 
     offsets = cull_row_offsets(cells_per_cutoff, Val(D))
-    return CellGrid{D, FT, Vector{Int}, typeof(offsets)}(
+    return CellGrid{D, FT, Vector{Int}, Vector{Int}, typeof(offsets)}(
         origin, inv_h, dims, cell_ids, run_starts, perm, offsets, FT(cutoff), cells_per_cutoff,
     )
 end
@@ -242,16 +242,14 @@ struct NoCulling <: CullingPolicy end
 const SF_CULL_CELLS_PER_CUTOFF = 2
 
 """Whether the last bin is unbounded, so every pair lands in a reported bin."""
-@inline _cull_is_unbounded(::InfPaddedBinEdges) = true
-@inline _cull_is_unbounded(be::BinEdges) = _cull_is_unbounded(be.edges)
-@inline _cull_is_unbounded(_) = false
+@inline _cull_is_unbounded(bins) = isinf(last(bins))
 
 # The overflow bin is reported, and its sum needs each far pair's value, which needs that pair's
 # displacement. So no pair can be skipped: only the digitize is knowable in advance, and that is
 # not where the time goes.
 _cull_on_unbounded(::AutoCulling) = nothing
 _cull_on_unbounded(::AlwaysCulling) = throw(ArgumentError(
-    "culling cannot skip any pair with InfPaddedBinEdges: the overflow bin is reported, and its " *
+    "culling cannot skip any pair when the last bin is unbounded: the overflow bin is reported, and its " *
     "sum needs every far pair's value, which needs that pair's displacement. Only the digitize " *
     "could be skipped, which is not the cost. Pass culling = NoCulling(), or finite bin edges.",
 ))

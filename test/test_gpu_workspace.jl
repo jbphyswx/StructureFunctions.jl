@@ -176,7 +176,8 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
         sums_drv, counts_drv, sft, x_batch, u_batch, linear_bins;
         backend = CB.GPUBackend(backend), workspace = ws_slice,
     )
-    Test.@test sums_drv ≈ sums_slices atol = 1e-12
+    Test.@test sums_drv ≈ 2 .* sums_slices atol = 1e-12
+    Test.@test counts_drv == 2 .* counts_slices
 
     # --- 2D joint slices ---
     n_dist = length(linear_bins) - 1

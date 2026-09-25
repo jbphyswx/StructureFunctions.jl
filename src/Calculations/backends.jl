@@ -30,7 +30,7 @@ function _dispatch_execution_backend(
 end
 
 """
-    threaded_calculate_structure_function(sf, x, u, distance_bins[, value_bins][, count_eltype]; kwargs...)
+    threaded_calculate_structure_function(sf, x, u, distance_bins[, value_bins], CT; kwargs...)
 
 The point-list structure function on the threaded CPU backend, returning the raw sums and counts.
 Takes the arguments of [`calculate_structure_function`](@ref) without `backend`; supplied by the
@@ -106,13 +106,13 @@ function _threaded_backend_available!(
 end
 
 function _dispatch_execution_backend(
-    ::CB.AbstractDistributedBackend, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
+    ::CB.AbstractDistributedBackend, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, ::Type; kwargs...
 )
     throw(ArgumentError("Distributed backend is unavailable. Load Distributed (`using Distributed`) or use backend=CB.SerialBackend()."))
 end
 
 function _dispatch_execution_backend(
-    ::CB.AbstractDistributedBackend, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
+    ::CB.AbstractDistributedBackend, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector, ::Type; kwargs...
 )
     throw(ArgumentError("Distributed backend is unavailable. Load Distributed (`using Distributed`) or use backend=CB.SerialBackend()."))
 end

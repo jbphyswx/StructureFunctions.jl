@@ -1,64 +1,100 @@
 # Tensor structure-function calculations.
 
-function calculate_structure_function_tensor(
-    order::Val{P},
-    x::AbstractArray{FT1},
-    u::AbstractArray{FT2},
-    distance_bins::AbstractVector{FT3};
-    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-    output_type::Type{OTT} = SFO.StructureFunctionTensor,
-    count_eltype::Type{CT} = UInt32,
-    distance_metric::DI.PreMetric = DI.Euclidean(),
-    kwargs...,
-) where {P, FT1, FT2, FT3, OTT, CT}
-    shape = _validate_array_shape(x, u, distance_metric)
-    _assert_counts_representable(CT, size(x, 2))
-    D = spatial_dimension(shape)
-    n_bins = n_histogram_bins(distance_bins)
-    auxiliary_dims = has_auxiliary_axes(shape) ? size(u)[3:end] : ()
-    OT = promote_type(float(FT1), float(FT2))
-    tensor_dims = ntuple(_ -> D, P)
-    sums = zeros(OT, tensor_dims..., n_bins, auxiliary_dims...)
-    counts = zeros(CT, n_bins, auxiliary_dims...)
-    calculate_structure_function_tensor!(
-        sums, counts, order, x, u, distance_bins; backend = backend, distance_metric, kwargs...
-    )
-    # The backend produces the raw accumulator; `_finalize` returns it as-is or as the averaged
-    # mean tensor (the default), mirroring the 1D output-type dispatch.
-    raw = SFO.StructureFunctionTensorSumsAndCounts(order, distance_bins, sums, counts)
-    return _finalize(raw, output_type)
-end
-
 """
-    calculate_structure_function_tensor(order, x, u, distance_bins, axis_bins; second_axis, backend, output_type, count_eltype, distance_metric)
+    calculate_structure_function_tensor(order, x, u, distance_bins[, CT][, OT]; backend, distance_metric, weights)
 
-The increment moment tensor joint in separation and the angle `second_axis` reads from each pair's
-direction, `sums` of shape `(D, …, D, n_bins, n_axis)`: the tensor resolved by direction. One field
-(no auxiliary axes), a flat metric, the CPU backends.
+The rank-`order` increment moment tensor of a point list, `sums` of shape
+`(D, …, D, n_bins, auxiliary...)`. `CT` is the count element type (default `$(DEFAULT_COUNT_TYPE)`) and `OT`
+the result representation, the averaged `StructureFunctionTensor` by default or the raw
+`StructureFunctionTensorSumsAndCounts`.
 """
 function calculate_structure_function_tensor(
     order::Val{P},
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector,
-    axis_bins::AbstractVector;
+    ::Type{CT},
+    ::Type{OTT};
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
+    distance_metric::DI.PreMetric = DI.Euclidean(),
+    weights = nothing,
+) where {P, FT1, FT2, CT <: Real, OTT <: SFO.AbstractStructureFunction}
+    shape = _validate_array_shape(x, u, distance_metric)
+    OT = promote_type(float(FT1), float(FT2))
+    w = _pair_weights(weights, size(u, 2), OT)
+    _assert_count_type(CT, size(u, 2), w)
+    D = spatial_dimension(shape)
+    n_bins = n_histogram_bins(distance_bins)
+    auxiliary_dims = has_auxiliary_axes(shape) ? size(u)[3:end] : ()
+    sums = zeros(OT, ntuple(_ -> D, P)..., n_bins, auxiliary_dims...)
+    counts = zeros(CT, n_bins, auxiliary_dims...)
+    _dispatch_tensor!(backend, shape, sums, counts, order, x, u, distance_bins; distance_metric, weights = w)
+    raw = SFO.StructureFunctionTensorSumsAndCounts(order, distance_bins, sums, counts)
+    return _finalize(raw, OTT)
+end
+
+calculate_structure_function_tensor(order::Val, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector;
+                                    kwargs...) =
+    calculate_structure_function_tensor(order, x, u, distance_bins, DEFAULT_COUNT_TYPE, SFO.StructureFunctionTensor;
+                                        kwargs...)
+calculate_structure_function_tensor(order::Val, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector,
+                                    ::Type{CT}; kwargs...) where {CT <: Real} =
+    calculate_structure_function_tensor(order, x, u, distance_bins, CT, SFO.StructureFunctionTensor; kwargs...)
+calculate_structure_function_tensor(order::Val, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector,
+                                    ::Type{OTT}; kwargs...) where {OTT <: SFO.AbstractStructureFunction} =
+    calculate_structure_function_tensor(order, x, u, distance_bins, DEFAULT_COUNT_TYPE, OTT; kwargs...)
+
+"""
+    calculate_structure_function_tensor(order, x, u, distance_bins, axis_bins[, CT][, OT]; second_axis, backend, distance_metric, weights)
+
+The increment moment tensor joint in separation and the angle `second_axis` reads from each pair's
+direction, `sums` of shape `(D, …, D, n_bins, n_axis)`: the tensor resolved by direction. One field
+(no auxiliary axes), a flat metric, the CPU backends. `OT` is `StructureFunctionTensor2DSumsAndCounts`.
+"""
+function calculate_structure_function_tensor(
+    order::Val{P},
+    x::AbstractArray{FT1},
+    u::AbstractArray{FT2},
+    distance_bins::AbstractVector,
+    axis_bins::AbstractVector,
+    ::Type{CT},
+    ::Type{OTT};
     second_axis::SeparationAngleAxis,
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-    output_type::Type{OTT} = SFO.StructureFunctionTensor2DSumsAndCounts,
-    count_eltype::Type{CT} = UInt32,
     distance_metric::DI.PreMetric = DI.Euclidean(),
-) where {P, FT1, FT2, OTT, CT}
+    weights = nothing,
+) where {P, FT1, FT2, CT <: Real, OTT <: SFO.AbstractStructureFunction}
     shape = _validate_array_shape(x, u, distance_metric)
-    _assert_counts_representable(CT, size(x, 2))
-    D = spatial_dimension(shape)
     OT = promote_type(float(FT1), float(FT2))
-    sums = zeros(OT, ntuple(_ -> D, P)..., n_histogram_bins(distance_bins), n_histogram_bins(axis_bins))
-    counts = zeros(CT, n_histogram_bins(distance_bins), n_histogram_bins(axis_bins))
-    calculate_structure_function_tensor!(
-        sums, counts, order, x, u, distance_bins, axis_bins; second_axis, backend, distance_metric,
-    )
+    w = _pair_weights(weights, size(u, 2), OT)
+    _assert_count_type(CT, size(u, 2), w)
+    axis = _tensor_axis(axis_bins, second_axis)
+    D = spatial_dimension(shape)
+    sums = zeros(OT, ntuple(_ -> D, P)..., n_histogram_bins(distance_bins), axis[2])
+    counts = zeros(CT, n_histogram_bins(distance_bins), axis[2])
+    _tensor_shape_check(order, shape, sums, counts, u, distance_bins, axis)
+    _dispatch_tensor!(backend, shape, sums, counts, order, x, u, distance_bins; distance_metric, weights = w, axis)
     raw = SFO.StructureFunctionTensor2DSumsAndCounts(order, distance_bins, axis_bins, sums, counts)
-    return _finalize(raw, output_type)
+    return _finalize(raw, OTT)
+end
+
+calculate_structure_function_tensor(order::Val, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector,
+                                    axis_bins::AbstractVector; kwargs...) =
+    calculate_structure_function_tensor(order, x, u, distance_bins, axis_bins, DEFAULT_COUNT_TYPE,
+                                        SFO.StructureFunctionTensor2DSumsAndCounts; kwargs...)
+calculate_structure_function_tensor(order::Val, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector,
+                                    axis_bins::AbstractVector, ::Type{CT}; kwargs...) where {CT <: Real} =
+    calculate_structure_function_tensor(order, x, u, distance_bins, axis_bins, CT,
+                                        SFO.StructureFunctionTensor2DSumsAndCounts; kwargs...)
+calculate_structure_function_tensor(order::Val, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector,
+                                    axis_bins::AbstractVector,
+                                    ::Type{OTT}; kwargs...) where {OTT <: SFO.AbstractStructureFunction} =
+    calculate_structure_function_tensor(order, x, u, distance_bins, axis_bins, DEFAULT_COUNT_TYPE, OTT; kwargs...)
+
+"""The joint tensor's second axis: its digitize plan, its bin count and the angle source."""
+@inline function _tensor_axis(axis_bins, second_axis::SeparationAngleAxis)
+    axis_edges = digitize_plan(axis_bins)
+    return (axis_edges, n_histogram_bins(axis_edges), second_axis)
 end
 
 """
@@ -78,13 +114,15 @@ function calculate_structure_function_tensor!(
     distance_bins::AbstractVector;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = NoWeights(),
+    weights = nothing,
 ) where {P}
     shape = _validate_array_shape(x, u, distance_metric)
-    _tensor_check(order, shape, sums, counts, x, u, distance_bins, nothing, weights)
+    _tensor_shape_check(order, shape, sums, counts, u, distance_bins, nothing)
+    w = _pair_weights(weights, size(u, 2), eltype(sums))
+    _assert_counts_can_accumulate(counts, size(u, 2), w)
     return _dispatch_tensor!(
         backend, shape, sums, counts, order, x, u, distance_bins;
-        distance_metric = distance_metric, weights = weights,
+        distance_metric = distance_metric, weights = w,
     )
 end
 
@@ -99,15 +137,16 @@ function calculate_structure_function_tensor!(
     second_axis::SeparationAngleAxis,
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = NoWeights(),
+    weights = nothing,
 ) where {P}
     shape = _validate_array_shape(x, u, distance_metric)
-    axis_edges = BinEdges(axis_bins)
-    axis = (axis_edges, n_histogram_bins(axis_edges), second_axis)
-    _tensor_check(order, shape, sums, counts, x, u, distance_bins, axis, weights)
+    axis = _tensor_axis(axis_bins, second_axis)
+    _tensor_shape_check(order, shape, sums, counts, u, distance_bins, axis)
+    w = _pair_weights(weights, size(u, 2), eltype(sums))
+    _assert_counts_can_accumulate(counts, size(u, 2), w)
     return _dispatch_tensor!(
         backend, shape, sums, counts, order, x, u, distance_bins;
-        distance_metric = distance_metric, weights = weights, axis = axis,
+        distance_metric = distance_metric, weights = w, axis = axis,
     )
 end
 
@@ -249,16 +288,12 @@ function gpu_calculate_structure_function_tensor!(backend, sums, counts, order, 
 end
 
 """
-    _tensor_check(order, shape, sums, counts, x, u, distance_bins, axis, weights)
+    _tensor_shape_check(order, shape, sums, counts, u, distance_bins, axis)
 
-Validate the accumulator shapes and the count type for a tensor sweep.
-
-Called at the public boundary, before any backend dispatch, so a caller's mistake reaches the
-caller as an `ArgumentError`: a threaded or distributed driver raises inside a task, and the
-parallel primitive wraps that in a `TaskFailedException` or a `RemoteException`.
+Validate the accumulator shapes of a tensor sweep, at the public boundary.
 """
-function _tensor_check(order::Val{P}, shape::AbstractFieldShape{D}, sums, counts, x, u,
-                       distance_bins, axis, weights) where {P, D}
+function _tensor_shape_check(order::Val{P}, shape::AbstractFieldShape{D}, sums, counts, u,
+                             distance_bins, axis) where {P, D}
     n_bins = n_histogram_bins(distance_bins)
     auxiliary_dims = has_auxiliary_axes(shape) ? size(u)[3:end] : ()
     if axis === nothing
@@ -275,10 +310,6 @@ function _tensor_check(order::Val{P}, shape::AbstractFieldShape{D}, sums, counts
         throw(DimensionMismatch("sums must have shape $expected_sums; got $(size(sums))"))
     size(counts) == expected_counts ||
         throw(DimensionMismatch("counts must have shape $expected_counts; got $(size(counts))"))
-    _check_weighted_counts(
-        _pair_weights(weights, size(u, 2), promote_type(float(eltype(x)), float(eltype(u)))),
-        eltype(counts),
-    )
     return nothing
 end
 
@@ -289,17 +320,15 @@ Everything a tensor sweep needs before its first pair: the geometry, the widened
 field, the bin edges, and the flattened accumulator shapes. With `axis = (axis_edges, n_axis,
 second_axis)` the sweep is joint in separation and angle, over one field on a flat metric.
 
-Shared by every backend so the preparation happens **once**, above any task or worker loop, and so
-there is one place where the shapes are validated.
+Shared by every backend so the preparation happens **once**, above any task or worker loop.
 """
 function _tensor_setup(
     order::Val{P}, shape::AbstractFieldShape{D}, sums, counts, x, u, distance_bins, distance_metric,
     axis = nothing, weights = NoWeights(),
 ) where {P, D}
-    _tensor_check(order, shape, sums, counts, x, u, distance_bins, axis, weights)
     n_bins = n_histogram_bins(distance_bins)
     auxiliary_dims = has_auxiliary_axes(shape) ? size(u)[3:end] : ()
-    dist_be = BinEdges(distance_bins)
+    dist_be = digitize_plan(distance_bins)
     N = size(u, 2)
     B = isempty(auxiliary_dims) ? 1 : prod(auxiliary_dims)
     fixed_x = ndims(x) == 2
@@ -312,9 +341,8 @@ function _tensor_setup(
     W = _val_int(vW)
     F = _val_int(vF)
 
-    w = _pair_weights(weights, N, promote_type(float(eltype(x)), float(eltype(u))))
     return (; n_bins, auxiliary_dims, dist_be, N, B, fixed_x, geom, xk, uk, vW, vF, W, F,
-            D = D, P = P, axis, weights = w)
+            D = D, P = P, axis, weights)
 end
 
 """Flattened views of the accumulators, so the kernel indexes one auxiliary axis."""
@@ -465,7 +493,7 @@ function _tensor_pairs_joint_inner!(sums, counts, order::Val{P}, s, outer,
 end
 
 """
-    tensor_partial(order, shape, x, u, distance_bins, outer; distance_metric, count_eltype, axis) -> (sums, counts)
+    tensor_partial(order, shape, x, u, distance_bins, outer, CT; distance_metric, axis, weights) -> (sums, counts)
 
 A worker's share of a tensor sweep: the pairs whose lower index is in `outer`, in freshly allocated
 accumulators.
@@ -473,9 +501,8 @@ accumulators.
 The outer lists partition `1:N`, so the partials add to the whole sweep exactly.
 """
 function tensor_partial(
-    order::Val{P}, shape::AbstractFieldShape{D}, x, u, distance_bins, outer;
-    distance_metric::DI.PreMetric = DI.Euclidean(), count_eltype::Type{CT} = UInt32, axis = nothing,
-    weights = NoWeights(),
+    order::Val{P}, shape::AbstractFieldShape{D}, x, u, distance_bins, outer, ::Type{CT};
+    distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing, weights = NoWeights(),
 ) where {P, D, CT}
     n_bins = n_histogram_bins(distance_bins)
     OT = promote_type(float(eltype(x)), float(eltype(u)))

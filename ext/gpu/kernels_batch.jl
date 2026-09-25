@@ -117,39 +117,17 @@ end
     return du_L * du_T2
 end
 
-@inline function _batch_dist_bin(
-    dist::T, fe::T, le::T, is_::T, sv::T, nb::Int, ::Val{false},
-) where {T}
-    return _gpu_digitize_linear(dist, fe, le, is_, sv, nb)
-end
-@inline function _batch_dist_bin(
-    dist::T, fe::T, le::T, is_::T, sv::T, nb::Int, ::Val{true},
-) where {T}
-    return _gpu_digitize_log_spaced(dist, fe, le, is_, sv, nb)
-end
-
-"""
-Separation and pair frame for one staged pair, plus its bin.
-
-The bin comes from the same O(1) FMA digitizer whatever the geometry: `_fma_distance_bins` is a
-statement about the *edges* being linear- or log-spaced, not about the space the separation was
-measured in. Only the separation and frame are geometry-dependent, and those come from dispatch on
-`geom`.
-"""
+"""Separation, pair frame and distance bin for one staged pair."""
 @inline function _pair_bin_frame_from_smem!(
     shared_xi::AbstractVector{FT},
     shared_xj::AbstractVector{FT},
     ia::Int,
     jb::Int,
     ::Val{OFF_DIAG},
-    first_edge::FT,
-    last_edge::FT,
-    inv_step::FT,
-    step_val::FT,
+    ddig,
     N_bins::Int,
     geom,
-    ::Val{LOG} = Val(false),
-) where {FT, OFF_DIAG, LOG}
+) where {FT, OFF_DIAG}
     if OFF_DIAG
         Xi = SA.SVector{2, FT}(shared_xi[ia], shared_xi[SF_GPU_TILE + ia])
         Xj = SA.SVector{2, FT}(shared_xj[jb], shared_xj[SF_GPU_TILE + jb])
@@ -158,7 +136,7 @@ measured in. Only the separation and frame are geometry-dependent, and those com
         Xj = SA.SVector{2, FT}(shared_xi[jb], shared_xi[SF_GPU_TILE + jb])
     end
     ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
-    bin = _batch_dist_bin(dist, first_edge, last_edge, inv_step, step_val, N_bins, Val(LOG))
+    bin = SFH.digitize(dist, ddig)
     return (ok && 1 <= bin < N_bins, bin, Xi, Xj, dist, frame)
 end
 
@@ -313,7 +291,7 @@ end
 # ---------------------------------------------------------------------------
 
 KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
-    partial_sums,
+    partial_sums::AbstractArray{FT},
     partial_cnts,
     @Const(x_mat),
     @Const(u_batch),
@@ -323,16 +301,12 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
     NB::Int,
     b_base::Int,
     bw::Int,
-    first_edge::FT,
-    last_edge::FT,
-    inv_step::FT,
-    step_val::FT,
+    ddig,
     sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
     geom,
-    ::Val{LOG} = Val(false),
-) where {FT, LOG}
+) where {FT}
     shared_xi = @localmem FT (256,)
     shared_xj = @localmem FT (256,)
     shared_ui = @localmem FT (256 * _batch_usmem_strip_w(FT),)
@@ -414,8 +388,7 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
                     ia = (p - 1) ÷ nj + 1
                     jb = (p - 1) - (ia - 1) * nj + 1
                     pair_ok, bin, Xi, Xj, dist, frame = _pair_bin_frame_from_smem!(
-                        shared_xi, shared_xj, ia, jb, Val(true),
-                        first_edge, last_edge, inv_step, step_val, N_bins, geom, Val(LOG),
+                        shared_xi, shared_xj, ia, jb, Val(true), ddig, N_bins, geom,
                     )
                     if pair_ok
                         priv_idx = _batch_usmem_priv_idx(block_id, lid)
@@ -440,8 +413,7 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
                 while p <= n_pairs
                     ia, jb = _pair_from_linear(p, ni)
                     pair_ok, bin, Xi, Xj, dist, frame = _pair_bin_frame_from_smem!(
-                        shared_xi, shared_xj, ia, jb, Val(false),
-                        first_edge, last_edge, inv_step, step_val, N_bins, geom, Val(LOG),
+                        shared_xi, shared_xj, ia, jb, Val(false), ddig, N_bins, geom,
                     )
                     if pair_ok
                         priv_idx = _batch_usmem_priv_idx(block_id, lid)

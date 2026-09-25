@@ -19,21 +19,35 @@ export finite_difference,
 """
     finite_difference(r, y)
 
-Second-order centered finite difference on nonuniform coordinates, using
-one-sided differences at the endpoints.
+Differentiate samples `y` on finite, strictly increasing coordinates `r`.
+
+For at least three samples, use the quadratic interpolant through three adjacent
+points, including one-sided endpoint formulas. These formulas are second-order
+accurate on nonuniform grids. Two samples produce the secant slope at both points.
+The output element type promotes the floating-point types of `r` and `y`.
 """
 function finite_difference(r::AbstractVector, y::AbstractVector)
-    length(r) == length(y) ||
-        throw(DimensionMismatch("r and y must have the same length"))
+    length(r) == length(y) || throw(DimensionMismatch("r and y must have the same length"))
+    Base.require_one_based_indexing(r, y)
     n = length(r)
     n >= 2 || throw(ArgumentError("finite_difference requires at least two samples"))
-    out = similar(y, float(eltype(y)))
-    @inbounds begin
-        out[1] = (y[2] - y[1]) / (r[2] - r[1])
-        for i in 2:(n - 1)
-            out[i] = (y[i + 1] - y[i - 1]) / (r[i + 1] - r[i - 1])
-        end
-        out[n] = (y[n] - y[n - 1]) / (r[n] - r[n - 1])
+    eltype(r) <: Real || throw(ArgumentError("coordinates must be real"))
+    all(isfinite, r) || throw(ArgumentError("coordinates must be finite"))
+    all(i -> r[i] > r[i - 1], 2:n) || throw(ArgumentError("coordinates must be strictly increasing"))
+    T = promote_type(float(eltype(r)), float(eltype(y)))
+    out = similar(y, T)
+    if n == 2
+        fill!(out, (T(y[2]) - T(y[1])) / (T(r[2]) - T(r[1])))
+        return out
+    end
+    @inbounds for i in 2:(n - 1)
+        h1 = T(r[i]) - T(r[i - 1])
+        h2 = T(r[i + 1]) - T(r[i])
+        s1 = (T(y[i]) - T(y[i - 1])) / h1
+        s2 = (T(y[i + 1]) - T(y[i])) / h2
+        out[i] = s1 + h1 / (h1 + h2) * (s2 - s1)
+        i == 2 && (out[1] = s1 - h1 / (h1 + h2) * (s2 - s1))
+        i == n - 1 && (out[n] = s2 + h2 / (h1 + h2) * (s2 - s1))
     end
     return out
 end

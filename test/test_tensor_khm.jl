@@ -72,7 +72,7 @@ end
 Test.@testset "KHM Diagnostics" begin
     r = [1.0, 2.0, 3.0, 4.0]
     DLL = r .^ 2
-    DTT = DLL .+ r .* SF.KHM.finite_difference(r, DLL) ./ 2
+    DTT = 2 .* r .^ 2
     Test.@test SF.KHM.transverse_incompressibility_residual(r, DLL, DTT; dimension = 3) ≈ zeros(4)
 
     ε = 0.2

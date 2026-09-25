@@ -17,7 +17,7 @@ Test.@testset "GPU single-pass tiled parity — 1D log bins" begin
     FT = Float32
     x = rand(FT, 2, N) .* FT(5000)
     u = randn(FT, 2, N) .* FT(0.3)
-    dist_vec = LogBinEdges(Vector{FT}(exp.(range(log(FT(10)), log(FT(5000)); length = 11))))
+    dist_vec = LogBinEdges(FT(10), FT(5000), 11)
 
     sums_cpu = zeros(FT, 6, length(dist_vec) - 1)
     counts_cpu = zeros(Int32, 6, length(dist_vec) - 1)
@@ -42,7 +42,7 @@ Test.@testset "GPU single-pass tiled parity — 2D log dist + linear value" begi
     FT = Float32
     x = rand(FT, 2, N) .* FT(5000)
     u = randn(FT, 2, N) .* FT(0.3)
-    dist_vec = LogBinEdges(Vector{FT}(exp.(range(log(FT(10)), log(FT(5000)); length = 11))))
+    dist_vec = LogBinEdges(FT(10), FT(5000), 11)
     n_val = 8
     value_bins = ntuple(_ -> LinearBinEdges(range(FT(-1), FT(2); length = n_val + 1)), 6)
     n_dist = length(dist_vec) - 1
@@ -71,7 +71,7 @@ Test.@testset "GPU single-pass tiled parity — 2D InfPadded linear value catch-
     FT = Float32
     x = rand(FT, 2, N) .* FT(5000)
     u = randn(FT, 2, N) .* FT(0.3)
-    dist_vec = LogBinEdges(Vector{FT}(exp.(range(log(FT(10)), log(FT(5000)); length = 11))))
+    dist_vec = LogBinEdges(FT(10), FT(5000), 11)
     n_val = 8
     value_bins = ntuple(_ -> InfPaddedBinEdges(LinearBinEdges(range(FT(-1), FT(2); length = n_val - 1))), 6)
     n_dist = length(dist_vec) - 1
@@ -105,7 +105,7 @@ Test.@testset "GPU single-pass global fallback parity — 2D and 3D" begin
         u = rand(FT, D, N)
         bin_sets = (
             collect(FT, range(0, 2; length = 75)),
-            LogBinEdges(collect(FT, exp.(range(log(FT(0.01)), log(FT(2)); length = 75)))),
+            LogBinEdges(FT(0.01), FT(2), 75),
             begin
                 edges = sort!(vcat(FT(0), cumsum(rand(FT, 74))))
                 edges ./= edges[end] / FT(2)
@@ -139,7 +139,7 @@ Test.@testset "GPU single-pass 2D global fallback parity" begin
     value_bins = collect(FT, range(-0.5f0, 1.5f0; length = 9))
     bin_sets = (
         collect(FT, range(0, 2; length = 75)),
-        LogBinEdges(collect(FT, exp.(range(log(FT(0.01)), log(FT(2)); length = 75)))),
+        LogBinEdges(FT(0.01), FT(2), 75),
         begin
             edges = sort!(vcat(FT(0), cumsum(rand(FT, 74))))
             edges ./= edges[end] / FT(2)

@@ -30,7 +30,8 @@ end
 
 function _check_wavenumber_edges(k_edges::AbstractVector)
     length(k_edges) >= 2 || throw(ArgumentError("wavenumber edges need at least one bin"))
-    issorted(k_edges) || throw(ArgumentError("wavenumber edges must be sorted"))
+    all(isfinite, k_edges) && all(>(0), diff(k_edges)) ||
+        throw(ArgumentError("wavenumber edges must be finite and strictly increasing"))
     first(k_edges) > 0 || throw(ArgumentError(
         "wavenumber edges must be positive; the k = 0 mode is not recoverable from a structure function",
     ))
@@ -39,7 +40,8 @@ end
 
 function _check_separations(r::AbstractVector)
     isempty(r) && throw(ArgumentError("no separation to fit at"))
-    issorted(r) || throw(ArgumentError("separations must be sorted"))
+    all(isfinite, r) && all(>(0), diff(r)) ||
+        throw(ArgumentError("separations must be finite and strictly increasing"))
     first(r) > 0 || throw(ArgumentError("separations must be positive"))
     return nothing
 end
@@ -194,22 +196,43 @@ flux_matrix(m::FluxForwardModel) = m.G
 `W^{-1/2} H` and `W^{-1/2} y` for a data covariance `W` given as the variances of `y` (a vector), a
 full matrix, or `nothing` for the identity.
 """
-_whitened(H::AbstractMatrix, y::AbstractVector, ::Nothing) = (Matrix{Float64}(H), Vector{Float64}(y))
+function _check_fit_data(H, y)
+    size(H, 1) == length(y) || throw(DimensionMismatch("H rows must match the number of observations"))
+    size(H, 1) > 0 && size(H, 2) > 0 || throw(ArgumentError("the fit needs observations and parameters"))
+    all(isfinite, H) && all(isfinite, y) || throw(ArgumentError("fit data must be finite"))
+    return nothing
+end
+
+function _covariance_factor(W, label)
+    size(W, 1) == size(W, 2) || throw(DimensionMismatch("$label must be square"))
+    all(isfinite, W) && LA.issymmetric(W) ||
+        throw(ArgumentError("$label must be finite and symmetric"))
+    factor = LA.cholesky(LA.Symmetric(Matrix{Float64}(W)); check=false)
+    LA.issuccess(factor) || throw(ArgumentError("$label must be positive definite"))
+    return factor
+end
+
+function _whitened(H::AbstractMatrix, y::AbstractVector, ::Nothing)
+    _check_fit_data(H, y)
+    return Matrix{Float64}(H), Vector{Float64}(y)
+end
 
 function _whitened(H::AbstractMatrix, y::AbstractVector, W::AbstractVector)
+    _check_fit_data(H, y)
     length(W) == length(y) || throw(DimensionMismatch(
         "the data covariance names $(length(W)) variances for $(length(y)) values",
     ))
-    all(>(0), W) || throw(ArgumentError("every data variance must be positive"))
+    all(v -> isfinite(v) && v > 0, W) || throw(ArgumentError("every data variance must be finite and positive"))
     s = 1 ./ sqrt.(W)
     return H .* s, y .* s
 end
 
 function _whitened(H::AbstractMatrix, y::AbstractVector, W::AbstractMatrix)
+    _check_fit_data(H, y)
     size(W) == (length(y), length(y)) || throw(DimensionMismatch(
         "the data covariance is $(size(W)) for $(length(y)) values",
     ))
-    L = LA.cholesky(LA.Symmetric(Matrix{Float64}(W))).L
+    L = _covariance_factor(W, "data covariance").L
     return L \ Matrix{Float64}(H), L \ Vector{Float64}(y)
 end
 
@@ -271,9 +294,10 @@ fits taking this method; [`independent_pair_variance`](@ref) supplies one from a
 struct RegularizedLeastSquares{P} <: AbstractFitMethod
     prior::P
     function RegularizedLeastSquares(prior::P) where {P <: Union{Nothing, AbstractVector, AbstractMatrix}}
-        prior isa AbstractVector && !all(>(0), prior) && throw(ArgumentError(
-            "every prior variance must be positive",
+        prior isa AbstractVector && !all(v -> isfinite(v) && v > 0, prior) && throw(ArgumentError(
+            "every prior variance must be finite and positive",
         ))
+        prior isa AbstractMatrix && _covariance_factor(prior, "prior covariance")
         return new{P}(prior)
     end
 end
@@ -284,7 +308,9 @@ end
 Least squares with every fitted value constrained non-negative, by the Lawson–Hanson active-set
 algorithm on the whitened system. For a flux that is the monotone-flux model, which cannot resolve a
 sink; for a spectrum it is the constraint that a spectral density is non-negative. It returns no
-covariance.
+covariance. `solve(method, H, y, W; maxiter, return_info=true)` also returns a
+third value containing `converged`, `iterations`, `kkt_residual`, and `tolerance`.
+The default two-value form throws on nonconvergence.
 """
 struct NonNegativeLeastSquares <: AbstractFitMethod end
 
@@ -295,7 +321,10 @@ A shell spectrum that is a power law on each of `segments` wavenumber ranges, lo
 smallest and the largest wavenumber asked for, continuous at the breakpoints, with slopes held in
 `slope_bounds` and a non-negative amplitude: `S + 1` parameters `(b₁, α₁, …, α_S)`. Fitted by bounded
 Levenberg–Marquardt through `LsqFit` (`using LsqFit`), on the relative residual
-`(S₂^{fit} - S₂)/S₂` when no data covariance is given.
+`(S₂^{fit} - S₂)/scale` when no data covariance is given. Here
+`scale = max(abs(S₂), sqrt(eps(Float64))*maximum(abs, S₂))` elementwise;
+an all-zero observation vector uses unit scale. This finite floor permits zero
+observations. Supply `W` when an observation-error model is available.
 """
 struct SegmentedPowerLaw <: AbstractFitMethod
     segments::Int
@@ -308,15 +337,17 @@ struct SegmentedPowerLaw <: AbstractFitMethod
     end
 end
 
-"""`P⁻¹` of a prior given as variances, a matrix, or nothing (zero)."""
-_prior_precision(::Nothing, n::Int) = zeros(Float64, n, n)
-function _prior_precision(P::AbstractVector, n::Int)
+# A zero-mean Gaussian prior contributes rows L⁻¹ to the least-squares system,
+# where P = LLᵀ. QR then avoids forming the squared-condition normal matrix.
+_prior_rows(::Nothing, n::Int) = zeros(Float64, 0, n)
+function _prior_rows(P::AbstractVector, n::Int)
     length(P) == n || throw(DimensionMismatch("the prior names $(length(P)) variances for $n values"))
-    return LA.Diagonal(1 ./ Vector{Float64}(P))
+    all(v -> isfinite(v) && v > 0, P) || throw(ArgumentError("prior variances must be finite and positive"))
+    return LA.Diagonal(1 ./ sqrt.(Vector{Float64}(P)))
 end
-function _prior_precision(P::AbstractMatrix, n::Int)
+function _prior_rows(P::AbstractMatrix, n::Int)
     size(P) == (n, n) || throw(DimensionMismatch("the prior covariance is $(size(P)) for $n values"))
-    return inv(LA.Symmetric(Matrix{Float64}(P)))
+    return _covariance_factor(P, "prior covariance").L \ Matrix{Float64}(LA.I, n, n)
 end
 
 """
@@ -324,6 +355,10 @@ end
 
 Fit `y = H x` by `method` under the data covariance `W`. [`RegularizedLeastSquares`](@ref) returns the
 posterior covariance; [`NonNegativeLeastSquares`](@ref) returns `nothing` for it.
+The regularized solve uses a pivoted QR factorization of the whitened system
+augmented by the prior. Numerically rank-deficient systems require a prior or a
+smaller model. A dense covariance can lose its smallest eigenvalues to rounding
+when the fitted system is poorly conditioned.
 """
 function solve(m::RegularizedLeastSquares, H::AbstractMatrix, y::AbstractVector, W)
     W === nothing && throw(ArgumentError(
@@ -333,54 +368,94 @@ function solve(m::RegularizedLeastSquares, H::AbstractMatrix, y::AbstractVector,
     ))
     Hw, yw = _whitened(H, y, W)
     n = size(H, 2)
-    A = LA.Symmetric(Hw' * Hw + _prior_precision(m.prior, n))
-    C = inv(A)
-    x = C * (Hw' * yw)
+    penalty = _prior_rows(m.prior, n)
+    A = vcat(Hw, penalty)
+    rhs = vcat(yw, zeros(size(penalty, 1)))
+    size(A, 1) >= n || throw(ArgumentError("fit is underdetermined; supply a positive definite prior"))
+    factor = LA.qr(A, LA.ColumnNorm())
+    R = factor.R
+    threshold = maximum(abs, LA.diag(R)) * max(size(A)...) * eps(Float64)
+    minimum(abs, LA.diag(R)) > threshold ||
+        throw(ArgumentError("fit is numerically rank deficient; supply a positive definite prior or reduce the model"))
+    x = factor \ rhs
+    inverse_R = LA.UpperTriangular(R) \ Matrix{Float64}(LA.I, n, n)
+    C = Matrix{Float64}(undef, n, n)
+    C[factor.p, factor.p] = inverse_R * inverse_R'
     return x, LA.Symmetric(C)
 end
 
-function solve(::NonNegativeLeastSquares, H::AbstractMatrix, y::AbstractVector, W)
+function solve(::NonNegativeLeastSquares, H::AbstractMatrix, y::AbstractVector, W;
+               maxiter::Int = 10 * size(H, 2), return_info::Bool = false)
     Hw, yw = _whitened(H, y, W)
-    return _nnls(Hw, yw), nothing
+    info = _nnls(Hw, yw; maxiter, return_info=true)
+    return_info && return (info.x, nothing, info)
+    info.converged || error("NNLS did not converge in $(info.iterations) iterations (KKT residual $(info.kkt_residual))")
+    return info.x, nothing
 end
 
 """
-    _nnls(A, b) -> x
+    _nnls(A, b; maxiter=10size(A, 2), return_info=false) -> x
 
-`argmin ‖A x − b‖₂` over `x ≥ 0` by the Lawson–Hanson active-set algorithm.
+Minimize `‖A x − b‖₂` over `x ≥ 0` with a bounded Lawson–Hanson active-set iteration.
+Failure to satisfy the KKT conditions throws. With `return_info=true`, return the
+iterate, convergence flag, iteration count, KKT residual, and tolerance instead.
 """
-function _nnls(A::AbstractMatrix, b::AbstractVector; maxiter::Int = 10 * size(A, 2))
+function _nnls(A::AbstractMatrix, b::AbstractVector;
+               maxiter::Int = 10 * size(A, 2), return_info::Bool = false)
+    _check_fit_data(A, b)
+    maxiter >= 0 || throw(ArgumentError("maxiter must be nonnegative"))
+    A, b = Matrix{Float64}(A), Vector{Float64}(b)
     m, n = size(A)
-    length(b) == m || throw(DimensionMismatch("A is $(size(A)) and b has $(length(b)) entries"))
-    x = zeros(Float64, n)
+    x = zeros(n)
     passive = falses(n)
-    tol = 10 * eps(Float64) * max(LA.opnorm(A, 1), 1.0) * max(m, n)
-    w = A' * (b - A * x)
-    iter = 0
-    while !all(passive) && maximum(w[.!passive]; init = -Inf) > tol && iter < maxiter
-        iter += 1
-        j = argmax(ifelse.(passive, -Inf, w))
-        passive[j] = true
-        s = zeros(Float64, n)
-        s[passive] = A[:, passive] \ b
-        while minimum(s[passive]; init = Inf) <= 0
-            α = Inf
-            for i in 1:n
-                if passive[i] && s[i] <= 0
-                    α = min(α, x[i] / (x[i] - s[i]))
+    tol = 10 * eps(Float64) * max(m, n) * LA.opnorm(A, 1) * LA.norm(b)
+    w = A' * b
+    iterations = 0
+    exhausted = false
+    while maximum(w[.!passive]; init=-Inf) > tol
+        if iterations >= maxiter
+            exhausted = true
+            break
+        end
+        passive[argmax(ifelse.(passive, -Inf, w))] = true
+        while true
+            if iterations >= maxiter
+                exhausted = true
+                break
+            end
+            iterations += 1
+            candidate = zeros(n)
+            # SVD gives a bounded minimum-norm solve when active columns are dependent.
+            candidate[passive] = LA.svd(A[:, passive]) \ b
+            all(>(0), candidate[passive]) && (x = candidate; break)
+            alpha = 1.0
+            for i in eachindex(x)
+                if passive[i] && candidate[i] <= 0
+                    denominator = x[i] - candidate[i]
+                    alpha = min(alpha, denominator > 0 ? x[i] / denominator : 0.0)
                 end
             end
-            x .+= α .* (s .- x)
-            for i in 1:n
-                passive[i] && x[i] <= tol && (passive[i] = false; x[i] = 0)
+            x .+= alpha .* (candidate .- x)
+            xtol = 10 * eps(Float64) * maximum(abs, x; init=0.0)
+            for i in eachindex(x)
+                if passive[i] && x[i] <= xtol
+                    passive[i] = false
+                    x[i] = 0
+                end
             end
-            s .= 0
-            any(passive) && (s[passive] = A[:, passive] \ b)
             any(passive) || break
         end
-        x .= s
         w = A' * (b - A * x)
+        exhausted && break
     end
+    # KKT: nonnegative x, zero gradient on its support, nonnegative gradient elsewhere.
+    dual_violation = max(maximum(w[.!passive]; init=0.0), 0.0)
+    active_violation = maximum(abs, w[passive]; init=0.0)
+    kkt_residual = max(dual_violation, active_violation)
+    converged = !exhausted && kkt_residual <= tol
+    info = (; x, converged, iterations, kkt_residual, tolerance=tol)
+    return_info && return info
+    converged || error("NNLS did not converge in $iterations iterations (KKT residual $kkt_residual, tolerance $tol)")
     return x
 end
 
@@ -402,15 +477,23 @@ function segmented_spectrum(p::AbstractVector, k::AbstractVector, edges::Abstrac
     S = length(edges) - 1
     length(p) == S + 1 || throw(DimensionMismatch("$S segments take $(S + 1) parameters; got $(length(p))"))
     T = promote_type(eltype(p), eltype(k))
+    be = digitize_plan(edges)
     amps = Vector{T}(undef, S)
     amps[1] = p[1]
     for s in 1:(S - 1)
-        amps[s + 1] = amps[s] * T(edges[s + 1])^(p[s + 1] - p[s + 2])
+        amps[s + 1] = amps[s] * T(be[s + 1])^(p[s + 1] - p[s + 2])
     end
     return [begin
-        s = clamp(searchsortedlast(edges, kq), 1, S)
+        s = clamp(searchsortedlast(be, kq), 1, S)
         amps[s] * T(kq)^p[s + 1]
     end for kq in k]
+end
+
+function _relative_scales(y)
+    all(isfinite, y) || throw(ArgumentError("observations must be finite"))
+    scale = maximum(abs, y; init=0.0)
+    scale == 0 && return ones(Float64, length(y))
+    return max.(abs.(y), sqrt(eps(Float64)) * scale)
 end
 
 """
@@ -598,7 +681,10 @@ end
         -> (segments, misfits, fits)
 
 Fit a [`SegmentedPowerLaw`](@ref) with each number of segments in `S_range` and report the one
-minimising the mean relative misfit `mean(|S₂^{fit} - S₂| / S₂)`, with every misfit and every fit.
+minimizing the mean absolute residual divided by the same floored observation
+scale as the default segmented fit. Returns every misfit and fitted model.
+This is an in-sample residual criterion; it does not penalize model complexity
+or estimate predictive error.
 """
 function select_segments(sf::SFO.AbstractStructureFunction, k_edges::AbstractVector, S_range, ::Val{D};
                          W = nothing, slope_bounds = (-4.0, 1.0)) where {D}
@@ -609,7 +695,7 @@ function select_segments(sf::SFO.AbstractStructureFunction, k_edges::AbstractVec
     misfits = [begin
         kq, _, K = _segmented_design(Val(D), r, f.breakpoints)
         yfit = K * segmented_spectrum(f.parameters, kq, f.breakpoints)
-        sum(abs.(yfit .- y) ./ abs.(y)) / length(y)
+        sum(abs.(yfit .- y) ./ _relative_scales(y)) / length(y)
     end for f in fits]
     best = argmin(misfits)
     return (segments = collect(S_range)[best], misfits = misfits, fits = fits)

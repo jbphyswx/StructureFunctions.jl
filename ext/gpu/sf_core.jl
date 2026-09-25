@@ -10,11 +10,8 @@
 # * Staged tile layout: dimension `d` of local point `k` lives at
 #   `buf[(d-1)*SF_GPU_TILE + k]` in an `@localmem` buffer (matches the existing
 #   tiled kernels).
-# * Distance digitizers are *isbits* functors (no array fields for linear/log)
-#   so they can be passed directly as kernel arguments and specialize the
-#   digitize at compile time. The bin-edge wrapper structs (LinearBinEdges /
-#   LogBinEdges) are NOT isbits (they hold a Range), hence these lightweight
-#   mirrors built host-side via `_sf_digitizer`.
+# * A digitizer is the host's `digitize_plan` with its arrays on the device, binned with
+#   `SFH.digitize`, so every backend bins every value alike.
 # * The shared histogram uses a "lane" axis of width `L` as its fastest index:
 #       hist[((m-1)*NB + (bin-1)) * L + lane]
 #   For the non-fixed-x path `L = R`, the replication factor that spreads contention, and the
@@ -24,68 +21,58 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Distance digitizers (isbits functors; compile-time dispatched)
+# Digitizers
 # -----------------------------------------------------------------------------
 
-"""Linear-grid distance digitizer. `n_edges` is the number of bin *edges*
-(so the number of bins is `n_edges - 1`). Returns a bin in `0:n_edges`."""
-struct SFLinearDigitizer{T}
-    first_edge::T
-    last_edge::T
-    inv_step::T
-    step_val::T
-    n_edges::Int
-end
+"""
+The device digitizer for `bins` in a pass of workspace kind `kind` (`Val(:value)` for value bins), or a
+tuple of them for per-moment value bins: the plan the host digitizes with, its arrays on `backend`. The
+distance bins of a `:sf1d` pass take logarithmic edges as an `SF.LogTableBinEdges`.
+"""
+_gpu_digitizer(backend, bins, kind::Val) = KA.adapt(backend, _device_plan(bins, kind))
 
-@inline (d::SFLinearDigitizer{T})(r::T) where {T} =
-    _gpu_digitize_linear(r, d.first_edge, d.last_edge, d.inv_step, d.step_val, d.n_edges)
+_device_plan(bins, ::Val) = SF.digitize_plan(bins)
+_device_plan(b::SF.LogBinEdges{<:Base.IEEEFloat}, ::Val{:sf1d}) = SF.LogTableBinEdges(b)
+_device_plan(b::SF.InfPaddedBinEdges, kind::Val{:sf1d}) =
+    (p = _device_plan(b.edges, kind); SF.InfPaddedBinEdges{eltype(p), typeof(p)}(p))
+_device_plan(t::Tuple, kind::Val) = map(b -> _device_plan(b, kind), t)
 
-"""Log-grid distance digitizer: `log(r)` then a linear digitize on the log grid
-(matches `LogBinEdges`). Non-positive `r` falls below the first edge (→ 0)."""
-struct SFLogDigitizer{T}
-    first_edge::T
-    last_edge::T
-    inv_step::T
-    step_val::T
-    n_edges::Int
-end
+"""Value bin of moment `m`. A tuple plan is indexed by an unrolled chain, so its columns may differ in type."""
+@inline _sf_value_bin(plan, x, m) = SFH.digitize(x, plan)
+@inline _sf_value_bin(plan::Tuple, x, m) = _sf_tuple_bin(plan, x, m)
+@inline _sf_tuple_bin(plan::Tuple{Any}, x, m) = SFH.digitize(x, first(plan))
+@inline _sf_tuple_bin(plan::Tuple, x, m) =
+    m == 1 ? SFH.digitize(x, first(plan)) : _sf_tuple_bin(Base.tail(plan), x, m - 1)
 
-@inline (d::SFLogDigitizer{T})(r::T) where {T} =
-    r <= zero(T) ? 0 :
-    _gpu_digitize_linear(log(r), d.first_edge, d.last_edge, d.inv_step, d.step_val, d.n_edges)
+"""Edges per value column; every column of a tuple plan has as many."""
+@inline _n_value_edges(value_bins) = length(value_bins)
+@inline _n_value_edges(value_bins::Tuple) = length(first(value_bins))
 
-"""General (arbitrary edges) distance digitizer: binary search over a device
-edge vector. `edges` is adapted to the backend alongside the kernel arguments."""
-struct SFGeneralDigitizer{E}
-    edges::E
-    n_edges::Int
-end
-
-# Without this the struct reaches the kernel holding a host-side `CuArray` and the launch fails
-# with `KernelError: passing non-bitstype argument`.
-KA.Adapt.adapt_structure(to, d::SFGeneralDigitizer) =
-    SFGeneralDigitizer(KA.Adapt.adapt(to, d.edges), d.n_edges)
-
-# A work list carries its packed tile pairs in a device array; the struct must be rebuilt around the
-# device-side view at launch, exactly as the general digitizer is around its edges.
+# A work list carries its packed tile pairs in a device array; the struct is rebuilt around the
+# device-side view at launch.
 KA.Adapt.adapt_structure(to, s::TilePairWorkList) =
     TilePairWorkList(KA.Adapt.adapt(to, s.pairs), s.n_tiles)
 
 # Bin edges, digitize plans and lag schedules reach a kernel with their vectors on the device.
 KA.Adapt.adapt_structure(to, b::SF.BinEdges) = SF.BinEdges(KA.Adapt.adapt(to, b.edges))
-KA.Adapt.adapt_structure(to, b::SF.InfPaddedBinEdges) = SF.InfPaddedBinEdges(KA.Adapt.adapt(to, b.edges))
+function KA.Adapt.adapt_structure(to, b::SF.BucketedBinEdges{T}) where {T}
+    e = KA.Adapt.adapt(to, b.edges)
+    c = KA.Adapt.adapt(to, b.cells)
+    return SF.BucketedBinEdges{T, typeof(e), typeof(c)}(e, b.inv_width, b.offset, b.last_cell, b.last_edge, c)
+end
+function KA.Adapt.adapt_structure(to, p::SF.LogTableBinEdges{FT, T}) where {FT, T}
+    e = KA.Adapt.adapt(to, p.edges)
+    return SF.LogTableBinEdges{FT, T, typeof(e)}(p.a, p.c, e)
+end
+function KA.Adapt.adapt_structure(to, b::SF.InfPaddedBinEdges{T}) where {T}
+    inner = KA.Adapt.adapt(to, b.edges)
+    return SF.InfPaddedBinEdges{T, typeof(inner)}(inner)
+end
 function KA.Adapt.adapt_structure(to, p::SF.SquaredLogPlan{T}) where {T}
     sq = KA.Adapt.adapt(to, p.sqedges)
     return SF.SquaredLogPlan{T, typeof(sq)}(p.a, p.b, p.n_bins, sq)
 end
-function KA.Adapt.adapt_structure(to, p::SF.SquaredLinearPlan{T}) where {T}
-    sq = KA.Adapt.adapt(to, p.sqedges)
-    return SF.SquaredLinearPlan{T, typeof(p.edges), typeof(sq)}(p.edges, p.n_bins, sq)
-end
-function KA.Adapt.adapt_structure(to, p::SF.SquaredGeneralPlan{T}) where {T}
-    sq = KA.Adapt.adapt(to, p.sqedges)
-    return SF.SquaredGeneralPlan{T, typeof(sq)}(p.n_bins, sq)
-end
+KA.Adapt.adapt_structure(to, p::SF.SquaredBucketPlan) = SF.SquaredBucketPlan(KA.Adapt.adapt(to, p.thresholds))
 KA.Adapt.adapt_structure(to, p::SF.SquaredInfPaddedPlan) = SF.SquaredInfPaddedPlan(KA.Adapt.adapt(to, p.inner))
 KA.Adapt.adapt_structure(to, s::SFC.RectilinearLagSchedule) =
     SFC.RectilinearLagSchedule(s.uniform, map(v -> KA.Adapt.adapt(to, v), s.enumerated), s.axis_order)
@@ -93,25 +80,6 @@ KA.Adapt.adapt_structure(to, s::SFC.ZonalLagSchedule) =
     SFC.ZonalLagSchedule(KA.Adapt.adapt(to, s.lats), s.n_lon, s.dlon, s.radius, s.lon_periodic)
 KA.Adapt.adapt_structure(to, s::SFC.ScatteredModesSchedule) =
     SFC.ScatteredModesSchedule(KA.Adapt.adapt(to, s.points), s.origin, s.box, s.modes, s.taper)
-
-@inline (d::SFGeneralDigitizer)(r) = _gpu_digitize_general(r, d.edges, d.n_edges)
-
-# Number of bins (edges - 1) for a digitizer.
-@inline _sf_nbins(d::SFLinearDigitizer) = d.n_edges - 1
-@inline _sf_nbins(d::SFLogDigitizer) = d.n_edges - 1
-@inline _sf_nbins(d::SFGeneralDigitizer) = d.n_edges - 1
-
-# Host-side constructors from the bin-edge wrapper types.
-@inline _sf_digitizer(lbe::LinearBinEdges) =
-    SFLinearDigitizer(lbe.first_edge, lbe.last_edge, lbe.inv_step, lbe.step_val, length(lbe.edges))
-
-@inline function _sf_digitizer(lbe::LogBinEdges)
-    ll = lbe.log_linear
-    return SFLogDigitizer(ll.first_edge, ll.last_edge, ll.inv_step, ll.step_val, length(lbe.log_edges))
-end
-
-# General edges: caller passes a device array of edges (already on backend).
-@inline _sf_digitizer_general(edges_dev) = SFGeneralDigitizer(edges_dev, length(edges_dev))
 
 # -----------------------------------------------------------------------------
 # Geometry (NDIMS-generic, via StaticArrays — unrolls for D = 2, 3)
@@ -135,7 +103,7 @@ end
 # -----------------------------------------------------------------------------
 
 """
-    _sf_count_type(weights, count_eltype, n_pairs) -> Type
+    _sf_count_type(weights, CT, n_pairs) -> Type
 
 Element type a device count histogram accumulates in, shared and global alike. `UInt32` while the
 sweep is unweighted **and** `n_pairs` fits it, since a narrower count halves the shared histogram;

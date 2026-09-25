@@ -47,9 +47,6 @@ Test.@testset "GPU joint2d exact smem parity — NB2=100" begin
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist, val)
     Test.@test ws.joint2d_nb2 == 100
     Test.@test ws.joint2d_compile_cells == 100
-    Test.@test GPUExt._joint2d_tiled_kernel_for(
-        KA.CPU(), ws.dist_bins, ws.val_plan, ws.joint2d_compile_cells, 2,
-    ) !== nothing
     gpu = _gpu_joint(sft, x, u, dist, val; workspace = ws)
     Test.@test gpu.counts == ref.counts
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -60,7 +57,7 @@ Test.@testset "GPU joint2d exact smem parity — log dist NB2=440" begin
     FT = Float64
     x = rand(FT, 2, N) .+ FT(0.01)
     u = randn(FT, 2, N)
-    dist = LogBinEdges(exp.(range(log(FT(100)), log(FT(5000)); length = 21)))
+    dist = LogBinEdges(FT(100), FT(5000), 21)
     val = collect(FT, range(-1.0, 2.0; length = 23))
     sft = SFT.L3SFType()
     ref = _ref_joint(sft, x, u, dist, val)
@@ -94,14 +91,14 @@ Test.@testset "GPU joint2d typed workspace dispatch — LogBinEdges + InfPadded"
     FT = Float64
     x = rand(FT, 2, N) .+ FT(0.01)
     u = randn(FT, 2, N)
-    dist = LogBinEdges(exp.(range(log(FT(100)), log(FT(5000)); length = 21)))
+    dist = LogBinEdges(FT(100), FT(5000), 21)
     val = InfPaddedBinEdges(LinearBinEdges(range(-1.0, 2.0; length = 23)))
     sft = SFT.L2SFType()
     ref = _ref_joint(sft, x, u, dist, val)
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist, val; kind = :joint2d)
     Test.@test typeof(ws).parameters[1] === :joint2d
-    Test.@test ws.val_plan isa GPUExt.GPUValueInfLinearShared
-    Test.@test GPUExt._joint2d_val_route(ws.val_plan) == :inflinear
+    Test.@test ws.val_plan isa InfPaddedBinEdges{FT, <:LinearBinEdges}
+    Test.@test ws.dist_digitizer isa SF.BucketedBinEdges
     gpu = _gpu_joint(sft, x, u, dist, val; workspace = ws)
     Test.@test gpu.counts == ref.counts
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -112,7 +109,7 @@ Test.@testset "GPU joint2d align256 smem parity — NB2=440" begin
     FT = Float64
     x = rand(FT, 2, N) .+ FT(0.01)
     u = randn(FT, 2, N)
-    dist = LogBinEdges(exp.(range(log(FT(100)), log(FT(5000)); length = 21)))
+    dist = LogBinEdges(FT(100), FT(5000), 21)
     val = collect(FT, range(-1.0, 2.0; length = 23))
     n_dist = length(dist) - 1
     n_val = length(val) - 1

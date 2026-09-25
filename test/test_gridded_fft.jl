@@ -1,3 +1,4 @@
+using ComputationalBackends: SerialBackend
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using FFTW: FFTW
@@ -14,9 +15,9 @@ function _run(sf, u, dims, spacing, periodic, bins, D, backend)
     c = zeros(Int, nb)
     sched = SFC.UniformLagSchedule(dims, spacing, periodic)
     if backend === nothing
-        SFC.gridded_lag_sweep!(s, c, sf, u, sched, bins, Val(D))
+        SFC.gridded_lag_sweep!(s, c, sf, u, sched, bins, Val(D); backend=SerialBackend())
     else
-        SFC.gridded_sweep!(s, c, sf, u, sched, bins, Val(D), backend)
+        SFC.gridded_sweep!(s, c, sf, u, sched, bins, Val(D), backend; backend=SerialBackend())
     end
     return s, c
 end
@@ -96,7 +97,7 @@ Test.@testset "the algorithm tags select as documented" begin
     bins = collect(range(0.0, 1.2; length = 7))
     ref_s, ref_c = _run(SFT.L2SFType(), u, dims, spacing, periodic, bins, 2, nothing)
 
-    # the direct sum IS the lag sweep, so it must be bit-identical, not merely close
+    # Both calls use the same serial lag reduction and preserve its summation order.
     ds_s, ds_c = _run(SFT.L2SFType(), u, dims, spacing, periodic, bins, 2,
                       SB.DirectSumSpectralBackend())
     Test.@test ds_c == ref_c
@@ -107,7 +108,7 @@ Test.@testset "the algorithm tags select as documented" begin
     Test.@test au_c == ref_c
     Test.@test isapprox(au_s, ref_s; rtol = 1e-8, atol = 1e-10)
 
-    # auto on an operator no transform expresses still works, by sweeping — bit-identically
+    # A nonpolynomial operator selects the serial direct reduction.
     l3_s, l3_c = _run(SFT.FullVectorStructureFunctionType{3}(), u, dims, spacing, periodic, bins, 2,
                       SB.AutoSpectralBackend())
     ref3_s, ref3_c = _run(SFT.FullVectorStructureFunctionType{3}(), u, dims, spacing, periodic, bins,

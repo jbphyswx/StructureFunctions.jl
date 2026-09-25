@@ -112,8 +112,8 @@ end
     return SA.SMatrix{D, D, T}(ntuple(Val(D * D)) do lin
         a = (lin - 1) % D + 1
         c = (lin - 1) ÷ D + 1
-        a == 1 ? (c == 1 ? LA.dot(t, E) : c == 2 ? LA.dot(t, N) : zero(T)) :
-        a == 2 ? (c == 1 ? LA.dot(m̂, E) : c == 2 ? LA.dot(m̂, N) : zero(T)) :
+        a == 1 ? (c == 1 ? SFH.fma_dot(t, E) : c == 2 ? SFH.fma_dot(t, N) : zero(T)) :
+        a == 2 ? (c == 1 ? SFH.fma_dot(m̂, E) : c == 2 ? SFH.fma_dot(m̂, N) : zero(T)) :
         (c == 3 ? one(T) : zero(T))
     end)
 end
@@ -219,19 +219,20 @@ function gridded_lag_sweep!(
         "field holds $(size(data, 2)) cells of $(size(data, 1)) components, the grid $n cells of " *
         "$(V * D + K)",
     ))
-    w = _pair_weights(weights, n, float(eltype(data)))
-    _check_weighted_counts(w, eltype(counts))
+    w = _pair_weights(weights, n, eltype(sums))
     keep = valid isa AllValid ? Colon() : findall(valid)
     x = valid isa AllValid ? s.points : s.points[:, keep]
     uu = valid isa AllValid ? data : data[:, keep]
-    ww = w isa NoWeights ? nothing : w[keep]
+    ww = w isa NoWeights ? w : w[keep]
+    _assert_counts_can_accumulate(counts, size(x, 2), ww)
     if V == 1 && K == 0
-        calculate_structure_function!(sums, counts, sf, x, uu, dist_be;
-                                      distance_metric = s.metric, backend, weights = ww)
+        shape = _validate_array_shape(x, uu, s.metric)
+        _dispatch_execution_backend!(backend, shape, sums, counts, sf, x, uu, dist_be;
+                                     distance_metric = s.metric, weights = ww)
     else
         f = MF.Fields{D, V, K, typeof(uu)}(uu)
-        calculate_structure_function!(sums, counts, sf, x, f, dist_be;
-                                      distance_metric = s.metric, backend, weights = ww)
+        validate_fields(sf, f)
+        _field_dispatch!(backend, sums, counts, sf, x, f, dist_be; distance_metric = s.metric, weights = ww)
     end
     return sums, counts
 end
@@ -247,13 +248,15 @@ function gridded_tensor_sweep!(
     size(data) == (D, n) || throw(DimensionMismatch(
         "field holds $(size(data, 2)) cells of $(size(data, 1)) components, the grid $n cells of $D",
     ))
-    w = _pair_weights(weights, n, promote_type(float(eltype(s.points)), float(eltype(data))))
+    w = _pair_weights(weights, n, eltype(sums))
     keep = valid isa AllValid ? Colon() : findall(valid)
     x = valid isa AllValid ? s.points : s.points[:, keep]
     uu = valid isa AllValid ? data : data[:, keep]
     wk = (valid isa AllValid || w isa NoWeights) ? w : w[keep]
-    calculate_structure_function_tensor!(sums, counts, order, x, uu, dist_be;
-        distance_metric = s.metric, backend, weights = wk)
+    shape = _validate_array_shape(x, uu, s.metric)
+    _tensor_shape_check(order, shape, sums, counts, uu, dist_be, nothing)
+    _assert_counts_can_accumulate(counts, size(uu, 2), wk)
+    _dispatch_tensor!(backend, shape, sums, counts, order, x, uu, dist_be; distance_metric = s.metric, weights = wk)
     return sums, counts
 end
 

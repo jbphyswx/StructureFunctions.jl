@@ -80,9 +80,9 @@ Test.@testset "GPU culling through a workspace" begin
 end
 
 # The prologue's grid and permutation are memoised on the workspace, keyed on the kernel
-# coordinates, the cutoff and the policy; the per-tile-size lists are built from the grid on first
-# use. A hit must be exactly as correct as a rebuild, and anything that could change the grid must
-# miss.
+# coordinate-array identity, the cutoff and the policy; the per-tile-size lists are built from the
+# grid on first use. In-place coordinate changes require `refresh!`, avoiding a device-wide equality
+# scan on every prepared execution.
 Test.@testset "the cull memo is reused for the same points and invalidated otherwise" begin
     Random.seed!(78)
     N = 2500
@@ -108,8 +108,9 @@ Test.@testset "the cull memo is reused for the same points and invalidated other
     Test.@test c2 == c_ref
     Test.@test isapprox(s2, s_ref; rtol = 1e-10, atol = 1e-12)
 
-    # the caller mutates its coordinates in place: a miss, and the new points are what is culled
+    # the caller mutates its coordinates in place and explicitly invalidates preparation
     x .= rand(2, N)
+    SFC.refresh!(ws)
     s_ref, c_ref = run1d(x, u2, TIGHT, SFC.NoCulling(), ref)
     s3, c3 = run1d(x, u2, TIGHT, SFC.AutoCulling(), ws)
     Test.@test ws.lazy.cull !== memo

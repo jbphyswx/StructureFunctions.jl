@@ -150,7 +150,7 @@ Test.@testset "Helmholtz decomposition — quadrature inputs" begin
     FT = Float64
     n_bins = 8
     lin_edges = collect(FT, range(0.5, 8.5; length = n_bins + 1))
-    log_edges = SF.LogBinEdges(collect(FT, 10 .^ range(log10(0.1), log10(10.0); length = n_bins + 1)))
+    log_edges = SF.LogBinEdges(FT(0.1), FT(10), n_bins + 1)
 
     # Non-constant D_TT - D_LL so the cumulative integral, and hence the abscissae, matter.
     counts = ones(UInt32, n_bins)

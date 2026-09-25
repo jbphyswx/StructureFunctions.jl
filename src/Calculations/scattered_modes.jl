@@ -247,31 +247,50 @@ _held_monomial_vector(data::AbstractMatrix, valid, weights, key::Tuple, ::Type{F
     _held_monomial_vector!(similar(parent(data), FT, size(data, 2)), data, valid, weights, key)
 
 """
-    calculate_structure_function(sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend; weights, backend, output_type, verbose)
+    calculate_structure_function(sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend[, CT][, OT]; weights, backend, verbose)
 
 The soft-binned structure function of scattered points by non-uniform FFT. `u` is `(D, N)` over the
 `N` points of `schedule`, or a multi-field over them; `spectral_backend` is a provider tag,
-[`NonuniformFFTsSpectralBackend`](@ref) or [`FINUFFTSpectralBackend`](@ref). Counts are
-`Float64`, the kernel-weighted pair mass, and the result's `distance` is a [`ModeBinEdges`](@ref)
-carrying the schedule. See [`ScatteredModesSchedule`](@ref) for what is and is not exact.
+[`NonuniformFFTsSpectralBackend`](@ref) or [`FINUFFTSpectralBackend`](@ref). Counts are the
+kernel-weighted pair mass, of the floating-point type `CT` (default the sums' type), and the result's
+`distance` is a [`ModeBinEdges`](@ref) carrying the schedule; `OT` is `StructureFunction` (the default)
+or `StructureFunctionSumsAndCounts`. See [`ScatteredModesSchedule`](@ref) for what is and is not exact.
 """
 function calculate_structure_function(
     sf::SFT.AbstractPairwiseStructureFunctionType, s::ScatteredModesSchedule, u::Union{AbstractArray, MF.Fields},
-    distance_bins::AbstractVector, spectral_backend;
-    weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-    output_type::Type{OT} = SFO.StructureFunction, verbose::Bool = true,
-) where {OT}
+    distance_bins::AbstractVector, spectral_backend, ::Type{CT}, ::Type{OT};
+    weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(), verbose::Bool = true,
+) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
+    _assert_mass_counts(CT)
     data, vD, vV, vK = _packed(u)
     N = n_cells(s)
     size(data, 2) == N || throw(DimensionMismatch("u covers $(size(data, 2)) points, the schedule $N"))
     valid = field_validity(data)
-    nb = n_histogram_bins(squared_digitize_plan(distance_bins))
+    nb = n_histogram_bins(distance_bins)
     sums = zeros(float(eltype(data)), nb)
-    counts = zeros(Float64, nb)
+    counts = zeros(CT, nb)
     verbose && @info "soft-binned structure function by non-uniform FFT: $N points onto $(s.modes) modes"
     gridded_sweep!(sums, counts, sf, data, s, distance_bins, vD, vV, vK, spectral_backend; valid, weights, backend)
     return _finalize(SFO.StructureFunctionSumsAndCounts(sf, ModeBinEdges(distance_bins, s), sums, counts), OT)
 end
+
+"""The sum element type of a field or multi-field, which a soft-binned entry's counts default to."""
+@inline _mass_type(u::AbstractArray) = float(eltype(u))
+@inline _mass_type(f::MF.Fields) = float(eltype(MF.packed(f)))
+
+calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, s::ScatteredModesSchedule,
+                             u::Union{AbstractArray, MF.Fields}, distance_bins::AbstractVector, spectral_backend;
+                             kwargs...) =
+    calculate_structure_function(sf, s, u, distance_bins, spectral_backend, _mass_type(u), SFO.StructureFunction;
+                                 kwargs...)
+calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, s::ScatteredModesSchedule,
+                             u::Union{AbstractArray, MF.Fields}, distance_bins::AbstractVector, spectral_backend,
+                             ::Type{CT}; kwargs...) where {CT <: Real} =
+    calculate_structure_function(sf, s, u, distance_bins, spectral_backend, CT, SFO.StructureFunction; kwargs...)
+calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, s::ScatteredModesSchedule,
+                             u::Union{AbstractArray, MF.Fields}, distance_bins::AbstractVector, spectral_backend,
+                             ::Type{OT}; kwargs...) where {OT <: SFO.AbstractStructureFunction} =
+    calculate_structure_function(sf, s, u, distance_bins, spectral_backend, _mass_type(u), OT; kwargs...)
 
 """
     calculate_structure_function_batch!(sums, counts, sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend; weights, backend, verbose)

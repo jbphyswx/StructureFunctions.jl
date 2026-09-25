@@ -21,11 +21,12 @@ end
     (SINGLE_PASS_N, n_bins, n_val)
 
 """
-    CPUSFWorkspace{kind}(x, u, distance_bins[, value_bins]; backend = SerialBackend(), count_eltype = UInt32)
+    CPUSFWorkspace{kind}(x, u, distance_bins[, value_bins][, CT]; backend = SerialBackend())
 
 Reusable CPU scratch for the batch drivers: the batch-leading working copies of `x`/`u`, one
 accumulator per task, and the full-width reduction accumulator. Pass to a batch entry point as
-`workspace = ...` to make repeated calls allocation-free.
+`workspace = ...` to make repeated calls allocation-free. `CT` is the count element type of the
+calls it serves (default `$(DEFAULT_COUNT_TYPE)`).
 
 Without it a batch call allocates one accumulator per task, tens of MiB at large `B`, on every
 call; the GC pauses that follow land on some calls and widen the spread of call times.
@@ -54,14 +55,23 @@ struct CPUSFWorkspace{kind, OT, CT, FTx, FTu, NA}
     n_tasks::Int
 end
 
+CPUSFWorkspace{kind}(x::BatchInput, u::BatchInput, distance_bins::AbstractVector; kwargs...) where {kind} =
+    CPUSFWorkspace{kind}(x, u, distance_bins, nothing, DEFAULT_COUNT_TYPE; kwargs...)
+CPUSFWorkspace{kind}(x::BatchInput, u::BatchInput, distance_bins::AbstractVector, ::Type{CT};
+                     kwargs...) where {kind, CT <: Real} =
+    CPUSFWorkspace{kind}(x, u, distance_bins, nothing, CT; kwargs...)
+CPUSFWorkspace{kind}(x::BatchInput, u::BatchInput, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins;
+                     kwargs...) where {kind} =
+    CPUSFWorkspace{kind}(x, u, distance_bins, value_bins, DEFAULT_COUNT_TYPE; kwargs...)
+
 function CPUSFWorkspace{kind}(
     x::BatchInput,
     u::BatchInput,
     distance_bins::AbstractVector,
-    value_bins = nothing;
+    value_bins::Union{Nothing, SinglePass2DValueBins},
+    ::Type{CT};
     backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
-    count_eltype::Type{CT} = UInt32,
-) where {kind, CT}
+) where {kind, CT <: Real}
     kind in (:sf1d, :joint2d, :single_pass, :single_pass_2d) || throw(ArgumentError(
         "CPUSFWorkspace kind must be :sf1d, :joint2d, :single_pass or :single_pass_2d; got :$kind"))
     x_raw, x_bl = _bl_unwrap(x)
@@ -116,14 +126,17 @@ function _validate_ws_shape(ws::CPUSFWorkspace, B::Int, N::Int, D::Int, W::Int)
     return nothing
 end
 
-"""Throw unless `ws` holds accumulators of this kind and shape. Checked before they are used."""
-@inline _validate_ws_layout(::Nothing, ::Symbol, ::Tuple) = nothing
+"""Throw unless `ws` holds accumulators of this kind, shape and element types. Checked before they are used."""
+@inline _validate_ws_layout(::Nothing, ::Symbol, ::Tuple, ::Type, ::Type) = nothing
 
-function _validate_ws_layout(ws::CPUSFWorkspace{kind}, want_kind::Symbol, tail::Tuple) where {kind}
+function _validate_ws_layout(ws::CPUSFWorkspace{kind, WOT, WCT}, want_kind::Symbol, tail::Tuple,
+                             ::Type{OT}, ::Type{CT}) where {kind, WOT, WCT, OT, CT}
     kind === want_kind ||
         throw(ArgumentError("CPUSFWorkspace kind :$kind incompatible with requested :$want_kind"))
     _ws_tail(ws) == tail || throw(ArgumentError(
         "CPUSFWorkspace built for accumulator axes $(_ws_tail(ws)); called with $tail"))
+    (WOT, WCT) == (OT, CT) || throw(ArgumentError(
+        "CPUSFWorkspace built for sums of $WOT and counts of $WCT; called with $OT and $CT"))
     return nothing
 end
 
@@ -160,35 +173,44 @@ end
 # StructureFunctionsKernelAbstractionsExt.
 
 """
-    GPUSFWorkspace
+    GPUSFWorkspace(backend, distance_bins; kind=:sf1d)
+    GPUSFWorkspace(backend, distance_bins, value_bins; kind=:joint2d)
 
-Reusable device histogram buffers and cached distance-bin edge arrays for GPU
-structure-function launches. Construct once per `(backend, distance_bins[, value_bins])`
-configuration; pass to `gpu_calculate_structure_function(!)` or slice drivers to avoid
-per-call `KA.zeros` allocation and repeated edge uploads.
+Reusable device histograms and bin preparation. Load `KernelAbstractions`, then
+construct a workspace for the execution backend, edges, and sum precision. Pass
+it as `workspace=ws` to a compatible calculation. Each workspace serves one call
+at a time.
 
-# Kinds (`kind` type parameter)
-- `:sf1d` — 1D distance histogram, `out_sums_dev`/`out_cnts_dev` of rank 1
-- `:joint2d` — distance × value joint histogram, rank 2 (exact `n_dist × n_val` smem by default;
-  override via `joint2d_compile_cells`)
-- `:single_pass` — six invariant 1D distance histograms `(6, NB)`
-- `:single_pass_2d` — six invariant distance × value joint histograms `(6, NB, n_val)`;
-  on-chip modes (`:shared`, `:typeplane`) flush shared histograms directly to `out_*`;
-  `:direct` uses `lazy.partition_sums_dev` / `lazy.partition_counts_dev` plus merge.
+`kind` selects the snapshot accumulator axes:
 
-`kind` is a type parameter, so the histogram rank is fixed at construction and every field is
-concretely typed — matching [`CPUSFWorkspace`](@ref). Use the matching constructor overload;
-`reset_histogram!(ws)` zeroes device outputs before each launch. The constructors live in
-`StructureFunctionsKernelAbstractionsExt` and need `using KernelAbstractions`.
+- `:sf1d`: `(n_distance,)`.
+- `:joint2d`: `(n_distance, n_value)`.
+- `:single_pass`: `(6, n_distance)`.
+- `:single_pass_2d`: `(6, n_distance, n_value)`.
+
+Batch scratch adds the flattened batch axis and is reused while its shape and
+count type agree. Backend, kind, sum precision, and bin definitions are checked
+before histogram execution. Construct another workspace when these change.
+Field values may change between calls. Coordinates are preparation data: call
+`refresh!(ws)` after mutating them in place. Passing a different coordinate
+array is detected by identity and prepares a new schedule. Allocating results
+own their buffers; mutating calculations add to caller-owned outputs.
+
+`reset_histogram!(ws)` clears snapshot, batch, and allocated partition histograms.
+`release!(ws)` drops lazy batch, input-staging, culling, and partition buffers.
+Neither operation changes an earlier allocated result. Required memory depends
+on histogram shape, batch size, and selected kernel. Prepared input conversion,
+weighted snapshot scratch, and digitizer reuse vary by route; this interface
+does not guarantee allocation-free execution.
 """
-struct GPUSFWorkspace{kind, FT, BE, DB, VB, S, C, VE, DE, VP, ST, K, L}
+struct GPUSFWorkspace{kind, FT, BE, DB, VB, S, C, DD, VP, ST, L}
     backend::BE
     dist_bins::DB
     val_bins::VB
     out_sums_dev::S
     out_cnts_dev::C
-    value_edges_dev::VE
-    dist_general_edges_dev::DE
+    dist_digitizer::DD
+    val_plan::VP
     NB::Int
     n_bins::Int
     n_dist::Int
@@ -196,9 +218,7 @@ struct GPUSFWorkspace{kind, FT, BE, DB, VB, S, C, VE, DE, VP, ST, K, L}
     n_val_edges::Int
     host_sums_scratch::Vector{FT}
     host_counts_scratch::Vector{UInt32}
-    val_plan::VP
     sp2d_accumulation_strategy::ST
-    sp2d_pair_kernel::K
     joint2d_nb2::Int
     joint2d_compile_cells::Int
     lazy::L
@@ -210,10 +230,15 @@ end
 What one cull prologue produced for a set of kernel coordinates, kept on the workspace so a call on
 the same coordinates, cutoff and policy reuses it: the cell grid (which owns the permutation), the
 coordinates already permuted, and one device work list per tile size, built on first use by
-[`schedule_for`](@ref). `x` is the workspace's own copy, so a caller's in-place mutation is a miss,
-never a stale hit. `to_device` uploads a host vector to the workspace's device.
+[`schedule_for`](@ref). `source` identifies the caller's prepared coordinate array; an in-place
+mutation therefore requires [`refresh!`](@ref). `x` is the workspace-owned coordinate snapshot and
+`to_device` uploads a host vector to the workspace's device.
 """
-struct GPUCullMemo{X <: AbstractMatrix, FT, PO <: CullingPolicy, G <: CellGrid, XS, TD}
+abstract type AbstractGPUCullMemo end
+
+struct GPUCullMemo{X <: AbstractMatrix, FT, PO <: CullingPolicy, G <: CellGrid, XS, TD} <:
+       AbstractGPUCullMemo
+    source::Any
     x::X
     cutoff::FT
     policy::PO
@@ -223,10 +248,18 @@ struct GPUCullMemo{X <: AbstractMatrix, FT, PO <: CullingPolicy, G <: CellGrid, 
     schedules::Dict{Int, TilePairWorkList}
 end
 
+
+"""Cached decision that culling cannot remove work for this prepared input."""
+struct GPUNoCullMemo{FT, PO <: CullingPolicy} <: AbstractGPUCullMemo
+    source::Any
+    cutoff::FT
+    policy::PO
+end
+
 """Whether `memo` was built from these coordinates under this cutoff and policy."""
-@inline _cull_memo_hit(::Nothing, xk, cutoff, policy) = false
-@inline _cull_memo_hit(m::GPUCullMemo, xk, cutoff, policy) =
-    m.policy === policy && m.cutoff == cutoff && eltype(m.x) === eltype(xk) && m.x == xk
+@inline _cull_memo_hit(::Nothing, source, cutoff, policy) = false
+@inline _cull_memo_hit(m::AbstractGPUCullMemo, source, cutoff, policy) =
+    m.source === source && m.policy === policy && m.cutoff == cutoff
 
 """
     schedule_for(cull, n_points, tile) -> PairBlockSchedule
@@ -249,16 +282,27 @@ end
 
 """State a workspace carries between launches: device buffers sized by `N_points`, the staged inputs,
 the cull memo, and `active`, the memo this call culls with (set by the prologue on every call)."""
+abstract type AbstractGPUBatchBuffers end
+
+struct GPUBatchBuffers{S, C} <: AbstractGPUBatchBuffers
+    sums::S
+    counts::C
+end
+
 mutable struct GPUSFLazyBuffers
     partition_sums_dev
     partition_counts_dev
     x_dev_cache
     u_dev_cache
+    snapshot_counts_dev
+    batch::Union{Nothing, AbstractGPUBatchBuffers}
     active::Union{Nothing, GPUCullMemo}
-    cull::Union{Nothing, GPUCullMemo}
+    cull::Union{Nothing, AbstractGPUCullMemo}
 end
 
-GPUSFLazyBuffers() = GPUSFLazyBuffers(nothing, nothing, nothing, nothing, nothing, nothing)
+GPUSFLazyBuffers() = GPUSFLazyBuffers(
+    nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing,
+)
 
 """Tile blocks the partition buffers are currently sized for; 0 when unallocated."""
 @inline _partition_n_tile_blocks(lazy::GPUSFLazyBuffers) =

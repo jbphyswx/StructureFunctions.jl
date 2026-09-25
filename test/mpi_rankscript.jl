@@ -24,6 +24,7 @@ ub = rand(2, N, B)                     # shared positions
 xv = rand(2, N, B); uv = rand(2, N, B) # varying positions
 bins = collect(range(0.0, 1.5, 21))
 vbins = collect(range(-2.0, 2.0, 13))
+w2 = rand(N) .+ 0.5                     # pair weights, one per point
 
 # a periodic 8x8 grid for the gridded sweep
 gsched = SFC.UniformLagSchedule((8, 8), (1 / 8, 1 / 8), (true, true))
@@ -74,6 +75,13 @@ function cases(be)
     d["sp1d_batch"] = (sp1b.S2.sums, sp1b.L1T2.sums)
     sp2b = SFC.calculate_structure_functions_single_pass_2d(x2, ub, bins, vbins; backend = be)
     d["sp2d_batch"] = (sp2b.S2.sums, sp2b.L1T2.sums)
+    wkw = (; weights = w2, count_eltype = Float64)
+    d["pf1d_weighted"] = sc(SFC.calculate_structure_function(sft, x2, u2, bins, Float64; backend = be,
+        output_type = raw, weights = w2, kw...))
+    sp1ww = SFC.calculate_structure_functions_single_pass(x2, u2, bins; backend = be, wkw...)
+    d["sp1d_weighted"] = (sp1ww.S2.sums, sp1ww.S2.counts, sp1ww.L1T2.sums)
+    sp2ww = SFC.calculate_structure_functions_single_pass_2d(x2, u2, bins, vbins; backend = be, wkw...)
+    d["sp2d_weighted"] = (sp2ww.S2.sums, sp2ww.S2.counts, sp2ww.L1T2.sums)
     return d
 end
 

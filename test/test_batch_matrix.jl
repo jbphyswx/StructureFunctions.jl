@@ -21,7 +21,7 @@ function _rand_batch_fixed(N::Int, B::Int)
     FT = Float32
     x = rand(FT, 2, N)
     u = rand(FT, 2, N, B)
-    edges = LinearBinEdges(collect(range(0.0f0, 1.5f0; length = 11)))
+    edges = LinearBinEdges(0.0f0, 1.5f0, 11)
     return x, u, edges
 end
 
@@ -29,7 +29,7 @@ function _rand_batch_varying(N::Int, B::Int)
     FT = Float32
     x = rand(FT, 2, N, B)
     u = rand(FT, 2, N, B)
-    edges = LinearBinEdges(collect(range(0.0f0, 1.8f0; length = 11)))
+    edges = LinearBinEdges(0.0f0, 1.8f0, 11)
     return x, u, edges
 end
 
@@ -48,7 +48,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
     @testset "row1 individual 1D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
         @test ndims(x) == 2
-        NB = length(lbe.edges) - 1
+        NB = length(lbe) - 1
         cpu_s = zeros(Float32, NB, B)
         cpu_c = zeros(UInt32, NB, B)
         auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
@@ -63,7 +63,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
     @testset "row1b individual 1D fixed-x B>strip (regression)" begin
         Nb, Bb = 24, 17
         x, u, lbe = _rand_batch_fixed(Nb, Bb)
-        NB = length(lbe.edges) - 1
+        NB = length(lbe) - 1
         cpu_s = zeros(Float32, NB, Bb)
         cpu_c = zeros(UInt32, NB, Bb)
         auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
@@ -77,7 +77,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
     @testset "row2 individual 1D varying-x" begin
         x, u, lbe = _rand_batch_varying(N, B)
         @test ndims(x) == 3
-        NB = length(lbe.edges) - 1
+        NB = length(lbe) - 1
         cpu_s = zeros(Float32, NB, B)
         cpu_c = zeros(UInt32, NB, B)
         auxiliary_varying_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
@@ -93,7 +93,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
     @testset "row2b signed transverse operators on the batch kernels" begin
         for sft in (SFT.T3SFType(), SFT.L2T1SFType())
             x, u, lbe = _rand_batch_fixed(N, B)
-            NB = length(lbe.edges) - 1
+            NB = length(lbe) - 1
             cpu_s = zeros(Float32, NB, B)
             cpu_c = zeros(UInt32, NB, B)
             auxiliary_shared_positions!(cpu_s, cpu_c, x, u, sft, lbe)
@@ -105,7 +105,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             @test any(!iszero, cpu_s)
 
             xv, uv, lbev = _rand_batch_varying(N, B)
-            NBv = length(lbev.edges) - 1
+            NBv = length(lbev) - 1
             cpu_sv = zeros(Float32, NBv, B)
             cpu_cv = zeros(UInt32, NBv, B)
             auxiliary_varying_positions!(cpu_sv, cpu_cv, xv, uv, sft, lbev)
@@ -119,13 +119,13 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
     @testset "row3 SP1D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
-        n_bins = length(lbe.edges) - 1
+        n_bins = length(lbe) - 1
         ref_s = zeros(Float32, 6, n_bins, B)
         ref_c = zeros(UInt32, 6, n_bins, B)
         for b in 1:B
             SFC.calculate_structure_functions_single_pass!(
                 @view(ref_s[:, :, b]), @view(ref_c[:, :, b]),
-                x, u[:, :, b], lbe.edges; backend = CPU_BE,
+                x, u[:, :, b], collect(lbe); backend = CPU_BE,
             )
         end
         cpu_s = zeros(Float32, 6, n_bins, B)
@@ -146,7 +146,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
     @testset "row4 SP1D varying-x slices" begin
         x, u, lbe = _rand_batch_varying(N, B)
-        n_bins = length(lbe.edges) - 1
+        n_bins = length(lbe) - 1
         cpu_s = zeros(Float32, 6, n_bins, B)
         cpu_c = zeros(UInt32, 6, n_bins, B)
         serial_calculate_structure_functions_single_pass!(cpu_s, cpu_c, x, u, lbe)
@@ -161,9 +161,9 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
     @testset "row5 SP2D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
-        val_edges = LinearBinEdges(collect(range(-1.0f0, 1.0f0; length = 9)))
-        n_bins = length(lbe.edges) - 1
-        n_val = length(val_edges.edges) - 1
+        val_edges = LinearBinEdges(-1.0f0, 1.0f0, 9)
+        n_bins = length(lbe) - 1
+        n_val = length(val_edges) - 1
         cpu_s = zeros(Float32, 6, n_bins, n_val, B)
         cpu_c = zeros(UInt32, 6, n_bins, n_val, B)
         serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges)
@@ -181,9 +181,9 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
     @testset "row6 SP2D varying-x slices" begin
         x, u, lbe = _rand_batch_varying(N, B)
-        val_edges = LinearBinEdges(collect(range(-1.0f0, 1.0f0; length = 9)))
-        n_bins = length(lbe.edges) - 1
-        n_val = length(val_edges.edges) - 1
+        val_edges = LinearBinEdges(-1.0f0, 1.0f0, 9)
+        n_bins = length(lbe) - 1
+        n_val = length(val_edges) - 1
         cpu_s = zeros(Float32, 6, n_bins, n_val, B)
         cpu_c = zeros(UInt32, 6, n_bins, n_val, B)
         serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges)
@@ -198,9 +198,9 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
     @testset "row7 joint 2D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
-        val_edges = LinearBinEdges(collect(range(-0.5f0, 1.5f0; length = 9)))
-        n_bins = length(lbe.edges) - 1
-        n_val = length(val_edges.edges) - 1
+        val_edges = LinearBinEdges(-0.5f0, 1.5f0, 9)
+        n_bins = length(lbe) - 1
+        n_val = length(val_edges) - 1
         cpu_s = zeros(Float32, n_bins, n_val, B)
         cpu_c = zeros(UInt32, n_bins, n_val, B)
         auxiliary_joint2d!(cpu_s, cpu_c, SF_TYPE, x, u, lbe, val_edges)
@@ -214,11 +214,9 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
     @testset "row8 SP2D fixed-x production 50x50 bin grid (smoke)" begin
         Np, Bp = 32, 2
         x, u, lbe = _rand_batch_fixed(Np, Bp)
-        val_edges = LinearBinEdges(collect(range(-1.0f0, 1.0f0; length = 51)))
-        @test length(lbe.edges) - 1 == 10
-        @test length(val_edges.edges) - 1 == 50
-        n_bins = length(lbe.edges) - 1
-        n_val = length(val_edges.edges) - 1
+        val_edges = LinearBinEdges(-1.0f0, 1.0f0, 51)
+        n_bins = length(lbe) - 1
+        n_val = length(val_edges) - 1
         cpu_s = zeros(Float32, 6, n_bins, n_val, Bp)
         cpu_c = zeros(UInt32, 6, n_bins, n_val, Bp)
         serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges)

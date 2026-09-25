@@ -51,7 +51,7 @@ Test.@testset "the device engine equals the CPU engine on a uniform grid" begin
     s3 = SFC.UniformLagSchedule((8, 9, 7), (1.0, 1.1, 0.9), (true, false, true))
     u3 = randn(3, 8, 9, 7)
     _device_matches(SFT.L2SFType(), u3, s3, collect(range(0.0, 6.0; length = 9)), 3; count_type = Float64)
-    _device_matches(SFT.S3SFType(), u3, s3, SF.LogBinEdges(exp.(range(log(0.8), log(6.0); length = 8))), 3)
+    _device_matches(SFT.S3SFType(), u3, s3, SF.LogBinEdges(0.8, 6.0, 8), 3)
 end
 
 Test.@testset "multi-fields and higher moments ride the device engine" begin

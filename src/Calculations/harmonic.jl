@@ -504,7 +504,7 @@ function _harmonic_sweep!(
 end
 
 """
-    calculate_structure_function(sf, x, u, nodes::HarmonicNodes, spectral_backend; distance_metric, weights, valid, output_type)
+    calculate_structure_function(sf, x, u, nodes::HarmonicNodes, spectral_backend[, CT][, OT]; distance_metric, weights, valid)
 
 The kernel-binned structure function of `u` sampled at the points `x` of a sphere, at the nodes'
 separations, by spherical harmonic pseudo-coefficients (see [`harmonic_sweep!`](@ref)). `x` is
@@ -514,15 +514,17 @@ field of `(east, north[, radial])` components, a `(1, cells...)` scalar, or a mu
 one per point; on a grid the cell measure makes the statistic an area average.
 
 The result's `distance` is the `HarmonicNodes` object itself, one value per node, and its counts are
-the kernel-weighted pair counts, floating point.
+the kernel-weighted pair mass, of the floating-point type `CT` (default the sums' type). `OT` is
+`StructureFunction` (the default) or `StructureFunctionSumsAndCounts`.
 """
 function calculate_structure_function(
     sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, u::Union{AbstractArray, MF.Fields},
-    nodes::HarmonicNodes, spectral_backend;
+    nodes::HarmonicNodes, spectral_backend, ::Type{CT}, ::Type{OT};
     distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing,
-    output_type::Type{OT} = SFO.StructureFunction, verbose::Bool = true, show_progress::Bool = true,
+    verbose::Bool = true, show_progress::Bool = true,
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-) where {OT}
+) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
+    _assert_mass_counts(CT)
     data, vD, vV, vK = _packed(u)
     D = SFC_val_int(vD)
     V = SFC_val_int(vV)
@@ -536,12 +538,24 @@ function calculate_structure_function(
     v = valid === nothing ? field_validity(data) : valid
     nb = length(nodes)
     sums = zeros(float(eltype(data)), nb)
-    counts = zeros(Float64, nb)
+    counts = zeros(CT, nb)
     verbose && @info "harmonic structure function: $(nb) nodes, lmax = $(nodes.lmax), $(nameof(typeof(spectral_backend)))"
     harmonic_sweep!(sums, counts, sf, geometry, x, w, data, nodes, vD, vV, vK, spectral_backend;
                     valid = v, backend)
     return _finalize(SFO.StructureFunctionSumsAndCounts(sf, nodes, sums, counts), OT)
 end
+
+calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix,
+                             u::Union{AbstractArray, MF.Fields}, nodes::HarmonicNodes, spectral_backend; kwargs...) =
+    calculate_structure_function(sf, x, u, nodes, spectral_backend, _mass_type(u), SFO.StructureFunction; kwargs...)
+calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix,
+                             u::Union{AbstractArray, MF.Fields}, nodes::HarmonicNodes, spectral_backend,
+                             ::Type{CT}; kwargs...) where {CT <: Real} =
+    calculate_structure_function(sf, x, u, nodes, spectral_backend, CT, SFO.StructureFunction; kwargs...)
+calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix,
+                             u::Union{AbstractArray, MF.Fields}, nodes::HarmonicNodes, spectral_backend,
+                             ::Type{OT}; kwargs...) where {OT <: SFO.AbstractStructureFunction} =
+    calculate_structure_function(sf, x, u, nodes, spectral_backend, _mass_type(u), OT; kwargs...)
 
 # ---------------------------------------------------------------------------------------------------
 # Pseudo-spectra

@@ -53,25 +53,24 @@ weight folded away, as [`AllValid`](@ref) folds the mask away.
 struct NoWeights end
 
 """
-    _pair_weights(weights, n, FT) -> NoWeights or Vector{FT}
+    _pair_weights(weights, n, FT) -> NoWeights or AbstractVector{FT}
 
 The per-cell pair weights a sweep multiplies by: `nothing` means none; a vector must hold one finite
-weight per cell and is converted to the field's float type.
+weight per cell and is copied to the requested float type on its existing backend.
 """
 _pair_weights(::Nothing, ::Int, ::Type) = NoWeights()
 _pair_weights(w::NoWeights, ::Int, ::Type) = w
 function _pair_weights(w::AbstractVector, n::Int, ::Type{FT}) where {FT}
     length(w) == n || throw(DimensionMismatch("$(length(w)) weights for $n cells"))
     all(isfinite, w) || throw(ArgumentError("every pair weight must be finite"))
-    return convert(Vector{FT}, w)
+    return FT.(w)
 end
 
 """Weighted pairs make the counts a weighted pair mass, which needs a floating-point count type.
-Takes the three spellings [`_pair_weights`](@ref) takes, so a caller may check before normalising."""
-_check_weighted_counts(::Nothing, ::Type) = nothing
+Takes the weights [`_pair_weights`](@ref) returns."""
 _check_weighted_counts(::NoWeights, ::Type) = nothing
 _check_weighted_counts(::AbstractVector, ::Type{CT}) where {CT} = CT <: AbstractFloat ? nothing : throw(ArgumentError(
-    "pair weights make the counts a weighted pair mass, which the count type $CT cannot hold; pass count_eltype = Float64, or Float64 counts",
+    "pair weights make the counts a weighted pair mass, which the count type $CT cannot hold; pass Float64 as the count type, or Float64 counts",
 ))
 
 """
@@ -480,7 +479,7 @@ end
 ) where {Dg, D, V, K}
     dx = _lag_displacement(s, h, _direction_width(Val(D), Val(V), Val(Dg)))
     amb = _ambiguous_dirs(s, h)
-    return true, LA.dot(dx, dx), _lag_orientation(dx, amb), (dx = dx, amb = amb)
+    return true, SFH.norm2(dx), _lag_orientation(dx, amb), (dx = dx, amb = amb)
 end
 
 # The representative of `-h`. A periodic direction of even length has one half-turn offset that is
@@ -662,7 +661,7 @@ end
     ambp = _ambiguous_dirs(su, h)
     dx = _ordered_displacement(dxp, s.positions, _direction_width(Val(D), Val(V), Val(N)))
     amb = ntuple(d -> (k = @inbounds(s.positions[d]); k <= Du && @inbounds(ambp[k])), Val(N))
-    return true, LA.dot(dx, dx), _lag_orientation(dx, amb), (dx = dx, amb = amb)
+    return true, SFH.norm2(dx), _lag_orientation(dx, amb), (dx = dx, amb = amb)
 end
 
 @inline function _ordered_displacement(dxp::Tuple, positions::NTuple{N, Int}, ::Val{Dr}) where {N, Dr}
@@ -920,7 +919,7 @@ function gridded_lag_sweep!(
 ) where {OT, CT, D, V, K}
     _check_grid_field(sf, data, s, Val(D), Val(V), Val(K))
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
-    _check_weighted_counts(w, CT)
+    _assert_counts_can_accumulate(counts, size(data, 2), w)
     plan = squared_digitize_plan(dist_be)
     nb = n_histogram_bins(plan)
     length(sums) == nb && length(counts) == nb || throw(DimensionMismatch(
@@ -988,11 +987,12 @@ function gridded_lag_sweep!(
 ) where {OT, CT, D, V, K}
     _check_grid_field(sf, data, s, Val(D), Val(V), Val(K))
     _require_directional(s)
+    _check_half_turn_counts(CT, s, dist_be)
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
-    _check_weighted_counts(w, CT)
+    _assert_counts_can_accumulate(counts, size(data, 2), w)
     plan = squared_digitize_plan(dist_be)
     nb = n_histogram_bins(plan)
-    axis_edges = BinEdges(axis_be)
+    axis_edges = digitize_plan(axis_be)
     na = n_histogram_bins(axis_edges)
     size(sums) == (nb, na) && size(counts) == (nb, na) || throw(DimensionMismatch(
         "sums and counts must be ($nb, $na); got $(size(sums)) and $(size(counts))",
@@ -1044,6 +1044,34 @@ _require_directional(::FrameTransport) = throw(ArgumentError(
     "direction lives in its own geodesic frame, so an angle to one fixed reference axis is not a " *
     "property of the pair. Ask for the 1-D histogram.",
 ))
+
+"""
+    _check_half_turn_counts(CT, schedule, distance_bins)
+
+Throw unless counts of type `CT` can hold a joint histogram over angle of `schedule`'s lags up to the
+last edge: a lag that half-turns a periodic direction of even length splits each of its pairs in
+halves between two directions, which an integer count cannot hold.
+"""
+function _check_half_turn_counts(::Type{CT}, s::AbstractSeparableSchedule, dist_be) where {CT}
+    CT <: Integer || return nothing
+    su = uniform_axes(s)
+    T = eltype(su.spacing)
+    lims = lag_limits(s, _cull_is_unbounded(dist_be) ? T(Inf) : T(float(last(dist_be))))
+    any(d -> su.periodic[d] && iseven(su.dims[d]) && lims[d] >= su.dims[d] ÷ 2, eachindex(su.dims)) || return nothing
+    throw(ArgumentError(
+        "a lag that half-turns a periodic direction splits each pair between its two directions, so a " *
+        "joint histogram over angle needs a floating-point count type; got $CT",
+    ))
+end
+
+"""
+    _assert_grid_counts(schedule, counts, n_cells, weights)
+
+The count check of a grid entry: a soft-binned schedule's counts are a pair mass and need a
+floating-point type; an exact one's need room for every pair on top of what they hold.
+"""
+_assert_grid_counts(s, counts::AbstractArray, n_cells::Int, weights) =
+    _soft_binned(s) ? _assert_mass_counts(eltype(counts)) : _assert_counts_can_accumulate(counts, n_cells, weights)
 
 # ---------------------------------------------------------------------------------------------------
 # Batches over a trailing slice axis
@@ -1218,7 +1246,7 @@ function gridded_lag_sweep_batch!(
 ) where {OT, CT, D, V, K}
     nt = _check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
-    _check_weighted_counts(w, CT)
+    _assert_counts_can_accumulate(counts, size(data, 2), w)
     plan = squared_digitize_plan(dist_be)
     nb = n_histogram_bins(plan)
     size(sums) == (nb, nt) && size(counts) == (nb, nt) || throw(DimensionMismatch(
@@ -1271,11 +1299,12 @@ function gridded_lag_sweep_batch!(
 ) where {OT, CT, D, V, K}
     nt = _check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
     _require_directional(s)
+    _check_half_turn_counts(CT, s, dist_be)
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
-    _check_weighted_counts(w, CT)
+    _assert_counts_can_accumulate(counts, size(data, 2), w)
     plan = squared_digitize_plan(dist_be)
     nb = n_histogram_bins(plan)
-    axis_edges = BinEdges(axis_be)
+    axis_edges = digitize_plan(axis_be)
     na = n_histogram_bins(axis_edges)
     size(sums) == (nb, na, nt) && size(counts) == (nb, na, nt) || throw(DimensionMismatch(
         "sums and counts must be ($nb, $na, $nt); got $(size(sums)) and $(size(counts))",
@@ -1338,10 +1367,6 @@ device_transform_sweep_batch!(sums, counts, backend, args...) = throw(ArgumentEr
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, b, factor, totals::NTuple{M}, n_pairs, images,
     r2, axis_edges, na, second_axis,
 ) where {OT, CT, M}
-    M > 1 && CT <: Integer && throw(ArgumentError(
-        "a lag that half-turns a periodic direction splits each pair between its two directions, " *
-        "so a joint histogram over angle needs a floating-point count type; got $CT",
-    ))
     @inbounds for m in 1:M
         bθ = SFH.digitize(axis_quantity(second_axis, images[m], r2), axis_edges)
         1 <= bθ <= na || continue

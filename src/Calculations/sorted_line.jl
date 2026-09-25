@@ -33,15 +33,13 @@ function sorted_line_sweep!(
         "field has $(size(data, 1)) components, declared $V vector field(s) of width $D and $K scalar " *
         "field(s), $W components",
     ))
-    w = _pair_weights(weights, N, OT)
-    _check_weighted_counts(w, CT)
-    be = BinEdges(distance_bins)
+    be = digitize_plan(distance_bins)
     nb = n_histogram_bins(be)
     length(sums) == nb == length(counts) || throw(DimensionMismatch(
         "$nb bins, but sums has $(length(sums)) entries and counts $(length(counts))",
     ))
     N < 2 && return nothing
-    xs, ds, ws = _sorted_line_inputs(x, data, w, OT)
+    xs, ds, ws = _sorted_line_inputs(x, data, weights, OT)
     P = SFT.order(sf)
     return _sorted_line_run!(sums, counts, sf, xs, ds, ws, be, nb, Val(W), Val(P), Val(D), Val(V), Val(K), backend)
 end

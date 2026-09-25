@@ -1,13 +1,6 @@
 using Test: Test
 
-# The README is not part of the Documenter build, so nothing executes what it shows. Two of its
-# samples were broken for as long as anyone had gone without reading them: one named a submodule
-# path that raises `UndefVarError`, the other called an unqualified entry that does not resolve.
-# Both are the kind of defect that only running the code finds, so this file runs it.
-#
-# The blocks are run verbatim and in order, sharing one module, which is what a reader copying the
-# page top to bottom does — so a later block reading a name an earlier one bound is covered too.
-# The only line dropped is the installation command, which would install the package over itself.
+# Execute the small README examples in order, sharing their documented bindings.
 
 const README_PATH = joinpath(@__DIR__, "..", "README.md")
 

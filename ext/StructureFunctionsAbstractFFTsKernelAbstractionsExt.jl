@@ -282,13 +282,6 @@ function SFC.device_transform_sweep_batch!(
     strides = SFC._lag_strides(P)
     Pn = prod(P)
     axis_edges, second_axis, na = _axis_parts(axis)
-    if axis !== nothing && CT <: Integer &&
-       any(d -> su.periodic[d] && iseven(su.dims[d]) && lims[d] >= su.dims[d] ÷ 2, 1:Dg)
-        throw(ArgumentError(
-            "a lag that half-turns a periodic direction splits each pair between its two directions, so a " *
-            "joint histogram over angle needs a floating-point count type; got $CT",
-        ))
-    end
     d_axis_edges = axis_edges === nothing ? nothing : to(axis_edges)
     s_dev = to(s)
     plan_dev = to(plan)

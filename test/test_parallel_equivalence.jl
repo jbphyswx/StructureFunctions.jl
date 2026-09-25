@@ -171,6 +171,7 @@ Test.@testset "Distributed covers every entry family" begin
     # An entry family with no distributed method fails here rather than reaching a user.
     N, T, NB, NV = 40, 3, 6, 5
     xp, up = rand(2, N), randn(2, N)
+    wp = rand(N) .+ 0.5
     xb, ub = rand(2, N, T), randn(2, N, T)
     bins = collect(range(0.0, 1.0; length = NB + 1))
     vbins = collect(range(-3.0, 3.0; length = NV + 1))
@@ -259,6 +260,22 @@ Test.@testset "Distributed covers every entry family" begin
             SFC.calculate_structure_functions_single_pass_2d!(s, c, xp, up, bins, vbins;
                 backend = be)
             (s, c)
+        end),
+        # Pair weights ride as a keyword too; a route that drops them returns the unweighted answer.
+        ("weighted point", be -> begin
+            r = SFC.calculate_structure_function(op, xp, up, bins, Float64; backend = be, verbose = false,
+                show_progress = false, weights = wp, output_type = SF.StructureFunctionSumsAndCounts)
+            (r.sums, r.counts)
+        end),
+        ("weighted single-pass", be -> begin
+            r = SFC.calculate_structure_functions_single_pass(xp, up, bins; backend = be, weights = wp,
+                count_eltype = Float64)
+            (r.L3.sums, r.S2.counts)
+        end),
+        ("weighted single-pass 2D", be -> begin
+            r = SFC.calculate_structure_functions_single_pass_2d(xp, up, bins, vbins; backend = be,
+                weights = wp, count_eltype = Float64)
+            (r.T2.sums, r.T2.counts)
         end),
         ("harmonic direct sum", be -> begin
             hθ = acos.(clamp.(range(-0.95, 0.95; length = N), -1, 1))

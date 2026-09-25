@@ -3,13 +3,6 @@
 # On-chip (:shared, :typeplane): @localmem histogram during pair loop; block-end flush
 #   via _sp2d_flush_*_to_output! (@atomic into out_sums/out_cnts, joint pattern).
 # Direct (:direct): global atomics into block-private partition; merge on host.
-#
-# Included from StructureFunctionsKernelAbstractionsExt.jl.
-
-
-@inline function _sp2d_flat_index(t, dbin, vbin, n_dist, n_val)
-    return (t - 1) * n_dist * n_val + (dbin - 1) * n_val + vbin
-end
 
 """
     _sp2d_val_stride(n_val)
@@ -51,58 +44,6 @@ end
     return t, dbin, vbin
 end
 
-# Index args are ::Integer, not ::Int: on CUDA, @index(Local, Linear) yields Int32
-# (threadIdx().x), and ::Int-typed methods would not match — the resulting
-# MethodError cannot even be thrown in device code, so the kernel fails to compile
-# (InvalidIRError: gpu_gc_pool_alloc / jl_f_throw_methoderror). Coerce once inside.
-@inline function _sp2d_zero_shared_hist!(
-    shared_sums,
-    shared_cnts,
-    C::Integer,
-    lid::Integer,
-    workgroup_size::Integer,
-)
-    g = Int(lid)
-    FT = eltype(shared_sums)
-    while g <= C
-        @inbounds begin
-            shared_sums[g] = zero(FT)
-            shared_cnts[g] = zero(eltype(shared_cnts))
-        end
-        g += workgroup_size
-    end
-    return nothing
-end
-
-"""Flush block-local shared histogram into block-private partition (`:direct` path only)."""
-@inline function _sp2d_flush_shared_hist!(
-    partition_sums,
-    partition_counts,
-    shared_sums,
-    shared_cnts,
-    C,
-    n_dist,
-    n_val,
-    block_id,
-    lid,
-    workgroup_size,
-)
-    g = lid
-    while g <= C
-        t, dbin, vbin = _sp2d_shared_decode(g, n_dist, n_val)
-        if vbin <= n_val
-            @inbounds begin
-                partition_sums[t, dbin, vbin, block_id] += shared_sums[g]
-                if shared_cnts[g] != zero(eltype(shared_cnts))
-                    partition_counts[t, dbin, vbin, block_id] += shared_cnts[g]
-                end
-            end
-        end
-        g += workgroup_size
-    end
-    return nothing
-end
-
 """Joint-style flush: `@atomic` block-local shared histogram into final output (on-chip path)."""
 @inline function _sp2d_flush_shared_to_output!(
     out_sums,
@@ -131,141 +72,15 @@ end
     return nothing
 end
 
-# --- shared-histogram accumulation (flat index g, no strip filter) ---
-
-@inline function _gpu_accumulate_sp2d_sharedhist_linear_val!(
-    shared_sums, shared_cnts, n_dist, n_val,
-    dbin, du_L, du_n2, N_val_edges,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
-    w,
-) where {FT}
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_linear(
-            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_sharedhist_linear_val_cols!(
-    shared_sums, shared_cnts, n_dist, n_val,
-    val_first, val_last, val_inv_step, val_step,
+"""Accumulate one pair's six invariants into the padded shared histogram."""
+@inline function _gpu_accumulate_sp2d_sharedhist!(
+    shared_sums, shared_cnts, n_dist, n_val, vplan,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_linear(
-            vals[t], val_first[t], val_last[t], val_inv_step[t], val_step[t],
-            N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_sharedhist_inflinear_val!(
-    shared_sums, shared_cnts, n_dist, n_val,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
-    n_inner_edges::Int, inner_last::FT,
-    w,
-) where {FT}
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first, val_last, val_inv_step, val_step,
-            n_inner_edges, inner_last,
-        )
-        if 1 <= vbin < N_val_edges
-            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_sharedhist_inflinear_val_cols!(
-    shared_sums, shared_cnts, n_dist, n_val,
-    val_first, val_last, val_inv_step, val_step, inner_last,
-    dbin::Int, du_L, du_n2, n_inner_edges::Int, N_val_edges::Int,
-    w,
-)
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first[t], val_last[t], val_inv_step[t], val_step[t],
-            n_inner_edges, inner_last[t],
-        )
-        if 1 <= vbin < N_val_edges
-            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_sharedhist_log_val!(
-    shared_sums, shared_cnts, n_dist, n_val,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
-    w,
-) where {FT}
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_log_spaced(
-            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_sharedhist_log_val_cols!(
-    shared_sums, shared_cnts, n_dist, n_val,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first, val_last, val_inv_step, val_step,
-    w,
-)
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_log_spaced_col(
-            vals[t], val_first, val_last, val_inv_step, val_step, t, N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_sharedhist_vector_val_cols!(
-    shared_sums, shared_cnts, n_dist, n_val,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    value_edges,
-    w,
-)
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
+        vbin = _sf_value_bin(vplan, vals[t], t)
         if 1 <= vbin < N_val_edges
             g = _sp2d_shared_index(t, dbin, vbin, n_dist, n_val)
             @atomic shared_sums[g] += w * vals[t]
@@ -284,40 +99,6 @@ end
 
 """Cells in one padded type plane."""
 @inline _sp2d_plane_cells(n_dist::Int, n_val::Int) = n_dist * _sp2d_val_stride(n_val)
-
-"""Flush type-plane shared histogram into block-private partition (`:direct` path only)."""
-@inline function _sp2d_flush_typeplane!(
-    partition_sums,
-    partition_counts,
-    shared_sums,
-    shared_cnts,
-    type_pass::Integer,
-    types_per_pass::Integer,
-    plane::Integer,
-    n_dist::Integer,
-    n_val::Integer,
-    block_id::Integer,
-    lid::Integer,
-    workgroup_size::Integer,
-)
-    t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
-    g = Int(lid)
-    while g <= plane
-        dbin = (g - 1) ÷ n_val + 1
-        vbin = (g - 1) % n_val + 1
-        for t in t_lo:t_hi
-            slot = t - t_lo
-            @inbounds idx = slot * plane + g
-            @inbounds partition_sums[t, dbin, vbin, block_id] += shared_sums[idx]
-            if shared_cnts[idx] != UInt32(0)
-                @inbounds partition_counts[t, dbin, vbin, block_id] += shared_cnts[idx]
-            end
-        end
-        g += workgroup_size
-    end
-    return nothing
-end
 
 """Joint-style flush for type-plane shared histogram into final output (on-chip path)."""
 @inline function _sp2d_flush_typeplane_to_output!(
@@ -355,33 +136,9 @@ end
     return nothing
 end
 
-@inline function _gpu_accumulate_sp2d_typeplane_linear_val!(
-    shared_sums, shared_cnts, n_val, plane::Int,
-    type_pass::Int, types_per_pass::Int,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
-    w,
-) where {FT}
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
-    for t in t_lo:t_hi
-        vbin = _gpu_digitize_linear(
-            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            slot = t - t_lo
-            g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_typeplane_linear_val_cols!(
-    shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    val_first, val_last, val_inv_step, val_step,
+"""Accumulate one pair's invariants of this type pass into the type-plane shared histogram."""
+@inline function _gpu_accumulate_sp2d_typeplane!(
+    shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int, vplan,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     w,
 )
@@ -389,129 +146,7 @@ end
     t_lo = (type_pass - 1) * types_per_pass + 1
     t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
     for t in t_lo:t_hi
-        vbin = _gpu_digitize_linear(
-            vals[t], val_first[t], val_last[t],
-            val_inv_step[t], val_step[t],
-            N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            slot = t - t_lo
-            g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_typeplane_inflinear_val!(
-    shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
-    n_inner_edges::Int, inner_last::FT,
-    w,
-) where {FT}
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
-    for t in t_lo:t_hi
-        vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first, val_last, val_inv_step, val_step,
-            n_inner_edges, inner_last,
-        )
-        if 1 <= vbin < N_val_edges
-            slot = t - t_lo
-            g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_typeplane_inflinear_val_cols!(
-    shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    val_first, val_last, val_inv_step, val_step, inner_last,
-    dbin::Int, du_L, du_n2, n_inner_edges::Int, N_val_edges::Int,
-    w,
-)
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
-    for t in t_lo:t_hi
-        vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first[t], val_last[t],
-            val_inv_step[t], val_step[t],
-            n_inner_edges, inner_last[t],
-        )
-        if 1 <= vbin < N_val_edges
-            slot = t - t_lo
-            g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_typeplane_log_val!(
-    shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
-    w,
-) where {FT}
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
-    for t in t_lo:t_hi
-        vbin = _gpu_digitize_log_spaced(
-            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            slot = t - t_lo
-            g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_typeplane_log_val_cols!(
-    shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first, val_last, val_inv_step, val_step,
-    w,
-)
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
-    for t in t_lo:t_hi
-        vbin = _gpu_digitize_log_spaced_col(
-            vals[t], val_first, val_last, val_inv_step, val_step,
-            t, N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            slot = t - t_lo
-            g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
-            @atomic shared_sums[g] += w * vals[t]
-            @atomic shared_cnts[g] += convert(eltype(shared_cnts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_typeplane_vector_val_cols!(
-    shared_sums, shared_cnts, n_val, plane::Int, type_pass::Int, types_per_pass::Int,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    value_edges,
-    w,
-)
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    t_lo = (type_pass - 1) * types_per_pass + 1
-    t_hi = min(SF_GPU_SINGLE_PASS_N, type_pass * types_per_pass)
-    for t in t_lo:t_hi
-        vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
+        vbin = _sf_value_bin(vplan, vals[t], t)
         if 1 <= vbin < N_val_edges
             slot = t - t_lo
             g = slot * plane + _sp2d_plane_flat_index(dbin, vbin, n_val)
@@ -524,133 +159,15 @@ end
 
 # --- direct partitioned accumulation (block-partitioned global atomics) ---
 
-@inline function _gpu_accumulate_sp2d_partitioned_direct_linear_val!(
-    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
-    w,
-) where {FT}
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_linear(
-            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_partitioned_direct_linear_val_cols!(
-    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    val_first, val_last, val_inv_step, val_step,
+"""Accumulate one pair's six invariants into this block's global partition."""
+@inline function _gpu_accumulate_sp2d_partitioned_direct!(
+    partition_sums, partition_counts, block_id::Integer, vplan,
     dbin::Int, du_L, du_n2, N_val_edges::Int,
     w,
 )
     vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
     for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_linear(
-            vals[t], val_first[t], val_last[t], val_inv_step[t], val_step[t],
-            N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_partitioned_direct_inflinear_val!(
-    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
-    n_inner_edges::Int, inner_last::FT,
-    w,
-) where {FT}
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first, val_last, val_inv_step, val_step,
-            n_inner_edges, inner_last,
-        )
-        if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_partitioned_direct_inflinear_val_cols!(
-    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    val_first, val_last, val_inv_step, val_step, inner_last,
-    dbin::Int, du_L, du_n2, n_inner_edges::Int, N_val_edges::Int,
-    w,
-)
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_inf_padded_linear(
-            vals[t], val_first[t], val_last[t], val_inv_step[t], val_step[t],
-            n_inner_edges, inner_last[t],
-        )
-        if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_partitioned_direct_log_val!(
-    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first::FT, val_last::FT, val_inv_step::FT, val_step::FT,
-    w,
-) where {FT}
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_log_spaced(
-            vals[t], val_first, val_last, val_inv_step, val_step, N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_partitioned_direct_log_val_cols!(
-    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    val_first, val_last, val_inv_step, val_step,
-    w,
-)
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_log_spaced_col(
-            vals[t], val_first, val_last, val_inv_step, val_step, t, N_val_edges,
-        )
-        if 1 <= vbin < N_val_edges
-            @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
-            @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
-        end
-    end
-    return nothing
-end
-
-@inline function _gpu_accumulate_sp2d_partitioned_direct_vector_val_cols!(
-    partition_sums, partition_counts, block_id::Integer, n_dist, n_val,
-    dbin::Int, du_L, du_n2, N_val_edges::Int,
-    value_edges,
-    w,
-)
-    vals = SA.SVector(SFC.single_pass_invariants(du_L, du_n2))
-    for t in 1:SF_GPU_SINGLE_PASS_N
-        vbin = _gpu_digitize_general_col(vals[t], value_edges, t, N_val_edges)
+        vbin = _sf_value_bin(vplan, vals[t], t)
         if 1 <= vbin < N_val_edges
             @atomic partition_sums[t, dbin, vbin, block_id] += w * vals[t]
             @atomic partition_counts[t, dbin, vbin, block_id] += convert(eltype(partition_counts), w)
@@ -796,320 +313,114 @@ function _sp2d_merge_mode()
     return sym in _SP2D_MERGE_MODES ? sym : :serial
 end
 
-# --- kernel codegen ---
-
-function _sp2d_partition_dist_spec(::Val{:linear})
-    params = [
-        :(dist_first), :(dist_last), :(dist_inv_step),
-        :(dist_step),
-    ]
-    bin = :(_gpu_digitize_linear(
-        dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins,
-    ))
-    return params, bin
-end
-
-function _sp2d_partition_dist_spec(::Val{:log_linear})
-    params = [
-        :(dist_first), :(dist_last), :(dist_inv_step),
-        :(dist_step),
-    ]
-    bin = :(_gpu_digitize_log_spaced(
-        dist, dist_first, dist_last, dist_inv_step, dist_step, N_bins,
-    ))
-    return params, bin
-end
-
-"""Arbitrary distance edges: binary search on device, so no bin spacing is assumed."""
-function _sp2d_partition_dist_spec(::Val{:general})
-    params = [:(@Const(distance_edges))]
-    bin = :(_gpu_digitize_general(dist, distance_edges, N_bins))
-    return params, bin
-end
-
-function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:shared})
-    return quote
-        _gpu_accumulate_sp2d_sharedhist_linear_val!(
-            shared_sums, shared_cnts, NB, N_val_edges - 1,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step,
-            pw,
-        )
+"""
+Stage tile `ti` (and `tj` when off-diagonal) into shared memory, component-major as
+`(d-1)*SF_GPU_TILE + k`.
+"""
+function _sp2d_tiled_load_tile!(
+    shared_xi, shared_ui, shared_xj, shared_uj, x_mat, u_mat,
+    ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, ::Val{D},
+) where {D}
+    if ni > 0 && nj > 0
+        k = lid
+        while k <= ni
+            gi = i0 + k - 1
+            @inbounds for d in 1:D
+                shared_xi[(d - 1) * SF_GPU_TILE + k] = x_mat[d, gi]
+                shared_ui[(d - 1) * SF_GPU_TILE + k] = u_mat[d, gi]
+            end
+            k += workgroup_size
+        end
+        if ti < tj
+            k = lid
+            while k <= nj
+                gj = j0 + k - 1
+                @inbounds for d in 1:D
+                    shared_xj[(d - 1) * SF_GPU_TILE + k] = x_mat[d, gj]
+                    shared_uj[(d - 1) * SF_GPU_TILE + k] = u_mat[d, gj]
+                end
+                k += workgroup_size
+            end
+        end
     end
-end
-function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:direct})
-    return quote
-        _gpu_accumulate_sp2d_partitioned_direct_linear_val!(
-            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step,
-            pw,
-        )
-    end
+    return nothing
 end
 
-function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:shared})
-    return quote
-        _gpu_accumulate_sp2d_sharedhist_linear_val_cols!(
-            shared_sums, shared_cnts, NB, N_val_edges - 1,
-            val_first, val_last, val_inv_step, val_step,
-            bin, du_L, du_n2, N_val_edges,
-            pw,
-        )
-    end
-end
-function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:direct})
-    return quote
-        _gpu_accumulate_sp2d_partitioned_direct_linear_val_cols!(
-            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            val_first, val_last, val_inv_step, val_step,
-            bin, du_L, du_n2, N_val_edges,
-            pw,
-        )
-    end
-end
+# --- HTP-EJ pair kernels, one per accumulation mode ---
+#
+# Each stages its tile pair, walks the pairs, and accumulates through the mode's helper. The tile
+# coordinates are held in `shared_tile` so every section after a `@synchronize` rereads them.
 
-function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:shared})
-    return quote
-        _gpu_accumulate_sp2d_sharedhist_inflinear_val!(
-            shared_sums, shared_cnts, NB, N_val_edges - 1,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
-            pw,
-        )
-    end
-end
-function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:direct})
-    return quote
-        _gpu_accumulate_sp2d_partitioned_direct_inflinear_val!(
-            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
-            pw,
-        )
-    end
-end
+KA.@kernel unsafe_indices=true function _sf6_sp2d_sharedhist_tiled128_u32!(
+    out_sums::AbstractArray{OT}, out_cnts, x_mat::AbstractMatrix{FT}, u_mat::AbstractMatrix{FT},
+    N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
+    ddig, vplan,
+    sched, n_tile_blocks::Int, workgroup_size::Int,
+    C::Int, plane::Int, types_per_pass::Int, n_type_passes::Int,
+    ::Val{HC}, ::Val{D}, ::Val{CST}, wts, geom,
+) where {OT, FT, HC, D, CST}
+    shared_xi = @localmem FT (D * SF_GPU_TILE,)
+    shared_ui = @localmem FT (D * SF_GPU_TILE,)
+    shared_xj = @localmem FT (D * SF_GPU_TILE,)
+    shared_uj = @localmem FT (D * SF_GPU_TILE,)
+    shared_sums = @localmem OT (HC,)
+    shared_cnts = @localmem CST (HC,)
+    shared_block_id = @localmem Int (1,)
+    shared_tile = @localmem Int (4,)
 
-function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:shared})
-    return quote
-        _gpu_accumulate_sp2d_sharedhist_inflinear_val_cols!(
-            shared_sums, shared_cnts, NB, N_val_edges - 1,
-            val_first, val_last, val_inv_step, val_step, inner_last,
-            bin, du_L, du_n2, n_inner_edges, N_val_edges,
-            pw,
+    g = @index(Global, Linear)
+    if (g - 1) % workgroup_size + 1 == 1
+        @inbounds shared_block_id[1] = (g - 1) ÷ workgroup_size + 1
+    end
+    @synchronize
+    lid = @index(Local, Linear)
+    if @inbounds(shared_block_id[1]) <= n_tile_blocks
+        ti, tj = tile_for(sched, @inbounds(shared_block_id[1]))
+        i0 = (ti - 1) * SF_GPU_TILE + 1
+        j0 = (tj - 1) * SF_GPU_TILE + 1
+        ni = min(SF_GPU_TILE, N_points - i0 + 1)
+        nj = min(SF_GPU_TILE, N_points - j0 + 1)
+        _sp2d_tiled_load_tile!(
+            shared_xi, shared_ui, shared_xj, shared_uj, x_mat, u_mat,
+            ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(D),
         )
     end
-end
-function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:direct})
-    return quote
-        _gpu_accumulate_sp2d_partitioned_direct_inflinear_val_cols!(
-            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            val_first, val_last, val_inv_step, val_step, inner_last,
-            bin, du_L, du_n2, n_inner_edges, N_val_edges,
-            pw,
-        )
+    @synchronize
+    lid = @index(Local, Linear)
+    if @inbounds(shared_block_id[1]) <= n_tile_blocks
+        ti, tj = tile_for(sched, @inbounds(shared_block_id[1]))
+        i0 = (ti - 1) * SF_GPU_TILE + 1
+        j0 = (tj - 1) * SF_GPU_TILE + 1
+        ni = min(SF_GPU_TILE, N_points - i0 + 1)
+        nj = min(SF_GPU_TILE, N_points - j0 + 1)
+        if lid == 1
+            @inbounds shared_tile[1] = ti
+            @inbounds shared_tile[2] = tj
+            @inbounds shared_tile[3] = ni
+            @inbounds shared_tile[4] = nj
+        end
     end
-end
-
-function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:shared})
-    return quote
-        _gpu_accumulate_sp2d_sharedhist_log_val!(
-            shared_sums, shared_cnts, NB, N_val_edges - 1,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step,
-            pw,
-        )
+    @synchronize
+    lid = @index(Local, Linear)
+    if @inbounds(shared_block_id[1]) <= n_tile_blocks
+        g_zero = lid
+        while g_zero <= C
+            @inbounds begin
+                shared_sums[g_zero] = zero(OT)
+                shared_cnts[g_zero] = zero(CST)
+            end
+            g_zero += workgroup_size
+        end
     end
-end
-function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:direct})
-    return quote
-        _gpu_accumulate_sp2d_partitioned_direct_log_val!(
-            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step,
-            pw,
-        )
-    end
-end
-
-function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:shared})
-    return quote
-        _gpu_accumulate_sp2d_sharedhist_log_val_cols!(
-            shared_sums, shared_cnts, NB, N_val_edges - 1,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step,
-            pw,
-        )
-    end
-end
-function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:direct})
-    return quote
-        _gpu_accumulate_sp2d_partitioned_direct_log_val_cols!(
-            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step,
-            pw,
-        )
-    end
-end
-
-function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:shared})
-    return quote
-        _gpu_accumulate_sp2d_sharedhist_vector_val_cols!(
-            shared_sums, shared_cnts, NB, N_val_edges - 1,
-            bin, du_L, du_n2, N_val_edges, value_edges,
-            pw,
-        )
-    end
-end
-function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:direct})
-    return quote
-        _gpu_accumulate_sp2d_partitioned_direct_vector_val_cols!(
-            partition_sums, partition_counts, block_id, NB, N_val_edges - 1,
-            bin, du_L, du_n2, N_val_edges, value_edges,
-            pw,
-        )
-    end
-end
-
-# type-plane (one or more SF types per pass; shared hist = types_per_pass × plane)
-function _sp2d_partition_val_accum(::Val{:linear_shared}, ::Val{:typeplane})
-    return quote
-        _gpu_accumulate_sp2d_typeplane_linear_val!(
-            shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step,
-            pw,
-        )
-    end
-end
-function _sp2d_partition_val_accum(::Val{:linear_cols}, ::Val{:typeplane})
-    return quote
-        _gpu_accumulate_sp2d_typeplane_linear_val_cols!(
-            shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            val_first, val_last, val_inv_step, val_step,
-            bin, du_L, du_n2, N_val_edges,
-            pw,
-        )
-    end
-end
-function _sp2d_partition_val_accum(::Val{:inflinear_shared}, ::Val{:typeplane})
-    return quote
-        _gpu_accumulate_sp2d_typeplane_inflinear_val!(
-            shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step, n_inner_edges, inner_last,
-            pw,
-        )
-    end
-end
-function _sp2d_partition_val_accum(::Val{:inflinear_cols}, ::Val{:typeplane})
-    return quote
-        _gpu_accumulate_sp2d_typeplane_inflinear_val_cols!(
-            shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            val_first, val_last, val_inv_step, val_step, inner_last,
-            bin, du_L, du_n2, n_inner_edges, N_val_edges,
-            pw,
-        )
-    end
-end
-function _sp2d_partition_val_accum(::Val{:log_linear_shared}, ::Val{:typeplane})
-    return quote
-        _gpu_accumulate_sp2d_typeplane_log_val!(
-            shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step,
-            pw,
-        )
-    end
-end
-function _sp2d_partition_val_accum(::Val{:log_linear_cols}, ::Val{:typeplane})
-    return quote
-        _gpu_accumulate_sp2d_typeplane_log_val_cols!(
-            shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            bin, du_L, du_n2, N_val_edges,
-            val_first, val_last, val_inv_step, val_step,
-            pw,
-        )
-    end
-end
-function _sp2d_partition_val_accum(::Val{:vector_cols}, ::Val{:typeplane})
-    return quote
-        _gpu_accumulate_sp2d_typeplane_vector_val_cols!(
-            shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
-            bin, du_L, du_n2, N_val_edges, value_edges,
-            pw,
-        )
-    end
-end
-
-function _sp2d_partition_kernel_prefix(::Val{:shared})
-    return :_sf6_sp2d_sharedhist_tiled128_
-end
-function _sp2d_partition_kernel_prefix(::Val{:typeplane})
-    return :_sf6_sp2d_typeplane_tiled128_
-end
-function _sp2d_partition_kernel_prefix(::Val{:direct})
-    return :_sf6_sp2d_directpartition_tiled128_
-end
-
-function _sp2d_partition_val_params(::Val{:linear_shared})
-    return [:(val_first), :(val_last), :(val_inv_step), :(val_step)]
-end
-function _sp2d_partition_val_params(::Val{:linear_cols})
-    return [:(val_first), :(val_last), :(val_inv_step), :(val_step)]
-end
-function _sp2d_partition_val_params(::Val{:inflinear_shared})
-    return [
-        :(val_first), :(val_last), :(val_inv_step), :(val_step),
-        :(n_inner_edges::Int), :(inner_last),
-    ]
-end
-function _sp2d_partition_val_params(::Val{:inflinear_cols})
-    return [
-        :(val_first), :(val_last), :(val_inv_step), :(val_step),
-        :(inner_last), :(n_inner_edges::Int),
-    ]
-end
-function _sp2d_partition_val_params(::Val{:log_linear_shared})
-    return [:(val_first), :(val_last), :(val_inv_step), :(val_step)]
-end
-function _sp2d_partition_val_params(::Val{:log_linear_cols})
-    return [:(val_first), :(val_last), :(val_inv_step), :(val_step)]
-end
-function _sp2d_partition_val_params(::Val{:vector_cols})
-    return [:(@Const(value_edges))]
-end
-
-function _sp2d_partition_dist_spec(dist::Symbol)
-    return _sp2d_partition_dist_spec(Val(dist))
-end
-
-"""Emit one HTP-EJ tiled128 kernel for `accum_mode` (`:shared`, `:typeplane`, or `:direct`)."""
-function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbol)
-    prefix = _sp2d_partition_kernel_prefix(Val(accum_mode))
-    fname = Symbol(prefix, dist, :_, val, :_u32!)
-    dist_params, dist_bin = _sp2d_partition_dist_spec(dist)
-    val_params = _sp2d_partition_val_params(Val(val))
-    accum = _sp2d_partition_val_accum(Val(val), Val(accum_mode))
-    uses_shared = accum_mode in (:shared, :typeplane)
-    # Width is a kernel type parameter, so one definition specializes per config and no config pays
-    # for the largest one the budget allows.
-    shared_hist_decl = uses_shared ? quote
-        shared_sums = @localmem OT (HC,)
-        shared_cnts = @localmem CST (HC,)
-    end : quote end
-    type_pass_decl = accum_mode == :typeplane ? quote
-        shared_type_pass = @localmem Int (1,)
-    end : quote end
-    kernel_tail_params = [
-        :(sched), :(n_tile_blocks::Int), :(workgroup_size::Int),
-        :(C::Int), :(plane::Int), :(types_per_pass::Int), :(n_type_passes::Int),
-        :(::Val{HC}), :(::Val{D}), :(::Val{CST}), :(wts), :(geom),
-    ]
-    pair_loop = quote
-        # The pair loop reads its tile out of `shared_tile`, so the tiles' first global point
-        # indices are rebuilt here; a pair's weight is the product of its two points'.
+    @synchronize
+    lid = @index(Local, Linear)
+    if @inbounds(shared_block_id[1]) <= n_tile_blocks &&
+       @inbounds(shared_tile[3]) > 0 && @inbounds(shared_tile[4]) > 0
+        @inbounds ti = shared_tile[1]
+        @inbounds tj = shared_tile[2]
+        @inbounds ni = shared_tile[3]
+        @inbounds nj = shared_tile[4]
+        n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
         i0w = (ti - 1) * SF_GPU_TILE + 1
         jbw = ti < tj ? (tj - 1) * SF_GPU_TILE + 1 : i0w
         p = lid
@@ -1129,216 +440,239 @@ function _sp2d_partition_kernel_def(accum_mode::Symbol, dist::Symbol, val::Symbo
                 U2 = _sf_load_pt(Val(D), shared_ui, jb)
             end
             ok, dist, frame = SFH.pair_frame(geom, X1, X2)
-            bin = $(dist_bin)
+            bin = SFH.digitize(dist, ddig)
             if ok && 1 <= bin < N_bins
-                # |du_T|² from the norm: the six invariants use only du_L, du_L² and du_T², never
-                # the signed du_T, so n̂ = (r̂₂, -r̂₁) is never built and the kernel carries no
-                # 2-D-specific assumption. This is the CPU's formula, so the two sum one expression.
                 du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
                 pw = SFC._point_weight(wts, i0w + ia - 1) * SFC._point_weight(wts, jbw + jb - 1)
-                $(accum)
+                _gpu_accumulate_sp2d_sharedhist!(
+                    shared_sums, shared_cnts, NB, N_val_edges - 1, vplan,
+                    bin, du_L, du_n2, N_val_edges, pw,
+                )
             end
             p += workgroup_size
         end
     end
-    accum_body = if accum_mode == :typeplane
-        quote
-            @synchronize
+    @synchronize
     lid = @index(Local, Linear)
-            if lid == 1
-                @inbounds shared_type_pass[1] = 1
-            end
-            @synchronize
+    _sp2d_flush_shared_to_output!(
+        out_sums, out_cnts, shared_sums, shared_cnts, C, NB, N_val_edges - 1,
+        lid, workgroup_size,
+    )
+end
+
+KA.@kernel unsafe_indices=true function _sf6_sp2d_typeplane_tiled128_u32!(
+    out_sums::AbstractArray{OT}, out_cnts, x_mat::AbstractMatrix{FT}, u_mat::AbstractMatrix{FT},
+    N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
+    ddig, vplan,
+    sched, n_tile_blocks::Int, workgroup_size::Int,
+    C::Int, plane::Int, types_per_pass::Int, n_type_passes::Int,
+    ::Val{HC}, ::Val{D}, ::Val{CST}, wts, geom,
+) where {OT, FT, HC, D, CST}
+    shared_xi = @localmem FT (D * SF_GPU_TILE,)
+    shared_ui = @localmem FT (D * SF_GPU_TILE,)
+    shared_xj = @localmem FT (D * SF_GPU_TILE,)
+    shared_uj = @localmem FT (D * SF_GPU_TILE,)
+    shared_sums = @localmem OT (HC,)
+    shared_cnts = @localmem CST (HC,)
+    shared_type_pass = @localmem Int (1,)
+    shared_block_id = @localmem Int (1,)
+    shared_tile = @localmem Int (4,)
+
+    g = @index(Global, Linear)
+    if (g - 1) % workgroup_size + 1 == 1
+        @inbounds shared_block_id[1] = (g - 1) ÷ workgroup_size + 1
+    end
+    @synchronize
     lid = @index(Local, Linear)
-            if @inbounds(shared_block_id[1]) <= n_tile_blocks &&
-               @inbounds(shared_tile[3]) > 0 && @inbounds(shared_tile[4]) > 0
-                block_id = @inbounds(shared_block_id[1])
-                @inbounds ti = shared_tile[1]
-                @inbounds tj = shared_tile[2]
-                @inbounds ni = shared_tile[3]
-                @inbounds nj = shared_tile[4]
-                n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
-                for _ in 1:n_type_passes
+    if @inbounds(shared_block_id[1]) <= n_tile_blocks
+        ti, tj = tile_for(sched, @inbounds(shared_block_id[1]))
+        i0 = (ti - 1) * SF_GPU_TILE + 1
+        j0 = (tj - 1) * SF_GPU_TILE + 1
+        ni = min(SF_GPU_TILE, N_points - i0 + 1)
+        nj = min(SF_GPU_TILE, N_points - j0 + 1)
+        _sp2d_tiled_load_tile!(
+            shared_xi, shared_ui, shared_xj, shared_uj, x_mat, u_mat,
+            ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(D),
+        )
+    end
+    @synchronize
     lid = @index(Local, Linear)
-                    @inbounds type_pass = shared_type_pass[1]
-                    let g_zero = lid
-                        while g_zero <= types_per_pass * plane
-                            @inbounds begin
-                                shared_sums[g_zero] = zero(OT)
-                                shared_cnts[g_zero] = zero(eltype(shared_cnts))
-                            end
-                            g_zero += workgroup_size
-                        end
-                    end
-                    @synchronize
-    lid = @index(Local, Linear)
-                    block_id = @inbounds(shared_block_id[1])
-                    @inbounds ti = shared_tile[1]
-                    @inbounds tj = shared_tile[2]
-                    @inbounds ni = shared_tile[3]
-                    @inbounds nj = shared_tile[4]
-                    @inbounds type_pass = shared_type_pass[1]
-                    n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
-                    $(pair_loop)
-                    @synchronize
-    lid = @index(Local, Linear)
-                    @inbounds type_pass = shared_type_pass[1]
-                    block_id = @inbounds(shared_block_id[1])
-                    _sp2d_flush_typeplane_to_output!(
-                        out_sums, out_cnts, shared_sums, shared_cnts, type_pass, types_per_pass, plane,
-                        NB, N_val_edges - 1, lid, workgroup_size,
-                    )
-                    @synchronize
-    lid = @index(Local, Linear)
-                    if lid == 1
-                        @inbounds shared_type_pass[1] += 1
-                    end
-                    @synchronize
-                end
-            end
-        end
-    elseif accum_mode == :shared
-        quote
-            @synchronize
-    lid = @index(Local, Linear)
-            if @inbounds(shared_block_id[1]) <= n_tile_blocks
-                let g_zero = lid
-                    while g_zero <= C
-                        @inbounds begin
-                            shared_sums[g_zero] = zero(OT)
-                            shared_cnts[g_zero] = zero(UInt32)
-                        end
-                        g_zero += workgroup_size
-                    end
-                end
-            end
-            @synchronize
-    lid = @index(Local, Linear)
-            if @inbounds(shared_block_id[1]) <= n_tile_blocks &&
-               @inbounds(shared_tile[3]) > 0 && @inbounds(shared_tile[4]) > 0
-                block_id = @inbounds(shared_block_id[1])
-                @inbounds ti = shared_tile[1]
-                @inbounds tj = shared_tile[2]
-                @inbounds ni = shared_tile[3]
-                @inbounds nj = shared_tile[4]
-                n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
-                $(pair_loop)
-            end
-            @synchronize
-    lid = @index(Local, Linear)
-            _sp2d_flush_shared_to_output!(
-                out_sums, out_cnts, shared_sums, shared_cnts, C, NB, N_val_edges - 1,
-                lid, workgroup_size,
-            )
-        end
-    else
-        quote
-            @synchronize
-    lid = @index(Local, Linear)
-            if @inbounds(shared_block_id[1]) <= n_tile_blocks &&
-               @inbounds(shared_tile[3]) > 0 && @inbounds(shared_tile[4]) > 0
-                block_id = @inbounds(shared_block_id[1])
-                @inbounds ti = shared_tile[1]
-                @inbounds tj = shared_tile[2]
-                @inbounds ni = shared_tile[3]
-                @inbounds nj = shared_tile[4]
-                n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
-                $(pair_loop)
-            end
+    if @inbounds(shared_block_id[1]) <= n_tile_blocks
+        ti, tj = tile_for(sched, @inbounds(shared_block_id[1]))
+        i0 = (ti - 1) * SF_GPU_TILE + 1
+        j0 = (tj - 1) * SF_GPU_TILE + 1
+        ni = min(SF_GPU_TILE, N_points - i0 + 1)
+        nj = min(SF_GPU_TILE, N_points - j0 + 1)
+        if lid == 1
+            @inbounds shared_tile[1] = ti
+            @inbounds shared_tile[2] = tj
+            @inbounds shared_tile[3] = ni
+            @inbounds shared_tile[4] = nj
         end
     end
-    hist_params = accum_mode == :direct ?
-        [:(partition_sums::AbstractArray{OT}), :(partition_counts)] :
-        [:(out_sums::AbstractArray{OT}), :(out_cnts)]
-    return quote
-        KA.@kernel unsafe_indices=true function $(fname)(
-            $(hist_params...), x_mat::AbstractMatrix{FT}, u_mat::AbstractMatrix{FT},
-            N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
-            $(dist_params...),
-            $(val_params...),
-            $(kernel_tail_params...),
-        ) where {OT, FT, HC, D, CST}
-            shared_xi = @localmem FT (D * SF_GPU_TILE,)
-            shared_ui = @localmem FT (D * SF_GPU_TILE,)
-            shared_xj = @localmem FT (D * SF_GPU_TILE,)
-            shared_uj = @localmem FT (D * SF_GPU_TILE,)
-            $(shared_hist_decl)
-            $(type_pass_decl)
-            shared_block_id = @localmem Int (1,)
-            shared_tile = @localmem Int (4,)
-
-            g = @index(Global, Linear)
-            if (g - 1) % workgroup_size + 1 == 1
-                @inbounds shared_block_id[1] = (g - 1) ÷ workgroup_size + 1
+    @synchronize
+    lid = @index(Local, Linear)
+    if lid == 1
+        @inbounds shared_type_pass[1] = 1
+    end
+    @synchronize
+    lid = @index(Local, Linear)
+    if @inbounds(shared_block_id[1]) <= n_tile_blocks &&
+       @inbounds(shared_tile[3]) > 0 && @inbounds(shared_tile[4]) > 0
+        for _ in 1:n_type_passes
+            lid = @index(Local, Linear)
+            g_zero = lid
+            while g_zero <= types_per_pass * plane
+                @inbounds begin
+                    shared_sums[g_zero] = zero(OT)
+                    shared_cnts[g_zero] = zero(CST)
+                end
+                g_zero += workgroup_size
             end
             @synchronize
+            lid = @index(Local, Linear)
+            @inbounds ti = shared_tile[1]
+            @inbounds tj = shared_tile[2]
+            @inbounds ni = shared_tile[3]
+            @inbounds nj = shared_tile[4]
+            @inbounds type_pass = shared_type_pass[1]
+            n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
+            i0w = (ti - 1) * SF_GPU_TILE + 1
+            jbw = ti < tj ? (tj - 1) * SF_GPU_TILE + 1 : i0w
+            p = lid
+            while p <= n_pairs
+                if ti < tj
+                    ia = (p - 1) ÷ nj + 1
+                    jb = (p - 1) - (ia - 1) * nj + 1
+                    X1 = _sf_load_pt(Val(D), shared_xi, ia)
+                    X2 = _sf_load_pt(Val(D), shared_xj, jb)
+                    U1 = _sf_load_pt(Val(D), shared_ui, ia)
+                    U2 = _sf_load_pt(Val(D), shared_uj, jb)
+                else
+                    ia, jb = _pair_from_linear(p, ni)
+                    X1 = _sf_load_pt(Val(D), shared_xi, ia)
+                    X2 = _sf_load_pt(Val(D), shared_xi, jb)
+                    U1 = _sf_load_pt(Val(D), shared_ui, ia)
+                    U2 = _sf_load_pt(Val(D), shared_ui, jb)
+                end
+                ok, dist, frame = SFH.pair_frame(geom, X1, X2)
+                bin = SFH.digitize(dist, ddig)
+                if ok && 1 <= bin < N_bins
+                    du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
+                    pw = SFC._point_weight(wts, i0w + ia - 1) * SFC._point_weight(wts, jbw + jb - 1)
+                    _gpu_accumulate_sp2d_typeplane!(
+                        shared_sums, shared_cnts, N_val_edges - 1, plane, type_pass, types_per_pass,
+                        vplan, bin, du_L, du_n2, N_val_edges, pw,
+                    )
+                end
+                p += workgroup_size
+            end
+            @synchronize
+            lid = @index(Local, Linear)
+            @inbounds type_pass = shared_type_pass[1]
+            _sp2d_flush_typeplane_to_output!(
+                out_sums, out_cnts, shared_sums, shared_cnts, type_pass, types_per_pass, plane,
+                NB, N_val_edges - 1, lid, workgroup_size,
+            )
+            @synchronize
+            lid = @index(Local, Linear)
+            if lid == 1
+                @inbounds shared_type_pass[1] += 1
+            end
+            @synchronize
+        end
+    end
+end
+
+KA.@kernel unsafe_indices=true function _sf6_sp2d_directpartition_tiled128_u32!(
+    partition_sums::AbstractArray{OT}, partition_counts,
+    x_mat::AbstractMatrix{FT}, u_mat::AbstractMatrix{FT},
+    N_points::Int, N_bins::Int, NB::Int, N_val_edges::Int,
+    ddig, vplan,
+    sched, n_tile_blocks::Int, workgroup_size::Int,
+    C::Int, plane::Int, types_per_pass::Int, n_type_passes::Int,
+    ::Val{HC}, ::Val{D}, ::Val{CST}, wts, geom,
+) where {OT, FT, HC, D, CST}
+    shared_xi = @localmem FT (D * SF_GPU_TILE,)
+    shared_ui = @localmem FT (D * SF_GPU_TILE,)
+    shared_xj = @localmem FT (D * SF_GPU_TILE,)
+    shared_uj = @localmem FT (D * SF_GPU_TILE,)
+    shared_block_id = @localmem Int (1,)
+    shared_tile = @localmem Int (4,)
+
+    g = @index(Global, Linear)
+    if (g - 1) % workgroup_size + 1 == 1
+        @inbounds shared_block_id[1] = (g - 1) ÷ workgroup_size + 1
+    end
+    @synchronize
     lid = @index(Local, Linear)
-            if @inbounds(shared_block_id[1]) <= n_tile_blocks
-                ti, tj = tile_for(sched, @inbounds(shared_block_id[1]))
-                i0 = (ti - 1) * SF_GPU_TILE + 1
-                j0 = (tj - 1) * SF_GPU_TILE + 1
-                ni = min(SF_GPU_TILE, N_points - i0 + 1)
-                nj = min(SF_GPU_TILE, N_points - j0 + 1)
-                _sp2d_tiled_load_tile!(
-                    shared_xi, shared_ui, shared_xj, shared_uj, x_mat, u_mat,
-                    ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(D),
+    if @inbounds(shared_block_id[1]) <= n_tile_blocks
+        ti, tj = tile_for(sched, @inbounds(shared_block_id[1]))
+        i0 = (ti - 1) * SF_GPU_TILE + 1
+        j0 = (tj - 1) * SF_GPU_TILE + 1
+        ni = min(SF_GPU_TILE, N_points - i0 + 1)
+        nj = min(SF_GPU_TILE, N_points - j0 + 1)
+        _sp2d_tiled_load_tile!(
+            shared_xi, shared_ui, shared_xj, shared_uj, x_mat, u_mat,
+            ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(D),
+        )
+    end
+    @synchronize
+    lid = @index(Local, Linear)
+    if @inbounds(shared_block_id[1]) <= n_tile_blocks
+        ti, tj = tile_for(sched, @inbounds(shared_block_id[1]))
+        i0 = (ti - 1) * SF_GPU_TILE + 1
+        j0 = (tj - 1) * SF_GPU_TILE + 1
+        ni = min(SF_GPU_TILE, N_points - i0 + 1)
+        nj = min(SF_GPU_TILE, N_points - j0 + 1)
+        if lid == 1
+            @inbounds shared_tile[1] = ti
+            @inbounds shared_tile[2] = tj
+            @inbounds shared_tile[3] = ni
+            @inbounds shared_tile[4] = nj
+        end
+    end
+    @synchronize
+    lid = @index(Local, Linear)
+    if @inbounds(shared_block_id[1]) <= n_tile_blocks &&
+       @inbounds(shared_tile[3]) > 0 && @inbounds(shared_tile[4]) > 0
+        block_id = @inbounds(shared_block_id[1])
+        @inbounds ti = shared_tile[1]
+        @inbounds tj = shared_tile[2]
+        @inbounds ni = shared_tile[3]
+        @inbounds nj = shared_tile[4]
+        n_pairs = ti < tj ? ni * nj : ni * (ni - 1) ÷ 2
+        i0w = (ti - 1) * SF_GPU_TILE + 1
+        jbw = ti < tj ? (tj - 1) * SF_GPU_TILE + 1 : i0w
+        p = lid
+        while p <= n_pairs
+            if ti < tj
+                ia = (p - 1) ÷ nj + 1
+                jb = (p - 1) - (ia - 1) * nj + 1
+                X1 = _sf_load_pt(Val(D), shared_xi, ia)
+                X2 = _sf_load_pt(Val(D), shared_xj, jb)
+                U1 = _sf_load_pt(Val(D), shared_ui, ia)
+                U2 = _sf_load_pt(Val(D), shared_uj, jb)
+            else
+                ia, jb = _pair_from_linear(p, ni)
+                X1 = _sf_load_pt(Val(D), shared_xi, ia)
+                X2 = _sf_load_pt(Val(D), shared_xi, jb)
+                U1 = _sf_load_pt(Val(D), shared_ui, ia)
+                U2 = _sf_load_pt(Val(D), shared_ui, jb)
+            end
+            ok, dist, frame = SFH.pair_frame(geom, X1, X2)
+            bin = SFH.digitize(dist, ddig)
+            if ok && 1 <= bin < N_bins
+                du_L, du_n2 = SFH.pair_invariants(geom, frame, dist, U1, U2)
+                pw = SFC._point_weight(wts, i0w + ia - 1) * SFC._point_weight(wts, jbw + jb - 1)
+                _gpu_accumulate_sp2d_partitioned_direct!(
+                    partition_sums, partition_counts, block_id, vplan,
+                    bin, du_L, du_n2, N_val_edges, pw,
                 )
             end
-            @synchronize
-    lid = @index(Local, Linear)
-            if @inbounds(shared_block_id[1]) <= n_tile_blocks
-                ti, tj = tile_for(sched, @inbounds(shared_block_id[1]))
-                i0 = (ti - 1) * SF_GPU_TILE + 1
-                j0 = (tj - 1) * SF_GPU_TILE + 1
-                ni = min(SF_GPU_TILE, N_points - i0 + 1)
-                nj = min(SF_GPU_TILE, N_points - j0 + 1)
-                if lid == 1
-                    @inbounds shared_tile[1] = ti
-                    @inbounds shared_tile[2] = tj
-                    @inbounds shared_tile[3] = ni
-                    @inbounds shared_tile[4] = nj
-                end
-            end
-            $(accum_body)
+            p += workgroup_size
         end
     end
-end
-
-const _SP2D_PARTITION_DIST_VAL = [
-    (:linear, :linear_shared),
-    (:linear, :linear_cols),
-    (:linear, :inflinear_shared),
-    (:linear, :inflinear_cols),
-    (:linear, :log_linear_shared),
-    (:linear, :log_linear_cols),
-    (:linear, :vector_cols),
-    (:log_linear, :linear_shared),
-    (:log_linear, :linear_cols),
-    (:log_linear, :inflinear_shared),
-    (:log_linear, :inflinear_cols),
-    (:log_linear, :log_linear_shared),
-    (:log_linear, :log_linear_cols),
-    (:log_linear, :vector_cols),
-    (:general, :linear_shared),
-    (:general, :linear_cols),
-    (:general, :inflinear_shared),
-    (:general, :inflinear_cols),
-    (:general, :log_linear_shared),
-    (:general, :log_linear_cols),
-    (:general, :vector_cols),
-]
-
-for accum_mode in (:shared, :typeplane, :direct), (dist, val) in _SP2D_PARTITION_DIST_VAL
-    ex = _sp2d_partition_kernel_def(accum_mode, dist, val)
-    @eval $(ex)
-end
-
-"""Resolve compiled partitioned kernel for `(dist, val, accum_mode)`."""
-function _sp2d_partition_kernel_fn(dist::Symbol, val::Symbol, accum_mode::Symbol, backend, ws)
-    prefix = _sp2d_partition_kernel_prefix(Val(accum_mode))
-    fname = Symbol(prefix, dist, :_, val, :_u32!)
-    kf = getfield(@__MODULE__, fname)
-    return kf(backend, ws)
 end
 
 function _launch_merge_sp2d_partitions!(

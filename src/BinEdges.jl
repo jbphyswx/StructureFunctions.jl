@@ -3,32 +3,16 @@
 """
     AbstractBinEdges{T} <: AbstractVector{T}
 
-Supertype for all custom, high-performance bin edge collections in `StructureFunctions.jl`.
+Ordered histogram edges. Bin `i` contains queries in `(edges[i], edges[i+1]]`.
+[`BinEdges`](@ref) preserves arbitrary vectors. [`LinearBinEdges`](@ref) and
+[`LogBinEdges`](@ref) represent regular grids and use arithmetic to estimate
+lookup indices. [`InfPaddedBinEdges`](@ref) adds unbounded outer bins.
 
-### Why AbstractBinEdges Exists
-In structure function calculations over large datasets, the spatial separation distance ``r`` for each of
-the ``O(N^2)`` point pairs must be mapped to its corresponding distance bin (index). Using a standard sorted
-vector of bin edges requires a binary search (`searchsortedfirst`), which has ``O(\\log B)`` complexity
-where ``B`` is the number of bins.
-
-For large ``N``, this binary search becomes the dominant CPU bottleneck, causing high branch mispredictions and
-cache misses. Subtypes of `AbstractBinEdges` bypass the standard binary search by implementing custom
-`Base.searchsortedfirst` overrides that execute in ``O(1)`` time:
-- `LinearBinEdges` utilizes Fused Multiply-Add (FMA) arithmetic for uniformly-spaced bins.
-- `LogBinEdges` maps physical queries via `log(q)` then the same FMA path on the log-space grid.
-
-Wrapping standard arrays in these subtypes makes `digitize` a constant-time lookup.
-
-## Bin edges and backends
-
-- Plain `AbstractVector` bin edges are valid everywhere but use generic `searchsortedfirst` / binary search.
-- Pass [`LinearBinEdges`](@ref), [`LogBinEdges`](@ref), or [`InfPaddedBinEdges`](@ref) for O(1) CPU digitize
-  and matching GPU tiled kernels (see `StructureFunctionsKernelAbstractionsExt`).
-- [`InfPaddedBinEdges`](@ref) adds implicit catch-all under/overflow bins; do not `vcat(-Inf, …, Inf)` manually.
-- Classic serial/threaded pair-loop paths normalize once via [`BinEdges`](@ref); single-pass APIs expect callers
-  to choose edge types explicitly (no auto-wrap on GPU).
 """
-abstract type AbstractBinEdges{T} <: AbstractVector{T} end
+# abstract type AbstractBinEdges{T} <: AbstractVector{T} end
+abstract type AbstractVectorBinEdges{T} <: AbstractVector{T} end
+abstract type AbstractRangeBinEdges{T} <: AbstractRange{T} end
+const AbstractBinEdges{T} = Union{AbstractVectorBinEdges{T}, AbstractRangeBinEdges{T}}
 
 # ========================================================================= #
 # 1. Generic Wrapped Bin Edges
@@ -37,224 +21,376 @@ abstract type AbstractBinEdges{T} <: AbstractVector{T} end
 """
     BinEdges(edges::AbstractVector{T})
 
-Generic wrapper for arbitrary sorted vectors of bin edges.
-Bypasses range-specific optimizations but conforms to the `AbstractBinEdges` interface.
-
-### Behavior
-- If constructed with an `AbstractRange` (e.g. `StepRange` or `StepRangeLen`), it automatically promotes
-  and returns a `LinearBinEdges` wrapper to enable O(1) FMA indexing.
-- Otherwise, it wraps the vector and delegates to standard ``O(\\log N)`` binary search methods.
+The supplied sorted edges, kept as given and searched by bisection. A range is a
+[`LinearBinEdges`](@ref). [`digitize_plan`](@ref) turns these edges into a
+[`BucketedBinEdges`](@ref) for pair kernels.
 """
-struct BinEdges{T, ET <: AbstractVector{T}} <: AbstractBinEdges{T}
+struct BinEdges{T, ET <: AbstractVector{T}} <: AbstractVectorBinEdges{T}
     edges::ET
 end
 
 Base.size(v::BinEdges) = size(v.edges)
 Base.getindex(v::BinEdges, i::Int) = v.edges[i]
 
-@inline Base.searchsortedfirst(v::BinEdges, x) = searchsortedfirst(v.edges, x)
-@inline Base.searchsortedfirst(v::BinEdges, x, o::Base.Order.Ordering) = searchsortedfirst(v.edges, x, o)
-@inline Base.searchsortedlast(v::BinEdges, x) = searchsortedlast(v.edges, x)
-@inline Base.searchsortedlast(v::BinEdges, x, o::Base.Order.Ordering) = searchsortedlast(v.edges, x, o)
-@inline Base.searchsorted(v::BinEdges, x) = searchsorted(v.edges, x)
-@inline Base.searchsorted(v::BinEdges, x, o::Base.Order.Ordering) = searchsorted(v.edges, x, o)
+"""The first `i` in `lo:hi` with `edges[i] ≥ x`, given `edges[hi] ≥ x` or `hi = length(edges) + 1`."""
+@inline function _bisect_first(edges, x, lo::Int, hi::Int)
+    @inbounds while lo < hi
+        m = (lo + hi) >>> 1
+        if edges[m] < x
+            lo = m + 1
+        else
+            hi = m
+        end
+    end
+    return lo
+end
 
-# ========================================================================= #
-# 2. Linear/Uniform Spacing (FMA Linear Search)
-# ========================================================================= #
+@inline function Base.searchsortedfirst(v::BinEdges, x)
+    e = v.edges
+    n = length(e)
+    @inbounds x <= e[1] && return 1
+    @inbounds x <= e[n] || return n + 1
+    return _bisect_first(e, x, 2, n)
+end
+
+@inline Base.searchsortedlast(v::BinEdges, x) = _searchsortedlast_from_first(v, x)
+@inline Base.searchsorted(v::BinEdges, x) = searchsortedfirst(v, x):searchsortedlast(v, x)
+@inline Base.searchsortedfirst(v::BinEdges, x, o::Base.Order.Ordering) =
+    o isa Base.Order.ForwardOrdering ? searchsortedfirst(v, x) : searchsortedfirst(v.edges, x, o)
+@inline Base.searchsortedlast(v::BinEdges, x, o::Base.Order.Ordering) =
+    o isa Base.Order.ForwardOrdering ? searchsortedlast(v, x) : searchsortedlast(v.edges, x, o)
+@inline Base.searchsorted(v::BinEdges, x, o::Base.Order.Ordering) =
+    searchsortedfirst(v, x, o):searchsortedlast(v, x, o)
+
+"""`searchsortedlast` from `searchsortedfirst` on strictly increasing edges."""
+@inline function _searchsortedlast_from_first(edges, x)
+    i = searchsortedfirst(edges, x)
+    return i <= length(edges) && @inbounds(edges[i]) == x ? i : i - 1
+end
 
 """
-    LinearBinEdges(edges::AbstractRange{T})
+    LinearBinEdges(first_edge, last_edge, n_edges)
+    LinearBinEdges(edges::AbstractRange)
 
-High-performance wrapper for uniformly-spaced ranges (linear spacing).
+`n_edges` uniformly spaced edges from `first_edge` to `last_edge`, defining the `n_edges - 1` bins
+`(edges[k], edges[k+1]]`. A range is read for its endpoints and length; a vector of arbitrary edges is
+a [`BinEdges`](@ref).
 
-### Mathematical Theory
-A standard binary search takes ``O(\\log B)`` steps. With a uniformly spaced range of bin edges ``v_i = v_1 + (i-1)\\delta``,
-`searchsortedfirst(v, x)` is the smallest index ``i`` with ``v_i \\ge x``:
-```math
-i^*(x) = \\min\\{ i : v_1 + (i-1)\\delta \\ge x \\}
-     = \\left\\lfloor \\frac{x - v_1}{\\delta} \\right\\rfloor + 1
-     = \\lceil \\frac{x - v_1}{\\delta} + 1 \\rceil .
-```
-The discrete operator is **ceiling / floor+1**, not `round` (which answers a different question).
-
-Precompute `inv_step = 1/δ` and at query time one FMA gives \$t = (x-v_1)/\\delta\$:
-`t = muladd(x, inv_step, -v_1 * inv_step)` then `idx = floor(Int, t) + 1`.
-
-### Float boundary correction
-`t` and reconstructed edges are inexact. After clamping `idx`, compare the reconstructed left edge
-`u_idx = v_1 + (idx-1)δ`; if `u_idx < x`, return `idx + 1`. One comparison fixes the at-most-one-bin FP
-error without a second downward correction.
-
-### Performance
-Bypasses the twice-precision arithmetic of Julia's `StepRangeLen` search, so a lookup is one FMA and
-one comparison.
+The bin of `x` is `ceil(t) + 1` with `t = fma(x, inv_step, -first_edge * inv_step)`. The first and
+last edges are `first_edge` and `last_edge`; interior edge `k` is the largest value whose `t` does not
+exceed `k - 1`. `t` is correctly rounded and increasing in `x`, so the lookup equals a binary search
+over `collect(edges)`. A `NaN` falls above the last edge.
 """
-struct LinearBinEdges{T, RT <: AbstractRange{T}} <: AbstractBinEdges{T}
-    edges::RT
-    inv_step::T
+struct LinearBinEdges{T <: AbstractFloat} <: AbstractRangeBinEdges{T}
     first_edge::T
     last_edge::T
     step_val::T
+    inv_step::T
+    n_edges::Int
 end
+
+function LinearBinEdges(first_edge::Real, last_edge::Real, n_edges::Integer)
+    T = float(promote_type(typeof(first_edge), typeof(last_edge)))
+    f, l = T(first_edge) + zero(T), T(last_edge) + zero(T)
+    n_edges >= 2 || throw(ArgumentError("bin edges require at least two values"))
+    isfinite(f) && isfinite(l) && f < l ||
+        throw(ArgumentError("linear edges require finite increasing endpoints"))
+    isfinite(l - f) || throw(ArgumentError("the span from $f to $l overflows $T"))
+    s = (l - f) / (n_edges - 1)
+    s > 2 * eps(max(abs(f), abs(l))) || throw(ArgumentError(
+        "$T cannot resolve $(n_edges - 1) bins between $f and $l; use fewer bins or a wider type",
+    ))
+    return LinearBinEdges{T}(f, l, s, inv(s), Int(n_edges))
+end
+
+LinearBinEdges(edges::AbstractRange) = LinearBinEdges(first(edges), last(edges), length(edges))
+LinearBinEdges(b::LinearBinEdges) = b
+LinearBinEdges(::AbstractVector) = throw(ArgumentError(
+    "LinearBinEdges takes endpoints and a count, or a range; wrap a vector of edges in BinEdges",
+))
+
+Base.first(b::LinearBinEdges) = b.first_edge
+Base.last(b::LinearBinEdges) = b.last_edge
+Base.step(b::LinearBinEdges) = b.step_val
+Base.length(b::LinearBinEdges) = b.n_edges
+Base.:(==)(a::LinearBinEdges, b::LinearBinEdges) =
+    a.first_edge == b.first_edge && a.last_edge == b.last_edge && a.n_edges == b.n_edges
+Base.show(io::IO, b::LinearBinEdges) = print(io, "LinearBinEdges(", b.first_edge, ", ", b.last_edge, ", ", b.n_edges, ")")
 
 """
-    LinearBinEdges(edges::AbstractVector)
-
-Uniform bins spanning `first(edges)` to `last(edges)` with `length(edges)` edges. The interior of
-`edges` is **not read**: the type asserts uniform spacing and the digitizer computes each edge from
-the two ends. Pass a `BinEdges` for edges that are not uniform.
+The largest `x` in `[f, l]` with `fma(x, inv_s, -f * inv_s) ≤ k - 1`: interior edge `k` of a linear
+grid. Gallops out from `fma(k - 1, s, f)` and bisects, so an edge many ulps from that estimate, as
+near zero on a grid spanning it, costs a logarithmic number of evaluations.
 """
-@inline LinearBinEdges(edges::AbstractVector{T}) where {T} =
-    LinearBinEdges(range(first(edges), last(edges); length = length(edges)))
-
-function LinearBinEdges(edges::AbstractRange{T}) where {T}
-    inv_step = inv(step(edges))
-    return LinearBinEdges{T, typeof(edges)}(
-        edges, inv_step, first(edges), last(edges), step(edges)
-    )
-end
-
-Base.size(v::LinearBinEdges) = size(v.edges)
-Base.getindex(v::LinearBinEdges, i::Int) = v.edges[i]
-
-@inline function Base.searchsortedfirst(v::LinearBinEdges{T}, x) where {T}
-    f = v.first_edge
-    if x <= f
-        return 1
-    end
-    l = v.last_edge
-    n = length(v.edges)
-    if x > l
-        return n + 1
-    end
-
-    # i* = floor((x - f)/δ) + 1  — one FMA for (x - f)/δ
-    t = muladd(x, v.inv_step, -f * v.inv_step)
-    idx = clamp(floor(Int, t) + 1, 1, n)
-
-    @inbounds u = muladd(T(idx - 1), v.step_val, f)
-    return u < x ? idx + 1 : idx
-end
-
-@inline function Base.searchsortedfirst(v::LinearBinEdges, x, o::Base.Order.Ordering)
-    # Fast path for forward ordering; delegate custom ordering to the wrapped vector.
-    if o isa Base.Order.ForwardOrdering
-        return searchsortedfirst(v, x)
+function _linear_threshold(f::T, l::T, inv_s::T, s::T, k::Int) where {T}
+    c = -f * inv_s
+    K = T(k - 1)
+    below(x) = fma(x, inv_s, c) <= K
+    x = fma(K, s, f)
+    d = eps(max(abs(x), abs(f)))
+    if below(x)
+        lo, hi = x, min(x + d, l)
+        while below(hi)
+            lo, d = hi, 2d
+            hi = min(x + d, l)
+        end
     else
-        return searchsortedfirst(v.edges, x, o)
+        lo, hi = max(x - d, f), x
+        while !below(lo)
+            hi, d = lo, 2d
+            lo = max(x - d, f)
+        end
+    end
+    while true
+        m = lo + (hi - lo) / 2
+        lo < m < hi || return lo
+        below(m) ? (lo = m) : (hi = m)
     end
 end
 
-@inline Base.searchsortedlast(v::LinearBinEdges, x) = searchsortedlast(v.edges, x)
-@inline Base.searchsortedlast(v::LinearBinEdges, x, o::Base.Order.Ordering) = searchsortedlast(v.edges, x, o)
-@inline Base.searchsorted(v::LinearBinEdges, x) = searchsorted(v.edges, x)
-@inline Base.searchsorted(v::LinearBinEdges, x, o::Base.Order.Ordering) = searchsorted(v.edges, x, o)
-
-# ========================================================================= #
-# 3. Log-uniform spacing (log(q) + LinearBinEdges on log grid)
-# ========================================================================= #
-
-"""
-    LogBinEdges(edges::AbstractVector{T})
-    LogBinEdges_from_log_edges(log_edges)
-
-Log-spaced (geometric) bin edges: uniform grid in log-space.
-
-### Digitize semantics
-
-`log_edges` is the authoritative grid. A physical query `q > 0` maps to
-`searchsortedfirst(LinearBinEdges(log_edges), log(q))`. See the documentation's "Binning Internals"
-page.
-
-[`LogBinEdges`](@ref) from a physical vector builds the same log grid from
-`range(log(first), log(last); length)`. [`LogBinEdges_from_log_edges`](@ref) accepts
-the log grid directly.
-
-### Performance
-
-One `log(q)` plus the constant-time FMA digitize on the log grid.
-"""
-struct LogBinEdges{T, LRT <: AbstractRange{T}, LBET <: LinearBinEdges{T}} <: AbstractBinEdges{T}
-    log_edges::LRT
-    log_linear::LBET
+@inline function Base.getindex(b::LinearBinEdges, k::Integer)
+    @boundscheck checkbounds(b, k)
+    k == 1 && return b.first_edge
+    k == b.n_edges && return b.last_edge
+    return _linear_threshold(b.first_edge, b.last_edge, b.inv_step, b.step_val, Int(k))
 end
 
-function _LogBinEdges_core(log_edges::AbstractRange{T}) where {T}
-    log_linear = LinearBinEdges(log_edges)
-    return LogBinEdges{T, typeof(log_edges), typeof(log_linear)}(log_edges, log_linear)
+@inline function Base.searchsortedfirst(b::LinearBinEdges{T}, x::T) where {T <: AbstractFloat}
+    x <= b.first_edge && return 1
+    x <= b.last_edge || return b.n_edges + 1
+    t = fma(x, b.inv_step, -b.first_edge * b.inv_step)
+    return clamp(unsafe_trunc(Int, ceil(t)) + 1, 2, b.n_edges)
 end
 
-"""
-    LogBinEdges(edges::AbstractVector)
+# The edges are values of `T`, so a query of another type lands where the next `T` value above it does.
+@inline Base.searchsortedfirst(b::LinearBinEdges{T}, x::Real) where {T} = searchsortedfirst(b, T(x, RoundUp))
 
-Log-uniform bins spanning `first(edges)` to `last(edges)` with `length(edges)` edges. The interior
-of `edges` is **not read**: the type asserts log-uniform spacing and the digitizer computes each
-edge from the two ends. Pass a `BinEdges` for edges that are not log-uniform.
+@inline Base.searchsortedlast(b::LinearBinEdges, x) = _searchsortedlast_from_first(b, x)
+@inline Base.searchsorted(b::LinearBinEdges, x) = searchsortedfirst(b, x):searchsortedlast(b, x)
+
+# Base searches a real range from `first` and `step`; these edges are thresholds, so every ordering it
+# searches that way goes through the edges.
+@inline Base.searchsortedfirst(b::LinearBinEdges, x::Real, o::Base.Sort.FastRangeOrderings) =
+    o === Base.Order.Forward ? searchsortedfirst(b, x) :
+    invoke(searchsortedfirst, Tuple{AbstractVector, Any, Base.Order.Ordering}, b, x, o)
+@inline Base.searchsortedlast(b::LinearBinEdges, x::Real, o::Base.Sort.FastRangeOrderings) =
+    o === Base.Order.Forward ? searchsortedlast(b, x) :
+    invoke(searchsortedlast, Tuple{AbstractVector, Any, Base.Order.Ordering}, b, x, o)
+
 """
-function LogBinEdges(edges::AbstractVector{T}) where {T}
-    any(x -> x <= zero(T), edges) && throw(ArgumentError("Log-spaced bin edges must be strictly positive."))
-    log_edges = range(log(first(edges)), log(last(edges)); length=length(edges))
-    return _LogBinEdges_core(log_edges)
+    LogBinEdges(first_edge, last_edge, n_edges)
+    LogBinEdges_from_log_edges(log_edges::AbstractRange)
+
+`n_edges` positive edges uniformly spaced in `log`, from `first_edge` to `last_edge`. The first and
+last edges are `first_edge` and `last_edge`; interior edge `k` is `exp(fma(k - 1, step, log_first))`,
+with `log_first` and `step` those of the [`LinearBinEdges`](@ref) grid `log_linear` from
+`log(first_edge)` to `log(last_edge)`. A vector of arbitrary edges is a [`BinEdges`](@ref).
+
+Membership is decided against those edges, `(edges[k], edges[k+1]]`: the log grid only estimates the
+index, so the result does not depend on how `log` rounds. [`digitize_plan`](@ref) turns these edges
+into a [`BucketedBinEdges`](@ref) for pair kernels.
+"""
+struct LogBinEdges{T <: AbstractFloat} <: AbstractVectorBinEdges{T}
+    first_edge::T
+    last_edge::T
+    log_linear::LinearBinEdges{T}
 end
 
-"""
-    LogBinEdges_from_log_edges(log_edges)
-
-Build log-uniform bins from log-space edges (`u` with physical edge `exp(u)`).
-"""
-LogBinEdges_from_log_edges(log_edges::AbstractRange{T}) where {T} =
-    _LogBinEdges_core(log_edges)
-LogBinEdges_from_log_edges(log_edges::AbstractVector{T}) where {T} =
-    _LogBinEdges_core(range(first(log_edges), last(log_edges); length=length(log_edges)))
-
-"""
-    physical_edges_vector(bins::LogBinEdges) -> Vector
-
-Materialize physical bin edges `exp(log_edges[i])` for display or generic consumers.
-Not used on the digitize hot path.
-"""
-function physical_edges_vector(bins::LogBinEdges{T}) where {T}
-    return T[exp(bins.log_edges[i]) for i in 1:length(bins.log_edges)]
+function _log_bins(f::T, l::T, ll::LinearBinEdges{T}) where {T}
+    0 < f < l < Inf || throw(ArgumentError("logarithmic edges must be finite, positive and increasing"))
+    b = LogBinEdges{T}(f, l, ll)
+    issorted(b; lt = <=) || throw(ArgumentError(
+        "$T cannot resolve $(length(ll) - 1) logarithmic bins between $f and $l; use fewer bins or a wider type",
+    ))
+    return b
 end
 
-function LogBinEdges(::AbstractRange{T}) where {T}
-    throw(ArgumentError("LogBinEdges does not support AbstractRange input. Use LogBinEdges_from_log_edges() instead."))
+function LogBinEdges(first_edge::Real, last_edge::Real, n_edges::Integer)
+    0 < first_edge < last_edge || throw(ArgumentError("logarithmic endpoints must satisfy 0 < first < last"))
+    ll = LinearBinEdges(log(float(first_edge)), log(float(last_edge)), n_edges)
+    T = eltype(ll)
+    return _log_bins(T(first_edge), T(last_edge), ll)
 end
 
-Base.size(v::LogBinEdges) = (length(v.log_edges),)
-Base.getindex(v::LogBinEdges, i::Int) = exp(v.log_edges[i])
+LogBinEdges(b::LogBinEdges) = b
+LogBinEdges(::AbstractVector) = throw(ArgumentError(
+    "LogBinEdges takes endpoints and a count; wrap a vector of edges in BinEdges, or pass a range of " *
+    "logarithms to LogBinEdges_from_log_edges",
+))
 
-@inline function Base.searchsortedfirst(v::LogBinEdges{T}, x) where {T}
-    x <= zero(T) && return 1
-    return searchsortedfirst(v.log_linear, log(x))
+"""
+    LogBinEdges_from_log_edges(log_edges::AbstractRange)
+
+[`LogBinEdges`](@ref) whose logarithms are the uniform grid `log_edges`: the edges are
+`exp.(log_edges)`.
+"""
+function LogBinEdges_from_log_edges(log_edges::AbstractRange)
+    ll = LinearBinEdges(log_edges)
+    return _log_bins(exp(ll.first_edge), exp(ll.last_edge), ll)
+end
+LogBinEdges_from_log_edges(::AbstractVector) = throw(ArgumentError(
+    "LogBinEdges_from_log_edges takes a range of logarithms; wrap a vector of edges in BinEdges",
+))
+
+Base.size(b::LogBinEdges) = size(b.log_linear)
+Base.:(==)(a::LogBinEdges, b::LogBinEdges) =
+    a.first_edge == b.first_edge && a.last_edge == b.last_edge && a.log_linear == b.log_linear
+
+@inline function Base.getindex(b::LogBinEdges{T}, k::Int) where {T}
+    @boundscheck checkbounds(b, k)
+    k == 1 && return b.first_edge
+    k == length(b) && return b.last_edge
+    return exp(fma(T(k - 1), b.log_linear.step_val, b.log_linear.first_edge))
 end
 
-@inline function Base.searchsortedfirst(v::LogBinEdges, x, o::Base.Order.Ordering)
-    if o isa Base.Order.ForwardOrdering
-        return searchsortedfirst(v, x)
-    else
-        return searchsortedfirst(physical_edges_vector(v), x, o)
+# The log grid estimates the index; the edges themselves decide it.
+@inline function Base.searchsortedfirst(b::LogBinEdges, x)
+    n = length(b)
+    x <= b.first_edge && return 1
+    x <= b.last_edge || return n + 1
+    i = clamp(searchsortedfirst(b.log_linear, log(x)), 2, n)
+    @inbounds while i < n && b[i] < x
+        i += 1
     end
-end
-
-@inline function Base.searchsortedlast(v::LogBinEdges{T}, x) where {T}
-    x < zero(T) && return 0
-    return searchsortedlast(v.log_linear, log(x))
-end
-
-@inline function Base.searchsortedlast(v::LogBinEdges, x, o::Base.Order.Ordering)
-    if o isa Base.Order.ForwardOrdering
-        return searchsortedlast(v, x)
-    else
-        return searchsortedlast(physical_edges_vector(v), x, o)
+    @inbounds while i > 2 && b[i - 1] >= x
+        i -= 1
     end
+    return i
+end
+@inline Base.searchsortedlast(b::LogBinEdges, x) = _searchsortedlast_from_first(b, x)
+@inline Base.searchsorted(b::LogBinEdges, x) = searchsortedfirst(b, x):searchsortedlast(b, x)
+
+@inline Base.searchsortedfirst(b::LogBinEdges, x, o::Base.Order.Ordering) =
+    o isa Base.Order.ForwardOrdering ? searchsortedfirst(b, x) :
+    invoke(searchsortedfirst, Tuple{AbstractVector, Any, Base.Order.Ordering}, b, x, o)
+@inline Base.searchsortedlast(b::LogBinEdges, x, o::Base.Order.Ordering) =
+    o isa Base.Order.ForwardOrdering ? searchsortedlast(b, x) :
+    invoke(searchsortedlast, Tuple{AbstractVector, Any, Base.Order.Ordering}, b, x, o)
+@inline Base.searchsorted(b::LogBinEdges, x, o::Base.Order.Ordering) =
+    searchsortedfirst(b, x, o):searchsortedlast(b, x, o)
+
+"""
+    BucketedBinEdges(edges::AbstractVector{<:Base.IEEEFloat})
+
+Sorted `edges` with a table that brackets every lookup. The finite span of the edges is cut into
+`16(length(edges) - 1)` equal cells by `cell(x) = trunc(clamp(fma(x, inv_width, offset), 0, last_cell))`,
+which never decreases as `x` increases. Each cell holds a [`BucketCell`](@ref StructureFunctions.BucketCell):
+the first edge at or above it, how many edges lie in it, and that edge's value. A query in a cell of at
+most one edge is decided by one comparison with that value; a cell of more bisects its own edges.
+Built by [`digitize_plan`](@ref) once per call.
+"""
+struct BucketedBinEdges{T <: Base.IEEEFloat, V <: AbstractVector{T}, C <: AbstractVector} <:
+       AbstractVectorBinEdges{T}
+    edges::V
+    inv_width::T
+    offset::T
+    last_cell::T
+    last_edge::T
+    cells::C
 end
 
-@inline Base.searchsorted(v::LogBinEdges, x) = searchsortedfirst(v, x):searchsortedlast(v, x)
-@inline function Base.searchsorted(v::LogBinEdges, x, o::Base.Order.Ordering)
-    searchsortedfirst(v, x, o):searchsortedlast(v, x, o)
+"""
+    BucketCell(first, count, edge)
+
+One cell of a [`BucketedBinEdges`](@ref): `first` is the index of the first edge at or above the cell,
+`count` the number of edges inside it, and `edge` the value of edge `first`, `Inf` past the last edge.
+"""
+struct BucketCell{T}
+    first::Int32
+    count::Int32
+    edge::T
 end
+
+function BucketedBinEdges(edges::AbstractVector{T}) where {T <: Base.IEEEFloat}
+    n = length(edges)
+    lo, hi = findfirst(isfinite, edges), findlast(isfinite, edges)
+    n_cells = 16 * (n - 1)
+    span = lo === nothing ? zero(T) : edges[hi] - edges[lo]
+    inv_width = T(n_cells) / span
+    offset = lo === nothing ? zero(T) : -edges[lo] * inv_width
+    # One cell when the finite span is empty or out of range: every query then bisects all the edges.
+    if !(span > 0 && isfinite(span) && isfinite(inv_width) && isfinite(offset))
+        n_cells, inv_width, offset = 1, one(T), zero(T)
+    end
+    last_cell = T(n_cells - 1)
+    count = zeros(Int32, n_cells)
+    for e in edges
+        count[_bucket_cell(inv_width, offset, last_cell, e) + 1] += 1
+    end
+    cells = Vector{BucketCell{T}}(undef, n_cells)
+    first = 1
+    for j in 1:n_cells
+        cells[j] = BucketCell{T}(first, count[j], first <= n ? edges[first] : T(Inf))
+        first += count[j]
+    end
+    return BucketedBinEdges{T, typeof(edges), typeof(cells)}(
+        edges, inv_width, offset, last_cell, edges[n], cells)
+end
+
+# A NaN takes the last cell: the first select sends it to `last_cell`, so the index is in range for any `x`.
+@inline function _bucket_cell(inv_width::T, offset::T, last_cell::T, x::T) where {T}
+    t = fma(x, inv_width, offset)
+    t = ifelse(t < last_cell, t, last_cell)
+    return unsafe_trunc(Int32, ifelse(t > zero(T), t, zero(T)))
+end
+@inline _bucket_cell(b::BucketedBinEdges{T}, x) where {T} = _bucket_cell(b.inv_width, b.offset, b.last_cell, T(x))
+
+"""`searchsortedfirst(b, x)` given the cell `j` of `x`, which is read only when `x ≤ edges[end]`."""
+@inline function _bucket_first(b::BucketedBinEdges, x, j::Integer)
+    x <= b.last_edge || return length(b.edges) + 1
+    c = @inbounds b.cells[j + 1]
+    k = Int(c.first) + (c.edge < x)
+    if c.count > 1
+        k = _bisect_first(b.edges, x, Int(c.first), Int(c.first) + Int(c.count))
+    end
+    return k
+end
+
+Base.size(b::BucketedBinEdges) = size(b.edges)
+Base.@propagate_inbounds Base.getindex(b::BucketedBinEdges, k::Int) = b.edges[k]
+@inline Base.searchsortedfirst(b::BucketedBinEdges, x) = _bucket_first(b, x, _bucket_cell(b, x))
+@inline Base.searchsortedlast(b::BucketedBinEdges, x) = _searchsortedlast_from_first(b, x)
+@inline Base.searchsorted(b::BucketedBinEdges, x) = searchsortedfirst(b, x):searchsortedlast(b, x)
+
+"""
+    LogTableBinEdges(b::LogBinEdges)
+
+The edges of `b` as a table, searched from the index estimate `⌊a log₂x + c⌋ + 2`, which is formed in
+the type of `a` and `c` (`Float32` here) with `Base.FastMath.log2_fast` and stepped to the first edge
+at or above `x`. The edges decide the bin, so the estimate's rounding does not. A device kernel
+digitizes [`LogBinEdges`](@ref) with it.
+"""
+struct LogTableBinEdges{FT, T <: Base.IEEEFloat, V <: AbstractVector{T}} <: AbstractVectorBinEdges{T}
+    a::FT
+    c::FT
+    edges::V
+end
+
+function LogTableBinEdges(b::LogBinEdges{T}, ::Type{FT} = Float32) where {FT, T <: Base.IEEEFloat}
+    ll = b.log_linear
+    e = collect(b)
+    return LogTableBinEdges{FT, T, typeof(e)}(
+        FT(log(2) / ll.step_val), FT(-ll.first_edge / ll.step_val), e)
+end
+
+Base.size(p::LogTableBinEdges) = size(p.edges)
+Base.@propagate_inbounds Base.getindex(p::LogTableBinEdges, k::Int) = p.edges[k]
+
+@inline function Base.searchsortedfirst(p::LogTableBinEdges{FT}, x) where {FT}
+    e = p.edges
+    x <= @inbounds(e[1]) && return 1
+    n = length(e)
+    k = clamp(unsafe_trunc(Int, floor(fma(Base.FastMath.log2_fast(FT(x)), p.a, p.c))) + 2, 2, n + 1)
+    @inbounds while k > 2 && e[k - 1] >= x
+        k -= 1
+    end
+    @inbounds while k <= n && !(x <= e[k])
+        k += 1
+    end
+    return k
+end
+@inline Base.searchsortedlast(p::LogTableBinEdges, x) = _searchsortedlast_from_first(p, x)
+@inline Base.searchsorted(p::LogTableBinEdges, x) = searchsortedfirst(p, x):searchsortedlast(p, x)
 
 # ========================================================================= #
 # 4. Infinity Padded Wrapper
@@ -274,33 +410,23 @@ Structure function distance bins are defined as half-open intervals \$(r_i, r_{i
 - The last element is treated as `typemax(T)` (\$+\\infty\$).
 
 This guarantees that every valid positive separation distance maps to a valid index without allocating 
-actual padding elements in memory or copying the array.
+actual padding elements in memory or copying the array. A `NaN` falls in the last bin.
 
 ### Prevention of Double Padding
 The constructor checks if the input array already has infinite endpoints. If they exist, it trims them 
 before wrapping to prevent nested padding (e.g. \$[-\\infty, -\\infty, ...]\$).
 """
-struct InfPaddedBinEdges{T, ET <: AbstractBinEdges{T}} <: AbstractBinEdges{T}
+struct InfPaddedBinEdges{T, ET <: AbstractBinEdges{T}} <: AbstractVectorBinEdges{T}
     edges::ET
 end
 
-# Generic constructor for raw vectors / AbstractVectors
+# Infinite endpoints already present are dropped, so the padding is never doubled. Edges that need no
+# trimming keep their own type, so a typed grid keeps its O(1) lookup.
 function InfPaddedBinEdges(edges::AbstractVector{T}) where {T}
-    # Check for existing infinite endpoints to prevent double-padding
-    start_idx = isinf(first(edges)) ? 2 : 1
-    end_idx = isinf(last(edges)) ? length(edges) - 1 : length(edges)
-    trimmed = @view edges[start_idx:end_idx]
-    
-    # Construct or wrap appropriately
-    if trimmed isa AbstractBinEdges
-        return InfPaddedBinEdges{T, typeof(trimmed)}(trimmed)
-    elseif trimmed isa AbstractRange
-        wrapped = LinearBinEdges(trimmed)
-        return InfPaddedBinEdges{T, typeof(wrapped)}(wrapped)
-    else
-        wrapped = BinEdges(trimmed)
-        return InfPaddedBinEdges{T, typeof(wrapped)}(wrapped)
-    end
+    lo = isinf(first(edges)) ? 2 : 1
+    hi = isinf(last(edges)) ? length(edges) - 1 : length(edges)
+    inner = BinEdges(lo == 1 && hi == length(edges) ? edges : @view(edges[lo:hi]))
+    return InfPaddedBinEdges{T, typeof(inner)}(inner)
 end
 
 Base.size(v::InfPaddedBinEdges) = (length(v.edges) + 2,)
@@ -317,15 +443,9 @@ Base.size(v::InfPaddedBinEdges) = (length(v.edges) + 2,)
 end
 
 @inline function Base.searchsortedfirst(v::InfPaddedBinEdges{T}, x) where {T}
-    # Direct check against out-of-bound limits
-    if x <= typemin(T)
-        return 1
-    elseif x > last(v.edges)
-        return length(v.edges) + 2
-    else
-        # Offset index by 1 to account for the implicit -Inf element at index 1
-        return searchsortedfirst(v.edges, x) + 1
-    end
+    x <= typemin(T) && return 1
+    x > last(v.edges) && return length(v.edges) + 2
+    return searchsortedfirst(v.edges, x) + 1
 end
 
 @inline function Base.searchsortedfirst(v::InfPaddedBinEdges, x, o::Base.Order.Ordering)
@@ -337,13 +457,9 @@ end
 end
 
 @inline function Base.searchsortedlast(v::InfPaddedBinEdges{T}, x) where {T}
-    if x < first(v.edges)
-        return 1
-    elseif x >= typemax(T)
-        return length(v.edges) + 2
-    else
-        return searchsortedlast(v.edges, x) + 1
-    end
+    x < first(v.edges) && return 1
+    x >= typemax(T) && return length(v.edges) + 2
+    return searchsortedlast(v.edges, x) + 1
 end
 
 @inline function Base.searchsortedlast(v::InfPaddedBinEdges, x, o::Base.Order.Ordering)
@@ -365,7 +481,7 @@ reaches them through the periodic kernel of the mode set `schedule` describes, s
 count are kernel-weighted and the histogram is soft-binned. Carried by the results of the
 non-uniform FFT route, so they cannot be mistaken for pair counts.
 """
-struct ModeBinEdges{T, ET <: AbstractBinEdges{T}, S} <: AbstractBinEdges{T}
+struct ModeBinEdges{T, ET <: AbstractBinEdges{T}, S} <: AbstractVectorBinEdges{T}
     edges::ET
     schedule::S
 end
@@ -411,16 +527,23 @@ midpoints(edges::AbstractVector{T}) where {T} =
     SA.SVector{N - 1, T}(ntuple(i -> (edges[i] + edges[i + 1]) / 2, N - 1))
 
 """
-    midpoints(edges::LinearBinEdges) -> LinearBinEdges
+    midpoints(edges::LinearBinEdges) -> AbstractRange
     midpoints(edges::LogBinEdges) -> LogBinEdges
 
 Midpoints of [`LinearBinEdges`](@ref) / [`LogBinEdges`](@ref).
 """
 @inline midpoints(edges::LinearBinEdges) =
-    LinearBinEdges(range(first(edges) + edges.step_val / 2;
-        length = length(edges) - 1, step = edges.step_val))
+    range(first(edges) + edges.step_val / 2;
+        length = length(edges) - 1, step = edges.step_val)
 
-@inline midpoints(edges::LogBinEdges) = LogBinEdges_from_log_edges(midpoints(edges.log_edges))
+@inline function midpoints(edges::LogBinEdges{T}) where {T}
+    ll = edges.log_linear
+    n = length(ll) - 1
+    s = ll.step_val
+    m1 = ll.first_edge + s / 2
+    mn = fma(T(n - 1), s, m1)
+    return LogBinEdges{T}(exp(m1), exp(mn), LinearBinEdges{T}(m1, mn, s, ll.inv_step, n))
+end
 
 """
 Fill an AbstractVector with midpoints using [`midpoints`](@ref).
@@ -505,14 +628,13 @@ end
 """
     AbstractSquaredDigitizePlan
 
-Maps a squared separation `r²` to the bin index `digitize(r, edges)` would give.
-
-Edges are strictly positive, so `e_{i-1} < r ≤ e_i` iff `e_{i-1}² < r² ≤ e_i²`. The index is
-approximate; [`squared_digitize`](@ref) corrects it against the true squared edges.
+Maps a squared separation `r²` to the bin `digitize(sqrt(r²), edges)` gives, compared against the
+thresholds `S_k`, the largest `s` with `sqrt(s) ≤ edges[k]`. The two agree for every `r²` because
+`sqrt` is correctly rounded.
 """
 abstract type AbstractSquaredDigitizePlan{T} end
 
-"""Log-uniform edges: index from `_fast_log2(r²)` and one FMA, then corrected."""
+"""Log-uniform edges: index from `_fast_log2(r²)` and one FMA, then corrected against the thresholds."""
 struct SquaredLogPlan{T, V <: AbstractVector{T}} <: AbstractSquaredDigitizePlan{T}
     a::T          # ln2 / (2·log-step)
     b::T          # -log(first edge) / log-step
@@ -520,18 +642,17 @@ struct SquaredLogPlan{T, V <: AbstractVector{T}} <: AbstractSquaredDigitizePlan{
     sqedges::V
 end
 
-"""Uniform-in-`r` edges: squares of a uniform grid are not uniform, so this keeps one `sqrt` and the
-existing O(1) FMA search."""
-struct SquaredLinearPlan{T, E <: LinearBinEdges{T}, V <: AbstractVector{T}} <: AbstractSquaredDigitizePlan{T}
+"""Uniform-in-`r` edges: the squares of a uniform grid are not uniform, so this takes one `sqrt` and
+the grid's own lookup."""
+struct SquaredLinearPlan{T, E <: LinearBinEdges{T}} <: AbstractSquaredDigitizePlan{T}
     edges::E
     n_bins::Int
-    sqedges::V
 end
 
-"""Arbitrary sorted edges: binary search on the precomputed squared edges (skips the `sqrt`)."""
-struct SquaredGeneralPlan{T, V <: AbstractVector{T}} <: AbstractSquaredDigitizePlan{T}
-    n_bins::Int
-    sqedges::V
+"""Any other sorted edges: the thresholds as a [`BucketedBinEdges`](@ref), so the vectorized half
+computes the cell of `r²` and the scalar half decides from that cell's record."""
+struct SquaredBucketPlan{T, B <: BucketedBinEdges{T}} <: AbstractSquaredDigitizePlan{T}
+    thresholds::B
 end
 
 """Implicit ±Inf catch-all bins around an inner plan; every pair lands somewhere."""
@@ -539,8 +660,25 @@ struct SquaredInfPaddedPlan{T, P <: AbstractSquaredDigitizePlan{T}} <: AbstractS
     inner::P
 end
 
-# Correctly-rounded squares of the actual edges; extended precision so the table adds no rounding.
-_sq_edges(::Type{T}, v) where {T} = T[T(big(v[i])^2) for i in eachindex(v)]
+"""
+    _sqrt_threshold(e) -> the largest `s` with `sqrt(s) ≤ e`
+
+`-Inf` for a negative edge, which no squared separation reaches.
+"""
+function _sqrt_threshold(e::T) where {T <: AbstractFloat}
+    e < 0 && return T(-Inf)
+    isinf(e) && return e
+    s = min(e * e, floatmax(T))
+    while sqrt(s) > e
+        s = prevfloat(s)
+    end
+    while s < floatmax(T) && sqrt(nextfloat(s)) <= e
+        s = nextfloat(s)
+    end
+    return s
+end
+
+_sqrt_thresholds(::Type{T}, v) where {T} = T[_sqrt_threshold(T(v[k])) for k in eachindex(v)]
 
 """
     squared_digitize_plan(edges) -> AbstractSquaredDigitizePlan
@@ -548,25 +686,33 @@ _sq_edges(::Type{T}, v) where {T} = T[T(big(v[i])^2) for i in eachindex(v)]
 Build the `r²` digitize plan for `edges`, once per call (never in the pair loop).
 """
 function squared_digitize_plan(v::LogBinEdges{T}) where {T}
-    le = v.log_edges
-    sq = _sq_edges(T, v)
+    ll = v.log_linear
+    sq = _sqrt_thresholds(T, v)
     return SquaredLogPlan{T, typeof(sq)}(
-        T(log(2) / (2 * step(le))), T(-first(le) / step(le)), length(le) - 1, sq,
+        T(log(2) / (2 * ll.step_val)), T(-ll.first_edge / ll.step_val), length(v) - 1, sq,
     )
 end
 
-function squared_digitize_plan(v::LinearBinEdges{T}) where {T}
-    sq = _sq_edges(T, v.edges)
-    return SquaredLinearPlan{T, typeof(v), typeof(sq)}(v, length(v.edges) - 1, sq)
-end
+squared_digitize_plan(v::LinearBinEdges{T}) where {T} = SquaredLinearPlan{T, typeof(v)}(v, length(v) - 1)
 
-function squared_digitize_plan(v::AbstractBinEdges{T}) where {T}
-    sq = _sq_edges(T, v)
-    return SquaredGeneralPlan{T, typeof(sq)}(length(v) - 1, sq)
-end
+squared_digitize_plan(v::AbstractBinEdges{T}) where {T} =
+    SquaredBucketPlan(BucketedBinEdges(_sqrt_thresholds(float(T), v)))
 
-# Explicit: `InfPaddedBinEdges(::AbstractVector)` wraps a `@view`, which would otherwise fall to
-# the generic binary-search plan.
+"""
+    digitize_plan(edges) -> AbstractBinEdges
+
+`edges` in the form a pair kernel digitizes against, built once per call: the same edges and the same
+lookup. [`LinearBinEdges`](@ref) are their own plan; the edges of a [`BinEdges`](@ref) or a
+[`LogBinEdges`](@ref) become a [`BucketedBinEdges`](@ref).
+"""
+digitize_plan(b::AbstractBinEdges) = b
+digitize_plan(b::BinEdges{<:Base.IEEEFloat}) = BucketedBinEdges(b.edges)
+digitize_plan(b::LogBinEdges) = BucketedBinEdges(collect(b))
+digitize_plan(b::InfPaddedBinEdges) = (p = digitize_plan(b.edges); InfPaddedBinEdges{eltype(p), typeof(p)}(p))
+digitize_plan(b::ModeBinEdges) = ModeBinEdges(digitize_plan(b.edges), b.schedule)
+digitize_plan(v::AbstractVector) = digitize_plan(BinEdges(v))
+digitize_plan(t::Tuple) = map(digitize_plan, t)
+
 squared_digitize_plan(v::InfPaddedBinEdges) = SquaredInfPaddedPlan(squared_digitize_plan(v.edges))
 
 squared_digitize_plan(v::ModeBinEdges) = squared_digitize_plan(v.edges)
@@ -575,27 +721,31 @@ squared_digitize_plan(edges::AbstractVector) = squared_digitize_plan(BinEdges(ed
 
 """Bins covered by the plan (`digitize` results in `1:n_bins` are in range)."""
 @inline n_histogram_bins(p::AbstractSquaredDigitizePlan) = p.n_bins
+@inline n_histogram_bins(p::SquaredBucketPlan) = length(p.thresholds) - 1
 @inline n_histogram_bins(p::SquaredInfPaddedPlan) = n_histogram_bins(p.inner) + 2
 
 """
     has_vector_index(plan) -> Bool
 
 Whether the plan's index is branch-free, and so worth computing in the vectorized half of a pair
-kernel. False for the linear and general plans, whose `searchsortedfirst` branches would
-de-vectorize the whole `@simd` body.
+kernel. False for the linear plan, whose `searchsortedfirst` branches would de-vectorize the whole
+`@simd` body.
 """
 @inline has_vector_index(::AbstractSquaredDigitizePlan) = false
 @inline has_vector_index(::SquaredLogPlan) = true
+@inline has_vector_index(::SquaredBucketPlan) = true
 @inline has_vector_index(p::SquaredInfPaddedPlan) = has_vector_index(p.inner)
 
 """
     squared_approx_index(plan, r2) -> Int32
 
-Approximate `searchsortedfirst` index for `r²`, branch-free, for the vectorized half of a pair
-kernel. Meaningful only when [`has_vector_index`](@ref); other plans return `0`.
+The index the vectorized half of a pair kernel computes from `r²`, branch-free: the approximate
+`searchsortedfirst` index of the log plan, the cell of the bucket plan. Meaningful only when
+[`has_vector_index`](@ref); other plans return `0`.
 """
 @inline squared_approx_index(p::SquaredLogPlan, r2) =
     unsafe_trunc(Int32, floor(muladd(_fast_log2(r2), p.a, p.b))) + Int32(1)
+@inline squared_approx_index(p::SquaredBucketPlan, r2) = _bucket_cell(p.thresholds, r2)
 @inline squared_approx_index(::AbstractSquaredDigitizePlan, r2) = Int32(0)
 @inline squared_approx_index(p::SquaredInfPaddedPlan, r2) = squared_approx_index(p.inner, r2)
 
@@ -604,22 +754,22 @@ kernel. Meaningful only when [`has_vector_index`](@ref); other plans return `0`.
 
 The quantity the plan's scalar half compares against, computed in the vectorized half from `r²`.
 
-`r²` for the log and general plans; `√r²` for the linear plan, whose grid is uniform in `r`.
+`r²` for the log and bucket plans; `√r²` for the linear plan, whose grid is uniform in `r`.
 """
 @inline digitize_key(::SquaredLogPlan, r2) = r2
-@inline digitize_key(::SquaredGeneralPlan, r2) = r2
+@inline digitize_key(::SquaredBucketPlan, r2) = r2
 @inline digitize_key(::SquaredLinearPlan, r2) = sqrt(r2)
 @inline digitize_key(p::SquaredInfPaddedPlan, r2) = digitize_key(p.inner, r2)
 
 """
     squared_bin(plan, key, i) -> Int
 
-The bin, in the scalar half, from [`digitize_key`](@ref). When [`has_vector_index`](@ref), `i` is
-the precomputed approximate index and this only corrects it; otherwise `i` is ignored.
+The bin, in the scalar half, from [`digitize_key`](@ref) and, when [`has_vector_index`](@ref), the
+index `i` the vectorized half computed; otherwise `i` is ignored.
 """
 @inline squared_bin(p::SquaredLogPlan, key, i::Integer) = squared_correct(p, key, i) - 1
 @inline squared_bin(p::SquaredLinearPlan, key, ::Integer) = searchsortedfirst(p.edges, key) - 1
-@inline squared_bin(p::SquaredGeneralPlan, key, ::Integer) = searchsortedfirst(p.sqedges, key) - 1
+@inline squared_bin(p::SquaredBucketPlan, key, i::Integer) = _bucket_first(p.thresholds, key, i) - 1
 # The implicit -Inf edge shifts every inner index up by one; the inner plan already reports
 # `n_bins + 1` above its last edge, which becomes the overflow bin. No separate range test needed.
 @inline squared_bin(p::SquaredInfPaddedPlan, key, i::Integer) = squared_bin(p.inner, key, i) + 1
@@ -630,7 +780,7 @@ the precomputed approximate index and this only corrects it; otherwise `i` is ig
 Walk `i` to the exact `searchsortedfirst(sqedges, r²)`. 0 or 1 step for a random separation; within a
 few ulps of an edge it can take more, so it loops.
 """
-@inline function squared_correct(p::AbstractSquaredDigitizePlan, r2, i::Integer)
+@inline function squared_correct(p::SquaredLogPlan, r2, i::Integer)
     sq = p.sqedges
     n = p.n_bins
     k = clamp(Int(i), 1, n + 2)
@@ -638,7 +788,7 @@ few ulps of an edge it can take more, so it loops.
         while k > 1 && sq[k - 1] >= r2
             k -= 1
         end
-        while k <= n + 1 && sq[k] < r2
+        while k <= n + 1 && !(r2 <= sq[k])
             k += 1
         end
     end
@@ -653,14 +803,6 @@ Exact `digitize(r, edges)` computed from `r²` alone. Out-of-range gives `0` (be
 """
 @inline squared_digitize(p::AbstractSquaredDigitizePlan, r2) =
     squared_bin(p, digitize_key(p, r2), squared_approx_index(p, r2))
-
-# The implicit -Inf edge shifts every inner index up by one.
-@inline function squared_correct(p::SquaredInfPaddedPlan, r2, i::Integer)
-    inner = p.inner
-    @inbounds hi = inner.sqedges[inner.n_bins + 1]
-    r2 > hi && return inner.n_bins + 3
-    return squared_correct(inner, r2, i) + 1
-end
 
 
 # ========================================================================================= #

@@ -53,13 +53,6 @@ const SP2D_GLOBAL_ATOMIC_HIST_BYTES = 340 * 1024
     _sp2d_prefers_global_atomics(n_dist, n_val, FT, caps) -> Bool
 
 Whether SP2D hands this shape to the plain global-atomic kernel in place of `:direct`.
-
-Consulted in **two** places that must agree: where the value plan is built
-(`_gpu_run_single_pass_2d!`, which must produce a `GPUValueVectorCols` because that is the plan the
-global-atomic kernel has methods for) and where the kernel is launched
-(`_launch_single_pass_2d!`). Splitting the rule between them silently routes a typed value plan into
-a kernel with no matching method, which surfaces as
-`ArgumentError: single-pass 2D global-atomic path unsupported for ...`.
 """
 function _sp2d_prefers_global_atomics(n_dist::Int, n_val::Int, ::Type{FT}, caps) where {FT}
     hist_bytes = SF_GPU_SINGLE_PASS_N * n_dist * n_val * (sizeof(FT) + sizeof(UInt32))
@@ -181,15 +174,4 @@ budget costs residency: a config needing 3072 cells then holds 5371 cells of sha
     need <= 0 && return 1
     quantized = cld(need, SP2D_COMPILE_CELL_QUANTUM) * SP2D_COMPILE_CELL_QUANTUM
     return min(quantized, config.max_shared_cells)
-end
-
-function _sp2d_dist_variant(::LinearBinEdges)
-    return :linear
-end
-function _sp2d_dist_variant(::LogBinEdges)
-    return :log_linear
-end
-"""Arbitrary (non-uniform, non-log) distance edges: device binary search."""
-function _sp2d_dist_variant(::AbstractVector)
-    return :general
 end

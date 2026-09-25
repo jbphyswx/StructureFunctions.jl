@@ -18,11 +18,28 @@ grid form is supplied by the FlowGeometries extension and the schedule forms by
 [`gridded_sweep_batch!`](@ref).
 """
 function calculate_structure_function_batch!(
-    sums, counts, sf_type, x, u, distance_bins;
-    backend = CB.AutoBackend(), kwargs...
+    sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
+    distance_bins::AbstractVector;
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
+    weights = nothing, kwargs...
 )
-    _dispatch_batch!(backend, sums, counts, sf_type, x, u, distance_bins; kwargs...)
+    w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
+    _dispatch_batch!(backend, sums, counts, sf_type, x, u, distance_bins; distance_metric, weights = w, kwargs...)
     return nothing
+end
+
+"""
+    _batch_boundary(counts, x, u, distance_metric, weights, OT) -> weights
+
+The one validation of a batch entry: the shapes, a trailing axis on `u`, the weights normalised to
+`OT`, and room in `counts` for every pair.
+"""
+function _batch_boundary(counts, x, u, distance_metric, weights, ::Type{OT}) where {OT}
+    shape = _validate_array_shape(x, u, distance_metric)
+    has_auxiliary_axes(shape) || throw(ArgumentError("batch fields require at least one trailing axis"))
+    w = _pair_weights(weights, size(x, 2), OT)
+    _assert_counts_can_accumulate(counts, size(x, 2), w)
+    return w
 end
 
 """
@@ -91,10 +108,14 @@ end
 Batch 2D joint histograms over `(N_dims, N_points, T)`; outputs `(n_dist, n_val, T)`.
 """
 function calculate_structure_function_2d_batch!(
-    sums, counts, sf_type, x, u, distance_bins, value_bins;
-    backend = CB.AutoBackend(), kwargs...
+    sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
+    distance_bins::AbstractVector, value_bins::AbstractVector;
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
+    weights = nothing, kwargs...
 )
-    _dispatch_2d_batch!(backend, sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...)
+    w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
+    _dispatch_2d_batch!(backend, sums, counts, sf_type, x, u, distance_bins, value_bins;
+        distance_metric, weights = w, kwargs...)
     return nothing
 end
 
@@ -223,10 +244,12 @@ Batch six invariant 1D distance histograms over `(N_dims, N_points, T)`;
 outputs `(6, NB, T)`.
 """
 function calculate_structure_functions_single_pass_batch!(
-    sums, counts, x, u, distance_bins;
-    backend = CB.AutoBackend(), kwargs...
+    sums, counts, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector;
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
+    weights = nothing, kwargs...
 )
-    _dispatch_single_pass_batch!(backend, sums, counts, x, u, distance_bins; kwargs...)
+    w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
+    _dispatch_single_pass_batch!(backend, sums, counts, x, u, distance_bins; distance_metric, weights = w, kwargs...)
     return nothing
 end
 
@@ -284,11 +307,14 @@ outputs `(6, NB, n_val, T)`. Pass shared bin types or `NTuple{6,...}`; use `Tupl
 if you have a length-6 vector of bin objects.
 """
 function calculate_structure_functions_single_pass_2d_batch!(
-    sums, counts, x, u, distance_bins, value_bins::SinglePass2DValueBins;
-    backend = CB.AutoBackend(), kwargs...
+    sums, counts, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector,
+    value_bins::SinglePass2DValueBins;
+    backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
+    weights = nothing, kwargs...
 )
+    w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _dispatch_single_pass_2d_batch!(
-        backend, sums, counts, x, u, distance_bins, value_bins; kwargs...
+        backend, sums, counts, x, u, distance_bins, value_bins; distance_metric, weights = w, kwargs...
     )
     return nothing
 end
@@ -343,4 +369,21 @@ end
 # --- Functor Support ---
 function (sf::SFT.AbstractPairwiseStructureFunctionType)(x, u, bins; kwargs...)
     return calculate_structure_function(sf, x, u, bins; kwargs...)
+end
+
+function calculate_structure_functions_single_pass!(sums::AbstractArray, counts::AbstractArray,
+        x::AbstractArray, u::AbstractArray, bins::AbstractVector; backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
+        distance_metric::DI.PreMetric = DI.Euclidean(), weights = nothing, kwargs...)
+    w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
+    _dispatch_single_pass_batch!(backend, sums, counts, x, u, bins; distance_metric, weights = w, kwargs...)
+    return sums, counts
+end
+
+function calculate_structure_functions_single_pass_2d!(sums::AbstractArray, counts::AbstractArray,
+        x::AbstractArray, u::AbstractArray, bins::AbstractVector, value_bins::SinglePass2DValueBins;
+        backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
+        weights = nothing, kwargs...)
+    w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
+    _dispatch_single_pass_2d_batch!(backend, sums, counts, x, u, bins, value_bins; distance_metric, weights = w, kwargs...)
+    return sums, counts
 end

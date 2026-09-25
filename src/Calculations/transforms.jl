@@ -883,14 +883,15 @@ function shell_average(wavenumbers::NTuple{Dg, <:AbstractVector}, density::Abstr
                        edges::AbstractVector) where {FT, Dg}
     nb = length(edges) - 1
     acc = zeros(FT, nb)
-    width = FT[edges[b + 1] - edges[b] for b in 1:nb]
+    be = digitize_plan(edges)
+    width = FT[be[b + 1] - be[b] for b in 1:nb]
     @inbounds for I in CartesianIndices(density)
         k = sqrt(sum(abs2, ntuple(d -> wavenumbers[d][I[d]], Val(Dg))))
-        b = searchsortedlast(edges, k)
+        b = searchsortedlast(be, k)
         (1 <= b <= nb) || continue
         acc[b] += density[I]
     end
-    mids = FT[(edges[b] + edges[b + 1]) / 2 for b in 1:nb]
+    mids = FT[(be[b] + be[b + 1]) / 2 for b in 1:nb]
     return mids, acc ./ width
 end
 

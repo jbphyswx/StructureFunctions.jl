@@ -187,13 +187,13 @@ lane poisons an entire atomic accumulator.
     # catastrophically as σ → 0 because both terms approach p̂.
     d = q̂ - p̂
     sum_pq = p̂ + q̂
-    dp = LA.dot(d, p̂)               # = p̂·q̂ - 1 = -2sin²(σ/2), small and accurate
+    dp = fma_dot(d, p̂)               # = p̂·q̂ - 1 = -2sin²(σ/2), small and accurate
     t_A = d - dp * p̂                # ≡ q̂ - (p̂·q̂)p̂
     t_B = dp * q̂ + d                # ≡ (p̂·q̂)q̂ - p̂
     w = LA.cross(p̂, d)              # ≡ p̂ × q̂
-    s2 = LA.dot(w, w)               # = sin²σ
-    c2 = LA.dot(sum_pq, sum_pq)     # = 4cos²(σ/2), the scale that vanishes at antipodal
-    σ = 2 * atan(sqrt(LA.dot(d, d)), sqrt(c2))
+    s2 = fma_dot(w, w)               # = sin²σ
+    c2 = fma_dot(sum_pq, sum_pq)     # = 4cos²(σ/2), the scale that vanishes at antipodal
+    σ = 2 * atan(sqrt(fma_dot(d, d)), sqrt(c2))
     # Both roots of `sin σ = 0`, which need different thresholds — see the two tolerances.
     ok = s2 > _geodesic_degeneracy_tol(T) && c2 > _antipodal_degeneracy_tol(T)
     inv_s = ok ? inv(sqrt(s2)) : zero(T)
@@ -279,7 +279,7 @@ defeat both.
     dx = δr(x1, x2)
     # Carry the RAW displacement, not `dx / r`: normalizing here would make every out-of-range pair
     # pay a divide and D multiplies for a direction the bin test is about to discard.
-    return true, sqrt(LA.dot(dx, dx)), dx
+    return true, sqrt(fma_dot(dx, dx)), dx
 end
 
 """
@@ -317,12 +317,12 @@ forms `r̂`; [`pair_increments`](@ref) is the form that does.
     δu = u2 - u1
     # `dot(δu, frame) / r`, not `dot(δu, frame / r)`: one rounding, and the same operation order the
     # flat kernels have always used.
-    return LA.dot(δu, frame) / r, LA.dot(δu, δu)
+    return fma_dot(δu, frame) / r, fma_dot(δu, δu)
 end
 
 @inline function pair_invariants(g::SphericalGeometry, frame, r, u1, u2)
     δu = pair_delta(g, frame, nothing, nothing, u1, u2)
-    return δu[1], LA.dot(δu, δu)
+    return δu[1], fma_dot(δu, δu)
 end
 
 """
@@ -378,7 +378,7 @@ Thin shell. The radial component is recovered as `u·p̂` at each endpoint and d
 @inline function pair_delta(::SphericalGeometry{3}, frame, x1, x2, u_A, u_B)
     t_A, t_B, m̂, p̂, q̂ = frame
     δu_L, δu_T = geodesic_increments(t_A, t_B, m̂, u_A, u_B)
-    δw = LA.dot(u_B, q̂) - LA.dot(u_A, p̂)
+    δw = fma_dot(u_B, q̂) - fma_dot(u_A, p̂)
     return SA.SVector{3, typeof(δu_L)}(δu_L, δu_T, δw)
 end
 
@@ -555,8 +555,8 @@ the difference of forward azimuths. The transverse term needs a single dot produ
 shared between the endpoints.
 """
 @inline function geodesic_increments(t̂_A, t̂_B, m̂, u_A, u_B)
-    δu_L = LA.dot(u_B, t̂_B) - LA.dot(u_A, t̂_A)
-    δu_T = LA.dot(u_B - u_A, m̂)
+    δu_L = fma_dot(u_B, t̂_B) - fma_dot(u_A, t̂_A)
+    δu_T = fma_dot(u_B - u_A, m̂)
     return δu_L, δu_T
 end
 
@@ -600,10 +600,10 @@ end
 
 @inline function n̂(r_hat::SA.SVector{3, T}) where {T}
     c = LA.cross(SA.SVector{3, T}(0, 0, 1), r_hat)
-    c2 = LA.dot(c, c)
+    c2 = fma_dot(c, c)
     if c2 <= _transverse_degeneracy_tol(T)
         c = LA.cross(SA.SVector{3, T}(1, 0, 0), r_hat)
-        c2 = LA.dot(c, c)
+        c2 = fma_dot(c, c)
     end
     return c / sqrt(c2)
 end
@@ -657,13 +657,25 @@ end
 ReferenceAxisTransverseBasis(axis; parallel_tol = 1e-12) =
     ReferenceAxisTransverseBasis(axis, parallel_tol)
 
-@inline function _sum_abs2(x)
-    out = zero(eltype(x))
-    @inbounds for i in eachindex(x)
-        out += x[i] * x[i]
+"""
+    fma_dot(a, b)
+
+`Σₖ a[k] b[k]`, accumulated with `fma` in index order, for 1-based `a` and `b` of one length.
+"""
+@inline function fma_dot(a, b)
+    Base.require_one_based_indexing(a, b)
+    length(a) == length(b) || _unequal_lengths()
+    s = a[1] * b[1]
+    @inbounds for k in 2:length(a)
+        s = fma(a[k], b[k], s)
     end
-    return out
+    return s
 end
+
+@noinline _unequal_lengths() = throw(DimensionMismatch("fma_dot takes two vectors of one length"))
+
+"""Squared length of `x`: [`fma_dot`](@ref)`(x, x)`."""
+@inline norm2(x) = fma_dot(x, x)
 
 @inline function _as_svector_like(r_hat, x)
     return SA.SVector{length(r_hat), eltype(r_hat)}(ntuple(i -> x[i], length(r_hat)))
@@ -671,7 +683,7 @@ end
 
 @inline function _axis_transverse(axis, r_hat::SA.SVector{3}, parallel_tol)
     c = LA.cross(_as_svector_like(r_hat, axis), r_hat)
-    c2 = _sum_abs2(c)
+    c2 = norm2(c)
     c2 > parallel_tol * parallel_tol || throw(ArgumentError(
         "the reference axis is parallel to r̂ for this pair, which leaves no transverse direction; choose an axis no separation is parallel to, or CanonicalTransverseBasis()",
     ))
@@ -729,7 +741,7 @@ Return the signed longitudinal magnitude of `δu` along `r_hat`. The caller must
 a unit vector.
 """
 @inline function magnitude_δu_longitudinal(δu, r_hat)
-    return LA.dot(δu, r_hat) # r_hat is unit vector so just dot product
+    return fma_dot(δu, r_hat) # r_hat is unit vector so just dot product
 end
 
 """
@@ -746,7 +758,7 @@ caller must ensure `r_hat` is a unit vector.
 """
 @inline function magnitude_δu_transverse(δu, r_hat)
     # Signed relative to n̂; the norm of the rejected component is the unsigned magnitude.
-    return LA.dot(δu, n̂(r_hat))
+    return fma_dot(δu, n̂(r_hat))
 end
 
 @inline function magnitude_δu_transverse(
@@ -778,7 +790,7 @@ only negative it can take is that cancellation, which a `sqrt` downstream would 
 """
 @inline function transverse_norm2(δu, r_hat)
     du_l = magnitude_δu_longitudinal(δu, r_hat)
-    t2 = _sum_abs2(δu) - du_l * du_l
+    t2 = norm2(δu) - du_l * du_l
     return max(t2, zero(t2))
 end
 
@@ -808,7 +820,7 @@ or `L2T1SF`.
     basis_index::Integer = 1,
 )
     e = transverse_basis_vector(r_hat, basis, basis_index)
-    return LA.dot(δu, e)
+    return fma_dot(δu, e)
 end
 
 

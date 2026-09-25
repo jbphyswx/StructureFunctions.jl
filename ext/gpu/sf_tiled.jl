@@ -14,7 +14,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
     @Const(u),              # (D, N, B)
     wts,                    # NoWeights(), or one weight per point
     sf_type,
-    digitizer,              # SFLinearDigitizer / SFLogDigitizer / SFGeneralDigitizer
+    digitizer,              # device digitize plan of the distance bins
     N::Int,
     NB::Int,
     sched,
@@ -125,7 +125,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
                     Uj = _sf_load_pt(Val(D), shared_ui, jb)
                 end
                 ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
-                bin = digitizer(dist)
+                bin = SFH.digitize(dist, digitizer)
                 if ok && 1 <= bin <= NB
                     dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                     moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
@@ -250,7 +250,7 @@ KA.@kernel unsafe_indices = true function sf_wide_1d_varying!(
                 Xj = SA.SVector{D, XT}(ntuple(d -> @inbounds(x[d, j, b]), Val(D)))
                 Uj = SA.SVector{D, UT}(ntuple(d -> @inbounds(u[d, j, b]), Val(D)))
                 ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
-                bin = digitizer(dist)
+                bin = SFH.digitize(dist, digitizer)
                 if ok && 1 <= bin <= NB
                     dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                     moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
@@ -445,7 +445,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
                     Xj = _sf_load_pt(Val(D), shared_xi, jb)
                 end
                 ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
-                bin = digitizer(dist)
+                bin = SFH.digitize(dist, digitizer)
                 if ok && 1 <= bin <= NB
                     # Loop-invariant across the strip: one frame serves all bw fields.
                     rhat = SFH.pair_direction(geom, frame, dist)
@@ -661,13 +661,13 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_varying!(
                     Uj = _sf_load_pt(Val(D), shared_ui, jb)
                 end
                 ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
-                dbin = dist_digitizer(dist)
+                dbin = SFH.digitize(dist, dist_digitizer)
                 if ok && 1 <= dbin <= n_dist
                     dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                     moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
                     pw = SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1)
                     @inbounds for m in 1:NMOM
-                        vbin = _gpu_digitize_value_plan(moments[m], val_plan, m, n_val + 1)
+                        vbin = _sf_value_bin(val_plan, moments[m], m)
                         if 1 <= vbin <= n_val
                             @atomic output[m, dbin, vbin, b] += pw * moments[m]
                             @atomic counts[m, dbin, vbin, b] += CT(pw)
@@ -821,13 +821,13 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
                     Uj = _sf_load_pt(Val(D), shared_ui, jb)
                 end
                 ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
-                dbin = dist_digitizer(dist)
+                dbin = SFH.digitize(dist, dist_digitizer)
                 if ok && 1 <= dbin <= n_dist
                     dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
                     moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
                     pw = SFC._point_weight(wts, i0 + ia - 1) * SFC._point_weight(wts, jbase + jb - 1)
                     @inbounds for m in 1:NMOM
-                        vbin = _gpu_digitize_value_plan(moments[m], val_plan, m, n_val + 1)
+                        vbin = _sf_value_bin(val_plan, moments[m], m)
                         if 1 <= vbin <= n_val
                             cell = (m - 1) * NCELLS + (dbin - 1) * n_val + vbin
                             @atomic shared_sums[cell] += pw * moments[m]
@@ -995,7 +995,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
                     Xj = _sf_load_pt(Val(D), shared_xi, jb)
                 end
                 ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
-                dbin = dist_digitizer(dist)
+                dbin = SFH.digitize(dist, dist_digitizer)
                 if ok && 1 <= dbin <= n_dist
                     # Loop-invariant across the strip: one frame serves all bw fields.
                     rhat = SFH.pair_direction(geom, frame, dist)
@@ -1008,7 +1008,7 @@ KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
                         moments = _sf_moments(Val(NMOM), sf_type, dU, rhat)
                         bb = b_base + w - 1
                         for m in 1:NMOM
-                            vbin = _gpu_digitize_value_plan(moments[m], val_plan, m, n_val + 1)
+                            vbin = _sf_value_bin(val_plan, moments[m], m)
                             if 1 <= vbin <= n_val
                                 @atomic output[m, dbin, vbin, bb] += pw * moments[m]
                                 @atomic counts[m, dbin, vbin, bb] += CT(pw)
@@ -1066,24 +1066,6 @@ end
 # -----------------------------------------------------------------------------
 # Dispatch helpers used when rewiring the public API onto the unified kernels.
 # -----------------------------------------------------------------------------
-
-"""Build a distance digitizer from whatever distance-bins form the public API
-passes. Strictly type-driven: `LinearBinEdges` / `LogBinEdges` / `AbstractRange`
-(uniform by construction) take the O(1) FMA digitizers; raw edge vectors take the
-exact general device-array binary search. No approximate uniformity sniffing —
-bin membership must never depend on an `isapprox` tolerance; pass typed edges to
-opt into the fast digitizers. Supersedes the old `linear-only` batch restriction."""
-function _sf_batch_dist_digitizer(backend, distance_bins)
-    distance_bins isa LinearBinEdges && return _sf_digitizer(distance_bins)
-    distance_bins isa LogBinEdges && return _sf_digitizer(distance_bins)
-    distance_bins isa BinEdges && return _sf_batch_dist_digitizer(backend, distance_bins.edges)
-    distance_bins isa AbstractRange && return _sf_digitizer(LinearBinEdges(distance_bins))
-    if distance_bins isa AbstractVector
-        edges_dev = KA.adapt(backend, collect(distance_bins))
-        return _sf_digitizer_general(edges_dev)
-    end
-    error("unsupported distance_bins type $(typeof(distance_bins))")
-end
 
 """Dispatch a 2D batch launch on a runtime width into the Val-specialized launchers."""
 function _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
