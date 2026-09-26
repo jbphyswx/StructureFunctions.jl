@@ -10,6 +10,7 @@ using SpectralBackends: SpectralBackends as SB
 using FlowGeometries: FlowGeometries as FG
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
+using Distributed: Distributed
 using Random: Random
 
 const FFT_TAG = SB.FastFourierTransformSpectralBackend()

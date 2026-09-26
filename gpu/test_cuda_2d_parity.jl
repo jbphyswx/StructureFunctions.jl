@@ -27,7 +27,7 @@ function ka_cpu_2d(x, u, ddig_cpu, vplan_cpu, N, n_dist, n_val, B, NMOM, fixed_x
     out = zeros(FT, NMOM, n_dist, n_val, B)
     cnt = zeros(UInt32, NMOM, n_dist, n_val, B)
     GE._sf_launch_2d_batch!(KA.CPU(), out, cnt, x, u, sf2, ddig_cpu, vplan_cpu,
-                            N, n_dist, n_val, B, D, Val(NMOM), fixed_x, GEOM)
+                            N, n_dist, n_val, B, Val(NMOM), fixed_x, GEOM, SFC.InvariantValueAxis())
     KA.synchronize(KA.CPU())
     return out, cnt
 end
@@ -91,7 +91,8 @@ let n_dist = 50, n_val = 50, NMOM = 6, fixed_x = true
     out = CUDA.zeros(FT, NMOM, n_dist, n_val, B); cnt = CUDA.zeros(UInt32, NMOM, n_dist, n_val, B)
     f() = (CUDA.fill!(out, 0f0); CUDA.fill!(cnt, UInt32(0));
            GE._sf_launch_2d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, ddig, vplan,
-                                   N, n_dist, n_val, B, D, Val(6), true, GEOM); CUDA.synchronize())
+                                   N, n_dist, n_val, B, Val(6), true, GEOM, SFC.InvariantValueAxis());
+           CUDA.synchronize())
     f(); f(); ts = Float64[]; for _ in 1:5; t = time_ns(); f(); push!(ts, (time_ns()-t)/1e9); end
     t = median(ts); bapps = (N*(N-1)/2)*B/t/1e9
     @printf("  N=%d B=%d: %.3f s  (%.2f bapps)  → B=8064 ≈ %.1f s\n", N, B, t, bapps, t*8064/B)

@@ -145,7 +145,12 @@ end
 # shared read-only by the tasks, `ilist` indexing the sorted order.
 function _threaded_scalar_1d(sf, geom, x_vecs, u_vecs, distance_bins, ilist, ::Type{OT}, ::Type{CT},
                              culling, weights) where {OT, CT}
-    grid, xc, uc, wc = SFC._cull_sorted(x_vecs, u_vecs, weights, geom, distance_bins, culling)
+    return _threaded_scalar_1d_run(sf, geom, distance_bins, ilist, OT, CT,
+                                   SFC._cull_sorted(x_vecs, u_vecs, weights, geom, distance_bins, culling))
+end
+
+function _threaded_scalar_1d_run(sf, geom, distance_bins, ilist, ::Type{OT}, ::Type{CT},
+                                 (grid, xc, uc, wc)) where {OT, CT}
     be = digitize_plan(distance_bins)
     nb = n_histogram_bins(distance_bins)
     N = length(xc[1])
@@ -263,7 +268,12 @@ end
 # The joint scalar kernel, threaded; inputs sorted into the cull grid once and shared read-only.
 function _threaded_scalar_2d(sf, geom, x_vecs, u_vecs, distance_bins, value_bins, val_be, ::Type{OT},
                              ::Type{CT}, culling, weights, second_axis) where {OT, CT}
-    grid, xc, uc, wc = SFC._cull_sorted(x_vecs, u_vecs, weights, geom, distance_bins, culling)
+    return _threaded_scalar_2d_run(sf, geom, distance_bins, value_bins, val_be, OT, CT, second_axis,
+                                   SFC._cull_sorted(x_vecs, u_vecs, weights, geom, distance_bins, culling))
+end
+
+function _threaded_scalar_2d_run(sf, geom, distance_bins, value_bins, val_be, ::Type{OT}, ::Type{CT},
+                                 second_axis, (grid, xc, uc, wc)) where {OT, CT}
     dist_be = digitize_plan(distance_bins)
     nd, nv = n_histogram_bins(distance_bins), n_histogram_bins(value_bins)
     N = length(xc[1])

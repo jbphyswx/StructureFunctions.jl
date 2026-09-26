@@ -1,6 +1,7 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using KernelAbstractions: KernelAbstractions as KA
+using ComputationalBackends: ComputationalBackends as CB
 using Random: Random
 
 const BE = KA.CPU()
@@ -147,4 +148,57 @@ Test.@testset "the cull memo is reused for the same points and invalidated other
     SFC.release!(ws)
     Test.@test ws.lazy.cull === nothing
     Test.@test ws.lazy.active === nothing
+end
+
+# A batch culls through its workspace too: shared positions once for every slice, positions varying per
+# slice one slice at a time. Every policy gives the serial answer.
+Test.@testset "the device batch culls through a workspace" begin
+    Random.seed!(79)
+    N, B = 1200, 3
+    val = collect(range(-4.0, 4.0; length = 9))
+    vb = ntuple(_ -> val, SFC.SINGLE_PASS_N)
+    nv, NI = length(val) - 1, SFC.SINGLE_PASS_N
+    ser, dev = CB.SerialBackend(), CB.GPUBackend(BE)
+    for shared in (true, false), weighted in (false, true)
+        x = shared ? rand(2, N) : rand(2, N, B)
+        u = randn(2, N, B)
+        kw = weighted ? (; weights = 0.5 .+ rand(N)) : (;)
+        CT = weighted ? Float64 : UInt32
+        families = (
+            (:batch1d, (NB, B), () -> SFC.GPUSFWorkspace(BE, TIGHT),
+             (s, c, be, ws, pol) -> SFC.calculate_structure_function_batch!(
+                 s, c, SF1D, x, u, TIGHT; backend = be, workspace = ws, culling = pol, kw...)),
+            (:joint, (NB, nv, B), () -> SFC.GPUSFWorkspace(BE, TIGHT, val; kind = :joint2d),
+             (s, c, be, ws, pol) -> SFC.calculate_structure_function_2d_batch!(
+                 s, c, SF1D, x, u, TIGHT, val; backend = be, workspace = ws, culling = pol, kw...)),
+            (:sp1d, (NI, NB, B), () -> SFC.GPUSFWorkspace(BE, TIGHT; kind = :single_pass),
+             (s, c, be, ws, pol) -> SFC.calculate_structure_functions_single_pass_batch!(
+                 s, c, x, u, TIGHT; backend = be, workspace = ws, culling = pol, kw...)),
+            (:sp2d, (NI, NB, nv, B), () -> SFC.GPUSFWorkspace(BE, TIGHT, vb; kind = :single_pass_2d),
+             (s, c, be, ws, pol) -> SFC.calculate_structure_functions_single_pass_2d_batch!(
+                 s, c, x, u, TIGHT, vb; backend = be, workspace = ws, culling = pol, kw...)),
+        )
+        for (name, shape, workspace, run!) in families
+            rs, rc = zeros(shape), zeros(CT, shape)
+            run!(rs, rc, ser, nothing, SFC.NoCulling())
+            Test.@test sum(rc) > 0
+            for pol in (SFC.NoCulling(), SFC.AutoCulling(), SFC.AlwaysCulling())
+                ws = workspace()
+                gs, gc = zeros(shape), zeros(CT, shape)
+                run!(gs, gc, dev, ws, pol)
+                agree = weighted ? isapprox(gc, rc; rtol = 1e-10) : gc == rc
+                Test.@test (name, shared, weighted, pol, agree, isapprox(gs, rs; rtol = 1e-10, atol = 1e-12)) ==
+                           (name, shared, weighted, pol, true, true)
+                Test.@test (name, shared, weighted, pol, ws.lazy.cull isa SFC.GPUCullMemo) ==
+                           (name, shared, weighted, pol, !(pol isa SFC.NoCulling))
+            end
+            # Without a workspace there is nowhere to hold the work list: `Auto` sweeps every pair,
+            # an explicit `AlwaysCulling()` raises.
+            gs, gc = zeros(shape), zeros(CT, shape)
+            run!(gs, gc, dev, nothing, SFC.AutoCulling())
+            Test.@test (name, shared, weighted, gc == rc || isapprox(gc, rc; rtol = 1e-10)) ==
+                       (name, shared, weighted, true)
+            Test.@test_throws ArgumentError run!(zeros(shape), zeros(CT, shape), dev, nothing, SFC.AlwaysCulling())
+        end
+    end
 end

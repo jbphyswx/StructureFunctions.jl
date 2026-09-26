@@ -38,11 +38,9 @@ function _value_general(n_val_inner::Int, ::Type{FT}) where {FT}
 end
 
 function _kernel_only_launch!(sft, backend, x, u, dist, value_bins, ws)
-    SFC.reset_histogram!(ws)
-    _GPUExt._launch_gpu_joint2d!(
-        sft, backend, x, u, dist, value_bins, UInt32;
-        workspace = ws, synchronize = true,
-    )
+    _GPUExt._launch_gpu_joint2d!(sft, backend, x, u, dist, value_bins, eltype(x), UInt32, nothing, nothing;
+                                 workspace = ws)
+    KA.synchronize(backend)
     return nothing
 end
 
@@ -147,7 +145,7 @@ function main()
 
     println("\n--- compile_cells: exact NB2 vs max (inflinear, kernel-only) ---")
     ws_exact = _build_ws(backend, dist, val_typed)
-    ws_max = _build_ws(backend, dist, val_typed; compile_cells=joint2d_smem_max(backend, 2, FT, FT, UInt32))
+    ws_max = _build_ws(backend, dist, val_typed; compile_cells=joint2d_smem_max(backend, 2, 2, FT, FT, UInt32))
     @printf("exact compile_cells=%d  max compile_cells=%d\n", ws_exact.joint2d_compile_cells, ws_max.joint2d_compile_cells)
     e_med = _report_samples("exact kernel-only", _time_samples!(
         () -> _kernel_only_launch!(sft, backend, x, u, dist, val_typed, ws_exact), warmup, repeat_,

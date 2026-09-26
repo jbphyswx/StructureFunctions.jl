@@ -1,21 +1,21 @@
-using Test
-using Random
+using Test: Test
+using Random: Random
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using ComputationalBackends: ComputationalBackends as CB
-using FFTW
+using FFTW: FFTW
 using SpectralBackends: SpectralBackends as SB
 
-@testset "Repair regressions" begin
-    @testset "Nonuniform finite differences" begin
+Test.@testset "Repair regressions" begin
+    Test.@testset "Nonuniform finite differences" begin
         for r in ([1.0, 2.0, 4.0], [0.0, 0.2, 1.0, 3.0, 7.0])
-            @test SF.KHM.finite_difference(r, r .^ 2) ≈ 2 .* r atol=1e-14
-            @test SF.KHM.finite_difference(r, 3 .* r .+ 7) ≈ fill(3.0, length(r))
+            Test.@test SF.KHM.finite_difference(r, r .^ 2) ≈ 2 .* r atol=1e-14
+            Test.@test SF.KHM.finite_difference(r, 3 .* r .+ 7) ≈ fill(3.0, length(r))
         end
-        @test SF.KHM.finite_difference([1, 3], [2, 8]) == [3.0, 3.0]
-        @test_throws ArgumentError SF.KHM.finite_difference([1.0, 1.0, 2.0], [1.0, 2.0, 3.0])
-        @test_throws ArgumentError SF.KHM.finite_difference([1.0, Inf, 3.0], [1.0, 2.0, 3.0])
+        Test.@test SF.KHM.finite_difference([1, 3], [2, 8]) == [3.0, 3.0]
+        Test.@test_throws ArgumentError SF.KHM.finite_difference([1.0, 1.0, 2.0], [1.0, 2.0, 3.0])
+        Test.@test_throws ArgumentError SF.KHM.finite_difference([1.0, Inf, 3.0], [1.0, 2.0, 3.0])
     end
-    @testset "Batch count capacity" begin
+    Test.@testset "Batch count capacity" begin
         for N in (4, 24), varying in (false, true)
             rng = MersenneTwister(932)
             u = randn(rng, 2, N, 2)
@@ -27,7 +27,7 @@ using SpectralBackends: SpectralBackends as SB
                 dims = kind == :sf1d ? (1, 2) : kind == :joint2d ? (1, 1, 2) :
                        kind == :single_pass ? (6, 1, 2) : (6, 1, 1, 2)
                 sums, counts = zeros(dims), fill(initial, dims)
-                @test_throws ArgumentError if kind == :sf1d
+                Test.@test_throws ArgumentError if kind == :sf1d
                     SFC.calculate_structure_function_batch!(sums, counts, SFT.S2SFType(), x, u, bins;
                         backend = CB.SerialBackend())
                 elseif kind == :joint2d
@@ -40,12 +40,12 @@ using SpectralBackends: SpectralBackends as SB
                     SFC.calculate_structure_functions_single_pass_2d_batch!(sums, counts, x, u, bins, value_bins;
                         backend = CB.SerialBackend())
                 end
-                @test all(iszero, sums)
-                @test all(==(initial), counts)
+                Test.@test all(iszero, sums)
+                Test.@test all(==(initial), counts)
             end
         end
     end
-    @testset "Float32 zonal FFT output alignment" begin
+    Test.@testset "Float32 zonal FFT output alignment" begin
         ext = Base.get_extension(SF, :StructureFunctionsAbstractFFTsExt)
         old_budget = ext.FORWARD_BATCH_BYTES[]
         try
@@ -59,7 +59,7 @@ using SpectralBackends: SpectralBackends as SB
                 SFC.gridded_lag_sweep!(reference, refcounts, SFT.S2SFType(), u, schedule, bins, Val(2))
                 for repetition in 1:2
                     sums, counts = zeros(Float32, 2), zeros(UInt64, 2)
-                    @test begin
+                    Test.@test begin
                         SFC.gridded_sweep!(sums, counts, SFT.S2SFType(), u, schedule, bins, Val(2), SB.FastFourierTransformSpectralBackend())
                         counts == refcounts && isapprox(sums, reference; rtol=5e-5)
                     end
@@ -71,31 +71,31 @@ using SpectralBackends: SpectralBackends as SB
     end
 end
 
-@testset "Count addition and mutation preflight" begin
+Test.@testset "Count addition and mutation preflight" begin
     using ComputationalBackends: SerialBackend
     bins = [0.0, 2.0]
     a = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), bins, [1.0], UInt8[250])
     b = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), bins, [1.0], UInt8[6])
-    @test_throws ArgumentError a + b
-    @test a.counts == UInt8[250]
+    Test.@test_throws ArgumentError a + b
+    Test.@test a.counts == UInt8[250]
     x = [0.0 0.1 0.2 0.3; 0.0 0.0 0.0 0.0]
     u = [0.0 1.0 2.0 3.0; 0.0 1.0 2.0 3.0]
     s, c = [0.0], UInt8[250]
-    @test_throws ArgumentError SFC.calculate_structure_function!(s, c, SFT.S2SFType(), x, u, bins; backend=SerialBackend())
-    @test s == [0.0] && c == UInt8[250]
+    Test.@test_throws ArgumentError SFC.calculate_structure_function!(s, c, SFT.S2SFType(), x, u, bins; backend=SerialBackend())
+    Test.@test s == [0.0] && c == UInt8[250]
     ts, tc = zeros(2, 2, 1), UInt8[250]
-    @test_throws ArgumentError SFC.calculate_structure_function_tensor!(ts, tc, Val(2), x, u, bins; backend=SerialBackend())
-    @test all(iszero, ts) && tc == UInt8[250]
+    Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor!(ts, tc, Val(2), x, u, bins; backend=SerialBackend())
+    Test.@test all(iszero, ts) && tc == UInt8[250]
 end
 
-@testset "Dimensions above eight" begin
+Test.@testset "Dimensions above eight" begin
     using ComputationalBackends: SerialBackend
     for D in (9, 12)
         x = zeros(D, 3); x[1, :] = [0, 1, 2]
         u = zeros(D, 3); u[end, :] = [0, 2, 5]
         r = SFC.calculate_structure_function(SFT.S2SFType(), x, u, [0.0, 3.0], SF.StructureFunctionSumsAndCounts;
             backend=SerialBackend())
-        @test r.counts == [3]
-        @test r.sums == [38.0]
+        Test.@test r.counts == [3]
+        Test.@test r.sums == [38.0]
     end
 end

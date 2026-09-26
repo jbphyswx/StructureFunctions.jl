@@ -4,8 +4,8 @@ using StructureFunctions:
     StructureFunctionTypes as SFT, InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 using OhMyThreads: OhMyThreads  # load extension for ThreadedBackend / AutoBackend when nthreads() > 1
 using KernelAbstractions: KernelAbstractions as KA
-using Test
-using Random
+using Test: Test
+using Random: Random
 
 # Single-pass 2D now returns a NamedTuple keyed by invariant (each entry a
 # StructureFunction2DSumsAndCounts). Canonical invariant order matches the stacked-row order.

@@ -1,7 +1,7 @@
 # Parity matrix for production batch fast paths (KA.CPU).
 using ComputationalBackends: ComputationalBackends as CB
-using Test
-using Random
+using Test: Test
+using Random: Random
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,

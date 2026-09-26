@@ -46,7 +46,7 @@ and harmonic residency coverage remains incomplete.
 
 `CPUSFWorkspace` and `GPUSFWorkspace` retain buffers for compatible calculations. Construct a workspace for the calculation's layout, bins, precision, and backend; pass it with `workspace=...`. A workspace serves one call at a time.
 
-Mutating entries add to output buffers. `reset_histogram!` clears a workspace's histogram storage; clear caller-owned accumulators separately when starting an independent result. Integer counts must represent both existing counts and the new contributions. Weighted normalization uses floating-point pair mass.
+Mutating entries add to output buffers; zero them when starting an independent result. A workspace carries no result from one call to the next: allocating entries return fresh buffers. Integer counts must represent both existing counts and the new contributions. Weighted normalization uses floating-point pair mass.
 
 Workspace compatibility and supported families are specified in the [calculation reference](api/calculations.md). Memory and allocation claims require measurements of the specific prepared route.
 

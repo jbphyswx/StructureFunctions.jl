@@ -78,13 +78,13 @@ end
 end
 
 """
-    _sp2d_accumulation_strategy(caps, n_dist, n_val, D, FT, OT, CST) -> SP2DAccumulationStrategy
+    _sp2d_accumulation_strategy(caps, n_dist, n_val, W, F, FT, OT, CST) -> SP2DAccumulationStrategy
 
-Select `:shared`, `:typeplane` or `:direct` for `D`-wide points of `FT`, sums of `OT` and counts of
-`CST` on the device `caps` describes, from the static shared bytes each HTP-EJ kernel declares.
-Sets `needs_partition_merge = (mode == :direct)` for host launch routing, and the serial merge.
+Select `:shared`, `:typeplane` or `:direct` for `W`-wide coordinates and `F`-wide fields of `FT`, sums of
+`OT` and counts of `CST` on the device `caps` describes, from the static shared bytes each HTP-EJ kernel
+declares. Sets `needs_partition_merge = (mode == :direct)` for host launch routing, and the serial merge.
 """
-function _sp2d_accumulation_strategy(caps::SFC.GPUDeviceCaps, n_dist::Int, n_val::Int, D::Int,
+function _sp2d_accumulation_strategy(caps::SFC.GPUDeviceCaps, n_dist::Int, n_val::Int, W::Int, F::Int,
                                      ::Type{FT}, ::Type{OT}, ::Type{CST}) where {FT, OT, CST}
     C = _sp2d_joint_cells(n_dist, n_val)
     plane = n_dist * n_val
@@ -93,8 +93,8 @@ function _sp2d_accumulation_strategy(caps::SFC.GPUDeviceCaps, n_dist::Int, n_val
     plane_s = _sp2d_plane_cells(n_dist, n_val)
     budget = SFC.gpu_static_smem_budget(caps)
     cell = sizeof(OT) + sizeof(CST)
-    max_shared = _smem_max_cells(hc -> _sp2d_sharedhist_smem_bytes(FT, OT, CST, D, hc), budget, cell)
-    max_plane = _smem_max_cells(hc -> _sp2d_typeplane_smem_bytes(FT, OT, CST, D, hc), budget, cell)
+    max_shared = _smem_max_cells(hc -> _sp2d_sharedhist_smem_bytes(FT, OT, CST, W, F, hc), budget, cell)
+    max_plane = _smem_max_cells(hc -> _sp2d_typeplane_smem_bytes(FT, OT, CST, W, F, hc), budget, cell)
     mode, max_cells = if Cs <= max_shared
         :shared, max_shared
     elseif plane_s <= max_plane

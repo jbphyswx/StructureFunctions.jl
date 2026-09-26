@@ -266,7 +266,7 @@ Test.@testset "Auto-binning min/max scan" begin
     Random.seed!(808)
     for FT in (Float64, Float32)
         x = rand(FT, 2, 250) .* FT(10)
-        mn, mx = SFC._minmax_matrix_for_autobins(x, SFC.DI.Euclidean(), false)
+        mn, mx = SFC._minmax_matrix_for_autobins(x, SFC.DI.Euclidean())
 
         # brute force over every unordered pair
         bmn, bmx = FT(Inf), FT(0)

@@ -1,13 +1,13 @@
 module TestInplace
 
 using ComputationalBackends: ComputationalBackends as CB
-using Test
-using Random
-using OhMyThreads
+using Test: Test
+using Random: Random
+using OhMyThreads: OhMyThreads
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionObjects as SFO, StructureFunctionTypes as SFT
 
-@testset "In-place / Pre-allocated Buffer API Tests" begin
+Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
     # Generate synthetic test dataset
     Random.seed!(1234)
     n_points = 60
@@ -25,7 +25,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     n_vals = length(value_bins) - 1
 
     # 1. 1D Serial mutating Array tests
-    @testset "1D Serial Mutating Array Correctness & Accumulation" begin
+    Test.@testset "1D Serial Mutating Array Correctness & Accumulation" begin
         # Baselines
         bas = SFC.calculate_structure_function(
             SFT.L2SF, x_mat, u_mat, distance_bins, SF.StructureFunctionSumsAndCounts;
@@ -37,17 +37,17 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 
         # Mutate
         SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins)
-        @test sums == bas.sums
-        @test counts == bas.counts
+        Test.@test sums == bas.sums
+        Test.@test counts == bas.counts
 
         # Accumulation (calling twice should double the values)
         SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins)
-        @test sums ≈ bas.sums .* 2
-        @test counts == bas.counts .* 2
+        Test.@test sums ≈ bas.sums .* 2
+        Test.@test counts == bas.counts .* 2
     end
 
     # 2. 1D Serial mutating Array tests
-    @testset "1D Serial Mutating Array Correctness & Accumulation" begin
+    Test.@testset "1D Serial Mutating Array Correctness & Accumulation" begin
         bas = SFC.calculate_structure_function(
             SFT.L2SF, x_mat, u_mat, distance_bins, SF.StructureFunctionSumsAndCounts;
             backend = CB.SerialBackend()
@@ -57,16 +57,16 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         counts = zeros(UInt32, n_dist)
 
         SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins)
-        @test sums == bas.sums
-        @test counts == bas.counts
+        Test.@test sums == bas.sums
+        Test.@test counts == bas.counts
 
         SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins)
-        @test sums ≈ bas.sums .* 2
-        @test counts == bas.counts .* 2
+        Test.@test sums ≈ bas.sums .* 2
+        Test.@test counts == bas.counts .* 2
     end
 
     # 3. 2D Serial mutating Array and Array tests
-    @testset "2D Serial Mutating Array & Array Correctness & Accumulation" begin
+    Test.@testset "2D Serial Mutating Array & Array Correctness & Accumulation" begin
         bas_arr = SFC.calculate_structure_function(
             SFT.L2SF, x_mat, u_mat, distance_bins, value_bins;
             backend = CB.SerialBackend()
@@ -77,24 +77,24 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 
         # Mutate Array
         SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
-        @test sums_arr == bas_arr.sums
-        @test counts_arr == bas_arr.counts
+        Test.@test sums_arr == bas_arr.sums
+        Test.@test counts_arr == bas_arr.counts
 
         # Accumulation
         SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
-        @test sums_arr ≈ bas_arr.sums .* 2
-        @test counts_arr == bas_arr.counts .* 2
+        Test.@test sums_arr ≈ bas_arr.sums .* 2
+        Test.@test counts_arr == bas_arr.counts .* 2
 
         # Mutate Array
         sums_arr = zeros(Float64, n_dist, n_vals)
         counts_arr = zeros(UInt32, n_dist, n_vals)
         SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
-        @test sums_arr == bas_arr.sums
-        @test counts_arr == bas_arr.counts
+        Test.@test sums_arr == bas_arr.sums
+        Test.@test counts_arr == bas_arr.counts
     end
 
     # 4. Threaded mutating tests
-    @testset "1D & 2D Threaded Mutating Parity & Low Allocation" begin
+    Test.@testset "1D & 2D Threaded Mutating Parity & Low Allocation" begin
         # 1D Array Threaded
         sums_ser = zeros(Float64, n_dist)
         counts_ser = zeros(UInt32, n_dist)
@@ -104,15 +104,15 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         counts_thr = zeros(UInt32, n_dist)
         SFC.threaded_calculate_structure_function!(sums_thr, counts_thr, SFT.L2SF, x_mat, u_mat, distance_bins)
 
-        @test sums_ser ≈ sums_thr
-        @test counts_ser == counts_thr
+        Test.@test sums_ser ≈ sums_thr
+        Test.@test counts_ser == counts_thr
 
         # 1D Array Threaded
         sums_thr_arr = zeros(Float64, n_dist)
         counts_thr_arr = zeros(UInt32, n_dist)
         SFC.threaded_calculate_structure_function!(sums_thr_arr, counts_thr_arr, SFT.L2SF, x_mat, u_mat, distance_bins)
-        @test sums_ser ≈ sums_thr_arr
-        @test counts_ser == counts_thr_arr
+        Test.@test sums_ser ≈ sums_thr_arr
+        Test.@test counts_ser == counts_thr_arr
 
         # 2D Array Threaded
         sums_2d_ser = zeros(Float64, n_dist, n_vals)
@@ -123,18 +123,18 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         counts_2d_thr = zeros(UInt32, n_dist, n_vals)
         SFC.threaded_calculate_structure_function!(sums_2d_thr, counts_2d_thr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
 
-        @test sums_2d_ser ≈ sums_2d_thr
-        @test counts_2d_ser == counts_2d_thr
+        Test.@test sums_2d_ser ≈ sums_2d_thr
+        Test.@test counts_2d_ser == counts_2d_thr
 
         # Allocation checks: chunked OhMyThreads must allocate O(n_threads) which is extremely lightweight
         # We check that it runs without errors or excessive allocation.
         alloc1 = @allocated SFC.threaded_calculate_structure_function!(sums_thr, counts_thr, SFT.L2SF, x_mat, u_mat, distance_bins)
         @info "Threaded 1D Array Mutating call allocation: $alloc1 bytes"
-        @test alloc1 < 250_000 # extremely lightweight compared to O(N_points)
+        Test.@test alloc1 < 250_000 # extremely lightweight compared to O(N_points)
     end
 
     # 5. Public backend dispatch calculate_structure_function! tests
-    @testset "Public Entrypoints & Backend Dispatch" begin
+    Test.@testset "Public Entrypoints & Backend Dispatch" begin
         # 1D Public AutoBackend (resolves to threaded or serial)
         sums_pub = zeros(Float64, n_dist)
         counts_pub = zeros(UInt32, n_dist)
@@ -144,8 +144,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         counts_bas = zeros(UInt32, n_dist)
         SFC.serial_calculate_structure_function!(sums_bas, counts_bas, SFT.L2SF, x_mat, u_mat, distance_bins)
 
-        @test sums_pub ≈ sums_bas
-        @test counts_pub == counts_bas
+        Test.@test sums_pub ≈ sums_bas
+        Test.@test counts_pub == counts_bas
 
         # 2D Public AutoBackend
         sums_2d_pub = zeros(Float64, n_dist, n_vals)
@@ -156,14 +156,14 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         counts_2d_bas = zeros(UInt32, n_dist, n_vals)
         SFC.serial_calculate_structure_function!(sums_2d_bas, counts_2d_bas, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
 
-        @test sums_2d_pub ≈ sums_2d_bas
-        @test counts_2d_pub == counts_2d_bas
+        Test.@test sums_2d_pub ≈ sums_2d_bas
+        Test.@test counts_2d_pub == counts_2d_bas
     end
 end
 
 # Every `!` entry ACCUMULATES into the caller's buffers; zeroing belongs to the non-mutating
 # wrappers. One contract for every rank of input, checked here rank by rank.
-@testset "Mutating API accumulates for every input shape" begin
+Test.@testset "Mutating API accumulates for every input shape" begin
     Random.seed!(4242)
     FT = Float64
     N, B = 24, 3
@@ -178,30 +178,30 @@ end
     SFC.calculate_structure_function!(s1, c1, sft, x2, u2, bins)
     s2, c2 = copy(s1), copy(c1)
     SFC.calculate_structure_function!(s2, c2, sft, x2, u2, bins)
-    @test s2 ≈ 2 .* s1
-    @test c2 == 2 .* c1
+    Test.@test s2 ≈ 2 .* s1
+    Test.@test c2 == 2 .* c1
 
     # (b) batch / auxiliary axes
     bs1, bc1 = zeros(FT, nb, B), zeros(UInt32, nb, B)
     SFC.calculate_structure_function!(bs1, bc1, sft, x2, u3, bins)
     bs2, bc2 = copy(bs1), copy(bc1)
     SFC.calculate_structure_function!(bs2, bc2, sft, x2, u3, bins)
-    @test bs2 ≈ 2 .* bs1
-    @test bc2 == 2 .* bc1
+    Test.@test bs2 ≈ 2 .* bs1
+    Test.@test bc2 == 2 .* bc1
 
     # (c) tensor
     ts1, tc1 = zeros(FT, 2, 2, nb), zeros(UInt32, nb)
     SFC.calculate_structure_function_tensor!(ts1, tc1, Val(2), x2, u2, bins)
     ts2, tc2 = copy(ts1), copy(tc1)
     SFC.calculate_structure_function_tensor!(ts2, tc2, Val(2), x2, u2, bins)
-    @test ts2 ≈ 2 .* ts1
-    @test tc2 == 2 .* tc1
+    Test.@test ts2 ≈ 2 .* ts1
+    Test.@test tc2 == 2 .* tc1
 
     # The non-mutating wrappers still own the zeroing, so repeated calls are independent.
     r1 = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins, SFO.StructureFunctionTensorSumsAndCounts)
     r2 = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins, SFO.StructureFunctionTensorSumsAndCounts)
-    @test r1.sums ≈ r2.sums
-    @test r1.counts == r2.counts
+    Test.@test r1.sums ≈ r2.sums
+    Test.@test r1.counts == r2.counts
 end
 
 end # module

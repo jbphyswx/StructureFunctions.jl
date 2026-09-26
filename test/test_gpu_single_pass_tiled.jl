@@ -158,7 +158,7 @@ Test.@testset "GPU single-pass 2D global fallback parity" begin
             backend.backend, 64, gs, gc, x, u,
             GE._gpu_digitizer(backend.backend, bins, Val(:single_pass_2d)),
             GE._value_digitizer(nothing, backend.backend, value_bins),
-            N, 2, length(bins), length(value_bins), SF.HelperFunctions.FlatGeometry{2}(),
+            N, length(bins), length(value_bins), SF.HelperFunctions.FlatGeometry{2}(),
         )
         KA.synchronize(backend.backend)
         for (t, k) in enumerate(inv)

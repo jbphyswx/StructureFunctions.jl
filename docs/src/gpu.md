@@ -159,8 +159,8 @@ take a different kernel on a device with less shared memory; the answer is the s
 
 [`GPUSFWorkspace`](@ref StructureFunctions.Calculations.GPUSFWorkspace) for `kind = :joint2d` defaults to the exact compile-time shared histogram
 width `n_dist × n_val`; `joint2d_compile_cells = joint2d_smem_align256(n_dist, n_val)`, or the widest
-width a device fits, `joint2d_smem_max(backend, W, XT, OT, CT)`, overrides it so bin grids of
-different shapes share one compiled kernel.
+width a device fits, `joint2d_smem_max(backend, W, F, XT, OT, CT)` for `W`-wide coordinates and
+`F`-wide fields, overrides it so bin grids of different shapes share one compiled kernel.
 
 ## Six-invariant single-pass 2D
 

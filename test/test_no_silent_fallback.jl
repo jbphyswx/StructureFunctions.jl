@@ -3,6 +3,7 @@ using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads: OhMyThreads
+using Distributed: Distributed
 using Random: Random
 
 # An explicit backend either does what it says or raises naming the package that supplies it; only

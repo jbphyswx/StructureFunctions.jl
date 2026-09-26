@@ -38,13 +38,15 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_u32!(
     n_tile_blocks::Int,
     workgroup_size::Int,
     wts,                    # NoWeights(), or one weight per point
+    ::Val{W},               # coordinate width
+    ::Val{F},               # field width
     ::Val{CST},             # shared count element: UInt32 unweighted, the count type weighted
     geom,
-) where {FT, CST}
-    shared_xi = @localmem FT (2 * SF_GPU_TILE,)
-    shared_ui = @localmem FT (2 * SF_GPU_TILE,)
-    shared_xj = @localmem FT (2 * SF_GPU_TILE,)
-    shared_uj = @localmem FT (2 * SF_GPU_TILE,)
+) where {FT, W, F, CST}
+    shared_xi = @localmem FT (W * SF_GPU_TILE,)
+    shared_ui = @localmem FT (F * SF_GPU_TILE,)
+    shared_xj = @localmem FT (W * SF_GPU_TILE,)
+    shared_uj = @localmem FT (F * SF_GPU_TILE,)
     shared_sums = @localmem FT (SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS,)
     shared_cnts = @localmem CST (SF_GPU_MAX_BINS,)
     lid = @index(Local, Linear)
@@ -71,11 +73,11 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_u32!(
             k = lid
             while k <= ni
                 gi = i0 + k - 1
-                @inbounds begin
-                    shared_xi[k] = x_mat[1, gi]
-                    shared_xi[SF_GPU_TILE + k] = x_mat[2, gi]
-                    shared_ui[k] = u_mat[1, gi]
-                    shared_ui[SF_GPU_TILE + k] = u_mat[2, gi]
+                @inbounds for d in 1:W
+                    shared_xi[(d - 1) * SF_GPU_TILE + k] = x_mat[d, gi]
+                end
+                @inbounds for d in 1:F
+                    shared_ui[(d - 1) * SF_GPU_TILE + k] = u_mat[d, gi]
                 end
                 k += workgroup_size
             end
@@ -83,11 +85,11 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_u32!(
                 k = lid
                 while k <= nj
                     gj = j0 + k - 1
-                    @inbounds begin
-                        shared_xj[k] = x_mat[1, gj]
-                        shared_xj[SF_GPU_TILE + k] = x_mat[2, gj]
-                        shared_uj[k] = u_mat[1, gj]
-                        shared_uj[SF_GPU_TILE + k] = u_mat[2, gj]
+                    @inbounds for d in 1:W
+                        shared_xj[(d - 1) * SF_GPU_TILE + k] = x_mat[d, gj]
+                    end
+                    @inbounds for d in 1:F
+                        shared_uj[(d - 1) * SF_GPU_TILE + k] = u_mat[d, gj]
                     end
                     k += workgroup_size
                 end
@@ -111,16 +113,16 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_u32!(
                 if ti < tj
                     ia = (p - 1) ÷ nj + 1
                     jb = (p - 1) - (ia - 1) * nj + 1
-                    X1 = SA.SVector{2, FT}(shared_xi[ia], shared_xi[SF_GPU_TILE + ia])
-                    X2 = SA.SVector{2, FT}(shared_xj[jb], shared_xj[SF_GPU_TILE + jb])
-                    U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
-                    U2 = SA.SVector{2, FT}(shared_uj[jb], shared_uj[SF_GPU_TILE + jb])
+                    X1 = _sf_load_pt(Val(W), shared_xi, ia)
+                    X2 = _sf_load_pt(Val(W), shared_xj, jb)
+                    U1 = _sf_load_pt(Val(F), shared_ui, ia)
+                    U2 = _sf_load_pt(Val(F), shared_uj, jb)
                 else
                     ia, jb = _pair_from_linear(p, ni)
-                    X1 = SA.SVector{2, FT}(shared_xi[ia], shared_xi[SF_GPU_TILE + ia])
-                    X2 = SA.SVector{2, FT}(shared_xi[jb], shared_xi[SF_GPU_TILE + jb])
-                    U1 = SA.SVector{2, FT}(shared_ui[ia], shared_ui[SF_GPU_TILE + ia])
-                    U2 = SA.SVector{2, FT}(shared_ui[jb], shared_ui[SF_GPU_TILE + jb])
+                    X1 = _sf_load_pt(Val(W), shared_xi, ia)
+                    X2 = _sf_load_pt(Val(W), shared_xi, jb)
+                    U1 = _sf_load_pt(Val(F), shared_ui, ia)
+                    U2 = _sf_load_pt(Val(F), shared_ui, jb)
                 end
                 ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 bin = SFH.digitize(dist, dig)
@@ -162,14 +164,14 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_u32!(
     end
 end
 
-"""Static shared bytes of `_sf6_single_pass_kernel_tiled128_u32!` for coordinates and sums of `FT`
-and counts of `CST`."""
-@inline _sp1d_tiled_smem_bytes(::Type{FT}, ::Type{CST}) where {FT, CST} =
-    4 * SFC.gpu_localmem_bytes(FT, 2 * SF_GPU_TILE) +
+"""Static shared bytes of `_sf6_single_pass_kernel_tiled128_u32!` for `W`-wide coordinates and `F`-wide
+fields staged and summed as `FT`, and counts of `CST`."""
+@inline _sp1d_tiled_smem_bytes(::Type{FT}, ::Type{CST}, W::Int, F::Int) where {FT, CST} =
+    2 * SFC.gpu_localmem_bytes(FT, W * SF_GPU_TILE) + 2 * SFC.gpu_localmem_bytes(FT, F * SF_GPU_TILE) +
     SFC.gpu_localmem_bytes(FT, SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS) +
     SFC.gpu_localmem_bytes(CST, SF_GPU_MAX_BINS)
 
-"""Whether `_sf6_single_pass_kernel_tiled128_u32!` takes `NB` distance bins, coordinates of `FT`
-and counts of `CST` on the device `caps` describes."""
-@inline _gpu_single_pass_tiled_eligible(caps, NB::Int, ::Type{FT}, ::Type{CST}) where {FT, CST} =
-    NB <= SF_GPU_MAX_BINS && SFC.gpu_static_smem_fits(caps, _sp1d_tiled_smem_bytes(FT, CST))
+"""Whether `_sf6_single_pass_kernel_tiled128_u32!` takes `NB` distance bins, `W`-wide coordinates and
+`F`-wide fields of `FT` and counts of `CST` on the device `caps` describes."""
+@inline _gpu_single_pass_tiled_eligible(caps, NB::Int, ::Type{FT}, ::Type{CST}, W::Int, F::Int) where {FT, CST} =
+    NB <= SF_GPU_MAX_BINS && SFC.gpu_static_smem_fits(caps, _sp1d_tiled_smem_bytes(FT, CST, W, F))

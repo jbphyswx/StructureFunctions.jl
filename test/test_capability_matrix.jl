@@ -38,7 +38,11 @@ const CM_X1, CM_U1 = reshape(sort(rand(CM_N)), 1, CM_N), randn(1, CM_N)
 const CM_BINS = collect(range(0.0, 1.0; length = CM_NB + 1))
 const CM_VBINS = collect(range(-3.0, 3.0; length = CM_NV + 1))
 const CM_ABINS = collect(range(prevfloat(0.0), π; length = 4))
+const CM_NA = length(CM_ABINS) - 1
 const CM_AX = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
+# Bins short enough for a cull grid to exclude pairs on the unit square.
+const CM_TBINS = collect(range(0.0, 0.25; length = CM_NB + 1))
+const CM_CULL = SFC.AlwaysCulling()
 const CM_RAW = SF.StructureFunctionSumsAndCounts
 const CM_TRAW = SFO.StructureFunctionTensorSumsAndCounts
 const CM_FFT = SB.FastFourierTransformSpectralBackend()
@@ -87,6 +91,14 @@ const CM_ROUTES = (
         backend = be); (r.sums, r.counts)))),
     ("aux axes joint", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XB, CM_UB, CM_BINS,
         CM_VBINS; backend = be); (r.sums, r.counts)))),
+    ("aux axes joint angle", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XB, CM_UB, CM_BINS,
+        CM_ABINS; backend = be, second_axis = CM_AX); (r.sums, r.counts)))),
+    ("aux axes joint angle shared", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XP, CM_UB,
+        CM_BINS, CM_ABINS; backend = be, second_axis = CM_AX); (r.sums, r.counts)))),
+    ("aux axes 1D culled", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XB, CM_UB, CM_TBINS,
+        CM_RAW; backend = be, culling = CM_CULL); (r.sums, r.counts)))),
+    ("aux axes 1D culled shared", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XP, CM_UB,
+        CM_TBINS, CM_RAW; backend = be, culling = CM_CULL); (r.sums, r.counts)))),
     ("slice batch 1D", (be -> (s = zeros(CM_NB, CM_T); c = zeros(Int, CM_NB, CM_T);
         SFC.calculate_structure_function_batch!(s, c, CM_OP, CM_XB, CM_UB, CM_BINS; backend = be);
         (s, c)))),
@@ -94,10 +106,18 @@ const CM_ROUTES = (
         c = zeros(Int, CM_NB, CM_NV, CM_T);
         SFC.calculate_structure_function_2d_batch!(s, c, CM_OP, CM_XB, CM_UB, CM_BINS, CM_VBINS;
             backend = be); (s, c)))),
+    ("slice batch joint angle", (be -> (s = zeros(CM_NB, CM_NA, CM_T);
+        c = zeros(Int, CM_NB, CM_NA, CM_T);
+        SFC.calculate_structure_function_2d_batch!(s, c, CM_OP, CM_XB, CM_UB, CM_BINS, CM_ABINS;
+            backend = be, second_axis = CM_AX); (s, c)))),
     ("slice batch sp1d", (be -> (s = zeros(SFC.SINGLE_PASS_N, CM_NB, CM_T);
         c = zeros(Int, SFC.SINGLE_PASS_N, CM_NB, CM_T);
         SFC.calculate_structure_functions_single_pass_batch!(s, c, CM_XB, CM_UB, CM_BINS;
             backend = be); (s, c)))),
+    ("slice batch sp1d culled shared", (be -> (s = zeros(SFC.SINGLE_PASS_N, CM_NB, CM_T);
+        c = zeros(Int, SFC.SINGLE_PASS_N, CM_NB, CM_T);
+        SFC.calculate_structure_functions_single_pass_batch!(s, c, CM_XP, CM_UB, CM_TBINS;
+            backend = be, culling = CM_CULL); (s, c)))),
     ("slice batch sp2d", (be -> (s = zeros(SFC.SINGLE_PASS_N, CM_NB, CM_NV, CM_T);
         c = zeros(Int, SFC.SINGLE_PASS_N, CM_NB, CM_NV, CM_T);
         SFC.calculate_structure_functions_single_pass_2d_batch!(s, c, CM_XB, CM_UB, CM_BINS,
@@ -133,7 +153,7 @@ const CM_BACKENDS = (
 """
 The cells that do not run, each with the message its `ArgumentError` must carry and the reason the
 cell is refused. Every other cell must run and reproduce the serial reference. Emptying this is
-what "every route on every backend" means, and it is empty: all 105 cells run.
+what "every route on every backend" means.
 
 A cell added here must carry a reason, and a cell whose refusal is later implemented must be
 removed, or the matrix stops asserting anything about it.
@@ -149,6 +169,14 @@ const CM_REFUSED = Dict{Tuple{String, String},
                  "kernel differs from the transform's only in accumulating the symmetric moment " *
                  "store instead of contracting it, so this is unwritten work, not an impossibility.",
     ),
+    (map(("aux axes 1D culled", "aux axes 1D culled shared", "slice batch sp1d culled shared")) do r
+        (r, "gpu") => (
+            message = "GPU culling needs a SFC.GPUSFWorkspace",
+            reason = "the device takes its culled tile-pair work list from a workspace's cull memo, and " *
+                     "these calls pass none. Building the list per call on the device is unwritten " *
+                     "work, not an impossibility.",
+        )
+    end)...,
 )
 
 """Counts exactly when both are integer; a kernel-weighted count is a mass, compared like a sum."""
@@ -200,6 +228,17 @@ Test.@testset "the capability matrix: every route on every backend" begin
             # would then run on the driver and report a result that was never distributed.
             Test.@test Distributed.nworkers() == n_workers
         end
+    end
+end
+
+Test.@testset "an angle cell bins the angle" begin
+    # Over the same edges the value histogram differs, so an angle cell that binned the value would
+    # disagree with its serial reference.
+    ser = CB.SerialBackend()
+    for (name, x, u) in (("point", CM_XP, CM_UP), ("aux axes", CM_XB, CM_UB), ("aux axes shared", CM_XP, CM_UB))
+        angle = SFC.calculate_structure_function(CM_OP, x, u, CM_BINS, CM_ABINS; backend = ser, second_axis = CM_AX)
+        value = SFC.calculate_structure_function(CM_OP, x, u, CM_BINS, CM_ABINS; backend = ser)
+        Test.@test (name, angle.counts != value.counts) == (name, true)
     end
 end
 

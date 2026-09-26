@@ -1,6 +1,6 @@
-using Test
-using Random
-using LinearAlgebra: dot
+using Test: Test
+using Random: Random
+using LinearAlgebra: LinearAlgebra
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT, StructureFunctionObjects as SFO, MultiFields as MF
 using ComputationalBackends: ComputationalBackends as CB
@@ -18,16 +18,6 @@ function honours_weights(run, n_points::Int; k::Real = K_CONST, rtol::Real = 1e-
     a_s, a_c = run(nothing)
     b_s, b_c = run(fill(k, n_points))
     return isapprox(b_s, k^2 .* a_s; rtol = rtol) && isapprox(b_c, k^2 .* a_c; rtol = rtol)
-end
-
-"""Whether `f()` raises, which is what a route with no weighted kernel must do."""
-function raises(f)
-    try
-        f()
-        return false
-    catch
-        return true
-    end
 end
 
 """The weighted 1-D pair sum, written out so it shares no code with the kernels."""
@@ -48,7 +38,7 @@ function weighted_pair_loop(op, x, u, w, bins)
     return s, c
 end
 
-@testset "pair weights reach every route that accepts them" begin
+Test.@testset "pair weights reach every route that accepts them" begin
     Random.seed!(2026)
     np = 120
     bins = collect(range(0.0, 1.0; length = 7))
@@ -59,17 +49,17 @@ end
     u = rand(2, np)
     w = 0.3 .+ rand(np)
 
-    @testset "the 1-D point histogram, against an independent weighted pair loop" begin
+    Test.@testset "the 1-D point histogram, against an independent weighted pair loop" begin
         ref_s, ref_c = weighted_pair_loop(op, x, u, w, bins)
         for backend in (CB.SerialBackend(), CB.ThreadedBackend(), device)
             got = SFC.calculate_structure_function(op, x, u, bins, Float64, SFO.StructureFunctionSumsAndCounts;
                 backend = backend, weights = w)
-            @test isapprox(collect(got.sums), ref_s; rtol = 1e-10)
-            @test isapprox(collect(got.counts), ref_c; rtol = 1e-10)
+            Test.@test isapprox(collect(got.sums), ref_s; rtol = 1e-10)
+            Test.@test isapprox(collect(got.counts), ref_c; rtol = 1e-10)
         end
     end
 
-    @testset "a constant weight scales every accepting route by k²" begin
+    Test.@testset "a constant weight scales every accepting route by k²" begin
         sf1d(backend) = ws -> begin
             r = SFC.calculate_structure_function(op, x, u, bins, Float64, SFO.StructureFunctionSumsAndCounts;
                 backend = backend, weights = ws)
@@ -97,15 +87,15 @@ end
         end
 
         for backend in (CB.SerialBackend(), CB.ThreadedBackend(), device)
-            @test honours_weights(sf1d(backend), np)
-            @test honours_weights(single_pass(backend), np)
-            @test honours_weights(joint2d(backend), np)
-            @test honours_weights(single_pass_2d(backend), np)
-            @test honours_weights(tensor(backend), np)
+            Test.@test honours_weights(sf1d(backend), np)
+            Test.@test honours_weights(single_pass(backend), np)
+            Test.@test honours_weights(joint2d(backend), np)
+            Test.@test honours_weights(single_pass_2d(backend), np)
+            Test.@test honours_weights(tensor(backend), np)
         end
     end
 
-    @testset "the auxiliary-axis batches take weights on every backend that runs them" begin
+    Test.@testset "the auxiliary-axis batches take weights on every backend that runs them" begin
         nt = 3
         ub = rand(2, np, nt)
         batch1d(backend) = ws -> begin
@@ -127,13 +117,13 @@ end
             (s, c)
         end
         for backend in (CB.SerialBackend(), CB.ThreadedBackend(), device)
-            @test honours_weights(batch1d(backend), np)
-            @test honours_weights(batch_joint(backend), np)
+            Test.@test honours_weights(batch1d(backend), np)
+            Test.@test honours_weights(batch_joint(backend), np)
         end
-        @test honours_weights(batch_sp1d, np)
+        Test.@test honours_weights(batch_sp1d, np)
     end
 
-    @testset "multi-field sweeps take weights" begin
+    Test.@testset "multi-field sweeps take weights" begin
         fields = MF.Fields(vectors = (rand(2, np),), scalars = (rand(np),))
         mixed = SFT.MixedSFType{1, 0, 2}()
         nb = length(bins) - 1
@@ -143,15 +133,15 @@ end
             run!(s, c, ws)
             (s, c)
         end
-        @test honours_weights(multifield((s, c, ws) ->
+        Test.@test honours_weights(multifield((s, c, ws) ->
             SFC.calculate_structure_function!(s, c, mixed, x, fields, bins; backend = CB.SerialBackend(),
                 weights = ws)), np)
-        @test honours_weights(multifield((s, c, ws) ->
+        Test.@test honours_weights(multifield((s, c, ws) ->
             SFC.calculate_structure_function!(s, c, mixed, x, fields, bins; backend = device,
                 weights = ws)), np)
     end
 
-    @testset "the device single-pass 2D point path equals the serial weighted answer" begin
+    Test.@testset "the device single-pass 2D point path equals the serial weighted answer" begin
         # `honours_weights` proves the weight reaches the kernel; this proves it reaches it the
         # same way the CPU applies it, over both the shared-histogram and the value-column routes.
         for D in (2, 3)
@@ -160,15 +150,15 @@ end
                 bins, value_bins, Float64; weights = w)
             g = SFC._dispatch_single_pass_2d(device, SFC.PointField{D}(), xd, ud,
                 bins, value_bins, Float64; weights = w)
-            @test isapprox(collect(g[1]), collect(r[1]); rtol = 1e-9)
-            @test isapprox(collect(g[2]), collect(r[2]); rtol = 1e-9)
+            Test.@test isapprox(collect(g[1]), collect(r[1]); rtol = 1e-9)
+            Test.@test isapprox(collect(g[2]), collect(r[2]); rtol = 1e-9)
         end
     end
 
-    @testset "weights need a floating-point count type" begin
-        @test raises(() -> SFC.calculate_structure_function(op, x, u, bins, UInt32;
-            backend = CB.SerialBackend(), weights = w))
-        @test raises(() -> SFC.calculate_structure_function(op, x, u, bins, UInt32;
-            backend = device, weights = w))
+    Test.@testset "weights need a floating-point count type" begin
+        Test.@test_throws ArgumentError SFC.calculate_structure_function(op, x, u, bins, UInt32;
+            backend = CB.SerialBackend(), weights = w)
+        Test.@test_throws ArgumentError SFC.calculate_structure_function(op, x, u, bins, UInt32;
+            backend = device, weights = w)
     end
 end

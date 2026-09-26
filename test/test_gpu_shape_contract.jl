@@ -1,6 +1,6 @@
 using ComputationalBackends: ComputationalBackends as CB
-using Test
-using Random
+using Test: Test
+using Random: Random
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
     Calculations as SFC,
@@ -29,16 +29,16 @@ function _cpu_shape_pairwise(sf, x, u, bins)
 end
 
 function _assert_sums_counts_equal(gpu, cpu; atol = 1f-4)
-    @test batch_histograms_equal(gpu.sums, gpu.counts, cpu.sums, cpu.counts; atol)
+    Test.@test batch_histograms_equal(gpu.sums, gpu.counts, cpu.sums, cpu.counts; atol)
 end
 
-@testset "GPU public shape contract (KA.CPU)" begin
+Test.@testset "GPU public shape contract (KA.CPU)" begin
     sf = SFT.L2SFType()
     bins = collect(Float32, range(0.0f0, 1.75f0; length = 10))
     value_bins = collect(Float32, range(-0.1f0, 1.5f0; length = 8))
     n_bins = length(bins) - 1
 
-    @testset "point fields use axis 1 as D" begin
+    Test.@testset "point fields use axis 1 as D" begin
         x2 = rand(Float32, 2, 10)
         u2 = rand(Float32, 2, 10)
         x3 = rand(Float32, 3, 10)
@@ -48,13 +48,13 @@ end
         _assert_sums_counts_equal(_gpu_shape_pairwise(sf, x3, u3, bins), _cpu_shape_pairwise(sf, x3, u3, bins))
     end
 
-    @testset "shared-position auxiliary axes match explicit slices" begin
+    Test.@testset "shared-position auxiliary axes match explicit slices" begin
         x = rand(Float32, 2, 11)
         u = rand(Float32, 2, 11, 3, 2)
 
         gpu = _gpu_shape_pairwise(sf, x, u, bins)
-        @test size(gpu.sums) == (n_bins, 3, 2)
-        @test size(gpu.counts) == (n_bins, 3, 2)
+        Test.@test size(gpu.sums) == (n_bins, 3, 2)
+        Test.@test size(gpu.counts) == (n_bins, 3, 2)
 
         ref_sums = zeros(Float32, n_bins, 3, 2)
         ref_counts = zeros(UInt32, n_bins, 3, 2)
@@ -64,16 +64,16 @@ end
             ref_sums[:, t, m] .= rt.sums
             ref_counts[:, t, m] .= rt.counts
         end
-        @test batch_histograms_equal(gpu.sums, gpu.counts, ref_sums, ref_counts; atol = 1f-4)
+        Test.@test batch_histograms_equal(gpu.sums, gpu.counts, ref_sums, ref_counts; atol = 1f-4)
     end
 
-    @testset "varying-position auxiliary axes match explicit slices" begin
+    Test.@testset "varying-position auxiliary axes match explicit slices" begin
         x = rand(Float32, 2, 11, 3)
         u = rand(Float32, 2, 11, 3)
 
         gpu = _gpu_shape_pairwise(sf, x, u, bins)
-        @test size(gpu.sums) == (n_bins, 3)
-        @test size(gpu.counts) == (n_bins, 3)
+        Test.@test size(gpu.sums) == (n_bins, 3)
+        Test.@test size(gpu.counts) == (n_bins, 3)
 
         ref_sums = zeros(Float32, n_bins, 3)
         ref_counts = zeros(UInt32, n_bins, 3)
@@ -82,26 +82,26 @@ end
             ref_sums[:, t] .= rt.sums
             ref_counts[:, t] .= rt.counts
         end
-        @test batch_histograms_equal(gpu.sums, gpu.counts, ref_sums, ref_counts; atol = 1f-4)
+        Test.@test batch_histograms_equal(gpu.sums, gpu.counts, ref_sums, ref_counts; atol = 1f-4)
     end
 
-    @testset "joint 2D shared and varying auxiliary axes" begin
+    Test.@testset "joint 2D shared and varying auxiliary axes" begin
         x_shared = rand(Float32, 2, 9)
         u_shared = rand(Float32, 2, 9, 2)
         shared = SFC.calculate_structure_function(
             sf, x_shared, u_shared, bins, value_bins; backend = GPU_SHAPE_BE,
         )
-        @test size(shared.sums) == (n_bins, length(value_bins) - 1, 2)
+        Test.@test size(shared.sums) == (n_bins, length(value_bins) - 1, 2)
 
         x_varying = rand(Float32, 2, 9, 2)
         u_varying = rand(Float32, 2, 9, 2)
         varying = SFC.calculate_structure_function(
             sf, x_varying, u_varying, bins, value_bins; backend = GPU_SHAPE_BE,
         )
-        @test size(varying.sums) == (n_bins, length(value_bins) - 1, 2)
+        Test.@test size(varying.sums) == (n_bins, length(value_bins) - 1, 2)
     end
 
-    @testset "single-pass auxiliary axes preserve public shape" begin
+    Test.@testset "single-pass auxiliary axes preserve public shape" begin
         inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         x = rand(Float32, 2, 10)
         u = rand(Float32, 2, 10, 2, 3)
@@ -112,22 +112,22 @@ end
         cpu = SFC.calculate_structure_functions_single_pass(
             x, u, bins, SFO.StructureFunctionSumsAndCounts; backend = GPU_SHAPE_CPU_BE,
         )
-        @test keys(gpu) == inv
+        Test.@test keys(gpu) == inv
         for k in inv
-            @test size(gpu[k].sums) == (n_bins, 2, 3)
-            @test batch_histograms_equal(gpu[k].sums, gpu[k].counts, cpu[k].sums, cpu[k].counts; atol = 1f-4)
+            Test.@test size(gpu[k].sums) == (n_bins, 2, 3)
+            Test.@test batch_histograms_equal(gpu[k].sums, gpu[k].counts, cpu[k].sums, cpu[k].counts; atol = 1f-4)
         end
 
         gpu2d = SFC.calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend = GPU_SHAPE_BE)
         cpu2d = SFC.calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend = GPU_SHAPE_CPU_BE)
-        @test keys(gpu2d) == inv
+        Test.@test keys(gpu2d) == inv
         for k in inv
-            @test size(gpu2d[k].sums) == (n_bins, length(value_bins) - 1, 2, 3)
-            @test batch_histograms_equal(gpu2d[k].sums, gpu2d[k].counts, cpu2d[k].sums, cpu2d[k].counts; atol = 1f-4)
+            Test.@test size(gpu2d[k].sums) == (n_bins, length(value_bins) - 1, 2, 3)
+            Test.@test batch_histograms_equal(gpu2d[k].sums, gpu2d[k].counts, cpu2d[k].sums, cpu2d[k].counts; atol = 1f-4)
         end
     end
 
-    @testset "a one-dimensional field runs on the device" begin
+    Test.@testset "a one-dimensional field runs on the device" begin
         # The tiled kernels stage a fixed number of coordinate components, so a width outside the
         # set they were written for goes through the width-generic pair kernel. That is a routing
         # decision, not a refusal, so the answer must equal the CPU's.
@@ -139,20 +139,20 @@ end
             sf, x1, u1, b1, SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
         gpu1 = SFC.calculate_structure_function(
             sf, x1, u1, b1, SFO.StructureFunctionSumsAndCounts; backend = GPU_SHAPE_BE)
-        @test gpu1.counts == cpu1.counts
-        @test isapprox(gpu1.sums, cpu1.sums; rtol = 1f-5)
+        Test.@test gpu1.counts == cpu1.counts
+        Test.@test isapprox(gpu1.sums, cpu1.sums; rtol = 1f-5)
     end
 
-    @testset "invalid shapes fail before GPU launch" begin
-        @test_throws DimensionMismatch SFC.calculate_structure_function(
+    Test.@testset "invalid shapes fail before GPU launch" begin
+        Test.@test_throws DimensionMismatch SFC.calculate_structure_function(
             sf, rand(Float32, 2, 5), rand(Float32, 3, 5), bins;
             backend = GPU_SHAPE_BE,
         )
-        @test_throws DimensionMismatch SFC.calculate_structure_function(
+        Test.@test_throws DimensionMismatch SFC.calculate_structure_function(
             sf, rand(Float32, 2, 5, 2), rand(Float32, 2, 5, 3), bins;
             backend = GPU_SHAPE_BE,
         )
-        @test_throws DimensionMismatch SFC.calculate_structure_function(
+        Test.@test_throws DimensionMismatch SFC.calculate_structure_function(
             sf, rand(Float32, 2, 5, 2), rand(Float32, 2, 5), bins;
             backend = GPU_SHAPE_BE,
         )

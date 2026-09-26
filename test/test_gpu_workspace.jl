@@ -337,6 +337,13 @@ Test.@testset "a fixed-position slice batch agrees at every width and bin spelli
                 backend = CB.GPUBackend(backend))
             Test.@test reshape(collect(g.counts), NB, T) == ref_c
             Test.@test isapprox(reshape(collect(g.sums), NB, T), ref_s; rtol = 1e-10)
+            # `!` adds: twice into the caller's buffers is twice the histogram, on every route
+            s, c = zeros(FT, NB, T), zeros(UInt32, NB, T)
+            for _ in 1:2
+                SFC.calculate_structure_function_batch!(s, c, sft, x, u, bins; backend = CB.GPUBackend(backend))
+            end
+            Test.@test c == 2 .* ref_c
+            Test.@test isapprox(s, 2 .* ref_s; rtol = 1e-10)
         end
     end
 end

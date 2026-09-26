@@ -1,4 +1,4 @@
-using Test
+using Test: Test
 using Random: Random
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions: Calculations as SFC, LinearBinEdges, LogBinEdges
@@ -12,7 +12,7 @@ Test.@testset "GPU single-pass 2D, D = 3" begin
     backend = KA.CPU()
     FT = Float32
 
-    @testset "matches the CPU reference for D = $D, $(nd)x$(nv) bins" for D in (2, 3),
+    Test.@testset "matches the CPU reference for D = $D, $(nd)x$(nv) bins" for D in (2, 3),
                                                                           (nd, nv) in ((16, 8), (24, 12))
         N = 256
         x = rand(FT, D, N)
@@ -29,13 +29,13 @@ Test.@testset "GPU single-pass 2D, D = 3" begin
         # cells may differ by one where a pair sits within an ulp of a bin edge and GPU FMA rounds
         # the other way, so the bound is one pair per cell and the total is exact.
         gcm, ccm = Array(gc), cc
-        @test sum(Int.(gcm)) == sum(Int.(ccm))
-        @test maximum(abs.(Int.(gcm) .- Int.(ccm))) <= 1
-        @test count(gcm .!= ccm) <= max(4, length(ccm) ÷ 100)
-        @test isapprox(Array(gs), cs; rtol = 1e-4)
+        Test.@test sum(Int.(gcm)) == sum(Int.(ccm))
+        Test.@test maximum(abs.(Int.(gcm) .- Int.(ccm))) <= 1
+        Test.@test count(gcm .!= ccm) <= max(4, length(ccm) ÷ 100)
+        Test.@test isapprox(Array(gs), cs; rtol = 1e-4)
     end
 
-    @testset "log distance bins, D = 3" begin
+    Test.@testset "log distance bins, D = 3" begin
         N, nd, nv = 256, 16, 8
         x = rand(FT, 3, N) .+ FT(0.5)
         u = rand(FT, 3, N)
@@ -47,12 +47,12 @@ Test.@testset "GPU single-pass 2D, D = 3" begin
         cc = zeros(UInt32, 6, nd, nv)
         SFC._accumulate_single_pass_2d!(cs, cc, x, u, db, vb)
         gcm = Array(gc)
-        @test sum(Int.(gcm)) == sum(Int.(cc))
-        @test maximum(abs.(Int.(gcm) .- Int.(cc))) <= 1
-        @test isapprox(Array(gs), cs; rtol = 1e-4)
+        Test.@test sum(Int.(gcm)) == sum(Int.(cc))
+        Test.@test maximum(abs.(Int.(gcm) .- Int.(cc))) <= 1
+        Test.@test isapprox(Array(gs), cs; rtol = 1e-4)
     end
 
-    @testset "workspace reuse is stable in 3D" begin
+    Test.@testset "workspace reuse is stable in 3D" begin
         N, nd, nv = 256, 16, 8
         x = rand(FT, 3, N)
         u = rand(FT, 3, N)
@@ -63,8 +63,8 @@ Test.@testset "GPU single-pass 2D, D = 3" begin
         for _ in 1:3
             gs, gc = SFC.gpu_calculate_structure_functions_single_pass_2d(
                 backend, x, u, db, vb, UInt32; workspace = ws)
-            @test Array(gc) == Array(ref_c)
-            @test Array(gs) ≈ Array(ref_s)
+            Test.@test Array(gc) == Array(ref_c)
+            Test.@test Array(gs) ≈ Array(ref_s)
         end
     end
 end

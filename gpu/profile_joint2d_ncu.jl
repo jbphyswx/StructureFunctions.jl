@@ -44,7 +44,7 @@ end
 function _resolve_compile_cells(backend, ::Type{FT}) where {FT}
     spec = get(ENV, "COMPILE_CELLS", "exact")
     spec == "exact" && return nothing
-    spec == "max" && return joint2d_smem_max(backend, 2, FT, FT, UInt32)
+    spec == "max" && return joint2d_smem_max(backend, 2, 2, FT, FT, UInt32)
     return parse(Int, spec)
 end
 
@@ -79,11 +79,9 @@ function main()
     end
 
     launch! = function ()
-        SFC.reset_histogram!(ws)
-        _GPUExt._launch_gpu_joint2d!(
-            sft, backend, x, u, dist, value_bins, UInt32;
-            workspace = ws, synchronize = true,
-        )
+        _GPUExt._launch_gpu_joint2d!(sft, backend, x, u, dist, value_bins, FT, UInt32, nothing, nothing;
+                                     workspace = ws)
+        KA.synchronize(backend)
         return nothing
     end
 

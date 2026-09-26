@@ -36,11 +36,13 @@ const SCRIPT_SUITES = (
     "test_cuda_batch_widths.jl",
     "test_cuda_widths.jl",
     "test_cuda_smem_budget.jl",
+    "test_cuda_batch_culling.jl",
 )
 
 Test.@testset "StructureFunctions GPU" begin
     include("test_cuda_parity.jl")
     include("test_workspace_cuda.jl")
+    include("test_cuda_batch_contract.jl")
     Test.@testset "script suites" begin
         for file in SCRIPT_SUITES
             cmd = `$(Base.julia_cmd()) --project=$(GPU_DIR) --threads=$(Threads.nthreads()) $(joinpath(GPU_DIR, file))`

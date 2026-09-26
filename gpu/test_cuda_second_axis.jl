@@ -55,6 +55,16 @@ for (route, n_val) in (("tiled", 5), ("global atomic", 401))
     compare("value axis UNCHANGED $route", got, ref)
 end
 
+# The slice batch bins the angle too: shared positions once per pair, varying positions per slice.
+for shared in (true, false)
+    x = shared ? rand(2, NP ÷ 4) : rand(2, NP ÷ 4, 3)
+    u = rand(2, NP ÷ 4, 3)
+    abins = collect(range(prevfloat(0.0), π; length = 5))
+    ref = SFC.calculate_structure_function(OP, x, u, DBINS, abins; backend = SER, second_axis = SRC)
+    got = SFC.calculate_structure_function(OP, x, u, DBINS, abins; backend = DEV, second_axis = SRC)
+    compare("angle axis slice batch $(shared ? "shared" : "varying")", got, ref)
+end
+
 # The angle is read off `X2 - X1`, which is the separation only on a flat metric.
 let x = rand(2, 64), u = rand(2, 64)
     abins = collect(range(prevfloat(0.0), π; length = 5))

@@ -42,11 +42,22 @@ function serial_calculate_structure_function!(
     end
 
     _require_value_axis(second_axis, geometry)
-    grid, xc, uc, wc = _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling)
-    N = length(xc[1])
-    blocks = pair_blocks(N, 1:(N - 1); grid)
-    _pf_2d_scalar_pairs!(sums_2d, counts_2d, geometry, structure_function_type, xc, uc,
-                         digitize_plan(distance_bins), val_be, blocks, wc, second_axis)
+    N = length(x_vecs[1])
+    _pf_2d_scalar_run!(sums_2d, counts_2d, geometry, structure_function_type, distance_bins, val_be, second_axis,
+                       1:(N - 1), _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling))
+    return nothing
+end
+
+"""
+    _pf_2d_scalar_run!(sums, counts, geometry, sf, distance_bins, val_be, second_axis, ilist,
+                       (grid, x_vecs, u_vecs, weights))
+
+Run [`_pf_2d_scalar_pairs!`](@ref) over the outer indices `ilist` of a [`_cull_sorted`](@ref) result.
+"""
+function _pf_2d_scalar_run!(sums, counts, geometry, sf, distance_bins, val_be, second_axis, ilist,
+                            (grid, xc, uc, wc))
+    _pf_2d_scalar_pairs!(sums, counts, geometry, sf, xc, uc, digitize_plan(distance_bins), val_be,
+                         pair_blocks(length(xc[1]), ilist; grid), wc, second_axis)
     return nothing
 end
 
@@ -218,9 +229,8 @@ function _partial_2d_sums_counts(
     end
 
     _require_value_axis(second_axis, geometry)
-    grid, xc, uc, wc = _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling)
-    _pf_2d_scalar_pairs!(sums, counts, geometry, structure_function_type, xc, uc, digitize_plan(distance_bins),
-                         val_be, pair_blocks(length(xc[1]), ilist; grid), wc, second_axis)
+    _pf_2d_scalar_run!(sums, counts, geometry, structure_function_type, distance_bins, val_be, second_axis, ilist,
+                       _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling))
     return sums, counts
 end
 

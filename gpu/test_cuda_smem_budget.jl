@@ -149,7 +149,7 @@ function portable_1d(x, u, w, bins, NMOM)
     NB = length(bins) - 1
     out, cnt = CUDA.zeros(F64, NMOM, NB, Bu), CUDA.zeros(F64, NMOM, NB, Bu)
     GE._sf_launch_1d_batch_portable!(BE, out, cnt, CuArray(x), CuArray(u), NMOM == 1 ? OP : nothing,
-        GE._gpu_digitizer(BE, bins, Val(NMOM == 1 ? :sf1d : :single_pass)), Np, NB, Bu, D, Val(NMOM),
+        GE._gpu_digitizer(BE, bins, Val(NMOM == 1 ? :sf1d : :single_pass)), Np, NB, Bu, Val(NMOM),
         ndims(x) == 2, geom(D); weights = CuArray(w))
     CUDA.synchronize()
     return out, cnt
@@ -162,8 +162,8 @@ function portable_2d_batch(x, u, w, bins, vb, NMOM)
     out, cnt = CUDA.zeros(F64, NMOM, nd, nv, Bu), CUDA.zeros(F64, NMOM, nd, nv, Bu)
     GE._sf_launch_2d_batch_portable!(BE, out, cnt, CuArray(x), CuArray(u), NMOM == 1 ? OP : nothing,
         GE._gpu_digitizer(BE, bins, Val(NMOM == 1 ? :joint2d : :single_pass_2d)),
-        GE._value_digitizer(nothing, BE, vb), Np, nd, nv, Bu, D, Val(NMOM), ndims(x) == 2, geom(D);
-        weights = CuArray(w))
+        GE._value_digitizer(nothing, BE, vb), Np, nd, nv, Bu, Val(NMOM), ndims(x) == 2, geom(D),
+        SFC.InvariantValueAxis(); weights = CuArray(w))
     CUDA.synchronize()
     return out, cnt
 end
@@ -190,7 +190,7 @@ println("device=", CUDA.name(CUDA.device()), "  static budget=", BUDGET, " B  wa
 Random.seed!(20260925)
 
 # --- 1-D, per-slice positions: sf_tiled_1d_varying! at the widest width it fits, then past it ---
-let bytes_v = (D, R) -> GE._sf_1d_varying_smem_bytes(F64, F64, F64, F64, D, 1, R)
+let bytes_v = (D, R) -> GE._sf_1d_varying_smem_bytes(F64, F64, F64, F64, D, D, 1, R)
     Dstar = widest_width(D -> SFC.gpu_static_smem_fits(CAPS, bytes_v(D, 1)))
     for D in (Dstar, Dstar + 1)
         x, u, w, bins = pts(F64, D), pts(F64, D), weights(F64), edges(F64, sqrt(D), 16)
@@ -206,7 +206,7 @@ let bytes_v = (D, R) -> GE._sf_1d_varying_smem_bytes(F64, F64, F64, F64, D, 1, R
 end
 
 # --- 1-D, shared positions: sf_tiled_1d_fixed! at each strip width the ladder reaches, then past it ---
-let bytes_f = (D, W) -> GE._sf_1d_fixed_smem_bytes(F64, F64, F64, F64, D, 1, W)
+let bytes_f = (D, W) -> GE._sf_1d_fixed_smem_bytes(F64, F64, F64, F64, D, D, 1, W)
     D4 = widest_width(D -> SFC.gpu_static_smem_fits(CAPS, bytes_f(D, 4)))
     D1 = widest_width(D -> SFC.gpu_static_smem_fits(CAPS, bytes_f(D, 1)))
     for D in unique((D4, D4 + 1, D1, D1 + 1))
@@ -222,25 +222,27 @@ let bytes_f = (D, W) -> GE._sf_1d_fixed_smem_bytes(F64, F64, F64, F64, D, 1, W)
     end
     x, u, w, bins = pts(F64, 3), rand(F64, 3, N, B), weights(F64), edges(F64, 2, 16)
     tiled_row("single pass fixed batch D=3", "sf_tiled_1d_fixed",
-        GE._sf_1d_fixed_smem_bytes(F64, F64, F64, F64, 3, 6, 1),
+        GE._sf_1d_fixed_smem_bytes(F64, F64, F64, F64, 3, 3, 6, 1),
         () -> Raw(portable_1d(x, u, w, bins, 6)...), () -> serial_sp_batch(x, u, bins, w))
 end
 
 # --- single-pass 1-D tiled kernel ---
-let x = pts(F64, 2), u = pts(F64, 2), w = weights(F64), bins = edges(F64, 1.5, 32)
+for D in (2, 3)
+    x, u, w, bins = pts(F64, D), pts(F64, D), weights(F64), edges(F64, sqrt(D), 32)
     run = () -> begin
         out, cnt = CUDA.zeros(F64, SFC.SINGLE_PASS_N, 32), CUDA.zeros(F64, SFC.SINGLE_PASS_N, 32)
         GE._launch_single_pass_portable!(BE, 64, out, cnt, CuArray(x), CuArray(u),
-            GE._gpu_digitizer(BE, bins, Val(:single_pass)), N, 2, 33, geom(2); weights = CuArray(w))
+            GE._gpu_digitizer(BE, bins, Val(:single_pass)), N, 33, geom(D); weights = CuArray(w))
         CUDA.synchronize()
         Raw(out, cnt)
     end
-    ref = () -> Raw(values(SFC._dispatch_single_pass(SER, SFC.PointField{2}(), x, u, bins, F64; weights = w))...)
-    tiled_row("single pass point", "_sf6_single_pass_kernel_tiled128", GE._sp1d_tiled_smem_bytes(F64, F64), run, ref)
+    ref = () -> Raw(values(SFC._dispatch_single_pass(SER, SFC.PointField{D}(), x, u, bins, F64; weights = w))...)
+    tiled_row("single pass point D=$D", "_sf6_single_pass_kernel_tiled128", GE._sp1d_tiled_smem_bytes(F64, F64, D, D),
+              run, ref)
 end
 
 # --- joint 2-D point: the widest histogram joint2d_smem_max admits, one value bin past it ---
-let nd = 10, widest = SFC.joint2d_smem_max(BE, 2, F64, F64, F64)
+let nd = 10, widest = SFC.joint2d_smem_max(BE, 2, 2, F64, F64, F64)
     nv = widest ÷ nd
     x, u, w, bins = pts(F64, 2), pts(F64, 2), weights(F64), edges(F64, 1.5, nd)
     for n in (nv, nv + 1)
@@ -249,7 +251,7 @@ let nd = 10, widest = SFC.joint2d_smem_max(BE, 2, F64, F64, F64)
         ref = () -> SFC.calculate_structure_function(OP, x, u, bins, vb, F64; backend = SER, weights = w)
         if n == nv
             tiled_row("joint point $(nd)x$n (widest $widest)", "_sf2d_kernel_tiled128",
-                      GE._joint2d_tiled_smem_bytes(F64, F64, F64, 2, nd * n), run, ref; VALUE_BINNED...)
+                      GE._joint2d_tiled_smem_bytes(F64, F64, F64, 2, 2, nd * n), run, ref; VALUE_BINNED...)
         else
             past_row("joint point $(nd)x$n", "_sf2d_kernel_tiled128", run, ref; VALUE_BINNED...)
         end
@@ -263,7 +265,7 @@ let nd = 10, widest = SFC.joint2d_smem_max(BE, 2, F64, F64, F64)
 end
 
 # --- joint 2-D batch: the shared histogram at its widest, then the staged global-atomic kernels ---
-let nd = 10, bytes_s = nc -> GE._sf_2d_shared_smem_bytes(F64, F64, F64, F64, 2, 1, nc)
+let nd = 10, bytes_s = nc -> GE._sf_2d_shared_smem_bytes(F64, F64, F64, F64, 2, 2, 1, nc)
     nv = GE._smem_max_cells(bytes_s, BUDGET, 2 * sizeof(F64)) ÷ nd
     xf, xv, u, w, bins = pts(F64, 2), rand(F64, 2, N, B), rand(F64, 2, N, B), weights(F64), edges(F64, 1.5, nd)
     for n in (nv, nv + 1), (label, x) in (("fixed", xf), ("varying", xv))
@@ -273,15 +275,15 @@ let nd = 10, bytes_s = nc -> GE._sf_2d_shared_smem_bytes(F64, F64, F64, F64, 2, 
         if n == nv
             tiled_row("joint $label batch $(nd)x$n", "sf_tiled_2d_shared", bytes_s(nd * n), run, ref; VALUE_BINNED...)
         elseif label == "fixed"
-            W = GE._sf_tiled_2d_fixed_strip(CAPS, F64, F64, 2)
+            W = GE._sf_tiled_2d_fixed_strip(CAPS, F64, F64, 2, 2)
             tiled_row("joint fixed batch $(nd)x$n W=$W", "sf_tiled_2d_fixed",
-                      GE._sf_2d_fixed_smem_bytes(F64, F64, 2, W), run, ref; VALUE_BINNED...)
+                      GE._sf_2d_fixed_smem_bytes(F64, F64, 2, 2, W), run, ref; VALUE_BINNED...)
         else
             tiled_row("joint varying batch $(nd)x$n", "sf_tiled_2d_varying",
-                      GE._sf_2d_varying_smem_bytes(F64, F64, 2), run, ref; VALUE_BINNED...)
+                      GE._sf_2d_varying_smem_bytes(F64, F64, 2, 2), run, ref; VALUE_BINNED...)
         end
     end
-    Dref = minimum(D for D in 2:64 if !SFC.gpu_static_smem_fits(CAPS, GE._sf_2d_varying_smem_bytes(F64, F64, D)))
+    Dref = minimum(D for D in 2:64 if !SFC.gpu_static_smem_fits(CAPS, GE._sf_2d_varying_smem_bytes(F64, F64, D, D)))
     xr, xrf, ur = rand(F64, Dref, N, B), pts(F64, Dref), rand(F64, Dref, N, B)
     br, vr = edges(F64, sqrt(Dref), 8), collect(range(F64(-1), F64(1); length = 5))
     check("joint varying batch D=$Dref: no native plan",
@@ -299,14 +301,14 @@ end
 
 # --- single-pass 2-D, weighted: every accumulation mode, and the shared → typeplane boundary ---
 function sp2d_row(nd, nv, D, w)
-    cfg = GE._sp2d_accumulation_strategy(CAPS, nd, nv, D, F64, F64, F64)
+    cfg = GE._sp2d_accumulation_strategy(CAPS, nd, nv, D, D, F64, F64, F64)
     hc = GE._sp2d_sharedhist_compile_cells(cfg)
     pattern, predicted = if cfg.accum_mode === :shared
-        "_sf6_sp2d_sharedhist", GE._sp2d_sharedhist_smem_bytes(F64, F64, F64, D, hc)
+        "_sf6_sp2d_sharedhist", GE._sp2d_sharedhist_smem_bytes(F64, F64, F64, D, D, hc)
     elseif cfg.accum_mode === :typeplane
-        "_sf6_sp2d_typeplane", GE._sp2d_typeplane_smem_bytes(F64, F64, F64, D, hc)
+        "_sf6_sp2d_typeplane", GE._sp2d_typeplane_smem_bytes(F64, F64, F64, D, D, hc)
     else
-        "_sf6_sp2d_directpartition", GE._sp2d_direct_smem_bytes(F64, D)
+        "_sf6_sp2d_directpartition", GE._sp2d_direct_smem_bytes(F64, D, D)
     end
     x, u, bins = pts(F64, D), pts(F64, D), edges(F64, sqrt(D), nd)
     vb = collect(range(F64(-1), F64(1); length = nv + 1))
@@ -314,7 +316,7 @@ function sp2d_row(nd, nv, D, w)
         out, cnt = CUDA.zeros(F64, SFC.SINGLE_PASS_N, nd, nv), CUDA.zeros(F64, SFC.SINGLE_PASS_N, nd, nv)
         GE._launch_single_pass_2d_portable!(BE, 64, out, cnt, CuArray(x), CuArray(u),
             GE._gpu_digitizer(BE, bins, Val(:single_pass_2d)), GE._value_digitizer(nothing, BE, vb),
-            N, D, nd + 1, nv + 1, geom(D); weights = CuArray(w))
+            N, nd + 1, nv + 1, geom(D); weights = CuArray(w))
         CUDA.synchronize()
         Raw(out, cnt)
     end
@@ -329,7 +331,7 @@ function sp2d_row(nd, nv, D, w)
 end
 
 let w = weights(F64)
-    mode_of = nv -> GE._sp2d_accumulation_strategy(CAPS, 10, nv, 2, F64, F64, F64).accum_mode
+    mode_of = nv -> GE._sp2d_accumulation_strategy(CAPS, 10, nv, 2, 2, F64, F64, F64).accum_mode
     nv_shared = maximum(nv for nv in 2:200 if mode_of(nv) === :shared)
     check("sp2d 10x$(nv_shared) is the widest shared histogram", mode_of(nv_shared + 1) !== :shared)
     for (nd, nv, D) in ((10, nv_shared, 2), (10, nv_shared + 1, 2), (10, 8, 2), (30, 30, 2), (30, 30, 3), (60, 60, 2))

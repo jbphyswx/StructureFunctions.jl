@@ -176,39 +176,24 @@ end
     GPUSFWorkspace(backend, distance_bins; kind=:sf1d)
     GPUSFWorkspace(backend, distance_bins, value_bins; kind=:joint2d)
 
-Reusable device histograms and bin preparation. Load `KernelAbstractions`, then
-construct a workspace for the execution backend, edges, and sum precision. Pass
-it as `workspace=ws` to a compatible calculation. Each workspace serves one call
-at a time.
+Reusable device bin preparation: the digitizers of the edges, the staged inputs, the cull grid and
+its tile-pair schedules, and the single-pass 2D partitions. Load `KernelAbstractions`, then construct a
+workspace for the execution backend and edges. Pass it as `workspace=ws` to a compatible calculation.
+Each workspace serves one call at a time.
 
-`kind` selects the snapshot accumulator axes:
+`kind` selects the calculation the workspace serves: `:sf1d`, `:joint2d`, `:single_pass` or
+`:single_pass_2d`. Backend, kind and bin definitions are checked before execution; construct another
+workspace when these change. Field values may change between calls. Coordinates are preparation data:
+call `refresh!(ws)` after mutating them in place. Passing a different coordinate array is detected by
+identity and prepares a new schedule. An allocating calculation returns buffers of its own; a mutating
+one adds into the caller's outputs.
 
-- `:sf1d`: `(n_distance,)`.
-- `:joint2d`: `(n_distance, n_value)`.
-- `:single_pass`: `(6, n_distance)`.
-- `:single_pass_2d`: `(6, n_distance, n_value)`.
-
-Batch scratch adds the flattened batch axis and is reused while its shape and
-count type agree. Backend, kind, sum precision, and bin definitions are checked
-before histogram execution. Construct another workspace when these change.
-Field values may change between calls. Coordinates are preparation data: call
-`refresh!(ws)` after mutating them in place. Passing a different coordinate
-array is detected by identity and prepares a new schedule. Allocating results
-own their buffers; mutating calculations add to caller-owned outputs.
-
-`reset_histogram!(ws)` clears snapshot, batch, and allocated partition histograms.
-`release!(ws)` drops lazy batch, input-staging, culling, and partition buffers.
-Neither operation changes an earlier allocated result. Required memory depends
-on histogram shape, batch size, and selected kernel. Prepared input conversion,
-weighted snapshot scratch, and digitizer reuse vary by route; this interface
-does not guarantee allocation-free execution.
+`release!(ws)` drops the input-staging, culling and partition buffers.
 """
-struct GPUSFWorkspace{kind, FT, BE, DB, VB, S, C, DD, VP, L}
+struct GPUSFWorkspace{kind, FT, BE, DB, VB, DD, VP, L}
     backend::BE
     dist_bins::DB
     val_bins::VB
-    out_sums_dev::S
-    out_cnts_dev::C
     dist_digitizer::DD
     val_plan::VP
     NB::Int
@@ -273,28 +258,15 @@ function schedule_for(memo::GPUCullMemo, n_points::Int, tile::Int)
     end
 end
 
-"""State a workspace carries between launches: device buffers sized by `N_points`, the staged inputs,
-the cull memo, and `active`, the memo this call culls with (set by the prologue on every call)."""
-abstract type AbstractGPUBatchBuffers end
-
-struct GPUBatchBuffers{S, C} <: AbstractGPUBatchBuffers
-    sums::S
-    counts::C
-end
-
+"""State a workspace carries between launches: the single-pass 2D partitions, the staged inputs, the
+cull memo, and `active`, the memo this call culls with (set by the prologue on every call)."""
 mutable struct GPUSFLazyBuffers
     partition_sums_dev
     partition_counts_dev
     x_dev_cache
     u_dev_cache
-    snapshot_counts_dev
-    batch::Union{Nothing, AbstractGPUBatchBuffers}
     active::Union{Nothing, GPUCullMemo}
     cull::Union{Nothing, AbstractGPUCullMemo}
 end
 
-GPUSFLazyBuffers() = GPUSFLazyBuffers(
-    nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing,
-)
-
-@inline _ws_float_type(::GPUSFWorkspace{<:Any, FT}) where {FT} = FT
+GPUSFLazyBuffers() = GPUSFLazyBuffers(nothing, nothing, nothing, nothing, nothing, nothing)

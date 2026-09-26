@@ -1,15 +1,15 @@
 # Joint 2D tiled-kernel shared-memory compile width helpers.
 
 """
-    joint2d_smem_max(backend, W, XT, OT, CT) -> Int
+    joint2d_smem_max(backend, W, F, XT, OT, CT) -> Int
 
 The widest joint histogram, in cells, whose tiled kernel fits `backend`'s shared memory for `W`-wide
-coordinates of `XT`, sums of `OT` and shared counts of `CT`. One kernel compiled at this width serves
-every joint grid of at most that many cells, which is useful when many bin shapes are tried in one
-Julia session.
+coordinates and `F`-wide fields of `XT`, sums of `OT` and shared counts of `CT`. One kernel compiled at
+this width serves every joint grid of at most that many cells, which is useful when many bin shapes are
+tried in one Julia session.
 """
-function SFC.joint2d_smem_max(backend, W::Int, ::Type{XT}, ::Type{OT}, ::Type{CT}) where {XT, OT, CT}
-    return _smem_max_cells(hist -> _joint2d_tiled_smem_bytes(XT, OT, CT, W, hist),
+function SFC.joint2d_smem_max(backend, W::Int, F::Int, ::Type{XT}, ::Type{OT}, ::Type{CT}) where {XT, OT, CT}
+    return _smem_max_cells(hist -> _joint2d_tiled_smem_bytes(XT, OT, CT, W, F, hist),
                            SFC.gpu_static_smem_budget(SFC.gpu_device_caps(backend)),
                            sizeof(OT) + sizeof(CT))
 end

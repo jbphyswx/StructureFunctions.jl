@@ -23,7 +23,7 @@ const GEOM = SF.HelperFunctions.FlatGeometry{D}()
 
 function ref_1d(x, u, dig, N, NB, B, NMOM, fixed_x)
     out = zeros(FT, NMOM, NB, B); cnt = zeros(UInt32, NMOM, NB, B)
-    GE._sf_launch_1d_batch!(KA.CPU(), out, cnt, x, u, sf2, dig, N, NB, B, D, Val(NMOM), fixed_x, GEOM)
+    GE._sf_launch_1d_batch!(KA.CPU(), out, cnt, x, u, sf2, dig, N, NB, B, Val(NMOM), fixed_x, GEOM)
     KA.synchronize(KA.CPU())
     return out, cnt
 end
@@ -90,10 +90,12 @@ let Nj = 3000, Bj = 6, nd = 20, nv = 20
         ddig_g = GE._gpu_digitizer(CUDA.CUDABackend(), db, Val(:joint2d))
         vpg = GE._gpu_digitizer(CUDA.CUDABackend(), vb, Val(:value))
         oc = zeros(FT, 1, nd, nv, Bj); cc = zeros(UInt32, 1, nd, nv, Bj)
-        GE._sf_launch_2d_batch!(KA.CPU(), oc, cc, x_h, u_h, sf2, ddig_c, vpc, Nj, nd, nv, Bj, D, Val(1), false, GEOM)
+        GE._sf_launch_2d_batch!(KA.CPU(), oc, cc, x_h, u_h, sf2, ddig_c, vpc, Nj, nd, nv, Bj, Val(1), false, GEOM,
+                                SFC.InvariantValueAxis())
         KA.synchronize(KA.CPU())
         og = CUDA.zeros(FT, 1, nd, nv, Bj); cg = CUDA.zeros(UInt32, 1, nd, nv, Bj)
-        GE._sf_launch_2d_batch!(CUDA.CUDABackend(), og, cg, CuArray(x_h), CuArray(u_h), sf2, ddig_g, vpg, Nj, nd, nv, Bj, D, Val(1), false, GEOM)
+        GE._sf_launch_2d_batch!(CUDA.CUDABackend(), og, cg, CuArray(x_h), CuArray(u_h), sf2, ddig_g, vpg, Nj, nd, nv, Bj,
+                                Val(1), false, GEOM, SFC.InvariantValueAxis())
         CUDA.synchronize()
         dcnt = maximum(abs.(Int.(Array(cg)) .- Int.(cc)))
         tot = sum(cc)

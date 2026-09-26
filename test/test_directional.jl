@@ -183,7 +183,8 @@ Test.@testset "the angle axis on a trailing batch axis" begin
     dist_bins = collect(range(0.0, 1.0; length = 7))
     ax_bins = collect(range(prevfloat(0.0), π; length = 5))
     src = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
-    for x in (rand(2, N), rand(2, N, B)), backend in (CB.SerialBackend(), CB.ThreadedBackend())
+    for x in (rand(2, N), rand(2, N, B)),
+        backend in (CB.SerialBackend(), CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
         u = randn(2, N, B)
         got = SFC.calculate_structure_function(SF2, x, u, dist_bins, ax_bins; backend = backend,
             second_axis = src)
@@ -207,9 +208,11 @@ Test.@testset "the angle axis on a trailing batch axis" begin
     Test.@test dropdims(sum(joint3.counts; dims = 2); dims = 2) == plain3.counts
     Test.@test sum(plain3.counts) > 0
 
-    Test.@test_throws ArgumentError SFC.calculate_structure_function(SF2, [0.1 0.2 0.35; -0.2 0.05 0.3],
-        randn(2, 3, B), collect(range(0.0, 2.0; length = 4)), collect(range(0.0, π; length = 4));
-        backend = CB.SerialBackend(), distance_metric = SFC.DI.SphericalAngle(), second_axis = src)
+    for backend in (CB.SerialBackend(), CB.GPUBackend(KA.CPU()))
+        Test.@test_throws ArgumentError SFC.calculate_structure_function(SF2, [0.1 0.2 0.35; -0.2 0.05 0.3],
+            randn(2, 3, B), collect(range(0.0, 2.0; length = 4)), collect(range(0.0, π; length = 4));
+            backend, distance_metric = SFC.DI.SphericalAngle(), second_axis = src)
+    end
 end
 
 Test.@testset "an angle axis is refused where the direction is not shared" begin

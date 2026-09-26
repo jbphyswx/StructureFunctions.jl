@@ -2,13 +2,13 @@ module Test2DBinning
 
 using ComputationalBackends: ComputationalBackends as CB
 using KernelAbstractions: KernelAbstractions as KA
-using Test
-using Random
-using OhMyThreads
+using Test: Test
+using Random: Random
+using OhMyThreads: OhMyThreads
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionObjects as SFO, StructureFunctionTypes as SFT
 
-@testset "2D Joint-Probability Binning Tests" begin
+Test.@testset "2D Joint-Probability Binning Tests" begin
     # 1. Generate clean synthetic test dataset
     Random.seed!(1234)
     n_points = 50
@@ -30,7 +30,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     l3_value_bins = range(-1000.0, 1000.0, length = 11) # 10 bins
 
     # 2. Test L2SF (Longitudinal Second Order Structure Function)
-    @testset "L2SF Joint-Probability Binning & Mass Conservation" begin
+    Test.@testset "L2SF Joint-Probability Binning & Mass Conservation" begin
         # 1D Baseline Calculation
         sf1d = SFC.calculate_structure_function(
             SFT.L2SF,
@@ -51,9 +51,9 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             backend = CB.SerialBackend()
         )
 
-        @test sf2d isa SFO.StructureFunction2DSumsAndCounts
-        @test size(sf2d.sums) == (n_dist, 10)
-        @test size(sf2d.counts) == (n_dist, 10)
+        Test.@test sf2d isa SFO.StructureFunction2DSumsAndCounts
+        Test.@test size(sf2d.sums) == (n_dist, 10)
+        Test.@test size(sf2d.counts) == (n_dist, 10)
 
         # Assert Mass Conservation
         for b in 1:n_dist
@@ -63,13 +63,13 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             value_sum = sum(sf2d.sums[b, :])
 
             # In 1D, sums are in sf1d.sums, counts in sf1d.counts
-            @test counts_sum ≈ sf1d.counts[b]
-            @test value_sum ≈ sf1d.sums[b]
+            Test.@test counts_sum ≈ sf1d.counts[b]
+            Test.@test value_sum ≈ sf1d.sums[b]
         end
     end
 
     # 3. Test L3SF (Longitudinal Third Order Structure Function)
-    @testset "L3SF Symmetrical Joint-Probability Binning" begin
+    Test.@testset "L3SF Symmetrical Joint-Probability Binning" begin
         # 1D Baseline
         sf1d = SFC.calculate_structure_function(
             SFT.L3SF,
@@ -90,18 +90,18 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             backend = CB.SerialBackend()
         )
 
-        @test sf2d isa SFO.StructureFunction2DSumsAndCounts
-        @test size(sf2d.sums) == (n_dist, 10)
+        Test.@test sf2d isa SFO.StructureFunction2DSumsAndCounts
+        Test.@test size(sf2d.sums) == (n_dist, 10)
 
         # Assert Mass Conservation
         for b in 1:n_dist
-            @test sum(sf2d.counts[b, :]) ≈ sf1d.counts[b]
-            @test sum(sf2d.sums[b, :]) ≈ sf1d.sums[b]
+            Test.@test sum(sf2d.counts[b, :]) ≈ sf1d.counts[b]
+            Test.@test sum(sf2d.sums[b, :]) ≈ sf1d.sums[b]
         end
     end
 
     # 4. Test Array Input Equivalence
-    @testset "Array Equivalence" begin
+    Test.@testset "Array Equivalence" begin
         sf_serial = SFC.calculate_structure_function(
             SFT.L2SF,
             x_mat,
@@ -120,12 +120,12 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             backend = CB.SerialBackend()
         )
 
-        @test sf_serial.sums == sf_array.sums
-        @test sf_serial.counts == sf_array.counts
+        Test.@test sf_serial.sums == sf_array.sums
+        Test.@test sf_serial.counts == sf_array.counts
     end
 
     # 5. Test Threaded Backend Equivalence (OhMyThreads)
-    @testset "Serial vs Threaded Equivalence" begin
+    Test.@testset "Serial vs Threaded Equivalence" begin
         sf_serial = SFC.calculate_structure_function(
             SFT.L2SF,
             x_mat,
@@ -144,23 +144,23 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             backend = CB.ThreadedBackend()
         )
 
-        @test sf_serial.sums ≈ sf_threaded.sums
-        @test sf_serial.counts == sf_threaded.counts
+        Test.@test sf_serial.sums ≈ sf_threaded.sums
+        Test.@test sf_serial.counts == sf_threaded.counts
     end
 
     # 6. Test Algebraic Operator Support (+)
-    @testset "Base algebraic addition (+)" begin
+    Test.@testset "Base algebraic addition (+)" begin
         sf1 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins)
         sf2 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins)
         
         combined = sf1 + sf2
-        @test combined.sums == sf1.sums .* 2
-        @test combined.counts == sf1.counts .* 2
+        Test.@test combined.sums == sf1.sums .* 2
+        Test.@test combined.counts == sf1.counts .* 2
     end
 
     # 7. A histogram wider than the device's shared-memory cap takes its global-atomic kernels,
     # which are a separate code path and read the coordinate width off the geometry.
-    @testset "the device global-atomic joint route agrees at every width" begin
+    Test.@testset "the device global-atomic joint route agrees at every width" begin
         Random.seed!(4321)
         n = 150
         dbins = collect(range(0.0, 1.2; length = 7))
@@ -172,9 +172,9 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
                 backend = CB.SerialBackend())
             dev = SFC.calculate_structure_function(SFT.L2SF, x, u, dbins, vbins;
                 backend = CB.GPUBackend(KA.CPU()))
-            @test sum(ref.counts) > 0
-            @test dev.counts == ref.counts
-            @test dev.sums ≈ ref.sums
+            Test.@test sum(ref.counts) > 0
+            Test.@test dev.counts == ref.counts
+            Test.@test dev.sums ≈ ref.sums
         end
     end
 end

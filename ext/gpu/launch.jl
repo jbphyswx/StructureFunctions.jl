@@ -22,14 +22,14 @@ function _launch_joint_2d_tiled_kernel!(
     second_axis = SFC.InvariantValueAxis(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
-    W = SFC._val_int(SFH.coordinate_width(geom))
     kernel! = _sf2d_kernel_tiled128_u32!(backend, ws)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, _sf_weights_to_device(backend, weights),
         ddig, vdig, sf_type,
         N_points, n_dist_edges, n_val_edges, n_val, n_dist * n_val,
         sched, n_tile_blocks, ws,
-        Val(W), Val(hist), Val(eltype(out_cnts_dev)), geom, second_axis;
+        SFH.coordinate_width(geom), SFH.field_width(geom), Val(hist), Val(eltype(out_cnts_dev)), geom,
+        second_axis;
         ndrange = ndrange,
     )
     return nothing
@@ -48,10 +48,9 @@ all of them from one place.
 
 `C` and `plane` are the **padded** extents, because the kernel uses them to bound its zeroing and
 flush loops over the shared layout — not the logical cell counts, which are what the histogram
-actually contains. `D` follows as a `Val` so the kernel can size its tile staging and build its
-coordinate vectors at compile time.
+actually contains. The geometry's coordinate and field widths follow as `Val`s.
 """
-@inline function _sp2d_strategy_kernel_tail_args(config::SP2DAccumulationStrategy, D::Int, geom,
+@inline function _sp2d_strategy_kernel_tail_args(config::SP2DAccumulationStrategy, geom,
                                                  cnt_eltype::Type, weights, backend)
     wts = _sf_weights_to_device(backend, weights)
     return (
@@ -60,9 +59,8 @@ coordinate vectors at compile time.
         config.types_per_pass,
         config.n_type_passes,
         Val(_sp2d_sharedhist_compile_cells(config)),
-        D == 2 ? Val(2) : D == 3 ? Val(3) : error(
-            "the SP2D strategy kernels stage D components from `Val{D}` at D ∈ {2,3}; a caller " *
-            "must route another width elsewhere rather than reach here (got D=$D)"),
+        SFH.coordinate_width(geom),
+        SFH.field_width(geom),
         Val(cnt_eltype),
         wts,
         geom,
@@ -100,8 +98,7 @@ function _sp2d_pair_launch_kernel!(
         N_points, n_dist_edges, n_dist, n_val_edges,
         ddig, vplan,
         sched, n_tile_blocks, ws,
-        _sp2d_strategy_kernel_tail_args(config, size(x_dev, 1), geom,
-                                        eltype(partition_counts_dev), weights, backend)...;
+        _sp2d_strategy_kernel_tail_args(config, geom, eltype(partition_counts_dev), weights, backend)...;
         ndrange = ndrange,
     )
     return n_tile_blocks
@@ -224,7 +221,7 @@ function _sp2d_partition_pair_bufs_and_launch!(
         _alloc_sp2d_partition_bufs(backend, eltype(out_sums_dev), CST, n_dist, n_val_edges - 1,
                                    n_tile_blocks)
     else
-        _ensure_sp2d_partition_bufs!(workspace, n_tile_blocks, CST)
+        _ensure_sp2d_partition_bufs!(workspace, n_tile_blocks, eltype(out_sums_dev), CST)
     end
     n_tb = _sp2d_pair_launch_kernel!(
         backend, partition_sums, partition_counts, x_dev, u_dev,
@@ -245,7 +242,6 @@ function _launch_single_pass_2d_kernel!(
     ddig,
     vplan,
     N_points::Int,
-    N_dims::Int,
     n_dist_edges::Int,
     n_val_edges::Int,
     geom;
@@ -256,7 +252,7 @@ function _launch_single_pass_2d_kernel!(
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, ddig, vplan,
         _sf_weights_to_device(backend, weights),
-        N_points, Val(N_dims), n_dist_edges, n_val_edges, geom;
+        N_points, n_dist_edges, n_val_edges, geom;
         ndrange = (N_points, N_points),
     )
     return nothing
@@ -275,7 +271,6 @@ function _launch_single_pass_2d!(
     ddig,
     vplan,
     N_points::Int,
-    N_dims::Int,
     n_dist_edges::Int,
     n_val_edges::Int,
     geom;
@@ -287,7 +282,7 @@ function _launch_single_pass_2d!(
                                   eltype(out_cnts_dev), weights, geom, SF_GPU_SINGLE_PASS_N, n_dist, n_val)
     if plan === nothing
         _launch_single_pass_2d_portable!(backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
-                                         ddig, vplan, N_points, N_dims, n_dist_edges, n_val_edges, geom;
+                                         ddig, vplan, N_points, n_dist_edges, n_val_edges, geom;
                                          workspace, weights)
     else
         SFC.gpu_native_launch_2d!(plan, reshape(out_sums_dev, SF_GPU_SINGLE_PASS_N, n_dist, n_val, 1),
@@ -299,7 +294,7 @@ function _launch_single_pass_2d!(
 end
 
 """Launch a point list's six single-pass invariant joint histograms on the portable kernels: the
-strategy kernels at `D ∈ {2, 3}` while their histogram mode keeps up, the global-atomic kernel
+strategy kernels while their tiles fit and their histogram mode keeps up, the global-atomic kernel
 otherwise."""
 function _launch_single_pass_2d_portable!(
     backend::KA.Backend,
@@ -311,7 +306,6 @@ function _launch_single_pass_2d_portable!(
     ddig,
     vplan,
     N_points::Int,
-    N_dims::Int,
     n_dist_edges::Int,
     n_val_edges::Int,
     geom;
@@ -319,13 +313,13 @@ function _launch_single_pass_2d_portable!(
     weights = SFC.NoWeights(),
 )
     n_dist = n_dist_edges - 1
-    # The strategy kernels stage `D ∈ {2, 3}` components; past `SP2D_GLOBAL_ATOMIC_HIST_BYTES` a
-    # `:direct` histogram goes to the global-atomic kernel.
+    # Past `SP2D_GLOBAL_ATOMIC_HIST_BYTES` a `:direct` histogram goes to the global-atomic kernel.
     caps = SFC.gpu_device_caps(backend)
+    W, F = SFC._val_int(SFH.coordinate_width(geom)), SFC._val_int(SFH.field_width(geom))
     FT, OT, CST = eltype(x_dev), eltype(out_sums_dev), eltype(out_cnts_dev)
-    if (N_dims == 2 || N_dims == 3) && _gpu_single_pass_2d_tiled_eligible(n_dist) &&
-       SFC.gpu_static_smem_fits(caps, _sp2d_direct_smem_bytes(FT, N_dims))
-        config = _sp2d_accumulation_strategy(caps, n_dist, n_val_edges - 1, N_dims, FT, OT, CST)
+    if _gpu_single_pass_2d_tiled_eligible(n_dist) &&
+       SFC.gpu_static_smem_fits(caps, _sp2d_direct_smem_bytes(FT, W, F))
+        config = _sp2d_accumulation_strategy(caps, n_dist, n_val_edges - 1, W, F, FT, OT, CST)
         _sp2d_prefers_global_atomics(config, OT, CST) ||
             return _launch_single_pass_2d_strategy!(
                 backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
@@ -335,7 +329,7 @@ function _launch_single_pass_2d_portable!(
     end
     return _launch_single_pass_2d_kernel!(
         backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
-        ddig, vplan, N_points, N_dims, n_dist_edges, n_val_edges, geom;
+        ddig, vplan, N_points, n_dist_edges, n_val_edges, geom;
         workspace = workspace, weights = weights,
     )
 end
@@ -358,12 +352,13 @@ function _launch_batch_fixed_x_sf!(
     B::Int,
     ddig,
     NB::Int,
-    geom,
+    geom;
+    workspace = nothing,
 )
     FT = eltype(sums_dev)
     caps = SFC.gpu_device_caps(backend)
     strip_w = _batch_usmem_strip_w(caps, FT)
-    sched, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
+    sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N, workspace)
     n_priv = _batch_usmem_n_priv(n_tile_blocks, ws, caps.warp)
     kernel! = _batch_fixed_x_sf_kernel(backend, ws)
     merge_sums! = _batch_merge_usmem_sums!(backend, ws)
@@ -387,15 +382,9 @@ function _launch_batch_fixed_x_sf!(
             ndrange = NB * bw,
         )
         if b_base == 1
-            merge_cnts!(
-                @view(counts_dev[:, 1]), partial_cnts, NB, n_priv, NB;
-                ndrange = NB,
-            )
+            merge_cnts!(counts_dev, partial_cnts, NB, n_priv, NB; ndrange = NB)
         end
         b_base += bw
-    end
-    if B > 1
-        counts_dev[:, 2:end] .= @view counts_dev[:, 1]
     end
     KA.synchronize(backend)
     return nothing
@@ -412,12 +401,13 @@ function _launch_batch_fixed_x_sf!(
     B::Int,
     ddig,
     NB::Int,
-    geom,
+    geom;
+    workspace = nothing,
 )
     FT = eltype(sums_dev)
     caps = SFC.gpu_device_caps(backend)
     strip_w = _batch_usmem_strip_w(caps, FT)
-    sched, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
+    sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N, workspace)
     n_priv = _batch_usmem_n_priv(n_tile_blocks, ws, caps.warp)
     kernel! = _batch_fixed_x_sf_kernel(backend, ws)
     merge_sums! = _batch_merge_usmem_sums_grouped!(backend, ws)
@@ -441,15 +431,9 @@ function _launch_batch_fixed_x_sf!(
             ndrange = NB * bw * ws,
         )
         if b_base == 1
-            merge_cnts!(
-                @view(counts_dev[:, 1]), partial_cnts, NB, n_priv, ws;
-                ndrange = NB * ws,
-            )
+            merge_cnts!(counts_dev, partial_cnts, NB, n_priv, ws; ndrange = NB * ws)
         end
         b_base += bw
-    end
-    if B > 1
-        counts_dev[:, 2:end] .= @view counts_dev[:, 1]
     end
     KA.synchronize(backend)
     return nothing

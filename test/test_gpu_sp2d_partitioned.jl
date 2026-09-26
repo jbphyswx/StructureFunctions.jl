@@ -23,10 +23,10 @@ shared bytes of the kernel its mode compiles and of that kernel one cell wider t
 widest."""
 function _sp2d_strategy(n_dist::Int, n_val::Int, D::Int, ::Type{FT}, ::Type{CST} = UInt32) where {FT, CST}
     ext = SP2D_EXT
-    cfg = ext._sp2d_accumulation_strategy(SP2D_CAPS, n_dist, n_val, D, FT, FT, CST)
-    bytes_at(hc) = cfg.accum_mode === :typeplane ? ext._sp2d_typeplane_smem_bytes(FT, FT, CST, D, hc) :
-                                                   ext._sp2d_sharedhist_smem_bytes(FT, FT, CST, D, hc)
-    compiled = cfg.accum_mode === :direct ? ext._sp2d_direct_smem_bytes(FT, D) :
+    cfg = ext._sp2d_accumulation_strategy(SP2D_CAPS, n_dist, n_val, D, D, FT, FT, CST)
+    bytes_at(hc) = cfg.accum_mode === :typeplane ? ext._sp2d_typeplane_smem_bytes(FT, FT, CST, D, D, hc) :
+                                                   ext._sp2d_sharedhist_smem_bytes(FT, FT, CST, D, D, hc)
+    compiled = cfg.accum_mode === :direct ? ext._sp2d_direct_smem_bytes(FT, D, D) :
                                             bytes_at(ext._sp2d_sharedhist_compile_cells(cfg))
     return cfg, compiled, bytes_at(cfg.max_shared_cells), bytes_at(cfg.max_shared_cells + 1)
 end
@@ -104,7 +104,7 @@ Test.@testset "GPU sp2d HTP-EJ partitioned (KA.CPU)" begin
             backend, 64, sums_global, cnts_global, x, u,
             SP2D_EXT._gpu_digitizer(backend, db, Val(:single_pass_2d)),
             SP2D_EXT._value_digitizer(nothing, backend, value_bins_ntuple),
-            N, 2, length(db), SP2D_EXT._n_value_edges(value_bins_ntuple), SF.HelperFunctions.FlatGeometry{2}(),
+            N, length(db), SP2D_EXT._n_value_edges(value_bins_ntuple), SF.HelperFunctions.FlatGeometry{2}(),
         )
         KA.synchronize(backend)
         Test.@test sums_global ≈ sums_ref atol = 1e-11
@@ -156,15 +156,16 @@ Test.@testset "GPU sp2d merge kernels (KA.CPU)" begin
                              (Float64, Float64, () -> rand()))
         partition_counts = PCT[draw() for _ in 1:6, _ in 1:n_dist, _ in 1:n_val, _ in 1:n_blocks]
         ref_c = dropdims(sum(OCT.(partition_counts); dims = 4); dims = 4)
+        # The merge adds into the output, which may already hold a caller's accumulation.
         for merge in (SP2D_EXT.SerialMerge(), SP2D_EXT.ParallelMerge())
-            out_s = zeros(FT, 6, n_dist, n_val)
-            out_c = zeros(OCT, 6, n_dist, n_val)
+            out_s = fill(FT(3), 6, n_dist, n_val)
+            out_c = fill(OCT(3), 6, n_dist, n_val)
             SP2D_EXT._launch_merge_sp2d_partitions!(
                 backend, out_s, out_c, partition_sums, partition_counts, n_dist, n_val, n_blocks, merge,
             )
-            Test.@test out_s ≈ ref_s
-            Test.@test out_c ≈ ref_c
-            OCT <: Integer && Test.@test out_c == ref_c
+            Test.@test out_s ≈ ref_s .+ 3
+            Test.@test out_c ≈ ref_c .+ 3
+            OCT <: Integer && Test.@test out_c == ref_c .+ OCT(3)
         end
     end
 end

@@ -199,8 +199,8 @@ KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_serial!(
             c += partition_counts[t, dbin, vbin, block_id]
         end
         @inbounds begin
-            output_sums[t, dbin, vbin] = s
-            output_counts[t, dbin, vbin] = c
+            output_sums[t, dbin, vbin] += s
+            output_counts[t, dbin, vbin] += c
         end
     end
 end
@@ -300,8 +300,8 @@ KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_parallel!(
         dbin = @inbounds(shared_dbin[1])
         vbin = @inbounds(shared_vbin[1])
         @inbounds begin
-            output_sums[t, dbin, vbin] = shared_s[1]
-            output_counts[t, dbin, vbin] = shared_c[1]
+            output_sums[t, dbin, vbin] += shared_s[1]
+            output_counts[t, dbin, vbin] += shared_c[1]
         end
     end
 end
@@ -312,14 +312,16 @@ Stage tile `ti` (and `tj` when off-diagonal) into shared memory, component-major
 """
 function _sp2d_tiled_load_tile!(
     shared_xi, shared_ui, shared_xj, shared_uj, x_mat, u_mat,
-    ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, ::Val{D},
-) where {D}
+    ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, ::Val{W}, ::Val{F},
+) where {W, F}
     if ni > 0 && nj > 0
         k = lid
         while k <= ni
             gi = i0 + k - 1
-            @inbounds for d in 1:D
+            @inbounds for d in 1:W
                 shared_xi[(d - 1) * SF_GPU_TILE + k] = x_mat[d, gi]
+            end
+            @inbounds for d in 1:F
                 shared_ui[(d - 1) * SF_GPU_TILE + k] = u_mat[d, gi]
             end
             k += workgroup_size
@@ -328,8 +330,10 @@ function _sp2d_tiled_load_tile!(
             k = lid
             while k <= nj
                 gj = j0 + k - 1
-                @inbounds for d in 1:D
+                @inbounds for d in 1:W
                     shared_xj[(d - 1) * SF_GPU_TILE + k] = x_mat[d, gj]
+                end
+                @inbounds for d in 1:F
                     shared_uj[(d - 1) * SF_GPU_TILE + k] = u_mat[d, gj]
                 end
                 k += workgroup_size
@@ -350,12 +354,12 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_sharedhist_tiled128_u32!(
     ddig, vplan,
     sched, n_tile_blocks::Int, workgroup_size::Int,
     C::Int, plane::Int, types_per_pass::Int, n_type_passes::Int,
-    ::Val{HC}, ::Val{D}, ::Val{CST}, wts, geom,
-) where {OT, FT, HC, D, CST}
-    shared_xi = @localmem FT (D * SF_GPU_TILE,)
-    shared_ui = @localmem FT (D * SF_GPU_TILE,)
-    shared_xj = @localmem FT (D * SF_GPU_TILE,)
-    shared_uj = @localmem FT (D * SF_GPU_TILE,)
+    ::Val{HC}, ::Val{W}, ::Val{F}, ::Val{CST}, wts, geom,
+) where {OT, FT, HC, W, F, CST}
+    shared_xi = @localmem FT (W * SF_GPU_TILE,)
+    shared_ui = @localmem FT (F * SF_GPU_TILE,)
+    shared_xj = @localmem FT (W * SF_GPU_TILE,)
+    shared_uj = @localmem FT (F * SF_GPU_TILE,)
     shared_sums = @localmem OT (HC,)
     shared_cnts = @localmem CST (HC,)
     shared_block_id = @localmem Int (1,)
@@ -375,7 +379,7 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_sharedhist_tiled128_u32!(
         nj = min(SF_GPU_TILE, N_points - j0 + 1)
         _sp2d_tiled_load_tile!(
             shared_xi, shared_ui, shared_xj, shared_uj, x_mat, u_mat,
-            ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(D),
+            ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(W), Val(F),
         )
     end
     @synchronize
@@ -421,16 +425,16 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_sharedhist_tiled128_u32!(
             if ti < tj
                 ia = (p - 1) ÷ nj + 1
                 jb = (p - 1) - (ia - 1) * nj + 1
-                X1 = _sf_load_pt(Val(D), shared_xi, ia)
-                X2 = _sf_load_pt(Val(D), shared_xj, jb)
-                U1 = _sf_load_pt(Val(D), shared_ui, ia)
-                U2 = _sf_load_pt(Val(D), shared_uj, jb)
+                X1 = _sf_load_pt(Val(W), shared_xi, ia)
+                X2 = _sf_load_pt(Val(W), shared_xj, jb)
+                U1 = _sf_load_pt(Val(F), shared_ui, ia)
+                U2 = _sf_load_pt(Val(F), shared_uj, jb)
             else
                 ia, jb = _pair_from_linear(p, ni)
-                X1 = _sf_load_pt(Val(D), shared_xi, ia)
-                X2 = _sf_load_pt(Val(D), shared_xi, jb)
-                U1 = _sf_load_pt(Val(D), shared_ui, ia)
-                U2 = _sf_load_pt(Val(D), shared_ui, jb)
+                X1 = _sf_load_pt(Val(W), shared_xi, ia)
+                X2 = _sf_load_pt(Val(W), shared_xi, jb)
+                U1 = _sf_load_pt(Val(F), shared_ui, ia)
+                U2 = _sf_load_pt(Val(F), shared_ui, jb)
             end
             ok, dist, frame = SFH.pair_frame(geom, X1, X2)
             bin = SFH.digitize(dist, ddig)
@@ -459,12 +463,12 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_typeplane_tiled128_u32!(
     ddig, vplan,
     sched, n_tile_blocks::Int, workgroup_size::Int,
     C::Int, plane::Int, types_per_pass::Int, n_type_passes::Int,
-    ::Val{HC}, ::Val{D}, ::Val{CST}, wts, geom,
-) where {OT, FT, HC, D, CST}
-    shared_xi = @localmem FT (D * SF_GPU_TILE,)
-    shared_ui = @localmem FT (D * SF_GPU_TILE,)
-    shared_xj = @localmem FT (D * SF_GPU_TILE,)
-    shared_uj = @localmem FT (D * SF_GPU_TILE,)
+    ::Val{HC}, ::Val{W}, ::Val{F}, ::Val{CST}, wts, geom,
+) where {OT, FT, HC, W, F, CST}
+    shared_xi = @localmem FT (W * SF_GPU_TILE,)
+    shared_ui = @localmem FT (F * SF_GPU_TILE,)
+    shared_xj = @localmem FT (W * SF_GPU_TILE,)
+    shared_uj = @localmem FT (F * SF_GPU_TILE,)
     shared_sums = @localmem OT (HC,)
     shared_cnts = @localmem CST (HC,)
     shared_type_pass = @localmem Int (1,)
@@ -485,7 +489,7 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_typeplane_tiled128_u32!(
         nj = min(SF_GPU_TILE, N_points - j0 + 1)
         _sp2d_tiled_load_tile!(
             shared_xi, shared_ui, shared_xj, shared_uj, x_mat, u_mat,
-            ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(D),
+            ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(W), Val(F),
         )
     end
     @synchronize
@@ -537,16 +541,16 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_typeplane_tiled128_u32!(
                 if ti < tj
                     ia = (p - 1) ÷ nj + 1
                     jb = (p - 1) - (ia - 1) * nj + 1
-                    X1 = _sf_load_pt(Val(D), shared_xi, ia)
-                    X2 = _sf_load_pt(Val(D), shared_xj, jb)
-                    U1 = _sf_load_pt(Val(D), shared_ui, ia)
-                    U2 = _sf_load_pt(Val(D), shared_uj, jb)
+                    X1 = _sf_load_pt(Val(W), shared_xi, ia)
+                    X2 = _sf_load_pt(Val(W), shared_xj, jb)
+                    U1 = _sf_load_pt(Val(F), shared_ui, ia)
+                    U2 = _sf_load_pt(Val(F), shared_uj, jb)
                 else
                     ia, jb = _pair_from_linear(p, ni)
-                    X1 = _sf_load_pt(Val(D), shared_xi, ia)
-                    X2 = _sf_load_pt(Val(D), shared_xi, jb)
-                    U1 = _sf_load_pt(Val(D), shared_ui, ia)
-                    U2 = _sf_load_pt(Val(D), shared_ui, jb)
+                    X1 = _sf_load_pt(Val(W), shared_xi, ia)
+                    X2 = _sf_load_pt(Val(W), shared_xi, jb)
+                    U1 = _sf_load_pt(Val(F), shared_ui, ia)
+                    U2 = _sf_load_pt(Val(F), shared_ui, jb)
                 end
                 ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 bin = SFH.digitize(dist, ddig)
@@ -584,12 +588,12 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_directpartition_tiled128_u32!(
     ddig, vplan,
     sched, n_tile_blocks::Int, workgroup_size::Int,
     C::Int, plane::Int, types_per_pass::Int, n_type_passes::Int,
-    ::Val{HC}, ::Val{D}, ::Val{CST}, wts, geom,
-) where {OT, FT, HC, D, CST}
-    shared_xi = @localmem FT (D * SF_GPU_TILE,)
-    shared_ui = @localmem FT (D * SF_GPU_TILE,)
-    shared_xj = @localmem FT (D * SF_GPU_TILE,)
-    shared_uj = @localmem FT (D * SF_GPU_TILE,)
+    ::Val{HC}, ::Val{W}, ::Val{F}, ::Val{CST}, wts, geom,
+) where {OT, FT, HC, W, F, CST}
+    shared_xi = @localmem FT (W * SF_GPU_TILE,)
+    shared_ui = @localmem FT (F * SF_GPU_TILE,)
+    shared_xj = @localmem FT (W * SF_GPU_TILE,)
+    shared_uj = @localmem FT (F * SF_GPU_TILE,)
     shared_block_id = @localmem Int (1,)
     shared_tile = @localmem Int (4,)
 
@@ -607,7 +611,7 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_directpartition_tiled128_u32!(
         nj = min(SF_GPU_TILE, N_points - j0 + 1)
         _sp2d_tiled_load_tile!(
             shared_xi, shared_ui, shared_xj, shared_uj, x_mat, u_mat,
-            ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(D),
+            ti, tj, i0, j0, ni, nj, N_points, lid, workgroup_size, Val(W), Val(F),
         )
     end
     @synchronize
@@ -642,16 +646,16 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_directpartition_tiled128_u32!(
             if ti < tj
                 ia = (p - 1) ÷ nj + 1
                 jb = (p - 1) - (ia - 1) * nj + 1
-                X1 = _sf_load_pt(Val(D), shared_xi, ia)
-                X2 = _sf_load_pt(Val(D), shared_xj, jb)
-                U1 = _sf_load_pt(Val(D), shared_ui, ia)
-                U2 = _sf_load_pt(Val(D), shared_uj, jb)
+                X1 = _sf_load_pt(Val(W), shared_xi, ia)
+                X2 = _sf_load_pt(Val(W), shared_xj, jb)
+                U1 = _sf_load_pt(Val(F), shared_ui, ia)
+                U2 = _sf_load_pt(Val(F), shared_uj, jb)
             else
                 ia, jb = _pair_from_linear(p, ni)
-                X1 = _sf_load_pt(Val(D), shared_xi, ia)
-                X2 = _sf_load_pt(Val(D), shared_xi, jb)
-                U1 = _sf_load_pt(Val(D), shared_ui, ia)
-                U2 = _sf_load_pt(Val(D), shared_ui, jb)
+                X1 = _sf_load_pt(Val(W), shared_xi, ia)
+                X2 = _sf_load_pt(Val(W), shared_xi, jb)
+                U1 = _sf_load_pt(Val(F), shared_ui, ia)
+                U2 = _sf_load_pt(Val(F), shared_ui, jb)
             end
             ok, dist, frame = SFH.pair_frame(geom, X1, X2)
             bin = SFH.digitize(dist, ddig)
@@ -668,25 +672,26 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_directpartition_tiled128_u32!(
     end
 end
 
-"""Static shared bytes every HTP-EJ pair kernel stages for `D`-wide points of `FT`: four coordinate
-tiles and the block id and tile coordinates, which the kernels index by constants."""
-@inline _sp2d_staging_smem_bytes(::Type{FT}, D::Int) where {FT} =
-    4 * SFC.gpu_localmem_bytes(FT, D * SF_GPU_TILE) + SFC.gpu_localmem_scalar_bytes(Int, 1 + 4)
+"""Static shared bytes every HTP-EJ pair kernel stages for `W`-wide coordinates and `F`-wide fields of
+`FT`: four point tiles and the block id and tile coordinates, which the kernels index by constants."""
+@inline _sp2d_staging_smem_bytes(::Type{FT}, W::Int, F::Int) where {FT} =
+    2 * SFC.gpu_localmem_bytes(FT, W * SF_GPU_TILE) + 2 * SFC.gpu_localmem_bytes(FT, F * SF_GPU_TILE) +
+    SFC.gpu_localmem_scalar_bytes(Int, 1 + 4)
 
 """Static shared bytes of `_sf6_sp2d_sharedhist_tiled128_u32!` with an `HC`-cell histogram of sums
 `OT` and counts `CST`."""
-@inline _sp2d_sharedhist_smem_bytes(::Type{FT}, ::Type{OT}, ::Type{CST}, D::Int, HC::Int) where {FT, OT, CST} =
-    _sp2d_staging_smem_bytes(FT, D) + SFC.gpu_localmem_bytes(OT, HC) + SFC.gpu_localmem_bytes(CST, HC)
+@inline _sp2d_sharedhist_smem_bytes(::Type{FT}, ::Type{OT}, ::Type{CST}, W::Int, F::Int, HC::Int) where {FT, OT, CST} =
+    _sp2d_staging_smem_bytes(FT, W, F) + SFC.gpu_localmem_bytes(OT, HC) + SFC.gpu_localmem_bytes(CST, HC)
 
 """Static shared bytes of `_sf6_sp2d_typeplane_tiled128_u32!`: the shared-histogram kernel's and the
 type pass it holds."""
-@inline _sp2d_typeplane_smem_bytes(::Type{FT}, ::Type{OT}, ::Type{CST}, D::Int, HC::Int) where {FT, OT, CST} =
-    _sp2d_sharedhist_smem_bytes(FT, OT, CST, D, HC) + SFC.gpu_localmem_scalar_bytes(Int, 1)
+@inline _sp2d_typeplane_smem_bytes(::Type{FT}, ::Type{OT}, ::Type{CST}, W::Int, F::Int, HC::Int) where {FT, OT, CST} =
+    _sp2d_sharedhist_smem_bytes(FT, OT, CST, W, F, HC) + SFC.gpu_localmem_scalar_bytes(Int, 1)
 
 """Static shared bytes of `_sf6_sp2d_directpartition_tiled128_u32!`."""
-@inline _sp2d_direct_smem_bytes(::Type{FT}, D::Int) where {FT} = _sp2d_staging_smem_bytes(FT, D)
+@inline _sp2d_direct_smem_bytes(::Type{FT}, W::Int, F::Int) where {FT} = _sp2d_staging_smem_bytes(FT, W, F)
 
-"""Merge `n_tile_blocks` block partitions `(6, n_dist, n_val, n_tile_blocks)` into the output
+"""Add `n_tile_blocks` block partitions `(6, n_dist, n_val, n_tile_blocks)` into the output
 `(6, n_dist, n_val)` by `merge`."""
 function _launch_merge_sp2d_partitions!(
     backend::KA.Backend, out_sums_dev, out_cnts_dev, partition_sums_dev, partition_counts_dev,

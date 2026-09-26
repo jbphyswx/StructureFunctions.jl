@@ -27,12 +27,13 @@ end
 
 Test.@testset "joint2d smem helpers" begin
     caps = SFC.gpu_device_caps(KA.CPU())
-    for (W, XT, OT, CT) in ((2, Float32, Float32, UInt32), (2, Float64, Float64, UInt32),
-                            (3, Float64, Float64, Float64), (6, Float32, Float64, Float32))
-        m = joint2d_smem_max(KA.CPU(), W, XT, OT, CT)
+    for (W, F, XT, OT, CT) in ((2, 2, Float32, Float32, UInt32), (2, 2, Float64, Float64, UInt32),
+                               (3, 3, Float64, Float64, Float64), (6, 6, Float32, Float64, Float32),
+                               (3, 2, Float64, Float64, UInt32))
+        m = joint2d_smem_max(KA.CPU(), W, F, XT, OT, CT)
         Test.@test m > 0
-        Test.@test GPUExt._gpu_joint_2d_tiled_eligible(caps, W, XT, OT, CT, m)
-        Test.@test !GPUExt._gpu_joint_2d_tiled_eligible(caps, W, XT, OT, CT, m + 1)
+        Test.@test GPUExt._gpu_joint_2d_tiled_eligible(caps, W, F, XT, OT, CT, m)
+        Test.@test !GPUExt._gpu_joint_2d_tiled_eligible(caps, W, F, XT, OT, CT, m + 1)
     end
     Test.@test joint2d_smem_exact(20, 22) == 440
     Test.@test joint2d_smem_align256(20, 22) == 512
@@ -85,7 +86,7 @@ Test.@testset "GPU joint2d max smem parity — NB2=100 at the widest fitting wid
     val = collect(FT, range(0.0, 2.0; length = 11))
     sft = SFT.L2SFType()
     ref = _ref_joint(sft, x, u, dist, val)
-    widest = joint2d_smem_max(KA.CPU(), 2, FT, FT, UInt32)
+    widest = joint2d_smem_max(KA.CPU(), 2, 2, FT, FT, UInt32)
     ws = SFC.GPUSFWorkspace(KA.CPU(), dist, val; joint2d_compile_cells = widest)
     Test.@test ws.joint2d_compile_cells == widest
     gpu = _gpu_joint(sft, x, u, dist, val; workspace = ws)
@@ -106,7 +107,7 @@ Test.@testset "GPU joint2d past the shared-memory fit" begin
         val = collect(FT, range(-3.0, 3.0; length = 101))
         sft = SFT.L2SFType()
         caps = SFC.gpu_device_caps(KA.CPU())
-        Test.@test !GPUExt._gpu_joint_2d_tiled_eligible(caps, 2, FT, FT, UInt32, 100 * 100)
+        Test.@test !GPUExt._gpu_joint_2d_tiled_eligible(caps, 2, 2, FT, FT, UInt32, 100 * 100)
         ref = _ref_joint(sft, x, u, dist, val)
         gpu = _gpu_joint(sft, x, u, dist, val)
         Test.@test gpu.counts == ref.counts
@@ -121,7 +122,7 @@ Test.@testset "GPU joint2d past the shared-memory fit" begin
         small_dist = collect(FT, range(0.0, 1.4; length = 11))
         small_val = collect(FT, range(-3.0, 3.0; length = 11))
         ws = SFC.GPUSFWorkspace(KA.CPU(), small_dist, small_val; joint2d_compile_cells = 20_000)
-        Test.@test !GPUExt._gpu_joint_2d_tiled_eligible(caps, 2, FT, FT, UInt32, 20_000)
+        Test.@test !GPUExt._gpu_joint_2d_tiled_eligible(caps, 2, 2, FT, FT, UInt32, 20_000)
         sref = _ref_joint(sft, x, u, small_dist, small_val)
         sgpu = _gpu_joint(sft, x, u, small_dist, small_val; workspace = ws)
         Test.@test sgpu.counts == sref.counts
@@ -199,6 +200,6 @@ Test.@testset "GPUSFWorkspace is immutable with kind as a type parameter" begin
         Test.@test !ismutabletype(typeof(ws))
         Test.@test typeof(ws).parameters[1] === kind
         Test.@test !hasfield(typeof(ws), :kind)
-        Test.@test isconcretetype(fieldtype(typeof(ws), :out_sums_dev))
+        Test.@test all(isconcretetype, fieldtypes(typeof(ws)))
     end
 end

@@ -1,7 +1,8 @@
 # Tiled128 joint 2D SF histogram kernel (distance × value) with a block-local flat histogram.
 #
 # The compile-time histogram width `HIST` is chosen per [`GPUSFWorkspace`](@ref) (default exact
-# `n_dist × n_val`; optional override via `joint2d_compile_cells`), and `W` is the coordinate width.
+# `n_dist × n_val`; optional override via `joint2d_compile_cells`); `W` is the coordinate width and `F`
+# the field width.
 
 KA.@kernel unsafe_indices=true function _sf2d_kernel_tiled128_u32!(
     output_sums,
@@ -21,15 +22,16 @@ KA.@kernel unsafe_indices=true function _sf2d_kernel_tiled128_u32!(
     n_tile_blocks::Int,
     workgroup_size::Int,
     ::Val{W},
+    ::Val{F},
     ::Val{HIST},
     ::Val{CST},
     geom,
     second_axis,
-) where {FT, W, HIST, CST}
+) where {FT, W, F, HIST, CST}
     shared_xi = @localmem FT (W * SF_GPU_TILE,)
-    shared_ui = @localmem FT (W * SF_GPU_TILE,)
+    shared_ui = @localmem FT (F * SF_GPU_TILE,)
     shared_xj = @localmem FT (W * SF_GPU_TILE,)
-    shared_uj = @localmem FT (W * SF_GPU_TILE,)
+    shared_uj = @localmem FT (F * SF_GPU_TILE,)
     shared_sums = @localmem eltype(output_sums) (HIST,)
     shared_cnts = @localmem CST (HIST,)
 
@@ -58,6 +60,8 @@ KA.@kernel unsafe_indices=true function _sf2d_kernel_tiled128_u32!(
                 gi = i0 + k - 1
                 @inbounds for c in 1:W
                     shared_xi[(c - 1) * SF_GPU_TILE + k] = x_mat[c, gi]
+                end
+                @inbounds for c in 1:F
                     shared_ui[(c - 1) * SF_GPU_TILE + k] = u_mat[c, gi]
                 end
                 k += workgroup_size
@@ -68,6 +72,8 @@ KA.@kernel unsafe_indices=true function _sf2d_kernel_tiled128_u32!(
                     gj = j0 + k - 1
                     @inbounds for c in 1:W
                         shared_xj[(c - 1) * SF_GPU_TILE + k] = x_mat[c, gj]
+                    end
+                    @inbounds for c in 1:F
                         shared_uj[(c - 1) * SF_GPU_TILE + k] = u_mat[c, gj]
                     end
                     k += workgroup_size
@@ -95,14 +101,14 @@ KA.@kernel unsafe_indices=true function _sf2d_kernel_tiled128_u32!(
                     jb = (p - 1) - (ia - 1) * nj + 1
                     X1 = _sf_load_pt(Val(W), shared_xi, ia)
                     X2 = _sf_load_pt(Val(W), shared_xj, jb)
-                    U1 = _sf_load_pt(Val(W), shared_ui, ia)
-                    U2 = _sf_load_pt(Val(W), shared_uj, jb)
+                    U1 = _sf_load_pt(Val(F), shared_ui, ia)
+                    U2 = _sf_load_pt(Val(F), shared_uj, jb)
                 else
                     ia, jb = _pair_from_linear(p, ni)
                     X1 = _sf_load_pt(Val(W), shared_xi, ia)
                     X2 = _sf_load_pt(Val(W), shared_xi, jb)
-                    U1 = _sf_load_pt(Val(W), shared_ui, ia)
-                    U2 = _sf_load_pt(Val(W), shared_ui, jb)
+                    U1 = _sf_load_pt(Val(F), shared_ui, ia)
+                    U2 = _sf_load_pt(Val(F), shared_ui, jb)
                 end
                 ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 dbin = SFH.digitize(dist, ddig)
@@ -141,14 +147,14 @@ KA.@kernel unsafe_indices=true function _sf2d_kernel_tiled128_u32!(
     end
 end
 
-"""Static shared bytes of `_sf2d_kernel_tiled128_u32!` for `W`-wide coordinates of `FT`, sums of
-`OT` and `HIST` histogram cells counted in `CST`."""
-@inline _joint2d_tiled_smem_bytes(::Type{FT}, ::Type{OT}, ::Type{CST}, W::Int, HIST::Int) where {FT, OT, CST} =
-    4 * SFC.gpu_localmem_bytes(FT, W * SF_GPU_TILE) +
+"""Static shared bytes of `_sf2d_kernel_tiled128_u32!` for `W`-wide coordinates and `F`-wide fields
+staged as `FT`, sums of `OT` and `HIST` histogram cells counted in `CST`."""
+@inline _joint2d_tiled_smem_bytes(::Type{FT}, ::Type{OT}, ::Type{CST}, W::Int, F::Int, HIST::Int) where {FT, OT, CST} =
+    2 * SFC.gpu_localmem_bytes(FT, W * SF_GPU_TILE) + 2 * SFC.gpu_localmem_bytes(FT, F * SF_GPU_TILE) +
     SFC.gpu_localmem_bytes(OT, HIST) + SFC.gpu_localmem_bytes(CST, HIST)
 
 """Whether `_sf2d_kernel_tiled128_u32!` compiled at width `HIST` fits the device `caps` describes;
 the global-atomic joint kernel takes the call when it does not."""
-@inline _gpu_joint_2d_tiled_eligible(caps, W::Int, ::Type{FT}, ::Type{OT}, ::Type{CST},
+@inline _gpu_joint_2d_tiled_eligible(caps, W::Int, F::Int, ::Type{FT}, ::Type{OT}, ::Type{CST},
                                      HIST::Int) where {FT, OT, CST} =
-    SFC.gpu_static_smem_fits(caps, _joint2d_tiled_smem_bytes(FT, OT, CST, W, HIST))
+    SFC.gpu_static_smem_fits(caps, _joint2d_tiled_smem_bytes(FT, OT, CST, W, F, HIST))

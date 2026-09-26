@@ -130,9 +130,6 @@ staging against a guess. `KernelAbstractions.CPU()` answers with the host's free
 """
 function gpu_free_memory end
 
-"""Zero device histogram buffers in a [`GPUSFWorkspace`](@ref) before the next launch."""
-function reset_histogram! end
-
 """Release device buffers held by a [`GPUSFWorkspace`](@ref) (optional explicit free)."""
 function release! end
 
@@ -140,12 +137,12 @@ function release! end
 function refresh! end
 
 """
-    joint2d_smem_max(backend, W, XT, OT, CT) -> Int
+    joint2d_smem_max(backend, W, F, XT, OT, CT) -> Int
 
 The widest joint histogram, in cells, whose shared-memory kernel fits `backend` for `W`-wide
-coordinates of element type `XT`, sums of `OT` and shared counts of `CT` (`UInt32` when the call is
-unweighted and its pair count fits `UInt32`, the call's count type otherwise); supplied by the
-KernelAbstractions extension.
+coordinates and `F`-wide fields of element type `XT`, sums of `OT` and shared counts of `CT` (`UInt32`
+when the call is unweighted and its pair count fits `UInt32`, the call's count type otherwise);
+supplied by the KernelAbstractions extension.
 """
 function joint2d_smem_max end
 

@@ -26,13 +26,6 @@ describes; 0 when a strip of one does not."""
 _batch_fixed_x_sf_kernel(backend::KA.Backend, ws::Int) =
     _batch_fixed_x_usmem_priv!(backend, ws)
 
-function _batch_tiled_launch_params(N_points::Int)
-    sched = FullUpperTriangle(cld(N_points, SF_GPU_TILE))
-    n_tile_blocks = n_pair_blocks(sched)
-    ws = SF_GPU_TILED_WS
-    return sched, n_tile_blocks, ws, n_tile_blocks * ws
-end
-
 @inline function _batch_usmem_idx(c::Int, k::Int, col::Int)
     return c + 2 * (k - 1) + SF_GPU_TILE * 2 * (col - 1)
 end
@@ -127,7 +120,7 @@ KA.@kernel unsafe_indices=true function _batch_merge_usmem_sums!(
         @inbounds for blk in 1:n_priv
             acc_s += partial_sums[bin, col, blk]
         end
-        @inbounds output[bin, col] = acc_s
+        @inbounds output[bin, col] += acc_s
         t += nworkers
     end
 end
@@ -169,11 +162,13 @@ KA.@kernel unsafe_indices=true function _batch_merge_usmem_sums_grouped!(
             @inbounds for t in 1:workgroup_size
                 total += shared_acc[t]
             end
-            @inbounds output[bin, col] = total
+            @inbounds output[bin, col] += total
         end
     end
 end
 
+"""Add each bin's count, summed over the `n_priv` partials, into every column of `output_cnts`
+`(NB, B)`: with shared positions every slice has the same pairs."""
 KA.@kernel unsafe_indices=true function _batch_merge_usmem_cnts!(
     output_cnts,
     @Const(partial_cnts),
@@ -185,15 +180,19 @@ KA.@kernel unsafe_indices=true function _batch_merge_usmem_cnts!(
     t = worker
     while t <= NB
         bin = t
-        acc_c = UInt32(0)
+        acc_c = zero(eltype(output_cnts))
         @inbounds for blk in 1:n_priv
             acc_c += partial_cnts[bin, blk]
         end
-        @inbounds output_cnts[bin] = acc_c
+        @inbounds for col in 1:size(output_cnts, 2)
+            output_cnts[bin, col] += acc_c
+        end
         t += nworkers
     end
 end
 
+"""Workgroup form of `_batch_merge_usmem_cnts!`: one workgroup per bin reduces the partials, then its
+lanes add the total across the columns."""
 KA.@kernel unsafe_indices=true function _batch_merge_usmem_cnts_grouped!(
     output_cnts,
     @Const(partial_cnts),
@@ -204,27 +203,34 @@ KA.@kernel unsafe_indices=true function _batch_merge_usmem_cnts_grouped!(
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1
     gid = (g - 1) ÷ workgroup_size + 1
-    shared_acc = @localmem UInt32 (SF_GPU_TILED_WS,)
+    shared_acc = @localmem eltype(output_cnts) (SF_GPU_TILED_WS,)
     if gid <= NB
-        bin = gid
-        acc_c = UInt32(0)
+        acc_c = zero(eltype(output_cnts))
         blk = lid
         @inbounds while blk <= n_priv
-            acc_c += partial_cnts[bin, blk]
+            acc_c += partial_cnts[gid, blk]
             blk += workgroup_size
         end
         shared_acc[lid] = acc_c
         @synchronize
         g = @index(Global, Linear)
         lid = (g - 1) % workgroup_size + 1
-        gid = (g - 1) ÷ workgroup_size + 1
-        if gid <= NB && lid == 1
-            bin = gid
-            total = UInt32(0)
+        if lid == 1
+            total = zero(eltype(output_cnts))
             @inbounds for t in 1:workgroup_size
                 total += shared_acc[t]
             end
-            @inbounds output_cnts[bin] = total
+            @inbounds shared_acc[1] = total
+        end
+        @synchronize
+        g = @index(Global, Linear)
+        lid = (g - 1) % workgroup_size + 1
+        gid = (g - 1) ÷ workgroup_size + 1
+        total = @inbounds shared_acc[1]
+        col = lid
+        @inbounds while col <= size(output_cnts, 2)
+            output_cnts[gid, col] += total
+            col += workgroup_size
         end
     end
 end

@@ -80,7 +80,7 @@ function main()
     NB2 = n_dist * n_val
     C = 8 * NB2
     caps = SFC.gpu_device_caps(backend)
-    joint_eligible = _GPUExt._gpu_joint_2d_tiled_eligible(caps, 2, FT, FT, UInt32, NB2)
+    joint_eligible = _GPUExt._gpu_joint_2d_tiled_eligible(caps, 2, 2, FT, FT, UInt32, NB2)
 
     log_dir = joinpath(@__DIR__, "..", "test", "debug")
     mkpath(log_dir)
@@ -119,7 +119,7 @@ function main()
     # --- single-type joint 2D: max smem compile width ---
     ws_j_max = SFC.GPUSFWorkspace(
         backend, dist, value_bins;
-        kind = :joint2d, joint2d_compile_cells = joint2d_smem_max(backend, 2, FT, FT, UInt32),
+        kind = :joint2d, joint2d_compile_cells = joint2d_smem_max(backend, 2, 2, FT, FT, UInt32),
     )
     j_max_run = () -> SFC.gpu_calculate_structure_function_2d(
         sft, backend, x, u, dist, value_bins, UInt32; workspace = ws_j_max,
@@ -138,7 +138,7 @@ function main()
 
     # --- six-type sp2d (HTP-EJ privatized) ---
     ws_sp = SFC.GPUSFWorkspace(backend, dist, value_bins; kind = :single_pass_2d)
-    cfg = _GPUExt._sp2d_accumulation_strategy(caps, n_dist, n_val, 2, FT, FT, UInt32)
+    cfg = _GPUExt._sp2d_accumulation_strategy(caps, n_dist, n_val, 2, 2, FT, FT, UInt32)
     mode_label = if cfg.accum_mode == :typeplane
         "typeplane ($(cfg.types_per_pass)×$(cfg.n_type_passes) passes)"
     else
@@ -169,14 +169,14 @@ function main()
     pair_run = if cfg.needs_partition_merge
         () -> begin
             _GPUExt._sp2d_partition_pair_bufs_and_launch!(
-                backend, ws_sp.out_sums_dev, ws_sp.out_cnts_dev, x_dev, u_dev, ddig, vplan,
+                backend, sums, counts, x_dev, u_dev, ddig, vplan,
                 N, n_dist_edges, n_val_edges, n_dist, cfg, geom; workspace = ws_sp,
             )
         end
     else
         () -> begin
             _GPUExt._launch_sp2d_onchip!(
-                backend, ws_sp.out_sums_dev, ws_sp.out_cnts_dev, x_dev, u_dev,
+                backend, sums, counts, x_dev, u_dev,
                 ddig, vplan, N, n_dist_edges, n_val_edges, n_dist, cfg, geom;
                 workspace = ws_sp,
             )
@@ -189,11 +189,11 @@ function main()
         part_sums, part_cnts, n_tb = pair_run()
         CUDA.synchronize()
         merge_serial = () -> _GPUExt._launch_merge_sp2d_partitions!(
-            backend, ws_sp.out_sums_dev, ws_sp.out_cnts_dev, part_sums, part_cnts,
+            backend, sums, counts, part_sums, part_cnts,
             n_dist, n_val, n_tb, _GPUExt.SerialMerge(),
         )
         merge_parallel = () -> _GPUExt._launch_merge_sp2d_partitions!(
-            backend, ws_sp.out_sums_dev, ws_sp.out_cnts_dev, part_sums, part_cnts,
+            backend, sums, counts, part_sums, part_cnts,
             n_dist, n_val, n_tb, _GPUExt.ParallelMerge(),
         )
         t_merge_serial = _bench(merge_serial, warmup, repeat_)
@@ -209,7 +209,7 @@ function main()
 
     Printf.@printf("sp2d pair kernel         %8.3f ms  [%s; %s]\n", 1_000t_pair, mode_label, output_path)
     if cfg.needs_partition_merge
-        Printf.@printf("sp2d merge (serial)     %8.3f ms  [SP2D_MERGE=serial default]\n", 1_000t_merge_serial)
+        Printf.@printf("sp2d merge (serial)     %8.3f ms  [the strategy's merge]\n", 1_000t_merge_serial)
         Printf.@printf("sp2d merge (parallel)   %8.3f ms  [comparison only; slow when C large]\n", 1_000t_merge_parallel)
         Printf.@printf("sp2d total (end-to-end)  %8.3f ms  [pair + serial merge + host]\n", 1_000t_sp2d)
     else

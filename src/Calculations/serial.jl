@@ -28,11 +28,20 @@ function serial_calculate_structure_function!(
         return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs,
             distance_bins, Val(3); culling, weights)
     end
-    grid, xc, uc, wc = _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling)
-    N = length(xc[1])
-    blocks = pair_blocks(N, 1:(N - 1); grid)
-    _pf_scalar_pairs!(output, counts, geometry, structure_function_type, xc, uc, digitize_plan(distance_bins),
-                      blocks, wc)
+    N = length(x_vecs[1])
+    _pf_scalar_run!(output, counts, geometry, structure_function_type, distance_bins, 1:(N - 1),
+                    _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling))
+    return nothing
+end
+
+"""
+    _pf_scalar_run!(output, counts, geometry, sf, distance_bins, ilist, (grid, x_vecs, u_vecs, weights))
+
+Run [`_pf_scalar_pairs!`](@ref) over the outer indices `ilist` of a [`_cull_sorted`](@ref) result.
+"""
+function _pf_scalar_run!(output, counts, geometry, sf, distance_bins, ilist, (grid, xc, uc, wc))
+    _pf_scalar_pairs!(output, counts, geometry, sf, xc, uc, digitize_plan(distance_bins),
+                      pair_blocks(length(xc[1]), ilist; grid), wc)
     return nothing
 end
 
@@ -382,9 +391,8 @@ function _partial_sums_counts(
                           culling; geometry = geometry, weights = weights)
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
-    grid, xc, uc, wc = _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling)
-    _pf_scalar_pairs!(sums, counts, geometry, structure_function_type, xc, uc, digitize_plan(distance_bins),
-                      pair_blocks(length(xc[1]), ilist; grid), wc)
+    _pf_scalar_run!(sums, counts, geometry, structure_function_type, distance_bins, ilist,
+                    _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling))
     return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
 end
 
