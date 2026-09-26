@@ -36,10 +36,10 @@ let
     hu = Float64[sin(d + 2i) for d in 1:2, i in 1:N]
     nodes = StructureFunctions.HarmonicNodes(collect(range(0.2, 2.6; length = 9)), LMAX)
     raw = StructureFunctions.StructureFunctionSumsAndCounts
-    ref = SFC.calculate_structure_function(op, hx, hu, nodes, SB.DirectSumSpectralBackend();
-        backend = SER, verbose = false, output_type = raw)
-    got = SFC.calculate_structure_function(op, hx, hu, nodes, SB.DirectSumSpectralBackend();
-        backend = DEV, verbose = false, output_type = raw)
+    ref = SFC.calculate_structure_function(op, hx, hu, nodes, SB.DirectSumSpectralBackend(), raw;
+        backend = SER)
+    got = SFC.calculate_structure_function(op, hx, hu, nodes, SB.DirectSumSpectralBackend(), raw;
+        backend = DEV)
     ds = maximum(abs.(got.sums .- ref.sums)) / (maximum(abs, ref.sums) + eps())
     dc = maximum(abs.(got.counts .- ref.counts)) / (maximum(abs, ref.counts) + eps())
     ok = ds < 1e-10 && dc < 1e-10

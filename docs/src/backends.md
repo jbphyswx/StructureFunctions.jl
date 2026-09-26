@@ -1,111 +1,61 @@
-# Backends
+# Execution backends and workspaces
 
-Where a calculation runs is a type passed as `backend`. The result never depends on it: every backend
-gives the same counts exactly and the same sums to round-off, and the tests hold each pair of
-backends to that (see [Validation](validation.md) for the tolerance policy).
+Execution backends select hardware and parallel execution. Spectral backends select a numerical method. Both choices must support the requested operator, geometry, and data layout.
 
-| backend | needs | runs |
+## Execution choices
+
+| Backend | Required package | Execution |
 |---|---|---|
-| `SerialBackend()` | nothing | every route, on one thread; the reference the others are checked against |
-| `ThreadedBackend()` | `using OhMyThreads`, `julia -t N` | point lists, multi-fields, tensors, the gridded sweeps and transforms, the sorted line route |
-| `DistributedBackend()` | `using Distributed`, `addprocs` | point lists, multi-fields and tensors, each worker taking a share of the outer index; `DistributedBackend(ThreadedBackend())` threads inside each worker |
-| `MPIBackend()` | `using MPI` | every entry family across ranks: point lists, multi-fields, tensors, single-pass invariants, the batch drivers and the gridded sweeps |
-| `GPUBackend(device)` | `using KernelAbstractions` and a device package | point lists, joint histograms, single-pass invariants, batches over auxiliary axes, tensors, multi-fields, the gridded transform engine, the gridded direct lag sweep and the harmonic direct sum; `GPUBackend(KernelAbstractions.CPU())` runs the same kernels on the host |
-| `AutoBackend()` | — | the default: the distributed backend when the worker pool reaches hardware the driver cannot — workers that are not all local — the threaded one when Julia has more than one thread and its extension is loaded, the serial one otherwise |
+| `SerialBackend()` | Core dependencies | One CPU thread |
+| `ThreadedBackend()` | `OhMyThreads` | Tasks with private partial reductions |
+| `DistributedBackend()` | `Distributed` | Julia worker processes |
+| `MPIBackend()` | `MPI` | MPI ranks |
+| `GPUBackend(device)` | `KernelAbstractions`, device provider | Device kernels |
+| `AutoBackend()` | Available extensions | An available execution method |
 
-The backend types come from `ComputationalBackends`:
+Import these types from `ComputationalBackends`. Load `CUDA` and use `GPUBackend(CUDA.CUDABackend())` for CUDA. KernelAbstractions' CPU backend exercises portable kernels on a CPU; it does not establish GPU correctness or performance.
+
+## Explicit CPU calculation
 
 ```@example backends
-using ComputationalBackends: ComputationalBackends as CB
+using Random
+using ComputationalBackends: SerialBackend
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
-using OhMyThreads                     # an explicit ThreadedBackend() raises without it
-
-x = rand(2, 4_000) .* 100.0           # (D, N) coordinates
-u = randn(2, 4_000)                   # (D, N) velocities
-bins = range(0.0, 20.0; length = 41)  # a range is wrapped as LinearBinEdges, O(1) digitizing
-
-s = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.SerialBackend())
-t = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.ThreadedBackend())
-a = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins)   # AutoBackend()
-s.values ≈ t.values ≈ a.values        # the backend never changes the answer
+rng = MersenneTwister(7)
+x = rand(rng, 2, 32)
+u = randn(rng, 2, 32)
+bins = range(0.0, 1.5; length=9)
+s = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
+    backend=SerialBackend())
+s.values
 ```
 
-## In place
+For threading, start Julia with the allocated thread count, load `OhMyThreads`, and select `ThreadedBackend()`. Distributed and MPI workers must use a compatible project and package resolution. Configure the local backend and worker threads within the allocated CPU budget.
 
-Every entry has a mutating form that accumulates into caller-owned buffers, for loops over time
-steps or for adding partial results across processes:
+## Result location
 
-```@example backends
-sums = zeros(Float64, length(bins) - 1)
-counts = zeros(UInt32, length(bins) - 1)
-SFC.calculate_structure_function!(sums, counts, SFT.L2SFType(), x, u, bins; backend = CB.ThreadedBackend())
-Int(sum(counts))                     # pairs that landed in a bin
-```
+GPU individual, joint-value, and single-pass point calculations retain device
+arrays for snapshots and batches. `to_host(result)` explicitly copies numerical
+buffers to host memory. Mutating forms require outputs on the selected backend
+and add to existing values. Allocating results own their buffers across workspace
+reuse. The current A100 validation covers shared and varying positions, multiple
+batch axes, and weighted and unweighted calculations. Tensor, multifield, grid,
+and harmonic residency coverage remains incomplete.
 
-The mutating entries add into the buffers they are given; zero them first. The count element type
-must hold the worst-case pair count `N(N−1)/2` (`UInt32` up to `N = 92 682`), and weighted results
-take a floating-point count type.
+## Repeated calculations
 
-## What each backend does
+`CPUSFWorkspace` and `GPUSFWorkspace` retain buffers for compatible calculations. Construct a workspace for the calculation's layout, bins, precision, and backend; pass it with `workspace=...`. A workspace serves one call at a time.
 
-**Serial.** Flat two- and three-dimensional point lists take a SIMD compute/scatter kernel over
-blocked pair tiles: the pair distances and operator values of a block are computed in a vectorised
-loop and scattered into the histogram in a scalar one. When the last bin edge bounds the separations
-of interest, cells beyond it are never enumerated (`AutoCulling()`, the default; `AlwaysCulling()`
-insists and errors where culling is not implemented; `NoCulling()` sweeps every pair). Curved geometry
-takes the scalar per-point kernel through the pair frame; one-dimensional lists take the sorted line
-route.
+Mutating entries add to output buffers. `reset_histogram!` clears a workspace's histogram storage; clear caller-owned accumulators separately when starting an independent result. Integer counts must represent both existing counts and the new contributions. Weighted normalization uses floating-point pair mass.
 
-**Threaded.** The outer index is split round-robin over tasks — work for index `i` is `N − i`, so a
-contiguous split would skew the load by the thread count — each task accumulates into private
-histograms, and the partials are added. Throughput saturates near one socket's memory bandwidth on
-the batched paths; `JULIA_EXCLUSIVE=1` pins threads.
+Workspace compatibility and supported families are specified in the [calculation reference](api/calculations.md). Memory and allocation claims require measurements of the specific prepared route.
 
-The gridded routes split **slab pairs** across tasks, and the direct lag sweep additionally splits a
-single slab's lags. A transform has two feeds for one lag loop, because a pair's inverse transform
-must finish before any of that pair's lags can be read: with at least as many slab pairs as tasks
-its unit of work is the pair; with fewer — a
-[`UniformLagSchedule`](@ref StructureFunctions.Calculations.UniformLagSchedule) or a
-[`ScatteredModesSchedule`](@ref StructureFunctions.Calculations.ScatteredModesSchedule) has exactly one — each
-pair's inverse is computed once on the driver and the tasks take shares of that pair's lags,
-reading the inverted columns read-only. Either way a one-slab schedule threads.
+## Numerical methods
 
-Most of a one-slab transform is the transforms themselves rather than the lag sweep, and those are
-FFTW's to parallelise. FFTW keeps its own thread count, defaulting to one, and the package never sets
-it, because it is global to the session rather than a property of a call. `FFTW.set_num_threads(n)`
-is the caller's to set, and the two thread pools do not compose: raising it while the package is also
-threading over many slab pairs oversubscribes the cores and loses badly. Raise one or the other —
-FFTW's for a one-slab schedule, the package's for a many-slab one — and measure on your own grid,
-since which is larger depends on the grid, the operator and the FFTW build.
+Direct pairs support general pairwise operators. Culling restricts enumeration using an exact geometric cutoff. Sorted-line polynomial moments and gridded FFT correlations exploit additional structure. Explicit nonuniform and harmonic methods have their own resolution and tolerance parameters.
 
-**Distributed.** Every entry family runs distributed. Each worker receives a balanced share of the
-outer index (`w:k:N`) and computes its partial sums and counts with the serial kernel — or the threaded one under
-`DistributedBackend(ThreadedBackend())`, one process per NUMA node being the way past a single
-socket's bandwidth. The partials are reduced on the caller.
+Use `SpectralBackends` method tags where the interface accepts them. An FFT requires a compatible provider and a polynomial moment representation. Approximate spectral methods must be chosen with their resolution assumptions understood.
 
-**GPU.** See [GPU acceleration](gpu.md). One thread per point walks its partners with block-local
-histograms; the gridded transform engine takes its forward transforms through the device's
-`AbstractFFTs` implementation and bins every lag of every slab pair in one kernel.
+## Resource use on clima
 
-## Choosing
-
-- Under a few thousand points, or for a check, the serial backend.
-- Otherwise the threaded backend on one node, which is what `AutoBackend()` picks with
-  `julia -t N` and `using OhMyThreads`.
-- A GPU from a few thousand points up when the data fit in device memory; the gridded transform on a
-  device from about a million cells.
-- Several nodes: the distributed backend, threaded inside each worker.
-- On a grid, prefer the transform (`FastFourierTransformSpectralBackend()`) to any pair loop: it is
-  exact and its cost does not grow with the number of pairs. `AutoSpectralBackend()` costs the two
-  gridded algorithms and takes the cheaper.
-
-## Bin edges on the hot path
-
-Digitizing each of the `O(N²)` pairs is the inner loop. Pass a `range` (wrapped as `LinearBinEdges`)
-or `LogBinEdges(edges)` for `O(1)` digitizing by a fused multiply-add or an exponent lookup; a plain
-`Vector` of edges falls back to binary search. See [Binning Internals](uniform_bin_digitize.md).
-
-## Related pages
-
-- [Architecture](architecture.md) — how a call becomes a kernel.
-- [Extensions](extensions.md) — which package each backend needs.
+Run all GPU work, CPU scaling, and substantial parallel computations in Slurm. A visible GPU is not an allocation. Small CPU examples and documentation builds use one Julia thread and one BLAS thread. See the repository's development instructions for the persistent Julia launcher.

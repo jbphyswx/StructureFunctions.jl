@@ -17,17 +17,20 @@ interchangeable: applying the four-fifths law to `S3SF` returns a number that is
 | Yaglom | ``⟨δu_L (δθ)²⟩`` | `MixedSFType{1,0,2}` | ``⟨δu_L (δθ)²⟩ = -\tfrac{4}{3} ε_θ r`` | [`KHM.epsilon_theta_from_yaglom`](@ref) |
 
 ```@example khm
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
-
-x = rand(2, 2_000) .* 100.0
-u = randn(2, 2_000)
-bins = collect(range(0.0, 20.0; length = 21))
-
-res = SFC.calculate_structure_function(SFT.L3SFType(), x, u, bins)
-r = SF.midpoints(res.distance)
-ε = SF.KHM.epsilon_from_four_fifths(r, res.values)          # one estimate per bin; flat in the inertial range
-SF.KHM.four_fifths_residual(r, res.values, ε[5])[1:5]       # how far each bin is from the law at that ε
+using StructureFunctions: KHM
+r = [0.5, 1.0, 2.0, 4.0]
+epsilon = 0.2
+L3 = .-(4 / 5) .* epsilon .* r
+estimate = KHM.epsilon_from_four_fifths(r, L3)
+@assert all(isapprox.(estimate, epsilon))
+KHM.four_fifths_residual(r, L3, epsilon)
 ```
+
+This analytic fixture checks the normalization of the diagnostic. For measured
+data, pass the longitudinal third-order moment at each positive separation.
+A constant estimate over a chosen interval must be assessed against the flow's
+physical assumptions and sampling uncertainty.
+
 
 The residual of the planar isotropy relation between the longitudinal and transverse second-order
 functions, ``D_{TT} = D_{LL} + r\,\mathrm{d}D_{LL}/\mathrm{d}r`` in two dimensions (Lindborg 1999,

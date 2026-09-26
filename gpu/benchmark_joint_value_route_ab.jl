@@ -46,7 +46,7 @@ function _bench(f, warmup::Int, repeat_::Int)
 end
 
 function _dist_bins(n_dist::Int, ::Type{FT}) where {FT}
-    return LogBinEdges(Vector{FT}(exp.(range(log(FT(1000)), log(FT(50000)); length = n_dist + 1))))
+    return LogBinEdges(FT(1000), FT(50000), n_dist + 1)
 end
 
 function _value_inflinear(n_val_inner::Int, ::Type{FT}) where {FT}
@@ -76,10 +76,10 @@ function main()
     n_val = length(val_typed) - 1
     NB2 = n_dist * n_val
 
-    plan_typed = _GPUExt._joint2d_build_val_plan(backend, val_typed)
-    plan_general = _GPUExt._joint2d_build_val_plan(backend, val_general)
-    route_typed = _GPUExt._joint2d_val_route(plan_typed)
-    route_general = _GPUExt._joint2d_val_route(plan_general)
+    plan_typed = _GPUExt._gpu_digitizer(backend, val_typed, Val(:value))
+    plan_general = _GPUExt._gpu_digitizer(backend, val_general, Val(:value))
+    route_typed = nameof(typeof(plan_typed))
+    route_general = nameof(typeof(plan_general))
 
     println("=" ^ 72)
     println("joint 2D value-route A/B (full kernel, not digitize microbench)")
@@ -88,9 +88,9 @@ function main()
         "N=%d  n_dist=%d  n_val=%d  NB2=%d  n_val_edges=%d\n",
         N, n_dist, n_val, NB2, n_val + 1,
     )
-    @printf("dist_route=%s\n", _GPUExt._joint2d_dist_route(_GPUExt._gpu_normalize_bins(dist)))
+    @printf("dist digitizer=%s\n", nameof(typeof(SF.digitize_plan(dist))))
     @printf("typed:   value_route=%s  plan=%s\n", route_typed, typeof(plan_typed))
-    @printf("general: value_route=%s  plan=%s\n", route_general, plan_general === nothing ? "nothing" : typeof(plan_general))
+    @printf("general: value_route=%s  plan=%s\n", route_general, typeof(plan_general))
     println("=" ^ 72)
 
     Random.seed!(42)
@@ -103,10 +103,10 @@ function main()
     ws_general = SFC.GPUSFWorkspace(backend, dist, val_general; kind = :joint2d)
 
     run_typed! = () -> SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, val_typed; workspace = ws_typed,
+        sft, backend, x, u, dist, val_typed, UInt32; workspace = ws_typed,
     )
     run_general! = () -> SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, val_general; workspace = ws_general,
+        sft, backend, x, u, dist, val_general, UInt32; workspace = ws_general,
     )
 
     t_typed = _bench(run_typed!, warmup, repeat_)
@@ -125,17 +125,17 @@ function main()
     if check_parity
         ref = SFC.calculate_structure_function(
             sft, x, u, dist, val_typed;
-            backend = CB.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(),
         )
-        gpu_t = SFC.gpu_calculate_structure_function_2d(sft, backend, x, u, dist, val_typed; workspace = ws_typed)
-        gpu_g = SFC.gpu_calculate_structure_function_2d(sft, backend, x, u, dist, val_general; workspace = ws_general)
+        gpu_t = SFC.gpu_calculate_structure_function_2d(sft, backend, x, u, dist, val_typed, UInt32; workspace = ws_typed)
+        gpu_g = SFC.gpu_calculate_structure_function_2d(sft, backend, x, u, dist, val_general, UInt32; workspace = ws_general)
         @printf("parity typed vs CPU:   counts %s  sums max err %.3e\n",
-            gpu_t.counts == ref.counts ? "OK" : "MISMATCH",
-            maximum(abs.(gpu_t.sums .- ref.sums)),
+            Array(gpu_t.counts) == ref.counts ? "OK" : "MISMATCH",
+            maximum(abs.(Array(gpu_t.sums) .- ref.sums)),
         )
         @printf("parity general vs CPU: counts %s  sums max err %.3e\n",
-            gpu_g.counts == ref.counts ? "OK" : "MISMATCH",
-            maximum(abs.(gpu_g.sums .- ref.sums)),
+            Array(gpu_g.counts) == ref.counts ? "OK" : "MISMATCH",
+            maximum(abs.(Array(gpu_g.sums) .- ref.sums)),
         )
     end
 

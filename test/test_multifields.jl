@@ -33,8 +33,7 @@ function _brute(op, x, vectors, scalars, bins)
 end
 
 _run(op, x, f, bins) = SFC.calculate_structure_function(
-    op, x, f, bins, UInt32, SF.StructureFunctionSumsAndCounts;
-    verbose = false, show_progress = false)
+    op, x, f, bins, UInt32, SF.StructureFunctionSumsAndCounts)
 
 Test.@testset "a field of one vector field is the array path" begin
     # The adapter must be a no-op for what callers already pass: same kernel, same answer, bit for bit.
@@ -43,8 +42,7 @@ Test.@testset "a field of one vector field is the array path" begin
     u = randn(2, 80)
     bins = collect(range(0.0, 1.5; length = 7))   # spans the unit square diagonal
     for op in (SFT.L2SFType(), SFT.T2SFType(), SFT.S2SFType(), SFT.L3SFType())
-        bare = SFC.calculate_structure_function(op, x, u, bins, UInt32, SF.StructureFunctionSumsAndCounts;
-            verbose = false, show_progress = false)
+        bare = SFC.calculate_structure_function(op, x, u, bins, UInt32, SF.StructureFunctionSumsAndCounts)
         multi = _run(op, x, MF.Fields(vectors = (u,)), bins)
         Test.@test multi.counts == bare.counts
         Test.@test multi.sums == bare.sums          # identical, not merely close
@@ -159,21 +157,17 @@ Test.@testset "odd scalar moments do not depend on how the points are ordered" b
         fp = MF.Fields(vectors = (u[:, perm],), scalars = (th[perm],))
         for sf in (SFT.MixedSFType{1, 0, 1}(), SFT.ScalarSFType{3}())
             a = SFC.calculate_structure_function(sf, x, f, bins, SF.StructureFunctionSumsAndCounts;
-                backend = CB.SerialBackend(), distance_metric = metric,
-                verbose = false, show_progress = false)
+                backend = CB.SerialBackend(), distance_metric = metric)
             b = SFC.calculate_structure_function(sf, x[:, perm], fp, bins, SF.StructureFunctionSumsAndCounts;
-                backend = CB.SerialBackend(), distance_metric = metric,
-                verbose = false, show_progress = false)
+                backend = CB.SerialBackend(), distance_metric = metric)
             Test.@test a.counts == b.counts
             Test.@test isapprox(a.sums, b.sums; rtol = 1e-10, atol = 1e-12)
             Test.@test any(!iszero, a.sums)
             c = SFC.calculate_structure_function(sf, x[:, perm], fp, bins, SF.StructureFunctionSumsAndCounts;
-                backend = CB.ThreadedBackend(), distance_metric = metric,
-                verbose = false, show_progress = false)
+                backend = CB.ThreadedBackend(), distance_metric = metric)
             Test.@test isapprox(c.sums, a.sums; rtol = 1e-10, atol = 1e-12)
             d = SFC.calculate_structure_function(sf, x[:, perm], fp, bins, SF.StructureFunctionSumsAndCounts;
-                backend = CB.GPUBackend(KA.CPU()), distance_metric = metric,
-                verbose = false, show_progress = false)
+                backend = CB.GPUBackend(KA.CPU()), distance_metric = metric)
             Test.@test d.counts == a.counts
             Test.@test isapprox(d.sums, a.sums; rtol = 1e-10, atol = 1e-12)
             if metric isa DI.Euclidean
@@ -247,7 +241,7 @@ Test.@testset "fields are transported on a sphere, scalars are not" begin
                                      distance_metric = metric, backend = CB.SerialBackend())
     multi = SFC.calculate_structure_function(
         SFT.L2SFType(), x, MF.Fields(vectors = (u,)), bins, UInt32, SF.StructureFunctionSumsAndCounts;
-        distance_metric = metric, backend = CB.SerialBackend(), verbose = false, show_progress = false)
+        distance_metric = metric, backend = CB.SerialBackend())
     Test.@test multi.counts == bare_c
     Test.@test multi.sums == bare_s
 
@@ -255,14 +249,14 @@ Test.@testset "fields are transported on a sphere, scalars are not" begin
     # L2SF on the velocity alone
     with_tracer = SFC.calculate_structure_function(
         SFT.L2SFType(), x, MF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32, SF.StructureFunctionSumsAndCounts;
-        distance_metric = metric, verbose = false, show_progress = false)
+        distance_metric = metric)
     Test.@test with_tracer.counts == bare_c
     Test.@test isapprox(with_tracer.sums, bare_s; rtol = 1e-12)
 
     # the scalar structure function on a sphere: transport-free, so it is the plain difference
     scalar_only = SFC.calculate_structure_function(
         SFT.ScalarSFType{2}(), x, MF.Fields(scalars = (th,)), bins, UInt32, SF.StructureFunctionSumsAndCounts;
-        distance_metric = metric, verbose = false, show_progress = false)
+        distance_metric = metric)
     ref_s = zeros(5); ref_c = zeros(Int, 5)
     for i in 1:(N - 1), j in (i + 1):N
         r = SFC.DI.SphericalAngle()(view(x, :, i), view(x, :, j))
@@ -279,7 +273,7 @@ Test.@testset "fields are transported on a sphere, scalars are not" begin
     # flat answer
     yag = SFC.calculate_structure_function(
         SFT.MixedSFType{1, 0, 2}(), x, MF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32,
-        SF.StructureFunctionSumsAndCounts; distance_metric = metric, verbose = false, show_progress = false)
+        SF.StructureFunctionSumsAndCounts; distance_metric = metric)
     Test.@test all(isfinite, yag.sums)
     Test.@test yag.counts == bare_c
 end
@@ -301,11 +295,9 @@ Test.@testset "the threaded backend gives the serial answer" begin
                     (MF.Fields(vectors = (u,), scalars = (th,)), SFT.ScalarSFType{2}()),
                     (MF.Fields(vectors = (u,)), SFT.L2SFType()))
         ser_s = zeros(nb); ser_c = zeros(Int, nb)
-        SFC.serial_calculate_structure_function!(ser_s, ser_c, op, x, f, bins;
-                                                 verbose = false, show_progress = false)
+        SFC.serial_calculate_structure_function!(ser_s, ser_c, op, x, f, bins)
         thr_s = zeros(nb); thr_c = zeros(Int, nb)
-        SFC.threaded_calculate_structure_function!(thr_s, thr_c, op, x, f, bins;
-                                                   verbose = false, show_progress = false)
+        SFC.threaded_calculate_structure_function!(thr_s, thr_c, op, x, f, bins)
         Test.@test thr_c == ser_c
         Test.@test isapprox(thr_s, ser_s; rtol = 1e-10, atol = 1e-12)
         Test.@test sum(thr_c) == N * (N - 1) ÷ 2

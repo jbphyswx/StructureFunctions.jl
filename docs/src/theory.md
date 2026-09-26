@@ -259,7 +259,7 @@ theory predicts ``S_2(r) ∼ ε^{2/3} r^{2/3}`` and, more generally, ``S_n(r) �
 ``ζ_n = n/3``. Real turbulence is intermittent: the measured exponents deviate,
 ``ζ_n = n/3 + δ_n``, increasingly so for ``n > 3``, which is what the higher-order operators measure.
 A prescribed shell spectrum ``E(k) ∼ k^{-(ζ+1)}`` implies ``S_2 ∼ r^{ζ}`` — the two are one statement
-about a field, and the [Walkthrough](walkthrough.md) shows both on the same data.
+about a field, and the [Recipes](examples.md) shows both on the same data.
 
 ## References
 

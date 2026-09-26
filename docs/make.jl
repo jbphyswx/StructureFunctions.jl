@@ -30,30 +30,22 @@ makedocs(;
         size_threshold = 800 * 1024,
     ),
     pages = [
-        "Home" => "index.md",
-        "Theory" => "theory.md",
-        "Architecture" => "architecture.md",
-        "Backends" => "backends.md",
-        "GPU Acceleration" => "gpu.md",
-        "Extensions" => "extensions.md",
-        "Examples" => "examples.md",
-        "Walkthrough" => "walkthrough.md",
-        "Exact Laws (KHM)" => "khm.md",
-        "Validation" => "validation.md",
-        "Binning Internals" => "uniform_bin_digitize.md",
-        "API Reference" => [
-            "api/operators.md",
-            "api/calculations.md",
-            "api/results.md",
-            "api/helpers.md",
-            "api/internals.md",
-        ],
+        "Overview and installation" => "index.md",
+        "Getting started" => "getting_started.md",
+        "Mathematical definitions" => "theory.md",
+        "Data and geometry" => "data.md",
+        "Execution backends" => "backends.md",
+        "Recipes" => "examples.md",
+        "Scientific analysis" => ["spectra.md", "khm.md"],
+        "Validation and performance" => "validation.md",
+        "API reference" => ["api/operators.md", "api/calculations.md", "api/results.md", "api/helpers.md", "api/internals.md"],
+        "Contributor notes" => ["architecture.md", "gpu.md", "extensions.md", "digitize.md"],
     ],
     warnonly = false,
     checkdocs = :exports,
 )
 
-if get(ENV, "CI", "false") == "true"
+if get(ENV, "DOCUMENTER_DEPLOY", "false") == "true"
     deploydocs(;
         repo = "github.com/jbphyswx/StructureFunctions.jl",
         devbranch = "main",

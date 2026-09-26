@@ -289,13 +289,13 @@ Test.@testset "GPU sp2d weighted, every mode (KA.CPU)" begin
         dist = LinearBinEdges(range(FT(0), FT(1.5); length = nd + 1))
         vals = _synthetic_value_bins_ntuple(nv, FT)
         ref = SFC.calculate_structure_functions_single_pass_2d(
-            x, u, dist, vals, FT; backend = CB.SerialBackend(), weights = w, verbose = false,
+            x, u, dist, vals, FT; backend = CB.SerialBackend(), weights = w,
         )
         ws = SFC.GPUSFWorkspace(backend, dist, vals)
         for workspace in (nothing, ws, ws)
             got = SFC.calculate_structure_functions_single_pass_2d(
                 x, u, dist, vals, FT;
-                backend = CB.GPUBackend(backend), weights = w, workspace, verbose = false,
+                backend = CB.GPUBackend(backend), weights = w, workspace,
             )
             Test.@test keys(got) == keys(ref)
             for k in keys(ref)
@@ -307,13 +307,13 @@ Test.@testset "GPU sp2d weighted, every mode (KA.CPU)" begin
         cnts_ref = zeros(UInt32, 6, nd, nv)
         sums_ref = zeros(FT, 6, nd, nv)
         SFC.calculate_structure_functions_single_pass_2d!(
-            sums_ref, cnts_ref, x, u, dist, vals; backend = CB.SerialBackend(), verbose = false,
+            sums_ref, cnts_ref, x, u, dist, vals; backend = CB.SerialBackend(),
         )
         cnts_gpu = zeros(UInt32, 6, nd, nv)
         sums_gpu = zeros(FT, 6, nd, nv)
         SFC.calculate_structure_functions_single_pass_2d!(
             sums_gpu, cnts_gpu, x, u, dist, vals;
-            backend = CB.GPUBackend(backend), workspace = ws, verbose = false,
+            backend = CB.GPUBackend(backend), workspace = ws,
         )
         Test.@test cnts_gpu == cnts_ref
         Test.@test sums_gpu ≈ sums_ref rtol = 1e-12 atol = 1e-12

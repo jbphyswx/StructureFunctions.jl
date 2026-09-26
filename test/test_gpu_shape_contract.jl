@@ -18,7 +18,6 @@ function _gpu_shape_pairwise(sf, x, u, bins)
     return SFC.calculate_structure_function(
         sf, x, u, bins, SFO.StructureFunctionSumsAndCounts;
         backend = GPU_SHAPE_BE,
-        verbose = false, show_progress = false,
     )
 end
 
@@ -26,7 +25,6 @@ function _cpu_shape_pairwise(sf, x, u, bins)
     return SFC.calculate_structure_function(
         sf, x, u, bins, SFO.StructureFunctionSumsAndCounts;
         backend = GPU_SHAPE_CPU_BE,
-        verbose = false, show_progress = false,
     )
 end
 
@@ -138,11 +136,9 @@ end
         u1 = randn(Float32, 1, 200)
         b1 = collect(Float32, range(0.0f0, 0.9f0; length = 9))
         cpu1 = SFC.calculate_structure_function(
-            sf, x1, u1, b1, SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-            verbose = false, show_progress = false)
+            sf, x1, u1, b1, SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
         gpu1 = SFC.calculate_structure_function(
-            sf, x1, u1, b1, SFO.StructureFunctionSumsAndCounts; backend = GPU_SHAPE_BE,
-            verbose = false, show_progress = false)
+            sf, x1, u1, b1, SFO.StructureFunctionSumsAndCounts; backend = GPU_SHAPE_BE)
         @test gpu1.counts == cpu1.counts
         @test isapprox(gpu1.sums, cpu1.sums; rtol = 1f-5)
     end
@@ -150,15 +146,15 @@ end
     @testset "invalid shapes fail before GPU launch" begin
         @test_throws DimensionMismatch SFC.calculate_structure_function(
             sf, rand(Float32, 2, 5), rand(Float32, 3, 5), bins;
-            backend = GPU_SHAPE_BE, verbose = false, show_progress = false,
+            backend = GPU_SHAPE_BE,
         )
         @test_throws DimensionMismatch SFC.calculate_structure_function(
             sf, rand(Float32, 2, 5, 2), rand(Float32, 2, 5, 3), bins;
-            backend = GPU_SHAPE_BE, verbose = false, show_progress = false,
+            backend = GPU_SHAPE_BE,
         )
         @test_throws DimensionMismatch SFC.calculate_structure_function(
             sf, rand(Float32, 2, 5, 2), rand(Float32, 2, 5), bins;
-            backend = GPU_SHAPE_BE, verbose = false, show_progress = false,
+            backend = GPU_SHAPE_BE,
         )
     end
 end
@@ -177,7 +173,7 @@ Test.@testset "GPU point-field families honour a spherical metric" begin
     u = permutedims(hcat(randn(N), randn(N)))
     db = collect(FT, range(0.0, 9.0e6; length = 11))
     vb = collect(FT, range(-4.0, 4.0; length = 9))
-    kw = (; verbose = false, show_progress = false, distance_metric = m)
+    kw = (; distance_metric = m)
 
     for (name, call) in (
             ("sf1d", (be,) -> SFC.calculate_structure_function(
@@ -206,7 +202,7 @@ Test.@testset "GPU point-field families honour a spherical metric" begin
     # The metric genuinely changes the answer: the transported result is not the flat one.
     raw(mm) = SFC.calculate_structure_function(
         sft, x, u, db, SFO.StructureFunctionSumsAndCounts;
-        backend = CB.SerialBackend(), verbose = false, show_progress = false, distance_metric = mm,
+        backend = CB.SerialBackend(), distance_metric = mm,
     )
     Test.@test raw(DI.Euclidean()).counts != raw(m).counts
 
@@ -229,7 +225,7 @@ Test.@testset "GPU batch families honour a spherical metric" begin
     db = collect(FT, range(0.0, 9.0e6; length = 11))
     vb = collect(FT, range(-4.0, 4.0; length = 9))
     sft = SFT.L2SFType()
-    kw = (; verbose = false, show_progress = false, distance_metric = m)
+    kw = (; distance_metric = m)
 
     for (name, call) in (
             ("sf1d batch", (be,) -> SFC.calculate_structure_function(
@@ -282,23 +278,4 @@ Test.@testset "GPU single-pass 2D honors a spherical metric" begin
         x, u, db, vbn; backend = GPU_SHAPE_BE, distance_metric = DI.Euclidean(),
     )
     Test.@test flat.L2.counts != got.L2.counts
-end
-
-# The single-pass 2D GPU boundary accepts the package's standard `verbose`/`show_progress` pair,
-# which its core takes no `kwargs...` sink for.
-Test.@testset "GPU single-pass 2D accepts the standard display kwargs" begin
-    FT = Float64
-    N = 16
-    x, u = rand(FT, 2, N), rand(FT, 2, N)
-    db = collect(FT, range(0.0, 2.0; length = 9))
-    vb = collect(FT, range(-2.0, 2.0; length = 7))
-    ref = SFC.calculate_structure_functions_single_pass_2d(x, u, db, vb; backend = GPU_SHAPE_BE)
-    got = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, db, vb; backend = GPU_SHAPE_BE, verbose = false, show_progress = false,
-    )
-    Test.@test keys(got) == keys(ref)
-    for k in keys(ref)
-        Test.@test got[k].counts == ref[k].counts
-        Test.@test got[k].sums ≈ ref[k].sums
-    end
 end

@@ -32,17 +32,13 @@ Test.@testset "CUDA structure-function parity" begin
     sft = SFT.L2SFType()
 
     res_ref = SFC.calculate_structure_function(
-        sft, x_cpu, u_cpu, bin_edges;
-        verbose = false,
-        show_progress = false,
-        output_type = SFO.StructureFunctionSumsAndCounts,
+        sft, x_cpu, u_cpu, bin_edges, SFO.StructureFunctionSumsAndCounts,
     )
 
     # The GPU 1D entry returns sums and counts unconditionally.
-    res_cuda = SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges,
-    )
-    CUDA.synchronize()
+    res_cuda = SF.to_host(SFC.gpu_calculate_structure_function(
+        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32,
+    ))
 
     Test.@test res_cuda.counts ≈ res_ref.counts atol = 0.0
 
@@ -63,21 +59,16 @@ Test.@testset "CUDA log-spaced bin parity" begin
     x_gpu = CUDA.cu(x_cpu)
     u_gpu = CUDA.cu(u_cpu)
 
-    log_edge_vec = exp.(range(log(FT(0.05)), log(FT(1.4)); length = 11))
-    bin_edges = LogBinEdges(log_edge_vec)
+    bin_edges = LogBinEdges(FT(0.05), FT(1.4), 11)
     sft = SFT.L2SFType()
 
     res_ref = SFC.calculate_structure_function(
-        sft, x_cpu, u_cpu, bin_edges;
-        verbose = false,
-        show_progress = false,
-        output_type = SFO.StructureFunctionSumsAndCounts,
+        sft, x_cpu, u_cpu, bin_edges, SFO.StructureFunctionSumsAndCounts,
     )
 
-    res_cuda = SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges,
-    )
-    CUDA.synchronize()
+    res_cuda = SF.to_host(SFC.gpu_calculate_structure_function(
+        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32,
+    ))
 
     Test.@test res_cuda.counts ≈ res_ref.counts atol = 0.0
     max_Δ = maximum(abs, res_cuda.sums .- res_ref.sums)
@@ -98,15 +89,12 @@ Test.@testset "CUDA joint 2D structure-function parity" begin
     sft = SFT.L2SFType()
 
     ref = SFC.calculate_structure_function(
-        sft, x_cpu, u_cpu, distance_bins, value_bins;
-        verbose = false, show_progress = false,
+        sft, x_cpu, u_cpu, distance_bins, value_bins,
     )
-    gpu = SFC.calculate_structure_function(
+    gpu = SF.to_host(SFC.calculate_structure_function(
         sft, x_cpu, u_cpu, distance_bins, value_bins;
         backend = CB.GPUBackend(CUDA.CUDABackend()),
-        verbose = false, show_progress = false,
-    )
-    CUDA.synchronize()
+    ))
 
     Test.@test gpu.counts ≈ ref.counts atol = 0.0
     max_Δ = maximum(abs, gpu.sums .- ref.sums)
@@ -129,14 +117,11 @@ Test.@testset "CUDA joint 2D log distance bins" begin
     ref = SFC.calculate_structure_function(
         sft, x_cpu, u_cpu, distance_bins, value_bins;
         backend = CB.SerialBackend(),
-        verbose = false, show_progress = false,
     )
-    gpu = SFC.calculate_structure_function(
+    gpu = SF.to_host(SFC.calculate_structure_function(
         sft, x_cpu, u_cpu, distance_bins, value_bins;
         backend = CB.GPUBackend(CUDA.CUDABackend()),
-        verbose = false, show_progress = false,
-    )
-    CUDA.synchronize()
+    ))
 
     Test.@test gpu.counts ≈ ref.counts atol = 0.0
     max_Δ = maximum(abs, gpu.sums .- ref.sums)
@@ -169,11 +154,10 @@ Test.@testset "CUDA single-pass 2D parity" begin
     )
 
     inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
-    sp_gpu = SFC.calculate_structure_functions_single_pass_2d(
+    sp_gpu = SF.to_host(SFC.calculate_structure_functions_single_pass_2d(
         x_cpu, u_cpu, distance_bins, value_bins;
         backend = CB.GPUBackend(CUDA.CUDABackend()),
-    )
-    CUDA.synchronize()
+    ))
 
     max_Δ = 0.0
     for (t, k) in enumerate(inv)

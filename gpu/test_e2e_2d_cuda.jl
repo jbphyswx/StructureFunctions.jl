@@ -41,11 +41,11 @@ println("| case | bins | max relΔ | counts exact |")
 let N = 1500, B = 4
     for (nd, nv) in ((16, 8), (50, 50))
         x = rand(FT, 2, N); u = randn(FT, 2, N, B)
-        lbe = LinearBinEdges(collect(range(0.0f0, 1.5f0; length = nd + 1)))
-        ve = LinearBinEdges(collect(range(-1.0f0, 1.0f0; length = nv + 1)))
+        lbe = LinearBinEdges(0.0f0, 1.5f0, nd + 1)
+        ve = LinearBinEdges(-1.0f0, 1.0f0, nv + 1)
         cs = zeros(FT, 6, nd, nv, B); cc = zeros(UInt32, 6, nd, nv, B)
         serial_calculate_structure_functions_single_pass_2d!(cs, cc, x, u, lbe, ve)
-        g = SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE)
+        g = SF.to_host(SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE))
         mr, counts_ok = _sp2d_maxrel_counts(g, cs, cc)
         @printf("| SP2D fixed | %dx%d | %.2e | %s |\n", nd, nv, mr, counts_ok)
     end
@@ -54,11 +54,11 @@ end
 let N = 1500, B = 4
     for (nd, nv) in ((20, 20),)
         x = rand(FT, 2, N, B); u = randn(FT, 2, N, B)
-        lbe = LinearBinEdges(collect(range(0.0f0, 1.5f0; length = nd + 1)))
-        ve = LinearBinEdges(collect(range(-1.0f0, 1.0f0; length = nv + 1)))
+        lbe = LinearBinEdges(0.0f0, 1.5f0, nd + 1)
+        ve = LinearBinEdges(-1.0f0, 1.0f0, nv + 1)
         cs = zeros(FT, 6, nd, nv, B); cc = zeros(UInt32, 6, nd, nv, B)
         serial_calculate_structure_functions_single_pass_2d!(cs, cc, x, u, lbe, ve)
-        g = SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE)
+        g = SF.to_host(SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE))
         mr, counts_ok = _sp2d_maxrel_counts(g, cs, cc)
         @printf("| SP2D varying | %dx%d | %.2e | %s |\n", nd, nv, mr, counts_ok)
     end
@@ -66,17 +66,17 @@ end
 # ---- joint 2D fixed-x and varying-x ----
 let N = 1500, B = 4
     x = rand(FT, 2, N); u = randn(FT, 2, N, B)
-    lbe = LinearBinEdges(collect(range(0.0f0, 1.5f0; length = 21)))
-    ve = LinearBinEdges(collect(range(-0.5f0, 1.5f0; length = 21)))
+    lbe = LinearBinEdges(0.0f0, 1.5f0, 21)
+    ve = LinearBinEdges(-0.5f0, 1.5f0, 21)
     cs = zeros(FT, 20, 20, B); cc = zeros(UInt32, 20, 20, B)
     auxiliary_joint2d!(cs, cc, SF_TYPE, x, u, lbe, ve)
-    g = SFC.calculate_structure_function(SF_TYPE, x, u, lbe, ve; backend = GPU_BE)
+    g = SF.to_host(SFC.calculate_structure_function(SF_TYPE, x, u, lbe, ve; backend = GPU_BE))
     @printf("| joint2d fixed | 20x20 | %.2e | %s |\n", maxrel(g.sums, cs), g.counts == cc)
 
     xv = rand(FT, 2, N, B)
     cs2 = zeros(FT, 20, 20, B); cc2 = zeros(UInt32, 20, 20, B)
     auxiliary_joint2d!(cs2, cc2, SF_TYPE, xv, u, lbe, ve)
-    g2 = SFC.calculate_structure_function(SF_TYPE, xv, u, lbe, ve; backend = GPU_BE)
+    g2 = SF.to_host(SFC.calculate_structure_function(SF_TYPE, xv, u, lbe, ve; backend = GPU_BE))
     @printf("| joint2d varying | 20x20 | %.2e | %s |\n", maxrel(g2.sums, cs2), g2.counts == cc2)
 end
 
@@ -84,9 +84,9 @@ end
 println("\n--- headline: SP2D 50x50 fixed-x, N=20000 (public API, wall-clock) ---")
 let N = 20000, B = 64, nd = 50, nv = 50
     x = rand(FT, 2, N); u = randn(FT, 2, N, B)
-    lbe = LinearBinEdges(collect(range(0.0f0, 1.5f0; length = nd + 1)))
-    ve = LinearBinEdges(collect(range(-1.0f0, 1.0f0; length = nv + 1)))
-    f() = SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE)
+    lbe = LinearBinEdges(0.0f0, 1.5f0, nd + 1)
+    ve = LinearBinEdges(-1.0f0, 1.0f0, nv + 1)
+    f() = CUDA.@sync SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE)
     f(); f()
     ts = Float64[]; for _ in 1:3; t = time_ns(); f(); push!(ts, (time_ns()-t)/1e9); end
     t = median(ts); bapps = (N*(N-1)/2)*B/t/1e9

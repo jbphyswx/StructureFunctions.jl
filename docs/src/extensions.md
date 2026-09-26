@@ -2,7 +2,7 @@
 
 The core package computes structure functions of arrays and multi-fields on the serial backend
 and depends on nothing but `ComputationalBackends`, `Distances`, `LinearAlgebra`,
-`PrecompileTools`, `ProgressMeter`, `SpectralBackends` and `StaticArrays`. Everything else —
+`PrecompileTools`, `SpectralBackends` and `StaticArrays`. Everything else —
 parallel execution, transforms, grids, spectral providers, fits — is a package extension that loads
 when its trigger packages are loaded. A
 method that needs an extension which is not loaded throws an `ArgumentError` naming the package to
@@ -32,7 +32,7 @@ package's own. A tag whose transform is not loaded refuses by name.
 | `StructureFunctionsFINUFFTExt` | `using FINUFFT` | the FINUFFT provider of the same route (`FINUFFTSpectralBackend`), two real monomials per complex transform in one batched plan |
 | `StructureFunctionsFINUFFTKernelAbstractionsExt` | the one above with `KernelAbstractions` (and `CUDA`) | cuFINUFFT for points on a CUDA device |
 | `StructureFunctionsNUFSHTExt` | `using NUFSHT` | the fast spherical harmonic pseudo-coefficients behind the harmonic route on `HarmonicNodes` and `harmonic_spectra` |
-| `StructureFunctionsFlowGeometriesExt` | `using FlowGeometries` | the grid entries: `calculate_structure_function(sf, grid, u, bins[, spectral_backend]; …)`, `calculate_structure_function_tensor(order, grid, …)`, `cell_measure(grid)`, routing a grid's axis types to the uniform, rectilinear, zonal or scattered schedule |
+| `StructureFunctionsFlowGeometriesExt` | `using FlowGeometries` | the grid entries: `calculate_structure_function(sf, grid, u, bins[, spectral_backend][, CT][, OT]; …)`, `calculate_structure_function_tensor(order, grid, …)`, `cell_measure(grid)`, routing a grid's axis types to the uniform, rectilinear, zonal or scattered schedule |
 | `StructureFunctionsBesselsExt` | `using Bessels` | the Bessel functions `J₀`–`J₃`: the two-dimensional isotropic kernel, the flux relations, the Helmholtz spectra and forward models |
 | `StructureFunctionsLsqFitExt` | `using LsqFit` | the bounded Levenberg–Marquardt fit behind `SegmentedPowerLaw` |
 
@@ -44,9 +44,11 @@ Threads:
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads
+using Random
+Random.seed!(17)
 
-x = rand(2, 2_000)
-u = randn(2, 2_000)
+x = rand(2, 32)
+u = randn(2, 32)
 bins = range(0.0, 0.5; length = 21)
 res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.ThreadedBackend())
 res.values[1:4]
@@ -70,12 +72,12 @@ using FlowGeometries: FlowGeometries as FG
 using SpectralBackends: SpectralBackends as SB
 
 geo = FG.Geometry.CartesianGeometry()
-grid = FG.Grids.StructuredGrid(geo, range(0.0, step = 0.1, length = 16),
-                               range(0.0, step = 0.1, length = 16))
-ug = randn(2, 16, 16)
+grid = FG.Grids.StructuredGrid(geo, range(0.0, step = 0.1, length = 8),
+                               range(0.0, step = 0.1, length = 8))
+ug = randn(2, 8, 8)
 gbins = collect(range(0.0, 0.8; length = 9))
-sf = SFC.calculate_structure_function(SFT.L3SFType(), grid, ug, gbins, UInt64,
-                                      SB.FastFourierTransformSpectralBackend())
+sf = SFC.calculate_structure_function(SFT.L3SFType(), grid, ug, gbins,
+                                      SB.FastFourierTransformSpectralBackend(), UInt64)
 sf.values
 ```
 

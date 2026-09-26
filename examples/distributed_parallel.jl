@@ -1,40 +1,43 @@
-"""
-    distributed_parallel.jl
+# Partition pair work across local Julia workers and reduce their histograms.
+include("resources.jl")
+using Distributed
+using Random
+using StructureFunctions: Calculations as C, StructureFunctionTypes as T, StructureFunctionSumsAndCounts
+using ComputationalBackends: DistributedBackend, SerialBackend
 
-Distributed backend example with strict qualified imports.
-
-Run from package root:
-    julia --project=examples examples/distributed_parallel.jl 4
-"""
-
-using ComputationalBackends: ComputationalBackends as CB
-using Distributed: Distributed
-using StructureFunctions: StructureFunctions as SF
-
-n_workers = length(ARGS) > 0 ? parse(Int, ARGS[1]) : 2
-if Distributed.nworkers() < n_workers
-    Distributed.addprocs(n_workers - Distributed.nworkers())
+function distributed_example(; n=ExampleResources.points(), workers=2)
+    workers >= 1 || throw(ArgumentError("workers must be positive"))
+    existing = filter(!=(myid()), Distributed.workers())
+    total = max(length(existing), workers)
+    ExampleResources.require_allocation(; cpus=total + 1)
+    project = realpath(dirname(Base.active_project()))
+    for worker in existing
+        dirname(realpath(remotecall_fetch(Base.active_project, worker))) == project ||
+            error("Existing worker $worker uses a different project")
+    end
+    created = Int[]
+    try
+        append!(created, addprocs(max(0, workers - length(existing));
+            exeflags=`--project=$project --threads=1 --startup-file=no`,
+            env=["OPENBLAS_NUM_THREADS"=>"1", "MKL_NUM_THREADS"=>"1"]))
+        for worker in filter(!=(myid()), Distributed.workers())
+            remotecall_wait(Core.eval, worker, Main,
+                :(using StructureFunctions, ComputationalBackends, LinearAlgebra))
+            remotecall_wait(Core.eval, worker, Main, :(LinearAlgebra.BLAS.set_num_threads(1)))
+        end
+        rng = MersenneTwister(14)
+        x, u = rand(rng, 2, n), randn(rng, 2, n)
+        bins = range(0.0, 1.5; length=7)
+        calculate(backend) = C.calculate_structure_function(T.S2SFType(), x, u, bins,
+            StructureFunctionSumsAndCounts; backend)
+        result = calculate(DistributedBackend(SerialBackend()))
+        reference = calculate(SerialBackend())
+        @assert result.counts == reference.counts
+        @assert result.sums ≈ reference.sums
+        println("Matched ", sum(result.counts), " pairs across ", total, " workers")
+        return result
+    finally
+        isempty(created) || rmprocs(created)
+    end
 end
-
-Distributed.@everywhere using StructureFunctions: StructureFunctions as SF
-
-N = 100_000
-x = randn(N, 2)
-u = randn(N, 2)
-bins = collect(10.0:20.0:1000.0)
-operator = SF.FullVectorStructureFunctionType{Float64}(order = 2)
-
-result = @time SF.calculate_structure_function(
-    operator,
-    x,
-    u,
-    bins;
-    backend = CB.DistributedBackend(),
-    show_progress = false,
-    verbose = false,
-)
-
-println("Workers: $(Distributed.nworkers())")
-println("Total pair counts: $(sum(result.counts))")
-
-Distributed.rmprocs(Distributed.workers())
+result = distributed_example()

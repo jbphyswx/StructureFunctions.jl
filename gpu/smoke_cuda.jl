@@ -39,7 +39,7 @@ function main()
     sft = SFT.L2SFType()
 
     res = SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x, u, bin_edges
+        sft, CUDA.CUDABackend(), x, u, bin_edges, UInt32
     )
     CUDA.synchronize()
 
@@ -54,8 +54,6 @@ function main()
     result = SFC.calculate_structure_function(
         sft, x_cpu, u_cpu, bin_edges;
         backend = backend,
-        verbose = false,
-        show_progress = false,
     )
     println("GPUBackend API bins: ", length(result.distance))
     println("\nSmoke test OK.")

@@ -65,7 +65,7 @@ end
 # Inputs
 # ---------------------------------------------------------------------------------------------
 _bin(::Val{:linear}, ::Type{T}, nb) where {T} = LinearBinEdges(range(T(0), T(2); length = nb + 1))
-_bin(::Val{:log}, ::Type{T}, nb) where {T} = LogBinEdges(collect(T, 10 .^ range(T(-2), T(0.4); length = nb + 1)))
+_bin(::Val{:log}, ::Type{T}, nb) where {T} = LogBinEdges(T(0.01), T(10)^T(0.4), nb + 1)
 _bin(::Val{:infpad}, ::Type{T}, nb) where {T} = InfPaddedBinEdges(LinearBinEdges(range(T(0), T(2); length = nb + 1)))
 _bin(::Val{:vector}, ::Type{T}, nb) where {T} = collect(T, range(T(0), T(2); length = nb + 1))
 _valbins(::Type{T}, nv) where {T} = LinearBinEdges(range(T(-3), T(3); length = nv + 1))
@@ -89,25 +89,22 @@ function build_case(entry::Symbol, D::Int, ::Type{T}, binkind::Symbol, N::Int, B
     db = _bin(Val(binkind), T, nb)
     vb = _valbins(T, nv)
     ce = _count_eltype(N)
-    x = B == 1 ? rand(T, D, N) : rand(T, D, N)          # shared positions when batched
+    x = rand(T, D, N)          # shared positions when batched
     u = B == 1 ? rand(T, D, N) : rand(T, D, N, B)
     n_pairs = (N * (N - 1) ÷ 2) * B
-    kw = (; verbose = false, show_progress = false)
 
     f = if entry === :sf1d
-        () -> SFC.calculate_structure_function(SFTYPE, x, u, db, ce; backend = backend,
-                  output_type = SF.StructureFunctionSumsAndCounts, kw...)
+        () -> SFC.calculate_structure_function(SFTYPE, x, u, db, ce, SF.StructureFunctionSumsAndCounts;
+                  backend = backend)
     elseif entry === :joint2d
-        () -> SFC.calculate_structure_function(SFTYPE, x, u, db, vb; backend = backend,
-                  count_eltype = ce, kw...)
+        () -> SFC.calculate_structure_function(SFTYPE, x, u, db, vb, ce; backend = backend)
     elseif entry === :sp1d
-        () -> SFC.calculate_structure_functions_single_pass(x, u, db; backend = backend,
-                  output_type = SF.StructureFunctionSumsAndCounts, count_eltype = ce)
+        () -> SFC.calculate_structure_functions_single_pass(x, u, db, ce, SF.StructureFunctionSumsAndCounts;
+                  backend = backend)
     elseif entry === :sp2d
-        () -> SFC.calculate_structure_functions_single_pass_2d(x, u, db, vb; backend = backend,
-                  count_eltype = ce)
+        () -> SFC.calculate_structure_functions_single_pass_2d(x, u, db, vb, ce; backend = backend)
     elseif entry === :tensor
-        () -> SFC.calculate_structure_function_tensor(Val(2), x, u, db; backend = backend, count_eltype = ce)
+        () -> SFC.calculate_structure_function_tensor(Val(2), x, u, db, ce; backend = backend)
     else
         error("unknown entry $entry")
     end

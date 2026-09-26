@@ -117,7 +117,7 @@ Test.@testset "odd scalar moments on a lat-lon grid read south to north, then we
         got_s = zeros(nb); got_c = zeros(Int, nb)
         SFC.gridded_lag_sweep!(got_s, got_c, sf, f_grid, sched, bins)
         ref = SFC.calculate_structure_function(sf, x, f_pts, bins, SF.StructureFunctionSumsAndCounts;
-            distance_metric = DI.SphericalAngle(), verbose = false, show_progress = false)
+            distance_metric = DI.SphericalAngle())
         Test.@test got_c == Int.(ref.counts)
         Test.@test isapprox(got_s, ref.sums; rtol = 1e-9, atol = 1e-10)
         Test.@test any(!iszero, got_s)
@@ -144,7 +144,7 @@ Test.@testset "a descending axis reads pairs the same way as an ascending one" b
             got_s = zeros(nb); got_c = zeros(Int, nb)
             SFC.gridded_lag_sweep!(got_s, got_c, sf, f_grid, sched, bins)
             ref = SFC.calculate_structure_function(sf, x, f_pts, bins, SF.StructureFunctionSumsAndCounts;
-                distance_metric = DI.SphericalAngle(), verbose = false, show_progress = false)
+                distance_metric = DI.SphericalAngle())
             Test.@test got_c == Int.(ref.counts)
             Test.@test isapprox(got_s, ref.sums; rtol = 1e-9, atol = 1e-10)
             Test.@test any(!iszero, got_s)
@@ -295,8 +295,7 @@ Test.@testset "a spherical grid reaches the zonal sweep through the public entry
     bins = collect(range(0.0, 0.9 * π; length = 9))
 
     got = SFC.calculate_structure_function(
-        SFT.L2SFType(), grid, u, bins, SF.StructureFunctionSumsAndCounts;
-        verbose = false, show_progress = false)
+        SFT.L2SFType(), grid, u, bins, SF.StructureFunctionSumsAndCounts)
     x, uu = _zonal_points(collect(phi), n_lon, 2π / n_lon, u)
     ref_s = zeros(8); ref_c = zeros(UInt32, 8)
     SFC.calculate_structure_function!(ref_s, ref_c, SFT.L2SFType(), x, uu, bins;
@@ -311,8 +310,7 @@ Test.@testset "a spherical grid reaches the zonal sweep through the public entry
     Test.@test !FG.Grids.isperiodic(regional, 1)
     wide = collect(range(0.0, 10.0; length = 4))
     r2 = SFC.calculate_structure_function(
-        SFT.S2SFType(), regional, u, wide, SF.StructureFunctionSumsAndCounts;
-        verbose = false, show_progress = false)
+        SFT.S2SFType(), regional, u, wide, SF.StructureFunctionSumsAndCounts)
     N = n_lon * n_lat
     Test.@test sum(r2.counts) == N * (N - 1) ÷ 2
 
@@ -321,8 +319,7 @@ Test.@testset "a spherical grid reaches the zonal sweep through the public entry
     stretched = FG.Grids.StructuredGrid(geo, [0.0, 0.1, 0.35, 0.9], phi)
     us = randn(2, 4, n_lat)
     r_str = SFC.calculate_structure_function(
-        SFT.L2SFType(), stretched, us, bins, UInt32, SF.StructureFunctionSumsAndCounts;
-        verbose = false, show_progress = false)
+        SFT.L2SFType(), stretched, us, bins, UInt32, SF.StructureFunctionSumsAndCounts)
     xs = Matrix{Float64}(undef, 2, 4 * n_lat)
     for (k, I) in enumerate(CartesianIndices((4, n_lat)))
         xs[1, k] = [0.0, 0.1, 0.35, 0.9][I[1]]

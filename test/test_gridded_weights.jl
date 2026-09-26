@@ -131,10 +131,8 @@ Test.@testset "weights of one reproduce the unweighted results" begin
         Test.@test _close(tw_s, tr_s)
         Test.@test tw_c ≈ tr_c rtol = 1e-12
         for backend in (SERIAL, THREADED)
-            ref = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend, verbose = false,
-                                                   show_progress = false)
-            got = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend, weights = ones_w,
-                                                   verbose = false, show_progress = false)
+            ref = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend)
+            got = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend, weights = ones_w)
             Test.@test got.sums == ref.sums
             Test.@test got.counts == ref.counts
         end
@@ -144,10 +142,8 @@ Test.@testset "weights of one reproduce the unweighted results" begin
     for sf in (SFT.MixedSFType{1, 0, 2}(), SFT.ScalarSFType{2}(), SFT.VectorDotSFType(1, 1)),
         backend in (SERIAL, THREADED)
 
-        ref = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend, verbose = false,
-                                               show_progress = false)
-        got = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend, weights = ones_w,
-                                               verbose = false, show_progress = false)
+        ref = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend)
+        got = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend, weights = ones_w)
         Test.@test got.sums == ref.sums
         Test.@test got.counts == ref.counts
     end
@@ -174,8 +170,7 @@ Test.@testset "random weights equal the weighted pair loop on grids and points" 
                 Test.@test got_c ≈ ref_c rtol = 1e-11
             end
             for backend in (SERIAL, THREADED)
-                got = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend, weights = w,
-                                                       verbose = false, show_progress = false)
+                got = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend, weights = w)
                 Test.@test _close(got.sums, ref_s)
                 Test.@test got.counts ≈ ref_c rtol = 1e-11
             end
@@ -238,8 +233,7 @@ Test.@testset "multi-fields carry weights on every route" begin
         Test.@test _close(tr_s, ref_s)
         Test.@test tr_c ≈ ref_c rtol = 1e-11
         for backend in (SERIAL, THREADED)
-            got = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend, weights = w,
-                                                   verbose = false, show_progress = false)
+            got = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend, weights = w)
             Test.@test _close(got.sums, ref_s)
             Test.@test got.counts ≈ ref_c rtol = 1e-11
         end
@@ -268,8 +262,7 @@ Test.@testset "weights on the sphere: zonal sweep, transform, device and the poi
         end
         for backend in (SERIAL, THREADED)
             pts = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend, weights = w,
-                                                   distance_metric = SFH.SphericalDistance(1.0), verbose = false,
-                                                   show_progress = false)
+                                                   distance_metric = SFH.SphericalDistance(1.0))
             Test.@test _close(pts.sums, ref_s)
             Test.@test pts.counts ≈ ref_c rtol = 1e-11
         end
@@ -290,21 +283,18 @@ Test.@testset "cell_measure feeds a grid's cell areas as weights" begin
     Test.@test w[1] < w[n_lon * (n_lat ÷ 2) + 1]
     u = randn(2, n_lon, n_lat)
     bins = collect(range(0.0, π; length = 8)) .+ 1e-3
-    got = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, Float64, RAW; weights = w, backend = SERIAL,
-                                           verbose = false, show_progress = false)
+    got = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, Float64, RAW; weights = w, backend = SERIAL)
     coords = FG.Grids.materialize(grid)
     x = Matrix(hcat(coords[1], coords[2])')
     ref = SFC.calculate_structure_function(SFT.L2SFType(), x, reshape(u, 2, N), bins, Float64, RAW; weights = w,
-                                           backend = SERIAL, distance_metric = SFH.SphericalDistance(1.0),
-                                           verbose = false, show_progress = false)
+                                           backend = SERIAL, distance_metric = SFH.SphericalDistance(1.0))
     Test.@test _close(got.sums, ref.sums)
     Test.@test got.counts ≈ ref.counts rtol = 1e-11
     tr = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, FFT_TAG, Float64, RAW; weights = w,
-                                          backend = SERIAL, verbose = false, show_progress = false)
+                                          backend = SERIAL)
     Test.@test _close(tr.sums, got.sums)
     Test.@test tr.counts ≈ got.counts rtol = 1e-11
-    plain = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, RAW; backend = SERIAL, verbose = false,
-                                             show_progress = false)
+    plain = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, RAW; backend = SERIAL)
     Test.@test !(got.sums ./ got.counts ≈ plain.sums ./ plain.counts)
 
     # a Cartesian grid's cells are all alike, so its measure changes no average
@@ -315,9 +305,8 @@ Test.@testset "cell_measure feeds a grid's cell areas as weights" begin
     uc = randn(2, 7, 5)
     cbins = collect(range(0.0, 1.2; length = 7)) .+ 1e-3
     cgot = SFC.calculate_structure_function(SFT.L2SFType(), cgrid, uc, cbins, Float64, RAW; weights = cw,
-                                            backend = SERIAL, verbose = false, show_progress = false)
-    cplain = SFC.calculate_structure_function(SFT.L2SFType(), cgrid, uc, cbins, RAW; backend = SERIAL, verbose = false,
-                                              show_progress = false)
+                                            backend = SERIAL)
+    cplain = SFC.calculate_structure_function(SFT.L2SFType(), cgrid, uc, cbins, RAW; backend = SERIAL)
     Test.@test _same_average(cgot.sums ./ cgot.counts, cplain.sums ./ cplain.counts)
     Test.@test cgot.counts ≈ cplain.counts .* cw[1]^2
 end
@@ -336,13 +325,11 @@ Test.@testset "area-weighted hard bins agree with the harmonic route's area aver
     end
     w = SFC.cell_measure(grid)
     nodes = HarmonicNodes(24, 48; taper = SF.GaussianTaper(π / 48))
-    harm = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, nodes, SB.DirectSumSpectralBackend(), RAW;
-                                            verbose = false)
+    harm = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, nodes, SB.DirectSumSpectralBackend(), RAW)
     β = nodes.separations
     half = 0.04
     edges = sort(vcat(0.0, β .- half, β .+ half))
-    zon = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, edges, Float64, RAW; weights = w, backend = SERIAL,
-                                           verbose = false, show_progress = false)
+    zon = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, edges, Float64, RAW; weights = w, backend = SERIAL)
     hard = zon.sums ./ zon.counts
     soft = harm.sums ./ harm.counts
     compared = 0
@@ -376,8 +363,7 @@ Test.@testset "weights are refused where they cannot be honoured" begin
     Test.@test_throws ArgumentError SFC.gridded_sweep!(s, zeros(Int, 4), L2, data, sched, bins, Val(2), Val(1), Val(0),
                                                         FFT_TAG; weights = w)
     x = _grid_points(dims, spacing)
-    Test.@test_throws ArgumentError SFC.calculate_structure_function(L2, x, data, bins; weights = w, backend = SERIAL,
-                                                                     verbose = false, show_progress = false)
+    Test.@test_throws ArgumentError SFC.calculate_structure_function(L2, x, data, bins; weights = w, backend = SERIAL)
     # The device point path, the distributed point path and the value-binned joint histogram all
     # carry weights now. Each is checked against the serial weighted answer, so a weight plumbed
     # nowhere would not pass.
@@ -390,31 +376,29 @@ Test.@testset "weights are refused where they cannot be honoured" begin
     off_lattice_bins = bins .+ 0.013
     ref = SFC.calculate_structure_function(L2, x, data, off_lattice_bins, Float64,
                                            SFO.StructureFunctionSumsAndCounts; weights = w,
-                                           backend = SERIAL, verbose = false, show_progress = false)
+                                           backend = SERIAL)
     dev_w = SFC.calculate_structure_function(L2, x, data, off_lattice_bins, Float64,
                                              SFO.StructureFunctionSumsAndCounts; weights = w,
-                                             backend = DEVICE, verbose = false, show_progress = false)
+                                             backend = DEVICE)
     Test.@test isapprox(collect(dev_w.sums), collect(ref.sums); rtol = 1e-10)
     Test.@test isapprox(collect(dev_w.counts), collect(ref.counts); rtol = 1e-10)
 
     dist_w = SFC.calculate_structure_function(L2, x, data, off_lattice_bins, Float64,
                                               SFO.StructureFunctionSumsAndCounts; weights = w,
-                                              backend = CB.DistributedBackend(),
-                                              verbose = false, show_progress = false)
+                                              backend = CB.DistributedBackend())
     Test.@test isapprox(collect(dist_w.sums), collect(ref.sums); rtol = 1e-10)
     Test.@test isapprox(collect(dist_w.counts), collect(ref.counts); rtol = 1e-10)
 
     vb = collect(range(-3.0, 3.0; length = 5))
     joint_w = SFC.calculate_structure_function(L2, x, data, bins, vb, Float64; weights = w,
-                                               backend = SERIAL, verbose = false, show_progress = false)
+                                               backend = SERIAL)
     joint_1 = SFC.calculate_structure_function(L2, x, data, bins, vb, Float64;
-                                               backend = SERIAL, verbose = false, show_progress = false)
+                                               backend = SERIAL)
     Test.@test all(isfinite, joint_w.counts)
     Test.@test maximum(abs, joint_w.counts .- joint_1.counts) > 0
     grid = FG.Grids.StructuredGrid(FG.Geometry.CartesianGeometry(), range(0.0, step = 0.1, length = 6),
                                    range(0.0, step = 0.1, length = 5))
-    Test.@test_throws ArgumentError SFC.calculate_structure_function(L2, grid, u, bins; weights = SFC.cell_measure(grid),
-                                                                     verbose = false, show_progress = false)
+    Test.@test_throws ArgumentError SFC.calculate_structure_function(L2, grid, u, bins; weights = SFC.cell_measure(grid))
 end
 
 Test.@testset "the value-binned joint histogram takes pair weights" begin
@@ -452,20 +436,18 @@ Test.@testset "the value-binned joint histogram takes pair weights" begin
 
     bs, bc = brute(w)
     for be in (CB.SerialBackend(), CB.ThreadedBackend())
-        r = SFC.calculate_structure_function(op, x, u, dbins, vbins, Float64; backend = be, weights = w,
-                                             verbose = false, show_progress = false)
+        r = SFC.calculate_structure_function(op, x, u, dbins, vbins, Float64; backend = be, weights = w)
         Test.@test same(r.sums, bs)
         Test.@test same(r.counts, bc)
     end
 
     # weights of one reproduce the unweighted histogram
     us, uc = brute(nothing)
-    r1 = SFC.calculate_structure_function(op, x, u, dbins, vbins, Float64; weights = ones(N),
-                                          verbose = false, show_progress = false)
+    r1 = SFC.calculate_structure_function(op, x, u, dbins, vbins, Float64; weights = ones(N))
     Test.@test same(r1.sums, us)
     Test.@test same(r1.counts, uc)
 
     # an integer count type cannot hold a weighted pair mass
     Test.@test_throws ArgumentError SFC.calculate_structure_function(
-        op, x, u, dbins, vbins; weights = w, verbose = false, show_progress = false)
+        op, x, u, dbins, vbins; weights = w)
 end

@@ -53,8 +53,7 @@ Test.@testset "Single-Pass Core Correctness & Helmholtz Parity" begin
     distance_bins_ref = Float64[0.1, 1.0, 2.0]
     for t in 1:6
         res = SFC.calculate_structure_function(
-            SP_REF_TYPES[t], x, u, distance_bins_ref, SF.StructureFunctionSumsAndCounts;
-            verbose = false, show_progress = false,
+            SP_REF_TYPES[t], x, u, distance_bins_ref, SF.StructureFunctionSumsAndCounts,
         )
         entry = sp[SP_INV[t]]
         Test.@test isapprox(entry.sums, res.sums, atol = 1e-12)

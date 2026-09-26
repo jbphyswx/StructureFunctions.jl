@@ -12,7 +12,7 @@ Scale N ∝ √p so each thread has constant O(N²/p) pair-wise work.
 Ideal: wall-clock time stays constant as p grows.
 
 ## GPU scaling (skeleton — skipped if no CUDA GPU)
-Benchmarks `gpu_calculate_structure_function` across problem sizes when a
+Benchmarks `calculate_structure_function` with a `GPUBackend` across problem sizes when a
 CUDA-functional GPU is detected.
 
 ## How to run

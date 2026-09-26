@@ -89,7 +89,7 @@ function main()
     println("=" ^ 72)
 
     Random.seed!(42)
-    dist_vec = LogBinEdges(Vector{FT}(exp.(range(log(FT(1000)), log(FT(50000)); length = 51))))
+    dist_vec = LogBinEdges(FT(1000), FT(50000), 51)
     x = rand(FT, 2, N) .* FT(50000)
     u = randn(FT, 2, N) .* FT(0.5)
 
@@ -102,8 +102,8 @@ function main()
 
         ws = SFC.GPUSFWorkspace(ka_backend, dist_vec, value_bins; kind = :single_pass_2d)
         plan = ws.val_plan
-        sums = zeros(FT, 6, n_dist, n_val)
-        counts = zeros(UInt32, 6, n_dist, n_val)
+        sums = KA.zeros(ka_backend, FT, 6, n_dist, n_val)
+        counts = KA.zeros(ka_backend, UInt32, 6, n_dist, n_val)
 
         run! = () -> SFC.gpu_calculate_structure_functions_single_pass_2d!(
             sums, counts, ka_backend, x, u, dist_vec, value_bins;

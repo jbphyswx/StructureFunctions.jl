@@ -29,16 +29,16 @@ using SpectralBackends: SpectralBackends as SB
                 sums, counts = zeros(dims), fill(initial, dims)
                 @test_throws ArgumentError if kind == :sf1d
                     SFC.calculate_structure_function_batch!(sums, counts, SFT.S2SFType(), x, u, bins;
-                        backend = CB.SerialBackend(), verbose = false)
+                        backend = CB.SerialBackend())
                 elseif kind == :joint2d
                     SFC.calculate_structure_function_2d_batch!(sums, counts, SFT.S2SFType(), x, u, bins, value_bins;
-                        backend = CB.SerialBackend(), verbose = false)
+                        backend = CB.SerialBackend())
                 elseif kind == :single_pass
                     SFC.calculate_structure_functions_single_pass_batch!(sums, counts, x, u, bins;
-                        backend = CB.SerialBackend(), verbose = false)
+                        backend = CB.SerialBackend())
                 else
                     SFC.calculate_structure_functions_single_pass_2d_batch!(sums, counts, x, u, bins, value_bins;
-                        backend = CB.SerialBackend(), verbose = false)
+                        backend = CB.SerialBackend())
                 end
                 @test all(iszero, sums)
                 @test all(==(initial), counts)
@@ -94,7 +94,7 @@ end
         x = zeros(D, 3); x[1, :] = [0, 1, 2]
         u = zeros(D, 3); u[end, :] = [0, 2, 5]
         r = SFC.calculate_structure_function(SFT.S2SFType(), x, u, [0.0, 3.0], SF.StructureFunctionSumsAndCounts;
-            backend=SerialBackend(), verbose=false, show_progress=false)
+            backend=SerialBackend())
         @test r.counts == [3]
         @test r.sums == [38.0]
     end

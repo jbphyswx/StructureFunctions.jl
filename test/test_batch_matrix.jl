@@ -55,7 +55,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
         gpu_out = SFC.calculate_structure_function(
             SF_TYPE, x, u, lbe, SF.StructureFunctionSumsAndCounts;
-            backend = GPU_BE, verbose = false,
+            backend = GPU_BE,
         )
         @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
@@ -69,7 +69,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
         gpu_out = SFC.calculate_structure_function(
             SF_TYPE, x, u, lbe, SF.StructureFunctionSumsAndCounts;
-            backend = GPU_BE, verbose = false,
+            backend = GPU_BE,
         )
         @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
@@ -99,7 +99,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             auxiliary_shared_positions!(cpu_s, cpu_c, x, u, sft, lbe)
             gpu_out = SFC.calculate_structure_function(
                 sft, x, u, lbe, SF.StructureFunctionSumsAndCounts;
-                backend = GPU_BE, verbose = false,
+                backend = GPU_BE,
             )
             @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
             @test any(!iszero, cpu_s)

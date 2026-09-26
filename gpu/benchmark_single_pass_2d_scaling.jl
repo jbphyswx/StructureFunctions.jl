@@ -60,7 +60,7 @@ function main()
     println("=" ^ 72)
 
     Random.seed!(42)
-    dist_vec = LogBinEdges(Vector{FT}(exp.(range(log(FT(1000)), log(FT(50000)); length = 51))))
+    dist_vec = LogBinEdges(FT(1000), FT(50000), 51)
     value_bins = _synthetic_value_bins_ntuple(50, FT)
     n_dist = length(dist_vec) - 1
     n_val = length(value_bins[1]) - 1
@@ -72,8 +72,8 @@ function main()
 
     # --- Production-style path: in-place slice batch, kernel only ---
     ws_sp2d = SFC.GPUSFWorkspace(ka_backend, dist_vec, value_bins; kind = :single_pass_2d)
-    sums_sp2d = zeros(FT, 6, n_dist, n_val, 1)
-    counts_sp2d = zeros(Int64, 6, n_dist, n_val, 1)
+    sums_sp2d = KA.zeros(ka_backend, FT, 6, n_dist, n_val, 1)
+    counts_sp2d = KA.zeros(ka_backend, Int64, 6, n_dist, n_val, 1)
     sp2d_run = () -> SFC.calculate_structure_functions_single_pass_2d_batch!(
         sums_sp2d, counts_sp2d, x_batch, u_batch, dist_vec, value_bins;
         backend = gpu_backend, workspace = ws_sp2d,
@@ -86,15 +86,15 @@ function main()
     sft = SFT.L2SFType()
     ws_l2 = SFC.GPUSFWorkspace(ka_backend, bins_1d)
     l2_run = () -> SFC.gpu_calculate_structure_function(
-        sft, ka_backend, x2, u1, bins_1d; workspace = ws_l2,
+        sft, ka_backend, x2, u1, bins_1d, UInt32; workspace = ws_l2,
     )
     t_l2 = _bench(l2_run, warmup, repeat_)
     @printf("[ref]   1D L2SF tiled kernel        %8.4f s   (%8.2f ms)\n", t_l2, t_l2 * 1000)
 
     # --- Six-type single-pass 1D: kernel-only (in-place) ---
     ws_sp1 = SFC.GPUSFWorkspace(ka_backend, dist_vec; kind = :single_pass)
-    sums_sp1 = zeros(FT, 6, n_dist)
-    counts_sp1 = zeros(Int64, 6, n_dist)
+    sums_sp1 = KA.zeros(ka_backend, FT, 6, n_dist)
+    counts_sp1 = KA.zeros(ka_backend, Int64, 6, n_dist)
     sp1_kernel_run = () -> SFC.calculate_structure_functions_single_pass!(
         sums_sp1, counts_sp1, x2, u1, dist_vec;
         backend = gpu_backend, workspace = ws_sp1,
@@ -112,10 +112,6 @@ function main()
     @printf(
         "\nRatios at N=%d:\n  sp2d / L2SF tiled:        %.0f×\n  sp2d / sp1d kernel:       %.1f×\n  sp1d full / sp1d kernel:  %.1f×\n",
         N, t_sp2d / t_l2, t_sp2d / t_sp1_kernel, t_sp1_full / t_sp1_kernel,
-    )
-    println(
-        "\nNote: single-pass 1D/2D use tiled128 pair traversal when NB ≤ 64. ",
-        "2D uses global atomics into (6, n_dist, n_val); 1D uses block-local (6, NB).",
     )
 
     SFC.release!(ws_sp2d)

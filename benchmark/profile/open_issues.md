@@ -10,7 +10,7 @@ This document tracks identified performance bottlenecks, memory allocation issue
 During memory allocation profiling (captured in `allocs_threaded.txt`), the `ThreadedBackend` (implemented in `StructureFunctionsOhMyThreadsExt.jl`) was found to perform chunk-local array allocations inside the `tmapreduce` reduction block:
 ```julia
 local_sums = zeros(OT, 8, n_bins)
-local_counts = zeros(Int64, 8, n_bins)
+local_counts = zeros(CT, 8, n_bins)
 ```
 These allocations occur once per parallel chunk/task. With 24 threads/tasks, this results in exactly 48 allocations ($\approx 24\text{ KB}$ total). While this is a minor $O(\text{nthreads})$ overhead (and is allocation-free *inside* the main pairwise loop), it prevents the threaded backend from achieving absolute zero allocations. 
 
@@ -29,7 +29,7 @@ We can pre-allocate chunk-local buffers and map them 1-to-1 to tasks by using th
 
 ### Blockers / Design Considerations
 * **Wrapper View Allocations**: Taking a `view` of a 3D array can sometimes allocate a small slice wrapper object (SubArray) on the heap if it escapes or fails to compile down. Using a `Vector{Matrix{OT}}` is guaranteed to be 100% allocation-free but requires the caller to preallocate a vector of matrices instead of a standard 3D array.
-* **API Extension Synchronization**: We need to update the keyword argument parsing in `Calculations.jl` and verify that `thread_sums`/`thread_counts` are cleanly passed down via `kwargs` to `_dispatch_single_pass!` in all backend extensions.
+* **API Extension Synchronization**: No entry takes chunk buffers (there is no `thread_sums`/`thread_counts` keyword), so the buffers need a new argument threaded through `_dispatch_single_pass(backend, x, u, bins, CT; ...)` in all backend extensions.
 
 ---
 

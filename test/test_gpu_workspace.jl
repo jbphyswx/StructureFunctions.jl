@@ -297,7 +297,7 @@ Test.@testset "three-dimensional slice batches (KA.CPU)" begin
     ref4_c = zeros(UInt32, NB, T)
     for t in 1:T
         r = SFC.calculate_structure_function(sft, x4[:, :, t], u4[:, :, t], bins, UInt32,
-            SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(), verbose = false)
+            SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
         ref4_s[:, t] .= r.sums
         ref4_c[:, t] .= r.counts
     end
@@ -327,7 +327,7 @@ Test.@testset "a fixed-position slice batch agrees at every width and bin spelli
         for t in 1:T
             r = SFC.calculate_structure_function(sft, x, u[:, :, t],
                 collect(range(0.0, 1.0; length = NB + 1)), FT, SF.StructureFunctionSumsAndCounts;
-                backend = CB.SerialBackend(), verbose = false)
+                backend = CB.SerialBackend())
             ref_s[:, t] .= r.sums
             ref_c[:, t] .= r.counts
         end

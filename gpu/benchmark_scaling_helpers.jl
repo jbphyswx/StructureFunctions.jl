@@ -34,8 +34,10 @@ function run_timed_gpu(f, backend; warmup::Int = 1)
         f()
     end
     gpu_sync!(backend)
-    t = @elapsed f()
-    gpu_sync!(backend)
+    t = @elapsed begin
+        f()
+        gpu_sync!(backend)
+    end
     return t
 end
 
@@ -49,12 +51,12 @@ function bench_cpu_serial_sf(x_arr, u_arr, bins, sft; warmup::Int = 1)
     for _ in 1:warmup
         SFC.calculate_structure_function(
             sft, x_arr, u_arr, bins;
-            backend = CB.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(),
         )
     end
     return @elapsed SFC.calculate_structure_function(
         sft, x_arr, u_arr, bins;
-        backend = CB.SerialBackend(), verbose = false, show_progress = false,
+        backend = CB.SerialBackend(),
     )
 end
 
@@ -69,7 +71,7 @@ function bench_gpu_sf_with_workspace(
 )
     for _ in 1:warmup
         SFC.gpu_calculate_structure_function(
-            sft, backend, x_dev, u_dev, bins;
+            sft, backend, x_dev, u_dev, bins, UInt32;
             workspace = ws,
         )
     end
@@ -77,7 +79,7 @@ function bench_gpu_sf_with_workspace(
     times = Float64[]
     for _ in 1:repeat
         t = @elapsed SFC.gpu_calculate_structure_function(
-            sft, backend, x_dev, u_dev, bins;
+            sft, backend, x_dev, u_dev, bins, UInt32;
             workspace = ws,
         )
         gpu_sync!(backend)
@@ -94,12 +96,12 @@ Time one GPU call without workspace (fresh device histogram alloc each call).
 function bench_gpu_sf_fresh(backend, x_dev, u_dev, bins, sft; warmup::Int = 1)
     for _ in 1:warmup
         SFC.gpu_calculate_structure_function(
-            sft, backend, x_dev, u_dev, bins
+            sft, backend, x_dev, u_dev, bins, UInt32
         )
     end
     gpu_sync!(backend)
     t = @elapsed SFC.gpu_calculate_structure_function(
-        sft, backend, x_dev, u_dev, bins
+        sft, backend, x_dev, u_dev, bins, UInt32
     )
     gpu_sync!(backend)
     return t
@@ -116,10 +118,10 @@ function bench_naive_slice_loop!(
     function run!()
         for t in 1:T
             res = SFC.gpu_calculate_structure_function(
-                sft, backend, x_host[:, :, t], u_host[:, :, t], bins
+                sft, backend, x_host[:, :, t], u_host[:, :, t], bins, UInt32
             )
-            sums[:, t] .= res.sums
-            counts[:, t] .= res.counts
+            sums[:, t] .= Array(res.sums)
+            counts[:, t] .= Array(res.counts)
         end
     end
     return run_timed_gpu(run!, backend; warmup = warmup)
@@ -128,12 +130,15 @@ end
 """
     bench_slice_driver!(backend, x_batch, u_batch, bins, sft, sums, counts, ws; warmup=1)
 
-Batch slice driver API (`gpu_calculate_structure_function_batch!`).
+Batch slice driver API (`gpu_calculate_structure_function_batch!`) into device buffers `sums`,
+`counts`, which hold one call's histogram afterwards.
 """
 function bench_slice_driver!(
     backend, x_batch, u_batch, bins, sft, sums, counts, ws; warmup::Int = 1,
 )
     function run!()
+        fill!(sums, 0)
+        fill!(counts, 0)
         SFC.gpu_calculate_structure_function_batch!(
             sums, counts, sft, backend, x_batch, u_batch, bins; workspace = ws,
         )
@@ -150,9 +155,8 @@ function bench_cpu_serial_slice_loop!(x_batch, u_batch, bins, sft, sums, counts;
     function run!()
         for t in 1:T
             res = SFC.calculate_structure_function(
-                sft, @view(x_batch[:, :, t]), @view(u_batch[:, :, t]), bins;
-                backend = CB.SerialBackend(), verbose = false, show_progress = false,
-                output_type = StructureFunctionSumsAndCounts,
+                sft, @view(x_batch[:, :, t]), @view(u_batch[:, :, t]), bins, StructureFunctionSumsAndCounts;
+                backend = CB.SerialBackend(),
             )
             sums[:, t] .= res.sums
             counts[:, t] .= res.counts

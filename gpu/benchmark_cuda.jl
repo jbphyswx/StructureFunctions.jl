@@ -49,28 +49,24 @@ function main()
     SFC.calculate_structure_function(
         sft, x_cpu, u_cpu, bin_edges;
         backend = threaded_backend,
-        verbose = false,
-        show_progress = false,
     )
-    SFC.gpu_calculate_structure_function(sft, KA.CPU(), x_cpu, u_cpu, bin_edges)
-    SFC.gpu_calculate_structure_function(sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges)
+    SFC.gpu_calculate_structure_function(sft, KA.CPU(), x_cpu, u_cpu, bin_edges, UInt32)
+    SFC.gpu_calculate_structure_function(sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32)
     CUDA.synchronize()
 
     t_threaded = @elapsed begin
         SFC.calculate_structure_function(
             sft, x_cpu, u_cpu, bin_edges;
             backend = threaded_backend,
-            verbose = false,
-            show_progress = false,
         )
     end
 
     t_ka_cpu = @elapsed begin
-        SFC.gpu_calculate_structure_function(sft, KA.CPU(), x_cpu, u_cpu, bin_edges)
+        SFC.gpu_calculate_structure_function(sft, KA.CPU(), x_cpu, u_cpu, bin_edges, UInt32)
     end
 
     t_cuda = @elapsed begin
-        SFC.gpu_calculate_structure_function(sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges)
+        SFC.gpu_calculate_structure_function(sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32)
         CUDA.synchronize()
     end
 

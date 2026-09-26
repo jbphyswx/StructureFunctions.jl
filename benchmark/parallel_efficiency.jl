@@ -65,10 +65,10 @@ const OP = SFT.S2SFType()
 const BINS = collect(range(0.0, 1.0; length = 21))
 const VALUE_BINS = collect(range(0.0, 2.0; length = 6))
 
-sf1d(backend, x, u) = SFC.calculate_structure_function(OP, x, u, BINS, Float64;
-    backend = backend, verbose = false, output_type = SFO.StructureFunctionSumsAndCounts)
-joint2d(backend, x, u) = SFC.calculate_structure_function(OP, x, u, BINS, VALUE_BINS, Float64;
-    backend = backend, verbose = false, output_type = SFO.StructureFunction2DSumsAndCounts)
+sf1d(backend, x, u) = SFC.calculate_structure_function(OP, x, u, BINS, Float64,
+    SFO.StructureFunctionSumsAndCounts; backend = backend)
+joint2d(backend, x, u) = SFC.calculate_structure_function(OP, x, u, BINS, VALUE_BINS, Float64,
+    SFO.StructureFunction2DSumsAndCounts; backend = backend)
 """The public single-pass entry, mutating so the comparison allocates nothing per repeat."""
 function single_pass(backend, x, u)
     nb = length(BINS) - 1

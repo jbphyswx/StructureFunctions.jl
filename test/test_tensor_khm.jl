@@ -204,8 +204,7 @@ Test.@testset "the tensor from the transform equals the point tensor on a grid's
             ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, Dg, N), bins, RAW_T;
                                                           backend = CB.SerialBackend())
             for tag in (FFT_TAG, SB.AutoSpectralBackend()), backend in (CB.SerialBackend(), CB.ThreadedBackend())
-                got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, tag, RAW_T; backend,
-                                                              verbose = false)
+                got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, tag, RAW_T; backend)
                 Test.@test got.counts == ref.counts
                 Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
             end
@@ -216,25 +215,25 @@ Test.@testset "the tensor from the transform equals the point tensor on a grid's
             umf[1, .!held] .= NaN
             refm = SFC.calculate_structure_function_tensor(Val(P), x[:, held], umf[:, held], bins, RAW_T;
                                                            backend = CB.SerialBackend())
-            gotm = SFC.calculate_structure_function_tensor(Val(P), grid, um, bins, FFT_TAG, RAW_T; verbose = false)
+            gotm = SFC.calculate_structure_function_tensor(Val(P), grid, um, bins, FFT_TAG, RAW_T)
             Test.@test gotm.counts == refm.counts
             Test.@test isapprox(gotm.sums, refm.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, refm.sums))
             # weights of one change nothing but the count type
             gotw = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, Float64, RAW_T;
-                                                           weights = ones(N), verbose = false)
+                                                           weights = ones(N))
             Test.@test gotw.counts ≈ ref.counts
             Test.@test isapprox(gotw.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
         end
         # the averaged tensor is the default representation
-        mean = SFC.calculate_structure_function_tensor(Val(2), grid, u, bins, FFT_TAG; verbose = false)
+        mean = SFC.calculate_structure_function_tensor(Val(2), grid, u, bins, FFT_TAG)
         Test.@test mean isa SF.StructureFunctionTensor{2}
         ref2 = SFC.calculate_structure_function_tensor(Val(2), x, reshape(u, Dg, N), bins; backend = CB.SerialBackend())
         Test.@test isapprox(mean.values, ref2.values; rtol = 1e-9, atol = 1e-10, nans = true)
         # one algorithm: the direct sum is refused, a multi-field of fields is refused
         Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(Val(2), grid, u, bins,
-                                                                                SB.DirectSumSpectralBackend(); verbose = false)
+                                                                                SB.DirectSumSpectralBackend())
         Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(
-            Val(2), grid, MF.Fields(vectors = (u,), scalars = (randn(dims...),)), bins, FFT_TAG; verbose = false)
+            Val(2), grid, MF.Fields(vectors = (u,), scalars = (randn(dims...),)), bins, FFT_TAG)
     end
 end
 
@@ -251,7 +250,7 @@ Test.@testset "the tensor on a lat-lon grid is the point tensor in the geodesic 
     for P in (2, 3)
         ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, 2, :), bins, RAW_T; backend = CB.SerialBackend(),
                                                       distance_metric = SFH.SphericalDistance(1.0))
-        got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, RAW_T; verbose = false)
+        got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, RAW_T)
         Test.@test got.counts == ref.counts
         Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
         Test.@test sum(ref.counts) > 0
@@ -294,7 +293,7 @@ Test.@testset "the joint tensor over angle marginalises to the tensor and to the
         Test.@test isapprox(dropdims(sum(joint.sums; dims = 4); dims = 4), t1.sums; rtol = 1e-11, atol = 1e-12)
         # the trace of the joint tensor is the joint histogram of S2
         s2 = SFC.calculate_structure_function(SFT.S2SFType(), x, u, bins, θbins; backend = CB.SerialBackend(),
-                                              second_axis = axis, verbose = false, show_progress = false)
+                                              second_axis = axis)
         Test.@test joint.counts == s2.counts
         Test.@test isapprox(joint.sums[1, 1, :, :] .+ joint.sums[2, 2, :, :], s2.sums; rtol = 1e-11, atol = 1e-12)
     end
@@ -324,8 +323,7 @@ Test.@testset "the joint tensor over angle marginalises to the tensor and to the
     for P in (2, 3)
         refj = SFC.calculate_structure_function_tensor(Val(P), xg, reshape(ug, 2, :), gbins, gθbins; second_axis = axis,
                                                        backend = CB.SerialBackend())
-        gotj = SFC.calculate_structure_function_tensor(Val(P), grid, ug, gbins, gθbins, FFT_TAG; second_axis = axis,
-                                                       verbose = false)
+        gotj = SFC.calculate_structure_function_tensor(Val(P), grid, ug, gbins, gθbins, FFT_TAG; second_axis = axis)
         Test.@test gotj isa RAW_T2
         Test.@test gotj.counts ≈ refj.counts
         Test.@test isapprox(gotj.sums, refj.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, refj.sums))

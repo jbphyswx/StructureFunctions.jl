@@ -1,5 +1,5 @@
 using ComputationalBackends: ComputationalBackends as CB
-using StructureFunctions
+using StructureFunctions: Calculations as SFC, LogBinEdges
 using OhMyThreads
 using Profile
 using Serialization
@@ -25,25 +25,23 @@ function main()
     x = randn(FT, 2, N)
     u = randn(FT, 2, N)
 
-    # 50 log-spaced bin edges (length 51)
-    distance_bins_raw = collect(exp.(range(log(0.01), log(10.0), length=51)))
-    distance_bins = LogBinEdges(distance_bins_raw)
+    distance_bins = LogBinEdges(0.01, 10.0, 51)
 
     # 2. Warmup run (excludes compilation time from profile)
     println("Running warmup calculations to trigger JIT compilation...")
     flush(stdout); flush(stderr)
     
     # warm up serial
-    calculate_structure_functions_single_pass(x[:, 1:200], u[:, 1:200], distance_bins; backend=CB.SerialBackend())
+    SFC.calculate_structure_functions_single_pass(x[:, 1:200], u[:, 1:200], distance_bins; backend=CB.SerialBackend())
     # warm up threaded
-    calculate_structure_functions_single_pass(x[:, 1:200], u[:, 1:200], distance_bins; backend=CB.ThreadedBackend())
+    SFC.calculate_structure_functions_single_pass(x[:, 1:200], u[:, 1:200], distance_bins; backend=CB.ThreadedBackend())
 
     # 3. CPU Profiling (Serial)
     println("Profiling CPU execution (Serial)...")
     flush(stdout); flush(stderr)
 
     Profile.clear()
-    Profile.@profile calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.SerialBackend())
+    Profile.@profile SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.SerialBackend())
     
     cpu_serial_txt = joinpath(profile_dir, "cpu_serial.txt")
     cpu_serial_jls = joinpath(profile_dir, "cpu_serial.jls")
@@ -61,7 +59,7 @@ function main()
     flush(stdout); flush(stderr)
 
     Profile.clear()
-    Profile.@profile calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.ThreadedBackend())
+    Profile.@profile SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.ThreadedBackend())
     
     cpu_threaded_txt = joinpath(profile_dir, "cpu_threaded.txt")
     cpu_threaded_jls = joinpath(profile_dir, "cpu_threaded.jls")
@@ -131,7 +129,7 @@ function main()
     println("Profiling memory allocations (Serial)...")
     flush(stdout); flush(stderr)
     Profile.Allocs.clear()
-    Profile.Allocs.@profile sample_rate=0.1 calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.SerialBackend())
+    Profile.Allocs.@profile sample_rate=0.1 SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.SerialBackend())
     allocs_serial_profile = Profile.Allocs.fetch()
     
     allocs_serial_txt = joinpath(profile_dir, "allocs_serial.txt")
@@ -147,7 +145,7 @@ function main()
     println("Profiling memory allocations (Threaded)...")
     flush(stdout); flush(stderr)
     Profile.Allocs.clear()
-    Profile.Allocs.@profile sample_rate=0.1 calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.ThreadedBackend())
+    Profile.Allocs.@profile sample_rate=0.1 SFC.calculate_structure_functions_single_pass(x, u, distance_bins; backend=CB.ThreadedBackend())
     allocs_threaded_profile = Profile.Allocs.fetch()
     
     allocs_threaded_txt = joinpath(profile_dir, "allocs_threaded.txt")

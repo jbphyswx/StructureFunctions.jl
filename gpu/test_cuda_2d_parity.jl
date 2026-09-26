@@ -35,8 +35,10 @@ end
 function cuda_2d(xd, ud, ddig, vplan, N, n_dist, n_val, B, NMOM, fixed_x)
     out = CUDA.zeros(FT, NMOM, n_dist, n_val, B)
     cnt = CUDA.zeros(UInt32, NMOM, n_dist, n_val, B)
-    handled = SFC.gpu_fast_launch_2d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, ddig, vplan,
-                                            N, n_dist, n_val, B, D, NMOM, fixed_x, GEOM, nothing)
+    plan = SFC.gpu_native_2d_plan(CUDA.CUDABackend(), FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NMOM, n_dist, n_val)
+    handled = plan !== nothing
+    handled && SFC.gpu_native_launch_2d!(plan, out, cnt, xd, ud, SFC.NoWeights(), sf2, ddig, vplan,
+                                         N, n_dist, n_val, B, fixed_x, GEOM, SFC.InvariantValueAxis(), nothing)
     CUDA.synchronize()
     return out, cnt, handled
 end
@@ -53,10 +55,11 @@ for NMOM in (1, 6)
             u_h = randn(FT, D, N, B)
             dist_bins = collect(FT, range(0.05f0, 2.0f0, length = n_dist + 1))
             vb = collect(FT, range(-5.0f0, 5.0f0, length = n_val + 1))
-            ddig_cpu = GE._sf_batch_dist_digitizer(KA.CPU(), dist_bins)
-            vplan_cpu = GE._gpu_build_value_digitize_plan(KA.CPU(), vb)
-            ddig = GE._sf_batch_dist_digitizer(CUDA.CUDABackend(), dist_bins)
-            vplan = GE._gpu_build_value_digitize_plan(CUDA.CUDABackend(), vb)
+            kind = Val(NMOM == 1 ? :joint2d : :single_pass_2d)
+            ddig_cpu = GE._gpu_digitizer(KA.CPU(), dist_bins, kind)
+            vplan_cpu = GE._gpu_digitizer(KA.CPU(), vb, Val(:value))
+            ddig = GE._gpu_digitizer(CUDA.CUDABackend(), dist_bins, kind)
+            vplan = GE._gpu_digitizer(CUDA.CUDABackend(), vb, Val(:value))
             xd = fixed_x ? CuArray(x_h) : CuArray(x_h)
             ud = CuArray(u_h)
 
@@ -82,8 +85,8 @@ let n_dist = 50, n_val = 50, NMOM = 6, fixed_x = true
     x_h = rand(FT, D, N); u_h = randn(FT, D, N, B)
     dist_bins = collect(FT, range(0.05f0, 2.0f0, length = n_dist + 1))
     vb = collect(FT, range(-5.0f0, 5.0f0, length = n_val + 1))
-    ddig = GE._sf_batch_dist_digitizer(CUDA.CUDABackend(), dist_bins)
-    vplan = GE._gpu_build_value_digitize_plan(CUDA.CUDABackend(), vb)
+    ddig = GE._gpu_digitizer(CUDA.CUDABackend(), dist_bins, Val(:single_pass_2d))
+    vplan = GE._gpu_digitizer(CUDA.CUDABackend(), vb, Val(:value))
     xd = CuArray(x_h); ud = CuArray(u_h)
     out = CUDA.zeros(FT, NMOM, n_dist, n_val, B); cnt = CUDA.zeros(UInt32, NMOM, n_dist, n_val, B)
     f() = (CUDA.fill!(out, 0f0); CUDA.fill!(cnt, UInt32(0));

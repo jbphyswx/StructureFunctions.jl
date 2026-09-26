@@ -27,9 +27,13 @@ function ref_1d(x, u, dig, N, NB, B, NMOM, fixed_x)
     KA.synchronize(KA.CPU())
     return out, cnt
 end
+native_plan(NB, NMOM) = SFC.gpu_native_1d_plan(CUDA.CUDABackend(), FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NB, NMOM)
+
 function cuda_1d(xd, ud, dig, N, NB, B, NMOM, fixed_x)
     out = CUDA.zeros(FT, NMOM, NB, B); cnt = CUDA.zeros(UInt32, NMOM, NB, B)
-    h = SFC.gpu_fast_launch_1d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, dig, N, NB, B, D, NMOM, fixed_x, GEOM, nothing)
+    plan = native_plan(NB, NMOM)
+    h = plan !== nothing
+    h && SFC.gpu_native_launch_1d!(plan, out, cnt, xd, ud, SFC.NoWeights(), sf2, dig, N, NB, B, fixed_x, GEOM, nothing)
     CUDA.synchronize()
     return Array(out), Array(cnt), h
 end
@@ -43,8 +47,9 @@ for NMOM in (1, 6), fixed_x in (true, false), NB in (16, 50, 128)
     x_h = fixed_x ? rand(FT, D, N) : rand(FT, D, N, B)
     u_h = randn(FT, D, N, B)
     dist_bins = collect(FT, range(0.05f0, 2.0f0, length = NB + 1))
-    dig_c = GE._sf_batch_dist_digitizer(KA.CPU(), dist_bins)
-    dig_g = GE._sf_batch_dist_digitizer(CUDA.CUDABackend(), dist_bins)
+    kind = Val(NMOM == 1 ? :sf1d : :single_pass)
+    dig_c = GE._gpu_digitizer(KA.CPU(), dist_bins, kind)
+    dig_g = GE._gpu_digitizer(CUDA.CUDABackend(), dist_bins, kind)
     o_ref, c_ref = ref_1d(x_h, u_h, dig_c, N, NB, B, NMOM, fixed_x)
     o_cu, c_cu, h = cuda_1d(CuArray(x_h), CuArray(u_h), dig_g, N, NB, B, NMOM, fixed_x)
     rel = maximum(abs.(o_cu .- o_ref) ./ max.(abs.(o_ref), 1f-3))
@@ -58,12 +63,14 @@ let Nt = 20000, Bt = 64, NB = 50
     Random.seed!(20260916)
     x_h = rand(FT, D, Nt); u_h = randn(FT, D, Nt, Bt)
     dist_bins = collect(FT, range(0.05f0, 2.0f0, length = NB + 1))
-    dig = GE._sf_batch_dist_digitizer(CUDA.CUDABackend(), dist_bins)
     xd = CuArray(x_h); ud = CuArray(u_h)
     for NMOM in (1, 6)
+        dig = GE._gpu_digitizer(CUDA.CUDABackend(), dist_bins, Val(NMOM == 1 ? :sf1d : :single_pass))
         out = CUDA.zeros(FT, NMOM, NB, Bt); cnt = CUDA.zeros(UInt32, NMOM, NB, Bt)
+        plan = native_plan(NB, NMOM)
         f() = (CUDA.fill!(out, 0f0); CUDA.fill!(cnt, UInt32(0));
-               SFC.gpu_fast_launch_1d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, dig, Nt, NB, Bt, D, NMOM, true, GEOM, nothing);
+               SFC.gpu_native_launch_1d!(plan, out, cnt, xd, ud, SFC.NoWeights(), sf2, dig, Nt, NB, Bt, true, GEOM,
+                                         nothing);
                CUDA.synchronize())
         f(); f(); ts = Float64[]; for _ in 1:5; t = time_ns(); f(); push!(ts, (time_ns()-t)/1e9); end
         t = median(ts); bapps = (Nt*(Nt-1)/2)*Bt/t/1e9
@@ -79,8 +86,9 @@ let Nj = 3000, Bj = 6, nd = 20, nv = 20
         x_h = rand(FT, D, Nj, Bj) .+ seed_shift; u_h = randn(FT, D, Nj, Bj)
         db = collect(FT, range(0.05f0, 2.0f0, length = nd + 1))
         vb = collect(FT, range(-5f0, 5f0, length = nv + 1))
-        ddig_c = GE._sf_batch_dist_digitizer(KA.CPU(), db); vpc = GE._gpu_build_value_digitize_plan(KA.CPU(), vb)
-        ddig_g = GE._sf_batch_dist_digitizer(CUDA.CUDABackend(), db); vpg = GE._gpu_build_value_digitize_plan(CUDA.CUDABackend(), vb)
+        ddig_c = GE._gpu_digitizer(KA.CPU(), db, Val(:joint2d)); vpc = GE._gpu_digitizer(KA.CPU(), vb, Val(:value))
+        ddig_g = GE._gpu_digitizer(CUDA.CUDABackend(), db, Val(:joint2d))
+        vpg = GE._gpu_digitizer(CUDA.CUDABackend(), vb, Val(:value))
         oc = zeros(FT, 1, nd, nv, Bj); cc = zeros(UInt32, 1, nd, nv, Bj)
         GE._sf_launch_2d_batch!(KA.CPU(), oc, cc, x_h, u_h, sf2, ddig_c, vpc, Nj, nd, nv, Bj, D, Val(1), false, GEOM)
         KA.synchronize(KA.CPU())

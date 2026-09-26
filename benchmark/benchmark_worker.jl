@@ -32,14 +32,14 @@ bins = scaling_bins(FT)
 sft = SCALING_SFT
 
 # Warmup (avoid counting compile time)
-SFC.calculate_structure_function(sft, x_arr, u_arr, bins; backend = CB.ThreadedBackend(), verbose = false, show_progress = false)
+SFC.calculate_structure_function(sft, x_arr, u_arr, bins; backend = CB.ThreadedBackend())
 
 # The minimum of several runs, not one: a single sample on a shared machine is dominated by whatever
 # else is resident, and at high thread counts that noise is the same size as the speedup being measured.
 const SCALING_REPEATS = parse(Int, get(ENV, "SCALING_REPEATS", "5"))
 elapsed = minimum(1:SCALING_REPEATS) do _
     t_start = time()
-    SFC.calculate_structure_function(sft, x_arr, u_arr, bins; backend = CB.ThreadedBackend(), verbose = false, show_progress = false)
+    SFC.calculate_structure_function(sft, x_arr, u_arr, bins; backend = CB.ThreadedBackend())
     return time() - t_start
 end
 

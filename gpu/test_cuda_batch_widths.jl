@@ -40,14 +40,14 @@ for D in (2, 3)
     ref_s = zeros(NB, T); ref_c = zeros(Int, NB, T)
     for t in 1:T
         r = SFC.calculate_structure_function(OP, x, u[:, :, t],
-            collect(range(0.0, 1.0; length = NB + 1)), Float64;
-            backend = SER, verbose = false, output_type = RAW)
+            collect(range(0.0, 1.0; length = NB + 1)), Float64, RAW;
+            backend = SER)
         ref_s[:, t] .= r.sums; ref_c[:, t] .= r.counts
     end
     for (bname, bins) in (("LinearBinEdges", StructureFunctions.LinearBinEdges(
                                range(0.0, 1.0; length = NB + 1))),
                           ("raw vector", collect(range(0.0, 1.0; length = NB + 1))))
-        g = SFC.gpu_calculate_structure_function_batch(OP, CUDA.CUDABackend(), x, u, bins)
+        g = SFC.gpu_calculate_structure_function_batch(OP, CUDA.CUDABackend(), x, u, bins, UInt32)
         compare("fixed-x batch D=$D $bname", reshape(collect(g.sums), NB, T),
                 reshape(collect(g.counts), NB, T), ref_s, ref_c)
     end
@@ -64,10 +64,10 @@ let
     db = collect(range(0.0, 9.0e6; length = NB + 1))
     for F in (2, 3)
         u = randn(F, N, T)
-        r = SFC.calculate_structure_function(OP, x, u, db; backend = SER, verbose = false,
-            show_progress = false, distance_metric = m, output_type = RAW)
-        g = SFC.calculate_structure_function(OP, x, u, db; backend = DEV, verbose = false,
-            show_progress = false, distance_metric = m, output_type = RAW)
+        r = SFC.calculate_structure_function(OP, x, u, db, RAW; backend = SER,
+            distance_metric = m)
+        g = SFC.calculate_structure_function(OP, x, u, db, RAW; backend = DEV,
+            distance_metric = m)
         compare("spherical batch coords=2 field=$F", g.sums, g.counts, r.sums, r.counts)
     end
 end
@@ -79,10 +79,8 @@ let
     u = randn(2, N)
     for nb in (128, 129, 4000)
         bins = collect(range(0.0, 1.0; length = nb + 1))
-        r = SFC.calculate_structure_function(OP, x, u, bins, Float64; backend = SER,
-            verbose = false, output_type = RAW)
-        g = SFC.calculate_structure_function(OP, x, u, bins, Float64; backend = DEV,
-            verbose = false, output_type = RAW)
+        r = SFC.calculate_structure_function(OP, x, u, bins, Float64, RAW; backend = SER)
+        g = SFC.calculate_structure_function(OP, x, u, bins, Float64, RAW; backend = DEV)
         compare("1D point histogram nb=$nb", g.sums, g.counts, r.sums, r.counts)
     end
     # and the same widths through the batch entry, whose staging differs
@@ -91,11 +89,11 @@ let
         bins = collect(range(0.0, 1.0; length = nb + 1))
         ref_s = zeros(nb, T); ref_c = zeros(Int, nb, T)
         for t in 1:T
-            r = SFC.calculate_structure_function(OP, x, u3[:, :, t], bins, Float64;
-                backend = SER, verbose = false, output_type = RAW)
+            r = SFC.calculate_structure_function(OP, x, u3[:, :, t], bins, Float64, RAW;
+                backend = SER)
             ref_s[:, t] .= r.sums; ref_c[:, t] .= r.counts
         end
-        g = SFC.gpu_calculate_structure_function_batch(OP, CUDA.CUDABackend(), x, u3, bins)
+        g = SFC.gpu_calculate_structure_function_batch(OP, CUDA.CUDABackend(), x, u3, bins, UInt32)
         compare("fixed-x batch histogram nb=$nb", reshape(collect(g.sums), nb, T),
                 reshape(collect(g.counts), nb, T), ref_s, ref_c)
     end

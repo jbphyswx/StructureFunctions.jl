@@ -17,8 +17,10 @@ Eligible bin grids use tiled upper-triangle pair traversal with block-local hist
 global merge. Larger grids use explicit global-atomic kernels. The route is selected from bin shape,
 not by silently falling back to CPU.
 
-Device count histograms are `UInt32`. The public `count_eltype` keyword controls the downloaded host
-count array type only.
+Kernels count in a 32-bit local counter when the call's worst-case pair count fits and widen at the
+per-bin flush. The count type of the result is the positional argument after the bins, as in
+`calculate_structure_function(sf_type, x, u, distance_bins, value_bins, UInt64; backend=GPUBackend(...))`.
+Results stay on the device; `to_host(result)` copies them to the host.
 
 ## Workspace
 

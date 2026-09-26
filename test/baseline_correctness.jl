@@ -15,9 +15,7 @@ Test.@testset "Baseline Correctness" begin
         sf_type,
         x,
         u,
-        bins;
-        verbose = false,
-        show_progress = false,
+        bins,
     )
     Test.@test val[1] ≈ 1.0
 end

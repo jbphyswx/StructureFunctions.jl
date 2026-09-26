@@ -17,9 +17,7 @@ Test.@testset "Core Correctness - Block A" begin
             sf_type,
             x,
             u,
-            bins;
-            verbose = false,
-            show_progress = false,
+            bins,
         )
     end
 
@@ -30,14 +28,12 @@ Test.@testset "Core Correctness - Block A" begin
         bins = SA.SVector(0.0, 3.0)
         sf_type = SFT.SecondOrderStructureFunction
 
-        res = SFC.calculate_structure_function(sf_type, x, u, bins, SF.StructureFunctionSumsAndCounts;
-            verbose = false, show_progress = false)
+        res = SFC.calculate_structure_function(sf_type, x, u, bins, SF.StructureFunctionSumsAndCounts)
         Test.@test sum(res.counts) == 3
 
         # N=4 points -> 4*3/2 = 6 pairs
         x4 = [0.0 1.0 2.0 3.0; 0.0 0.0 0.0 0.0]
-        res4 = SFC.calculate_structure_function(sf_type, x4, zeros(2, 4), bins, SF.StructureFunctionSumsAndCounts;
-            verbose = false, show_progress = false)
+        res4 = SFC.calculate_structure_function(sf_type, x4, zeros(2, 4), bins, SF.StructureFunctionSumsAndCounts)
         Test.@test sum(res4.counts) == 6
     end
 
@@ -55,9 +51,7 @@ Test.@testset "Core Correctness - Block A" begin
             sf_type,
             x,
             u,
-            bins;
-            verbose = false,
-            show_progress = false,
+            bins,
         )
         Test.@test val[1] ≈ 1.0
 
@@ -76,9 +70,7 @@ Test.@testset "Core Correctness - Block A" begin
             sf_type,
             x3,
             u3,
-            bins;
-            verbose = false,
-            show_progress = false,
+            bins,
         )
         Test.@test val3[1] ≈ 4 / 3
     end
@@ -95,9 +87,7 @@ Test.@testset "Core Correctness - Block A" begin
             SFT.LongitudinalSecondOrderStructureFunction,
             x,
             u,
-            bins;
-            verbose = false,
-            show_progress = false,
+            bins,
         )[1][1] == 0.0
 
         # Transverse Second Order: |du_t|^2 = (-1)^2 = 1
@@ -105,9 +95,7 @@ Test.@testset "Core Correctness - Block A" begin
             SFT.TransverseSecondOrderStructureFunction,
             x,
             u,
-            bins;
-            verbose = false,
-            show_progress = false,
+            bins,
         )[1][1] == 1.0
 
         # Diagonal Consistent Third Order (l^3): 0^3 = 0
@@ -115,9 +103,7 @@ Test.@testset "Core Correctness - Block A" begin
             SFT.DiagonalConsistentThirdOrderStructureFunction,
             x,
             u,
-            bins;
-            verbose = false,
-            show_progress = false,
+            bins,
         )[1][1] == 0.0
 
         # Off-Diagonal Consistent Third Order (t^3): with the right-handed n̂ = ẑ × r̂ the transverse
@@ -126,9 +112,7 @@ Test.@testset "Core Correctness - Block A" begin
             SFT.OffDiagonalConsistentThirdOrderStructureFunction,
             x,
             u,
-            bins;
-            verbose = false,
-            show_progress = false,
+            bins,
         )[1][1] == 1.0
 
         # Off-Diagonal Inconsistent Third Order (l*t^2): 0 * (-1)^2 = 0
@@ -136,9 +120,7 @@ Test.@testset "Core Correctness - Block A" begin
             SFT.OffDiagonalInconsistentThirdOrderStructureFunction,
             x,
             u,
-            bins;
-            verbose = false,
-            show_progress = false,
+            bins,
         )[1][1] == 0.0
     end
 
@@ -203,7 +185,7 @@ Test.@testset "a projected operator's convention decides its signed transverse c
             for backend in (CB.SerialBackend(), CB.ThreadedBackend())
                 res = SFC.calculate_structure_function(
                     sf, x, u, bins, SF.StructureFunctionSumsAndCounts;
-                    backend, verbose = false, show_progress = false,
+                    backend,
                 )
                 Test.@test res.counts == [N * (N - 1) ÷ 2]
                 Test.@test res.sums[1] ≈ expected rtol = 1e-12
@@ -232,9 +214,7 @@ Test.@testset "Type Stability and Performance - Block C" begin
             sf_type,
             x,
             u,
-            bins;
-            verbose = false,
-            show_progress = false,
+            bins,
         )
         Test.@test res isa SF.AbstractStructureFunction
 
@@ -248,9 +228,7 @@ Test.@testset "Type Stability and Performance - Block C" begin
             sf_type,
             x,
             u,
-            bins;
-            verbose = false,
-            show_progress = false,
+            bins,
         )
     end
 end
@@ -269,17 +247,16 @@ Test.@testset "Count element type must represent the worst-case pair count" begi
 
     # Fires at the public boundary, before any O(N^2) work is done.
     Test.@test_throws ArgumentError SFC.calculate_structure_function(
-        sft, big_x, big_x, bins_of; verbose = false, show_progress = false,
+        sft, big_x, big_x, bins_of,
     )
     # A caller-supplied counts buffer is validated on its own element type.
     Test.@test_throws ArgumentError SFC.calculate_structure_function!(
-        zeros(Float32, 8), zeros(UInt32, 8), sft, big_x, big_x, bins_of;
-        verbose = false, show_progress = false,
+        zeros(Float32, 8), zeros(UInt32, 8), sft, big_x, big_x, bins_of,
     )
     # Small problems are unaffected.
     small_x = rand(Float32, 2, 64)
     Test.@test SFC.calculate_structure_function(
-        sft, small_x, small_x, bins_of; verbose = false, show_progress = false,
+        sft, small_x, small_x, bins_of,
     ) isa Any
 end
 
@@ -307,7 +284,7 @@ Test.@testset "Auto-binning min/max scan" begin
     # Auto-binned edges stay in the input precision end to end.
     x32 = rand(Float32, 2, 200); u32 = randn(Float32, 2, 200)
     r = SFC.calculate_structure_function(
-        SFT.L2SFType(), x32, u32, 12; verbose = false, show_progress = false,
+        SFT.L2SFType(), x32, u32, 12,
     )
     Test.@test eltype(r.distance) === Float32
     Test.@test eltype(r.values) === Float32

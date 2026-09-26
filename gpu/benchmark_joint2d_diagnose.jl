@@ -25,7 +25,7 @@ const _GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
 _GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded")
 
 function _dist_bins(n_dist::Int, ::Type{FT}) where {FT}
-    return LogBinEdges(Vector{FT}(exp.(range(log(FT(1000)), log(FT(50000)); length = n_dist + 1))))
+    return LogBinEdges(FT(1000), FT(50000), n_dist + 1)
 end
 
 function _value_inflinear(n_val_inner::Int, ::Type{FT}) where {FT}
@@ -40,7 +40,7 @@ end
 function _kernel_only_launch!(sft, backend, x, u, dist, value_bins, ws)
     SFC.reset_histogram!(ws)
     _GPUExt._launch_gpu_joint2d!(
-        sft, backend, x, u, dist, value_bins;
+        sft, backend, x, u, dist, value_bins, UInt32;
         workspace = ws, synchronize = true,
     )
     return nothing
@@ -48,7 +48,7 @@ end
 
 function _e2e_launch!(sft, backend, x, u, dist, value_bins, ws)
     SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, value_bins; workspace = ws,
+        sft, backend, x, u, dist, value_bins, UInt32; workspace = ws,
     )
     return nothing
 end
@@ -88,9 +88,7 @@ function _build_ws(backend, dist, value_bins; compile_cells=nothing)
 end
 
 function _route_label(ws)
-    dist_r = _GPUExt._joint2d_dist_route(ws.dist_bins)
-    val_r = _GPUExt._joint2d_val_route(ws.val_plan)
-    return "$(dist_r)/$(val_r)"
+    return "$(nameof(typeof(ws.dist_digitizer)))/$(nameof(typeof(ws.val_plan)))"
 end
 
 function main()
@@ -149,7 +147,7 @@ function main()
 
     println("\n--- compile_cells: exact NB2 vs max (inflinear, kernel-only) ---")
     ws_exact = _build_ws(backend, dist, val_typed)
-    ws_max = _build_ws(backend, dist, val_typed; compile_cells=joint2d_smem_max())
+    ws_max = _build_ws(backend, dist, val_typed; compile_cells=joint2d_smem_max(backend, 2, FT, FT, UInt32))
     @printf("exact compile_cells=%d  max compile_cells=%d\n", ws_exact.joint2d_compile_cells, ws_max.joint2d_compile_cells)
     e_med = _report_samples("exact kernel-only", _time_samples!(
         () -> _kernel_only_launch!(sft, backend, x, u, dist, val_typed, ws_exact), warmup, repeat_,

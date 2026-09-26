@@ -1,58 +1,31 @@
-"""
-    gpu_acceleration.jl
+# Reuse GPU histogram scratch for repeated point-field calculations.
+include("resources.jl")
+ExampleResources.require_allocation(; gpu=true, cpus=Threads.nthreads())
+using CUDA
+using KernelAbstractions
+using Random
+using ComputationalBackends: GPUBackend
+using StructureFunctions: Calculations as C, StructureFunctionTypes as T, StructureFunctionSumsAndCounts
+CUDA.functional() || error("This example requires a functioning allocated CUDA device")
+CUDA.allowscalar(false)
 
-Single-snapshot GPU structure function with optional `GPUSFWorkspace`.
-
-Run from package root:
-    julia --project=examples examples/gpu_acceleration.jl
-
-With CUDA (recommended on GPU allocation):
-    julia --project=gpu -e 'include("examples/gpu_acceleration.jl")'
-"""
-
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC
-using KernelAbstractions: KernelAbstractions as KA
-
-using Random: Random
-
-use_cuda = false
-CUDA_mod = nothing
-try
-    @eval using CUDA: CUDA
-    use_cuda = CUDA.functional()
-    CUDA_mod = CUDA
-catch
-    use_cuda = false
+function gpu_example(; n=ExampleResources.points())
+    rng = MersenneTwister(15)
+    x, u = CuArray(rand(rng, Float32, 3, n)), CuArray(randn(rng, Float32, 3, n))
+    bins = range(0.0f0, 2.0f0; length=9)
+    device = CUDABackend()
+    workspace = C.GPUSFWorkspace(device, bins)
+    try
+        calculate(; kwargs...) = C.calculate_structure_function(T.L2SFType(), x, u, bins,
+            StructureFunctionSumsAndCounts; backend=GPUBackend(device), kwargs...)
+        fresh = calculate()
+        reused = calculate(; workspace)
+        @assert Array(fresh.counts) == Array(reused.counts)
+        @assert Array(fresh.sums) ≈ Array(reused.sums)
+        println("Pairs: ", sum(reused.counts))
+        return reused
+    finally
+        C.release!(workspace)
+    end
 end
-
-const N = 2_000
-const FT = Float32
-backend = use_cuda ? CUDA_mod.CUDABackend() : KA.CPU()
-
-Random.seed!(42)
-x_cpu = rand(FT, 3, N)
-u_cpu = rand(FT, 3, N)
-x = use_cuda ? CUDA_mod.cu(x_cpu) : x_cpu
-u = use_cuda ? CUDA_mod.cu(u_cpu) : u_cpu
-
-bins = collect(FT, range(0.0f0, 1.5f0; length = 21))
-sft = SF.LongitudinalSecondOrderStructureFunctionType()
-
-println("Backend: ", typeof(backend))
-println("N = $N  bins = $(length(bins) - 1)")
-
-ws = SFC.GPUSFWorkspace(backend, bins)
-
-# gpu_calculate_structure_function returns the raw StructureFunctionSumsAndCounts accumulator.
-result_fresh = @time SFC.gpu_calculate_structure_function(
-    sft, backend, x, u, bins,
-)
-result_ws = @time SFC.gpu_calculate_structure_function(
-    sft, backend, x, u, bins; workspace = ws,
-)
-
-println("Counts match (fresh vs workspace): ", result_fresh.counts == result_ws.counts)
-println("Total pairs (approx): ", sum(result_ws.counts))
-println("Mode: ", use_cuda ? "CUDA" : "KA.CPU() smoke")
-
-SFC.release!(ws)
+result = gpu_example()

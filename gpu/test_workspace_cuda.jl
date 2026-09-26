@@ -35,40 +35,38 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     sft = SFT.L2SFType()
 
     ref = SFC.calculate_structure_function(
-        sft, x_cpu, u_cpu, bins;
-        output_type = SFO.StructureFunctionSumsAndCounts,
-        verbose = false, show_progress = false,
+        sft, x_cpu, u_cpu, bins, SFO.StructureFunctionSumsAndCounts,
     )
 
     res_fresh = SFC.gpu_calculate_structure_function(
-        sft, backend, x_gpu, u_gpu, bins,
+        sft, backend, x_gpu, u_gpu, bins, UInt32,
     )
     CUDA.synchronize()
-    Test.@test res_fresh.counts ≈ ref.counts atol = 0.0
-    max_Δ_fresh = maximum(abs, res_fresh.sums .- ref.sums)
+    Test.@test Array(res_fresh.counts) == ref.counts
+    max_Δ_fresh = maximum(abs, Array(res_fresh.sums) .- ref.sums)
     # Float32 GPU atomics vs serial CPU — same tolerance as test_cuda_parity.jl
     Test.@test max_Δ_fresh < 0.05f0
 
     ws = SFC.GPUSFWorkspace(backend, bins)
     res_ws = SFC.gpu_calculate_structure_function(
-        sft, backend, x_gpu, u_gpu, bins; workspace = ws,
+        sft, backend, x_gpu, u_gpu, bins, UInt32; workspace = ws,
     )
     CUDA.synchronize()
-    Test.@test res_ws.counts ≈ ref.counts atol = 0.0
-    max_Δ_ws = maximum(abs, res_ws.sums .- ref.sums)
+    Test.@test Array(res_ws.counts) == ref.counts
+    max_Δ_ws = maximum(abs, Array(res_ws.sums) .- ref.sums)
     Test.@test max_Δ_ws < 0.05f0
 
     # repeated-call accumulation with workspace
-    sums_acc = zeros(Float64, NB)
-    counts_acc = zeros(UInt32, NB)
+    sums_acc = CUDA.zeros(Float64, NB)
+    counts_acc = CUDA.zeros(UInt32, NB)
     for _ in 1:3
         SFC.gpu_calculate_structure_function!(
             sums_acc, counts_acc, sft, backend, x_gpu, u_gpu, bins; workspace = ws,
         )
     end
     CUDA.synchronize()
-    Test.@test counts_acc ≈ 3 .* ref.counts
-    max_Δ_acc = maximum(abs, sums_acc .- 3 .* ref.sums)
+    Test.@test Array(counts_acc) == 3 .* ref.counts
+    max_Δ_acc = maximum(abs, Array(sums_acc) .- 3 .* ref.sums)
     Test.@test max_Δ_acc < 0.15f0
 
     # slice batch on device-resident (N_dims, N_points, T)
@@ -81,24 +79,24 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     counts_ref = zeros(UInt32, NB, T)
     for t in 1:T
         ref_t = SFC.gpu_calculate_structure_function(
-            sft, backend, x_batch_cpu[:, :, t], u_batch_cpu[:, :, t], bins,
+            sft, backend, x_batch_cpu[:, :, t], u_batch_cpu[:, :, t], bins, UInt32,
         )
         CUDA.synchronize()
-        sums_ref[:, t] .= ref_t.sums
-        counts_ref[:, t] .= ref_t.counts
+        sums_ref[:, t] .= Array(ref_t.sums)
+        counts_ref[:, t] .= Array(ref_t.counts)
     end
 
-    sums_drv = zeros(Float64, NB, T)
-    counts_drv = zeros(UInt32, NB, T)
+    sums_drv = CUDA.zeros(FT, NB, T)
+    counts_drv = CUDA.zeros(UInt32, NB, T)
     ws_slice = SFC.GPUSFWorkspace(backend, bins)
     SFC.gpu_calculate_structure_function_batch!(
         sums_drv, counts_drv, sft, backend, x_batch, u_batch, bins;
         workspace = ws_slice,
     )
     CUDA.synchronize()
-    max_Δ_slice = maximum(abs, sums_drv .- sums_ref)
+    max_Δ_slice = maximum(abs, Array(sums_drv) .- sums_ref)
     Test.@test max_Δ_slice < 0.05f0
-    Test.@test counts_drv ≈ counts_ref
+    Test.@test Array(counts_drv) == counts_ref
 
     SFC.release!(ws)
     SFC.release!(ws_slice)

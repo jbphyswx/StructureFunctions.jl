@@ -36,9 +36,7 @@ Test.@testset "E2E: Structure Function E2E Suite" begin
             sf_type,
             pos,
             vals,
-            r_bins;
-            verbose = false,
-            show_progress = false,
+            r_bins,
         )
     end
 
@@ -49,9 +47,7 @@ Test.@testset "E2E: Structure Function E2E Suite" begin
             sf_type,
             pos,
             vals,
-            r_bins;
-            verbose = false,
-            show_progress = false,
+            r_bins,
         )
         Test.@test length(res) == 5
         Test.@test all(res .>= 0)
@@ -69,17 +65,13 @@ Test.@testset "E2E: Structure Function E2E Suite" begin
             SFT.SecondOrderStructureFunction,
             pos,
             vals,
-            r_bins;
-            verbose = false,
-            show_progress = false,
+            r_bins,
         )
         sf32 = SFC.calculate_structure_function(
             SFT.SecondOrderStructureFunction,
             vcat(vec(xs32)', vec(ys32)'),
             vcat(vec(u32)', vec(v32)'),
-            r32;
-            verbose = false,
-            show_progress = false,
+            r32,
         )
 
         Test.@test sf32 ≈ Float32.(sf64) rtol = 1e-5

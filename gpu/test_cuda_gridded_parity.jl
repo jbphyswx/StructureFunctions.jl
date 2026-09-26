@@ -208,10 +208,10 @@ end
 let N = 3000
     RAW = SF.StructureFunctionTensorSumsAndCounts
     function tensor_compare(name, P, x, u, edges; distance_metric = Distances.Euclidean())
-        ref = SFC.calculate_structure_function_tensor(Val(P), x, u, edges; backend = CB.SerialBackend(),
-                                                      distance_metric, output_type = RAW)
-        got = SFC.calculate_structure_function_tensor(Val(P), x, u, edges; backend = GPU,
-                                                      distance_metric, output_type = RAW)
+        ref = SFC.calculate_structure_function_tensor(Val(P), x, u, edges, RAW; backend = CB.SerialBackend(),
+                                                      distance_metric)
+        got = SFC.calculate_structure_function_tensor(Val(P), x, u, edges, RAW; backend = GPU,
+                                                      distance_metric)
         CUDA.synchronize()
         dc = maximum(abs.(Int.(ref.counts) .- Int.(got.counts)))
         ds = maximum(abs.(ref.sums .- got.sums)) / maximum(abs, ref.sums)
@@ -239,8 +239,7 @@ let N = 3000
         tsums = zeros(ntuple(_ -> 2, P)..., length(gedges) - 1)
         tcounts = zeros(Int, length(gedges) - 1)
         SFC.gridded_tensor_sweep!(tsums, tcounts, Val(P), reshape(ug, 2, :), sched, gedges, Val(2), FFT; backend = CPU)
-        got = SFC.calculate_structure_function_tensor(Val(P), xg, reshape(ug, 2, :), gedges; backend = GPU,
-                                                      output_type = RAW)
+        got = SFC.calculate_structure_function_tensor(Val(P), xg, reshape(ug, 2, :), gedges, RAW; backend = GPU)
         CUDA.synchronize()
         dc = maximum(abs.(tcounts .- Int.(got.counts)))
         ds = maximum(abs.(tsums .- got.sums)) / maximum(abs, tsums)

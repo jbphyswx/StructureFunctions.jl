@@ -24,11 +24,11 @@ function bench_manual_loop!(
 )
     for t in 1:T
         res = SFC.gpu_calculate_structure_function(
-            sft, backend, view(x_batch, :, :, t), view(u_batch, :, :, t), bins;
+            sft, backend, view(x_batch, :, :, t), view(u_batch, :, :, t), bins, UInt32;
             workspace = ws,
         )
-        sums[:, t] .= res.sums
-        counts[:, t] .= res.counts
+        sums[:, t] .= Array(res.sums)
+        counts[:, t] .= Array(res.counts)
     end
     gpu_sync!(backend)
     return nothing
@@ -78,15 +78,12 @@ function main()
     counts_a = zeros(UInt32, NB, T)
     sums_b = zeros(FT, NB, T)
     counts_b = zeros(UInt32, NB, T)
-    sums_c = zeros(FT, NB, T)
-    counts_c = zeros(UInt32, NB, T)
+    sums_c = KA.zeros(backend, FT, NB, T)
+    counts_c = KA.zeros(backend, UInt32, NB, T)
 
     println()
     println("--- naive_loop: host slice each t, fresh device alloc every call ---")
-    t_naive = run_timed_gpu(
-        () -> bench_naive_slice_loop!(backend, x_host, u_host, bins, sft, sums_a, counts_a; T = T),
-        backend; warmup = warmup,
-    )
+    t_naive = bench_naive_slice_loop!(backend, x_host, u_host, bins, sft, sums_a, counts_a; T = T, warmup = warmup)
 
     println("--- manual_loop_ws: CuArray batch + views + GPUSFWorkspace (expert setup) ---")
     t_manual = run_timed_gpu(
@@ -95,14 +92,12 @@ function main()
     )
 
     println("--- slice_driver: calculate_structure_function_batch! ---")
-    t_slice = run_timed_gpu(
-        () -> bench_slice_driver!(backend, x_batch, u_batch, bins, sft, sums_c, counts_c, ws),
-        backend; warmup = warmup,
-    )
+    t_slice = bench_slice_driver!(backend, x_batch, u_batch, bins, sft, sums_c, counts_c, ws; warmup = warmup)
 
-    maxΔ_manual = maximum(abs.(sums_b .- sums_c))
-    maxΔ_naive = maximum(abs.(sums_a .- sums_c))
-    counts_ok = counts_a == counts_c && counts_b == counts_c
+    sums_c_host, counts_c_host = Array(sums_c), Array(counts_c)
+    maxΔ_manual = maximum(abs.(sums_b .- sums_c_host))
+    maxΔ_naive = maximum(abs.(sums_a .- sums_c_host))
+    counts_ok = counts_a == counts_c_host && counts_b == counts_c_host
     println()
     println("naive_loop:     total=$(round(t_naive, digits=3))s  per_slice=$(round(1000 * t_naive / T; digits=3))ms")
     println("manual_loop_ws: total=$(round(t_manual, digits=3))s  per_slice=$(round(1000 * t_manual / T; digits=3))ms")

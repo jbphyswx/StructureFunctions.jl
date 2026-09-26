@@ -10,7 +10,7 @@ const SF2 = SFT.L2SFType()
 
 function _joint(sf, x, u, dist_bins, ax_bins, source)
     return SFC.serial_calculate_structure_function(
-        sf, x, u, dist_bins, ax_bins, UInt32; second_axis = source, verbose = false, show_progress = false)
+        sf, x, u, dist_bins, ax_bins, UInt32; second_axis = source)
 end
 
 Test.@testset "the angle axis folds a pair and its reverse together" begin
@@ -112,8 +112,7 @@ Test.@testset "binning the operator value is unchanged" begin
     dist_bins = collect(range(0.0, 1.0; length = 6))
     val_bins = collect(range(0.0, 4.0; length = 9))
     with_source = _joint(SF2, x, u, dist_bins, val_bins, SFC.InvariantValueAxis())
-    plain = SFC.serial_calculate_structure_function(SF2, x, u, dist_bins, val_bins, UInt32;
-                                                    verbose = false, show_progress = false)
+    plain = SFC.serial_calculate_structure_function(SF2, x, u, dist_bins, val_bins, UInt32)
     Test.@test with_source.counts == plain.counts
     Test.@test with_source.sums == plain.sums
     Test.@test sum(plain.counts) > 0
@@ -130,14 +129,14 @@ Test.@testset "the angle axis reaches every backend through the public entry" be
     ax_bins = collect(range(prevfloat(0.0), π; length = 5))
     src = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
     through(backend) = SFC.calculate_structure_function(
-        SF2, x, u, dist_bins, ax_bins; backend = backend, verbose = false, second_axis = src)
+        SF2, x, u, dist_bins, ax_bins; backend = backend, second_axis = src)
 
     ref = through(CB.SerialBackend())
     Test.@test sum(ref.counts) > 0
     # The control that makes the rows below mean something: binning the angle must not reproduce
     # the default value binning, so a backend that drops the keyword cannot pass by accident.
     value_binned = SFC.calculate_structure_function(
-        SF2, x, u, dist_bins, ax_bins; backend = CB.SerialBackend(), verbose = false)
+        SF2, x, u, dist_bins, ax_bins; backend = CB.SerialBackend())
     Test.@test value_binned.counts != ref.counts
 
     thr = through(CB.ThreadedBackend())
@@ -152,9 +151,9 @@ Test.@testset "the angle axis reaches every backend through the public entry" be
     # is a different kernel and was unreachable until its launcher was given the geometry.
     wide = collect(range(prevfloat(0.0), π; length = 201))
     wide_ref = SFC.calculate_structure_function(SF2, x, u, dist_bins, wide;
-        backend = CB.SerialBackend(), verbose = false, second_axis = src)
+        backend = CB.SerialBackend(), second_axis = src)
     wide_dev = SFC.calculate_structure_function(SF2, x, u, dist_bins, wide;
-        backend = CB.GPUBackend(KA.CPU()), verbose = false, second_axis = src)
+        backend = CB.GPUBackend(KA.CPU()), second_axis = src)
     Test.@test wide_dev.counts == wide_ref.counts
     Test.@test wide_dev.sums ≈ wide_ref.sums
 
@@ -163,16 +162,16 @@ Test.@testset "the angle axis reaches every backend through the public entry" be
     x3, u3 = rand(3, N), randn(3, N)
     src3 = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0, 0.0))
     ref3 = SFC.calculate_structure_function(SF2, x3, u3, dist_bins, wide;
-        backend = CB.SerialBackend(), verbose = false, second_axis = src3)
+        backend = CB.SerialBackend(), second_axis = src3)
     dev3 = SFC.calculate_structure_function(SF2, x3, u3, dist_bins, wide;
-        backend = CB.GPUBackend(KA.CPU()), verbose = false, second_axis = src3)
+        backend = CB.GPUBackend(KA.CPU()), second_axis = src3)
     Test.@test sum(ref3.counts) > 0
     Test.@test dev3.counts == ref3.counts
     Test.@test dev3.sums ≈ ref3.sums
 
     # On a curved metric each pair's direction is in its own frame, so the device refuses too.
     Test.@test_throws ArgumentError SFC.calculate_structure_function(
-        SF2, x, u, dist_bins, ax_bins; backend = CB.GPUBackend(KA.CPU()), verbose = false,
+        SF2, x, u, dist_bins, ax_bins; backend = CB.GPUBackend(KA.CPU()),
         second_axis = src, distance_metric = SFC.DI.SphericalAngle())
 end
 
@@ -187,15 +186,14 @@ Test.@testset "the angle axis on a trailing batch axis" begin
     for x in (rand(2, N), rand(2, N, B)), backend in (CB.SerialBackend(), CB.ThreadedBackend())
         u = randn(2, N, B)
         got = SFC.calculate_structure_function(SF2, x, u, dist_bins, ax_bins; backend = backend,
-            verbose = false, second_axis = src)
+            second_axis = src)
         for b in 1:B
             ref = SFC.calculate_structure_function(SF2, ndims(x) == 2 ? x : x[:, :, b], u[:, :, b],
-                dist_bins, ax_bins; backend = CB.SerialBackend(), verbose = false, second_axis = src)
+                dist_bins, ax_bins; backend = CB.SerialBackend(), second_axis = src)
             Test.@test got.counts[:, :, b] == ref.counts
             Test.@test got.sums[:, :, b] ≈ ref.sums
         end
-        value_binned = SFC.calculate_structure_function(SF2, x, u, dist_bins, ax_bins; backend = backend,
-            verbose = false)
+        value_binned = SFC.calculate_structure_function(SF2, x, u, dist_bins, ax_bins; backend = backend)
         Test.@test value_binned.counts != got.counts
     end
 
@@ -203,16 +201,15 @@ Test.@testset "the angle axis on a trailing batch axis" begin
     x3, u3 = rand(3, N, B), randn(3, N, B)
     ax3 = collect(range(prevfloat(0.0), π / 2 + 1e-9; length = 5))
     joint3 = SFC.calculate_structure_function(SF2, x3, u3, dist_bins, ax3; backend = CB.SerialBackend(),
-        verbose = false, second_axis = SFC.SeparationAngleAxis(SA.SVector(0.0, 0.0, 1.0)))
+        second_axis = SFC.SeparationAngleAxis(SA.SVector(0.0, 0.0, 1.0)))
     plain3 = SFC.calculate_structure_function(SF2, x3, u3, dist_bins, SF.StructureFunctionSumsAndCounts;
-        backend = CB.SerialBackend(), verbose = false)
+        backend = CB.SerialBackend())
     Test.@test dropdims(sum(joint3.counts; dims = 2); dims = 2) == plain3.counts
     Test.@test sum(plain3.counts) > 0
 
     Test.@test_throws ArgumentError SFC.calculate_structure_function(SF2, [0.1 0.2 0.35; -0.2 0.05 0.3],
         randn(2, 3, B), collect(range(0.0, 2.0; length = 4)), collect(range(0.0, π; length = 4));
-        backend = CB.SerialBackend(), distance_metric = SFC.DI.SphericalAngle(), second_axis = src,
-        verbose = false)
+        backend = CB.SerialBackend(), distance_metric = SFC.DI.SphericalAngle(), second_axis = src)
 end
 
 Test.@testset "an angle axis is refused where the direction is not shared" begin
@@ -224,6 +221,5 @@ Test.@testset "an angle axis is refused where the direction is not shared" begin
     Test.@test_throws ArgumentError SFC.serial_calculate_structure_function(
         SF2, x, u, collect(range(0.0, 2.0; length = 4)), collect(range(0.0, π; length = 4)), UInt32;
         distance_metric = SFC.DI.SphericalAngle(),
-        second_axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0)),
-        verbose = false, show_progress = false)
+        second_axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0)))
 end

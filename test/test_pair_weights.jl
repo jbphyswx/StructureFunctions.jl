@@ -63,7 +63,7 @@ end
         ref_s, ref_c = weighted_pair_loop(op, x, u, w, bins)
         for backend in (CB.SerialBackend(), CB.ThreadedBackend(), device)
             got = SFC.calculate_structure_function(op, x, u, bins, Float64, SFO.StructureFunctionSumsAndCounts;
-                backend = backend, weights = w, verbose = false)
+                backend = backend, weights = w)
             @test isapprox(collect(got.sums), ref_s; rtol = 1e-10)
             @test isapprox(collect(got.counts), ref_c; rtol = 1e-10)
         end
@@ -72,21 +72,21 @@ end
     @testset "a constant weight scales every accepting route by k²" begin
         sf1d(backend) = ws -> begin
             r = SFC.calculate_structure_function(op, x, u, bins, Float64, SFO.StructureFunctionSumsAndCounts;
-                backend = backend, weights = ws, verbose = false)
+                backend = backend, weights = ws)
             (collect(r.sums), collect(r.counts))
         end
         joint2d(backend) = ws -> begin
             r = SFC.calculate_structure_function(op, x, u, bins, value_bins, Float64,
-                SFO.StructureFunction2DSumsAndCounts; backend = backend, weights = ws, verbose = false)
+                SFO.StructureFunction2DSumsAndCounts; backend = backend, weights = ws)
             (collect(r.sums), collect(r.counts))
         end
         invariants = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         stacked(r) = (mapreduce(k -> collect(r[k].sums), vcat, invariants),
                       mapreduce(k -> collect(r[k].counts), vcat, invariants))
         single_pass(backend) = ws -> stacked(SFC.calculate_structure_functions_single_pass(x, u, bins, Float64;
-            backend = backend, weights = ws, verbose = false))
+            backend = backend, weights = ws))
         single_pass_2d(backend) = ws -> stacked(SFC.calculate_structure_functions_single_pass_2d(x, u, bins,
-            value_bins, Float64; backend = backend, weights = ws, verbose = false))
+            value_bins, Float64; backend = backend, weights = ws))
         tensor(backend) = ws -> begin
             nb = length(bins) - 1
             s = zeros(Float64, 2, 2, nb)
@@ -110,12 +110,12 @@ end
         ub = rand(2, np, nt)
         batch1d(backend) = ws -> begin
             r = SFC.calculate_structure_function(op, x, ub, bins, Float64, SFO.StructureFunctionSumsAndCounts;
-                backend = backend, weights = ws, verbose = false)
+                backend = backend, weights = ws)
             (collect(r.sums), collect(r.counts))
         end
         batch_joint(backend) = ws -> begin
             r = SFC.calculate_structure_function(op, x, ub, bins, value_bins, Float64,
-                SFO.StructureFunction2DSumsAndCounts; backend = backend, weights = ws, verbose = false)
+                SFO.StructureFunction2DSumsAndCounts; backend = backend, weights = ws)
             (collect(r.sums), collect(r.counts))
         end
         batch_sp1d = ws -> begin
@@ -123,7 +123,7 @@ end
             s = zeros(Float64, SFC.SINGLE_PASS_N, nb, nt)
             c = zeros(Float64, SFC.SINGLE_PASS_N, nb, nt)
             SFC.calculate_structure_functions_single_pass_batch!(s, c, x, ub, bins;
-                backend = CB.SerialBackend(), weights = ws, verbose = false)
+                backend = CB.SerialBackend(), weights = ws)
             (s, c)
         end
         for backend in (CB.SerialBackend(), CB.ThreadedBackend(), device)
@@ -148,7 +148,7 @@ end
                 weights = ws)), np)
         @test honours_weights(multifield((s, c, ws) ->
             SFC.calculate_structure_function!(s, c, mixed, x, fields, bins; backend = device,
-                weights = ws, verbose = false)), np)
+                weights = ws)), np)
     end
 
     @testset "the device single-pass 2D point path equals the serial weighted answer" begin
@@ -167,8 +167,8 @@ end
 
     @testset "weights need a floating-point count type" begin
         @test raises(() -> SFC.calculate_structure_function(op, x, u, bins, UInt32;
-            backend = CB.SerialBackend(), weights = w, verbose = false))
+            backend = CB.SerialBackend(), weights = w))
         @test raises(() -> SFC.calculate_structure_function(op, x, u, bins, UInt32;
-            backend = device, weights = w, verbose = false))
+            backend = device, weights = w))
     end
 end

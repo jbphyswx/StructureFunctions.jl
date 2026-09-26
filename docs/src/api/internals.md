@@ -6,7 +6,7 @@ CurrentModule = StructureFunctions
 
 Types and functions that are not exported but that the exported entries name: the schedules a grid
 resolves to, the lag transports, the field shapes, culling, the second histogram axis, the
-polynomial contract of the operators and the squared-distance digitizing.
+polynomial contract of the operators and the digitize plans.
 
 ```@index
 Pages = ["internals.md"]
@@ -82,9 +82,13 @@ StructureFunctionTypes.order
 StructureFunctionTypes.scalar_order
 ```
 
-## Squared-distance digitizing
+## Digitize plans
 
 ```@docs
+digitize_plan
+BucketedBinEdges
+BucketCell
+LogTableBinEdges
 AbstractSquaredDigitizePlan
 squared_digitize_plan
 squared_digitize

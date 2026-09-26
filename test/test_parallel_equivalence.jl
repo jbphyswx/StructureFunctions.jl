@@ -35,8 +35,6 @@ Test.@testset "Parallel Equivalence Verification" begin
         bins,
         SF.StructureFunctionSumsAndCounts;
         backend = CB.SerialBackend(),
-        verbose = false,
-        show_progress = false,
     )
     out_serial, counts_serial = res_serial.sums, res_serial.counts
 
@@ -48,8 +46,6 @@ Test.@testset "Parallel Equivalence Verification" begin
         bins,
         SF.StructureFunctionSumsAndCounts;
         backend = CB.ThreadedBackend(),
-        verbose = false,
-        show_progress = false,
     )
     out_thread, counts_thread = res_thread.sums, res_thread.counts
 
@@ -88,8 +84,6 @@ Test.@testset "Parallel Equivalence Verification" begin
         bins,
         SF.StructureFunctionSumsAndCounts;
         backend = CB.DistributedBackend(),
-        verbose = false,
-        show_progress = false,
     )
     out_dist, counts_dist = res_dist.sums, res_dist.counts
 
@@ -107,8 +101,6 @@ Test.@testset "Parallel Equivalence Verification" begin
         bins,
         SF.StructureFunctionSumsAndCounts;
         backend = CB.DistributedBackend(CB.ThreadedBackend()),
-        verbose = false,
-        show_progress = false,
     )
 
     Test.@testset "Serial vs Distributed(Threaded) hybrid" begin
@@ -121,13 +113,13 @@ Test.@testset "Parallel Equivalence Verification" begin
     ub = rand(2, N, 4)
     res_ser_b = SFC.calculate_structure_function(
         sf_type, xb, ub, bins, SF.StructureFunctionSumsAndCounts;
-        backend = CB.SerialBackend(), verbose = false, show_progress = false,
+        backend = CB.SerialBackend(),
     )
     Test.@testset "Serial vs Distributed batched" begin
         for inner in (CB.SerialBackend(), CB.ThreadedBackend())
             res_db = SFC.calculate_structure_function(
                 sf_type, xb, ub, bins, SF.StructureFunctionSumsAndCounts;
-                backend = CB.DistributedBackend(inner), verbose = false, show_progress = false,
+                backend = CB.DistributedBackend(inner),
             )
             Test.@test res_ser_b.counts == res_db.counts
             Test.@test res_ser_b.sums ≈ res_db.sums
@@ -143,8 +135,6 @@ Test.@testset "Parallel Equivalence Verification" begin
         SF.StructureFunctionSumsAndCounts;
         backend = CB.DistributedBackend(),
         bin_spacing = LogBinEdges,
-        verbose = false,
-        show_progress = false,
     )
 
     res_serial_int = SFC.calculate_structure_function(
@@ -154,8 +144,6 @@ Test.@testset "Parallel Equivalence Verification" begin
         2,
         SF.StructureFunctionSumsAndCounts;
         bin_spacing = LogBinEdges,
-        verbose = false,
-        show_progress = false,
     )
 
     Test.@testset "Serial vs Distributed (Int/LogBinEdges)" begin
@@ -183,46 +171,40 @@ Test.@testset "Distributed covers every entry family" begin
     entries = (
         ("non-mutating point", be -> begin
             r = SFC.calculate_structure_function(op, xp, up, bins, SF.StructureFunctionSumsAndCounts;
-                backend = be, verbose = false, show_progress = false)
+                backend = be)
             (r.sums, r.counts)
         end),
         ("in-place point", be -> begin
             s, c = zeros(NB), zeros(UInt32, NB)
-            SFC.calculate_structure_function!(s, c, op, xp, up, bins; backend = be,
-                verbose = false, show_progress = false)
+            SFC.calculate_structure_function!(s, c, op, xp, up, bins; backend = be)
             (s, c)
         end),
         ("non-mutating auxiliary axes", be -> begin
             r = SFC.calculate_structure_function(op, xb, ub, bins, SF.StructureFunctionSumsAndCounts;
-                backend = be, verbose = false, show_progress = false)
+                backend = be)
             (r.sums, r.counts)
         end),
         ("in-place auxiliary axes", be -> begin
             s, c = zeros(NB, T), zeros(UInt32, NB, T)
-            SFC.calculate_structure_function!(s, c, op, xb, ub, bins; backend = be,
-                verbose = false, show_progress = false)
+            SFC.calculate_structure_function!(s, c, op, xb, ub, bins; backend = be)
             (s, c)
         end),
         ("non-mutating joint point", be -> begin
-            r = SFC.calculate_structure_function(op, xp, up, bins, vbins; backend = be,
-                verbose = false, show_progress = false)
+            r = SFC.calculate_structure_function(op, xp, up, bins, vbins; backend = be)
             (r.sums, r.counts)
         end),
         ("non-mutating joint auxiliary axes", be -> begin
-            r = SFC.calculate_structure_function(op, xb, ub, bins, vbins; backend = be,
-                verbose = false, show_progress = false)
+            r = SFC.calculate_structure_function(op, xb, ub, bins, vbins; backend = be)
             (r.sums, r.counts)
         end),
         ("in-place joint point", be -> begin
             s, c = zeros(NB, NV), zeros(UInt32, NB, NV)
-            SFC.calculate_structure_function!(s, c, op, xp, up, bins, vbins; backend = be,
-                verbose = false, show_progress = false)
+            SFC.calculate_structure_function!(s, c, op, xp, up, bins, vbins; backend = be)
             (s, c)
         end),
         ("in-place joint auxiliary axes", be -> begin
             s, c = zeros(NB, NV, T), zeros(UInt32, NB, NV, T)
-            SFC.calculate_structure_function!(s, c, op, xb, ub, bins, vbins; backend = be,
-                verbose = false, show_progress = false)
+            SFC.calculate_structure_function!(s, c, op, xb, ub, bins, vbins; backend = be)
             (s, c)
         end),
         ("slice batch", be -> begin
@@ -263,7 +245,7 @@ Test.@testset "Distributed covers every entry family" begin
         # Pair weights ride as a keyword too; a route that drops them returns the unweighted answer.
         ("weighted point", be -> begin
             r = SFC.calculate_structure_function(op, xp, up, bins, Float64, SF.StructureFunctionSumsAndCounts;
-                backend = be, verbose = false, show_progress = false, weights = wp)
+                backend = be, weights = wp)
             (r.sums, r.counts)
         end),
         ("weighted single-pass", be -> begin
@@ -282,7 +264,7 @@ Test.@testset "Distributed covers every entry family" begin
             hu = Float64[sin(d + 2i) for d in 1:2, i in 1:N]
             nodes = SF.HarmonicNodes(collect(range(0.2, 2.6; length = 9)), 16)
             r = SFC.calculate_structure_function(op, hx, hu, nodes, SB.DirectSumSpectralBackend(),
-                SF.StructureFunctionSumsAndCounts; backend = be, verbose = false)
+                SF.StructureFunctionSumsAndCounts; backend = be)
             (r.sums, r.counts)
         end),
         ("gridded lag sweep", be -> begin
@@ -297,8 +279,7 @@ Test.@testset "Distributed covers every entry family" begin
         # about bins the pair value instead and returns a plausible, wrong answer.
         ("joint point over the angle axis", be -> begin
             r = SFC.calculate_structure_function(op, xp, up, bins,
-                collect(range(prevfloat(0.0), π; length = 5)); backend = be, verbose = false,
-                show_progress = false,
+                collect(range(prevfloat(0.0), π; length = 5)); backend = be,
                 second_axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0)))
             (r.sums, r.counts)
         end),
@@ -344,7 +325,6 @@ Test.@testset "Distributed covers every entry family" begin
         # The joint kernels take a geometry, not a metric; a sphere must not be read as flat.
         ("joint point on a sphere", be -> begin
             r = SFC.calculate_structure_function(op, xs, us, sbins, vbins; backend = be,
-                verbose = false, show_progress = false,
                 distance_metric = SF.HelperFunctions.SphericalDistance(R))
             (r.sums, r.counts)
         end),

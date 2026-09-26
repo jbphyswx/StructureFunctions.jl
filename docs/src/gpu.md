@@ -42,16 +42,20 @@ auxiliary axes take the same `backend` keyword.
 
 ### `GPUSFWorkspace` — reuse device histogram buffers
 
-Repeated calls with one bin layout reuse a workspace, which avoids reallocating the device histogram
-buffers on every launch:
+Repeated calls with one bin layout pass a workspace to the public entry alongside the GPU backend,
+which avoids reallocating the device histogram buffers on every launch:
 
 ```julia
 ws = SFC.GPUSFWorkspace(CUDA.CUDABackend(), bins)
 for _ in 1:10
-    SFC.gpu_calculate_structure_function(SFT.L2SFType(), CUDA.CUDABackend(), x, u, bins; workspace = ws)
+    SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
+                                     backend = CB.GPUBackend(CUDA.CUDABackend()), workspace = ws)
 end
 SFC.release!(ws)
 ```
+
+`calculate_structure_functions_single_pass` and `calculate_structure_functions_single_pass_2d` take a
+workspace built with `kind = :single_pass` or `kind = :single_pass_2d` the same way.
 
 ### Time series — the batch drivers
 
@@ -126,8 +130,8 @@ grid = FG.Grids.StructuredGrid(geo, range(0.0, step = 0.1, length = 64),
                                range(0.0, step = 0.1, length = 64))
 ug = randn(Float32, 2, 64, 64)
 gbins = collect(Float32, range(0.0f0, 3.0f0; length = 31))
-sf = SFC.calculate_structure_function(SFT.L3SFType(), grid, ug, gbins, UInt64,
-                                      SB.FastFourierTransformSpectralBackend();
+sf = SFC.calculate_structure_function(SFT.L3SFType(), grid, ug, gbins,
+                                      SB.FastFourierTransformSpectralBackend(), UInt64;
                                       backend = CB.GPUBackend(CUDA.CUDABackend()))
 ```
 
@@ -148,16 +152,21 @@ that reports `uniform_lag_box` instead shares one box across every pair and is i
 
 ## Single-type joint 2D shared memory
 
+A portable device kernel keeps its histogram in shared memory when the bytes its shared arrays take,
+for the call's element types, fit the device's static shared-memory budget, and accumulates with
+global atomics otherwise. The budget is the device's own (`gpu_device_caps`), so the same call can
+take a different kernel on a device with less shared memory; the answer is the same either way.
+
 [`GPUSFWorkspace`](@ref StructureFunctions.Calculations.GPUSFWorkspace) for `kind = :joint2d` defaults to the exact compile-time shared histogram
-width `n_dist × n_val`; `joint2d_compile_cells = joint2d_smem_max()` or `joint2d_smem_align256(n_dist,
-n_val)` override it.
+width `n_dist × n_val`; `joint2d_compile_cells = joint2d_smem_align256(n_dist, n_val)`, or the widest
+width a device fits, `joint2d_smem_max(backend, W, XT, OT, CT)`, overrides it so bin grids of
+different shapes share one compiled kernel.
 
 ## Six-invariant single-pass 2D
 
-The device path for `calculate_structure_functions_single_pass_2d!` with typed distance bins
-(`LinearBinEdges` / `LogBinEdges`) and `GPUSFWorkspace(...; kind = :single_pass_2d)` picks its histogram
-strategy — `:shared`, `:typeplane` or `:direct` — when the workspace is built, from a 48 KiB
-shared-memory budget. The six rows are `S2`, `L2`, `T2`, `S3`, `L3`, `L1T2`; the basis-dependent
+The device path for `calculate_structure_functions_single_pass_2d!` picks its histogram
+strategy — `:shared`, `:typeplane` or `:direct` — on every call, from the device's static
+shared-memory budget and the call's element types. The six rows are `S2`, `L2`, `T2`, `S3`, `L3`, `L1T2`; the basis-dependent
 `T3` and `L2T1` are not part of the single-pass contract and take the general entries with their
 transverse convention.
 
@@ -166,7 +175,7 @@ transverse convention.
 | tier | command | what it proves |
 |---|---|---|
 | default suite | `julia --project=test test/runtests.jl` | kernel arithmetic, binning, workspaces and slices on `KA.CPU()`, the same kernel source without CUDA |
-| CUDA | `julia --project=gpu gpu/runtests.jl` | every CUDA suite: point kernels, workspaces, 1-D and 2-D parity, end-to-end 2-D, slices, and the gridded engine's parity table (skipped when `!CUDA.functional()`) |
+| CUDA | `julia --project=gpu gpu/runtests.jl` | every CUDA suite: point kernels, workspaces, 1-D and 2-D parity, end-to-end 2-D, slices, the gridded engine's parity table, and every tiled kernel's static shared memory against the bytes its launcher decides by (skipped when `!CUDA.functional()`) |
 | gridded parity table | `sbatch gpu/run_cuda_gridded_parity.sh` | counts exact and sums to round-off against the 8-thread CPU on every schedule, the non-uniform FFT route and the tensor kernel, with timings |
 | benchmarks | `julia --project=gpu gpu/benchmark_suite.jl` | release-performance gates and timing JSON |
 

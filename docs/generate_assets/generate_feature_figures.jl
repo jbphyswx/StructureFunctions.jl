@@ -5,6 +5,7 @@ Run from the repo root:
     julia --project=docs/generate_assets docs/generate_assets/generate_feature_figures.jl
 """
 
+using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT
 using StructureFunctions: MultiFields as MF
@@ -159,10 +160,9 @@ function generate_directional_figure()
     end
     dist = collect(range(0.0, 2.0; length = 15))
     ang = collect(range(0, π; length = 25))
-    j = SFC.serial_calculate_structure_function(
-        SFT.L2SFType(), x, u, dist, ang;
-        second_axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0)),
-        verbose = false, show_progress = false)
+    j = SFC.calculate_structure_function(
+        SFT.L2SFType(), x, u, dist, ang; backend = CB.SerialBackend(),
+        second_axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0)))
     prof = [sum(j.sums[:, a]) / max(sum(j.counts[:, a]), 1) for a in 1:(length(ang) - 1)]
     θ = [(ang[a] + ang[a + 1]) / 2 for a in 1:(length(ang) - 1)]
 
@@ -243,12 +243,9 @@ function generate_fields_figure()
     bins = collect(10 .^ range(log10(0.05), log10(2.5); length = 22))
     mids = SF.midpoints(bins)
 
-    scal = SFC.calculate_structure_function(SFT.ScalarSFType{2}(), x, fields, bins;
-                                            output_type = SF.StructureFunction)
-    vel = SFC.calculate_structure_function(SFT.S2SFType(), x, fields, bins;
-                                           output_type = SF.StructureFunction)
-    yag = SFC.calculate_structure_function(SFT.MixedSFType{1, 0, 2}(), x, fields, bins;
-                                           output_type = SF.StructureFunction)
+    scal = SFC.calculate_structure_function(SFT.ScalarSFType{2}(), x, fields, bins, SF.StructureFunction)
+    vel = SFC.calculate_structure_function(SFT.S2SFType(), x, fields, bins, SF.StructureFunction)
+    yag = SFC.calculate_structure_function(SFT.MixedSFType{1, 0, 2}(), x, fields, bins, SF.StructureFunction)
 
     fig = CM.Figure(size = (1100, 430))
     ax1 = CM.Axis(fig[1, 1]; xscale = log10, yscale = log10, xlabel = "separation r",
@@ -369,8 +366,8 @@ function generate_advective_figure()
     mids = SF.midpoints(bins)
 
     asf = SFC.calculate_structure_function(
-        SFT.VectorDotSFType(1, 2), x, MF.Fields(vectors = (u, a)), bins;
-        output_type = SF.StructureFunctionSumsAndCounts)
+        SFT.VectorDotSFType(1, 2), x, MF.Fields(vectors = (u, a)), bins,
+        SF.StructureFunctionSumsAndCounts)
     Ks = collect(range(1.5, 9.0; length = 60))
     flux = SFC.spectral_flux(asf, Ks)
 
@@ -460,12 +457,8 @@ function generate_exact_laws_figure()
     bins = collect(10 .^ range(log10(0.08), log10(2.5); length = 22))
     mids = SF.midpoints(bins)
     skew(u) = begin
-        l3 = SFC.calculate_structure_function(SFT.L3SFType(), xs, u, bins;
-                                              output_type = SF.StructureFunction,
-                                              verbose = false, show_progress = false)
-        l2 = SFC.calculate_structure_function(SFT.L2SFType(), xs, u, bins;
-                                              output_type = SF.StructureFunction,
-                                              verbose = false, show_progress = false)
+        l3 = SFC.calculate_structure_function(SFT.L3SFType(), xs, u, bins, SF.StructureFunction)
+        l2 = SFC.calculate_structure_function(SFT.L2SFType(), xs, u, bins, SF.StructureFunction)
         l3.values ./ (l2.values .^ 1.5)
     end
     ax2 = CM.Axis(fig[1, 2]; xscale = log10, xlabel = "separation r",
@@ -496,11 +489,11 @@ function generate_spherical_figure()
     bins = collect(range(0.0, 8.0e6; length = 21))
     mids = SF.midpoints(bins)
     sphere = SFC.calculate_structure_functions_single_pass(
-        x, u, bins; distance_metric = DI.Haversine(Rearth), output_type = SF.StructureFunction)
+        x, u, bins, SF.StructureFunction; distance_metric = DI.Haversine(Rearth))
     # the same data with no transport: treat lon/lat as if they were a plane
     flatb = collect(range(0.0, 80.0; length = 21))
     flat = SFC.calculate_structure_functions_single_pass(
-        x, u, flatb; distance_metric = DI.Euclidean(), output_type = SF.StructureFunction)
+        x, u, flatb, SF.StructureFunction; distance_metric = DI.Euclidean())
 
     ratio(res) = begin
         occ = isfinite.(res.L2.values) .& isfinite.(res.S2.values) .& (res.S2.values .> 0)
@@ -544,10 +537,8 @@ function generate_spherical_figure()
         us[1, q] = ug[1, i, j]; us[2, q] = ug[2, i, j]
     end
     t2 = time()
-    un = SFC.calculate_structure_function(SFT.L2SFType(), xs, us, sbins;
-                                          distance_metric = DI.SphericalAngle(),
-                                          output_type = SF.StructureFunctionSumsAndCounts,
-                                          verbose = false, show_progress = false)
+    un = SFC.calculate_structure_function(SFT.L2SFType(), xs, us, sbins, SF.StructureFunctionSumsAndCounts;
+                                          distance_metric = DI.SphericalAngle())
     t_unstr = time() - t2
 
     smids = SF.midpoints(sbins)
@@ -578,21 +569,17 @@ function generate_culling_figure()
     exact = Bool[]
     for f in fracs
         bins = collect(range(0.0, f; length = 16))
-        a = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
-                culling = SFC.NoCulling(), output_type = SF.StructureFunctionSumsAndCounts,
-                verbose = false, show_progress = false)
+        a = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
+                culling = SFC.NoCulling())
         t1 = time()
-        a = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
-                culling = SFC.NoCulling(), output_type = SF.StructureFunctionSumsAndCounts,
-                verbose = false, show_progress = false)
+        a = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
+                culling = SFC.NoCulling())
         tn = time() - t1
-        b = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
-                culling = SFC.AlwaysCulling(), output_type = SF.StructureFunctionSumsAndCounts,
-                verbose = false, show_progress = false)
+        b = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
+                culling = SFC.AlwaysCulling())
         t2 = time()
-        b = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
-                culling = SFC.AlwaysCulling(), output_type = SF.StructureFunctionSumsAndCounts,
-                verbose = false, show_progress = false)
+        b = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
+                culling = SFC.AlwaysCulling())
         tc = time() - t2
         push!(speed, tn / tc)
         push!(exact, a.counts == b.counts)
@@ -680,12 +667,9 @@ function generate_weights_figure()
     end
     bins = collect(range(0.0, π; length = 18)) .+ 1e-3
     mids = SF.midpoints(bins)
-    plain = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, Float64;
-                                             output_type = SF.StructureFunction, verbose = false,
-                                             show_progress = false)
-    area = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, Float64; weights = w,
-                                            output_type = SF.StructureFunction, verbose = false,
-                                            show_progress = false)
+    plain = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, Float64, SF.StructureFunction)
+    area = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, Float64, SF.StructureFunction;
+                                            weights = w)
 
     fig = CM.Figure(size = (1100, 430))
     ax1 = CM.Axis(fig[1, 1]; xlabel = "latitude φ", ylabel = "cell measure",
@@ -723,15 +707,12 @@ function generate_sorted_line_figure()
     t_pairs = Float64[]
     for N in Ns
         x, u = line_field(N)
-        f() = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64;
-                                               output_type = SF.StructureFunction, verbose = false,
-                                               show_progress = false)
+        f() = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64, SF.StructureFunction)
         f()
         push!(t_sorted, minimum(@elapsed(f()) for _ in 1:3))
         if N <= 8_000
             g() = SFC.calculate_structure_function(SFT.FullVectorStructureFunctionType{3}(), x, u, bins,
-                                                   Int64; output_type = SF.StructureFunction,
-                                                   verbose = false, show_progress = false)
+                                                   Int64, SF.StructureFunction)
             g()
             push!(t_pairs, @elapsed g())
         end
@@ -740,9 +721,7 @@ function generate_sorted_line_figure()
     # exactness against a pair loop written here, at a size where both are quick
     Nc = 1_500
     x, u = line_field(Nc)
-    got = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64;
-                                           output_type = SF.StructureFunction, verbose = false,
-                                           show_progress = false)
+    got = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64, SF.StructureFunction)
     ref_s = zeros(length(mids))
     ref_c = zeros(Int, length(mids))
     for i in 1:Nc, j in (i + 1):Nc
@@ -793,11 +772,8 @@ function generate_tensor_figure()
     end
     bins = collect(range(0.1, 2.6; length = 18))
     mids = SF.midpoints(bins)
-    T = SFC.calculate_structure_function_tensor(Val(2), x, u, bins; verbose = false,
-                                                show_progress = false)
-    s2 = SFC.calculate_structure_function(SFT.S2SFType(), x, u, bins;
-                                          output_type = SF.StructureFunction, verbose = false,
-                                          show_progress = false)
+    T = SFC.calculate_structure_function_tensor(Val(2), x, u, bins)
+    s2 = SFC.calculate_structure_function(SFT.S2SFType(), x, u, bins, SF.StructureFunction)
 
     fig = CM.Figure(size = (1100, 430))
     ax1 = CM.Axis(fig[1, 1]; xlabel = "separation r", ylabel = "⟨δu_a δu_b⟩",
@@ -833,17 +809,14 @@ function generate_scattered_modes_figure()
     end
     bins = collect(range(0.15, 2.0; length = 15))
     mids = SF.midpoints(bins)
-    exact = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
-                                             output_type = SF.StructureFunction, verbose = false,
-                                             show_progress = false)
+    exact = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunction)
     tag = SFC.NonuniformFFTsSpectralBackend()
     Ms = [48, 64, 96, 128, 192]
     curves = Dict{Int, Vector{Float64}}()
     errs = Float64[]
     for M in Ms
         s = SFC.ScatteredModesSchedule(x, 2.0, (M, M); taper = SF.GaussianTaper(2π / M))
-        r = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag;
-                                             output_type = SF.StructureFunction, verbose = false)
+        r = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag, SF.StructureFunction)
         curves[M] = collect(r.values)
         push!(errs, maximum(abs.(r.values .- exact.values)) / maximum(abs, exact.values))
     end

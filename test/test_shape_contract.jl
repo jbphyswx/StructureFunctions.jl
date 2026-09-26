@@ -18,11 +18,9 @@ Random.seed!(42)
 
         r2 = SFC.calculate_structure_function(
             sf, x2, u2, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-            verbose = false, show_progress = false,
         )
         r3 = SFC.calculate_structure_function(
             sf, x3, u3, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-            verbose = false, show_progress = false,
         )
 
         @test size(r2.sums) == (n_bins,)
@@ -34,14 +32,12 @@ Random.seed!(42)
         u = rand(2, 9, 3)
         r = SFC.calculate_structure_function(
             sf, x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-            verbose = false, show_progress = false,
         )
         ref_sums = zeros(eltype(r.sums), n_bins, 3)
         ref_counts = zeros(eltype(r.counts), n_bins, 3)
         for t in 1:3
             rt = SFC.calculate_structure_function(
                 sf, x, @view(u[:, :, t]), bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-                verbose = false, show_progress = false,
             )
             ref_sums[:, t] .= rt.sums
             ref_counts[:, t] .= rt.counts
@@ -55,7 +51,6 @@ Random.seed!(42)
         u = rand(2, 7, 2, 3)
         r = SFC.calculate_structure_function(
             sf, x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-            verbose = false, show_progress = false,
         )
         @test size(r.sums) == (n_bins, 2, 3)
         @test size(r.counts) == (n_bins, 2, 3)
@@ -66,14 +61,12 @@ Random.seed!(42)
         u = rand(2, 8, 3)
         r = SFC.calculate_structure_function(
             sf, x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-            verbose = false, show_progress = false,
         )
         ref_sums = zeros(eltype(r.sums), n_bins, 3)
         ref_counts = zeros(eltype(r.counts), n_bins, 3)
         for t in 1:3
             rt = SFC.calculate_structure_function(
                 sf, @view(x[:, :, t]), @view(u[:, :, t]), bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-                verbose = false, show_progress = false,
             )
             ref_sums[:, t] .= rt.sums
             ref_counts[:, t] .= rt.counts
@@ -89,7 +82,6 @@ Random.seed!(42)
         u1 = reshape(randn(10), 1, :)
         r = SFC.calculate_structure_function(
             sf, x1, u1, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-            verbose = false, show_progress = false,
         )
         ref_sums = zeros(eltype(r.sums), n_bins)
         ref_counts = zeros(eltype(r.counts), n_bins)
@@ -106,13 +98,13 @@ Random.seed!(42)
 
     @testset "invalid shapes" begin
         @test_throws DimensionMismatch SFC.calculate_structure_function(
-            sf, rand(2, 5), rand(3, 5), bins; verbose = false, show_progress = false,
+            sf, rand(2, 5), rand(3, 5), bins,
         )
         @test_throws DimensionMismatch SFC.calculate_structure_function(
-            sf, rand(2, 5, 2), rand(2, 5, 3), bins; verbose = false, show_progress = false,
+            sf, rand(2, 5, 2), rand(2, 5, 3), bins,
         )
         @test_throws ArgumentError SFC.calculate_structure_function(
-            sf, (rand(5), rand(5)), (rand(5), rand(5)), bins; verbose = false, show_progress = false,
+            sf, (rand(5), rand(5)), (rand(5), rand(5)), bins,
         )
     end
 end

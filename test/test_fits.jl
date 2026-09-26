@@ -274,13 +274,11 @@ Test.@testset "the data covariance from a value-binned joint histogram" begin
     truth = [sum(abs2, v .- sum(v) / length(v)) / length(v) / length(v) for v in vals]
     vmax = maximum(maximum, vals)
     fine = collect(range(-1e-9, vmax * (1 + 1e-9); length = 4001))
-    joint = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, fine; backend = CB.SerialBackend(),
-                                             verbose = false, show_progress = false)
+    joint = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, fine; backend = CB.SerialBackend())
     est = SFC.independent_pair_variance(joint)
     Test.@test est ≈ truth rtol = 2e-3
     coarse = collect(range(-1e-9, vmax * (1 + 1e-9); length = 6))
-    jc = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, coarse; backend = CB.SerialBackend(),
-                                          verbose = false, show_progress = false)
+    jc = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, coarse; backend = CB.SerialBackend())
     estc = SFC.independent_pair_variance(jc)
     Test.@test all(estc .<= truth .* (1 + 1e-12))
     Test.@test all(estc .> 0)

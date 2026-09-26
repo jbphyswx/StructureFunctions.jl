@@ -164,13 +164,12 @@ Test.@testset "the soft bins converge to the hard bins as the modes grow ($(_pro
     u = vcat(sin.(2π .* x[1:1, :]) .* cos.(2π .* x[2:2, :]), cos.(2π .* x[1:1, :]) .* sin.(2π .* x[2:2, :]))
     r_max = 0.6
     bins = collect(range(0.0, r_max; length = 5))
-    hard = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Float64, RAW; backend = SERIAL, verbose = false,
-                                            show_progress = false)
+    hard = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Float64, RAW; backend = SERIAL)
     hard_avg = hard.sums ./ hard.counts
     errs = Float64[]
     for M in (16, 32, 64)
         s = SFC.ScatteredModesSchedule(x, r_max, (M, M); taper = SF.GaussianTaper(maximum(x) / M))
-        soft = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag, RAW; backend = SERIAL, verbose = false)
+        soft = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag, RAW; backend = SERIAL)
         Test.@test soft.distance isa SF.ModeBinEdges
         Test.@test soft.distance.schedule === s
         Test.@test sum(soft.counts) ≈ sum(hard.counts) rtol = 0.2
@@ -234,13 +233,11 @@ Test.@testset "the box is padded so that no pair within r_max wraps ($(_provider
     # bins starting above the kernel's width, so no self pair's mass is counted; the two clusters' pairs
     # sit at separations 1.9 … 2.1, which a box without the padding wraps to 0 … 0.2
     bins = collect(range(0.02, 0.25; length = 4))
-    soft = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag, RAW; backend = SERIAL, verbose = false)
-    hard = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Float64, RAW; backend = SERIAL, verbose = false,
-                                            show_progress = false)
+    soft = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag, RAW; backend = SERIAL)
+    hard = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Float64, RAW; backend = SERIAL)
     unpadded = SFC.ScatteredModesSchedule(x, (minimum(x),), (maximum(x) - minimum(x),), (512,),
                                           SF.GaussianTaper(0.01))
-    wrapped = SFC.calculate_structure_function(SFT.L2SFType(), unpadded, u, bins, tag, RAW; backend = SERIAL,
-                                               verbose = false)
+    wrapped = SFC.calculate_structure_function(SFT.L2SFType(), unpadded, u, bins, tag, RAW; backend = SERIAL)
     inter = half * half
     Test.@test sum(hard.counts) > 0
     Test.@test abs(sum(soft.counts) - sum(hard.counts)) / sum(hard.counts) < 0.1
@@ -292,13 +289,12 @@ Test.@testset "the route is asked for by name and refuses what it cannot mean" b
                                                             Val(1), Val(0), tag)
     end
     Test.@test_throws DimensionMismatch SFC.calculate_structure_function(SFT.L2SFType(), s, randn(2, N + 1), bins,
-                                                                         PROVIDERS[1]; verbose = false)
+                                                                         PROVIDERS[1])
     # a point list without a schedule stays on the exact pair loop
-    plain = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, RAW; backend = CB.AutoBackend(), verbose = false,
-                                             show_progress = false)
+    plain = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, RAW; backend = CB.AutoBackend())
     Test.@test !(plain.distance isa SF.ModeBinEdges)
     for tag in PROVIDERS
-        res = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag; verbose = false)
+        res = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag)
         Test.@test res isa SFO.StructureFunction
         Test.@test SF.midpoints(res.distance) == SF.midpoints(bins)
         Test.@test SF.n_histogram_bins(res.distance) == 4

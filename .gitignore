@@ -37,6 +37,7 @@ docs/site/
 # environment.
 # Make sure you ignore test/Manifest.toml because up_deps will break the test suites by adding the local path to the Manifest.toml
 Manifest.toml
+Manifest*.toml
 test/Manifest.toml
 
 # Ignore any local depot stored here.

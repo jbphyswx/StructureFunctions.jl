@@ -148,7 +148,6 @@ Test.@testset "Spherical geometry: backend agreement" begin
                        (SFT.SecondOrderStructureFunctionType(), :S2))
         one = SFC.calculate_structure_function(
             sft, x, u, bins, SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(), distance_metric = m,
-            verbose = false, show_progress = false,
         )
         Test.@test one.counts == ref[key].counts
         Test.@test one.sums ≈ ref[key].sums
@@ -223,12 +222,11 @@ Test.@testset "User-defined geometry works end to end on every backend" begin
     # And through a different entry point (2D joint) to show nothing is special-cased per-path.
     vb = collect(range(-3.0, 3.0; length = 9))
     j_euc = SFC.calculate_structure_function(
-        SFT.L2SFType(), x, u, bins, vb; backend = CB.SerialBackend(), verbose = false,
-        show_progress = false,
+        SFT.L2SFType(), x, u, bins, vb; backend = CB.SerialBackend(),
     )
     j_got = SFC.calculate_structure_function(
         SFT.L2SFType(), x, u, 2 .* bins, vb; backend = CB.SerialBackend(),
-        distance_metric = DoubledFlatMetric(), verbose = false, show_progress = false,
+        distance_metric = DoubledFlatMetric(),
     )
     Test.@test j_got.counts == j_euc.counts
     Test.@test j_got.sums ≈ j_euc.sums

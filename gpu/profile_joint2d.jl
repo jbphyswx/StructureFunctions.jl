@@ -54,14 +54,14 @@ function _bench(f, warmup::Int, repeat_::Int)
 end
 
 function _dist_bins(n_dist::Int, ::Type{FT}) where {FT}
-    return LogBinEdges(Vector{FT}(exp.(range(log(FT(1000)), log(FT(50000)); length = n_dist + 1))))
+    return LogBinEdges(FT(1000), FT(50000), n_dist + 1)
 end
 
 function _value_inflinear(n_val_inner::Int, ::Type{FT}) where {FT}
     return InfPaddedBinEdges(LinearBinEdges(range(FT(-1), FT(2); length = n_val_inner + 1)))
 end
 
-"""Raw edge vector → joint `val_plan === nothing` → `:general` kernel route."""
+"""Raw edge vector: the value digitizer is a binary search over [`BinEdges`](@ref)."""
 function _value_general(n_val_inner::Int, ::Type{FT}) where {FT}
     inner = collect(FT, range(-1, 2; length = n_val_inner + 1))
     return vcat(FT(-Inf), inner, FT(Inf))
@@ -87,16 +87,15 @@ function _profile_one!(
     repeat_::Int,
 )
     value_bins, route_sym = _scenario_value_bins(route, n_val_inner, FT)
-    val_plan = _GPUExt._joint2d_build_val_plan(backend, value_bins)
-    reported = _GPUExt._joint2d_val_route(val_plan)
     n_dist = length(dist) - 1
     n_val = length(value_bins) - 1
     NB2 = n_dist * n_val
 
-    # Use typed value_bins (not _gpu_host_edge_vector) so workspace.val_plan matches kernel route.
     ws = SFC.GPUSFWorkspace(backend, dist, value_bins; kind = :joint2d)
+    val_plan = ws.val_plan
+    reported = nameof(typeof(val_plan))
     run! = () -> SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, value_bins; workspace = ws,
+        sft, backend, x, u, dist, value_bins, UInt32; workspace = ws,
     )
     t = _bench(run!, warmup, repeat_)
 
@@ -104,7 +103,7 @@ function _profile_one!(
         "%-12s  route=%-10s  plan=%-26s  %8.3f ms  [NB2=%d compile_cells=%d]\n",
         label,
         reported,
-        val_plan === nothing ? "nothing (general)" : typeof(val_plan),
+        typeof(val_plan),
         1_000t,
         NB2,
         ws.joint2d_compile_cells,
@@ -136,7 +135,7 @@ function main()
     end
 
     dist = _dist_bins(n_dist, FT)
-    dist_route = _GPUExt._joint2d_dist_route(_GPUExt._gpu_normalize_bins(dist))
+    dist_route = nameof(typeof(SF.digitize_plan(dist)))
 
     println("=" ^ 72)
     println("joint 2D profile workload")

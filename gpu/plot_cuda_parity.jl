@@ -30,12 +30,10 @@ function main()
     sft = SFT.L2SFType()
 
     ref = SFC.calculate_structure_function(
-        sft, x_cpu, u_cpu, bins;
-        output_type = SFO.StructureFunctionSumsAndCounts,
-        verbose = false, show_progress = false,
+        sft, x_cpu, u_cpu, bins, SFO.StructureFunctionSumsAndCounts,
     )
     gpu_res = SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bins,
+        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bins, UInt32,
     )
     CUDA.synchronize()
 

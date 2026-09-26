@@ -12,15 +12,14 @@ Random.seed!(42)
 
 function _cpu_ref(sft, x, u, bin_edges)
     return SFC.calculate_structure_function(
-        sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
-        verbose = false, show_progress = false,
+        sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts,
     )
 end
 
 function _gpu_tiled(sft, x, u, bin_edges)
     return SFC.calculate_structure_function(
         sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
-        backend = CB.GPUBackend(KA.CPU()), verbose = false, show_progress = false,
+        backend = CB.GPUBackend(KA.CPU()),
     )
 end
 
@@ -159,11 +158,11 @@ Test.@testset "GPU joint 2D parity — L2SF linear bins N=50" begin
     sft = SFT.L2SFType()
     ref = SFC.calculate_structure_function(
         sft, x, u, distance_bins, value_bins;
-        backend = CB.SerialBackend(), verbose = false, show_progress = false,
+        backend = CB.SerialBackend(),
     )
     gpu = SFC.calculate_structure_function(
         sft, x, u, distance_bins, value_bins;
-        backend = CB.GPUBackend(KA.CPU()), verbose = false, show_progress = false,
+        backend = CB.GPUBackend(KA.CPU()),
     )
     Test.@test gpu.counts == ref.counts
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -179,11 +178,11 @@ Test.@testset "GPU joint 2D parity — L3SF log distance bins" begin
     sft = SFT.L3SFType()
     ref = SFC.calculate_structure_function(
         sft, x, u, distance_bins, value_bins;
-        backend = CB.SerialBackend(), verbose = false, show_progress = false,
+        backend = CB.SerialBackend(),
     )
     gpu = SFC.calculate_structure_function(
         sft, x, u, distance_bins, value_bins;
-        backend = CB.GPUBackend(KA.CPU()), verbose = false, show_progress = false,
+        backend = CB.GPUBackend(KA.CPU()),
     )
     Test.@test gpu.counts == ref.counts
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
@@ -220,9 +219,9 @@ Test.@testset "GPU parity above the tiled kernel's shared-memory cap" begin
     for nb in (128, 129, 4000)
         bin_edges = collect(FT, range(0.0, 2.0; length = nb + 1))
         ref = SFC.calculate_structure_function(sft, x, u, bin_edges, FT, SF.StructureFunctionSumsAndCounts;
-            backend = CB.SerialBackend(), verbose = false)
+            backend = CB.SerialBackend())
         got = SFC.calculate_structure_function(sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
-            backend = CB.GPUBackend(KA.CPU()), verbose = false)
+            backend = CB.GPUBackend(KA.CPU()))
         Test.@test sum(ref.counts) > 0
         Test.@test collect(got.counts) == collect(ref.counts)
         Test.@test isapprox(collect(got.sums), collect(ref.sums); rtol = 1e-10, atol = 1e-12)
@@ -255,7 +254,7 @@ Test.@testset "GPU batch — NB > SF_GPU_MAX_BINS errors (no silent shared-mem o
                 for b in 1:B
                     xb = ndims(x) == 2 ? x : x[:, :, b]
                     r = SFC.calculate_structure_function(sft, xb, u[:, :, b], bins, FT,
-                        SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(), verbose = false)
+                        SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
                     ref_s[:, b] .= r.sums
                     ref_c[:, b] .= r.counts
                 end

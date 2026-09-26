@@ -15,7 +15,7 @@ Random.seed!(42)
 function _ref_joint(sft, x, u, dist, val)
     return SFC.calculate_structure_function(
         sft, x, u, dist, val;
-        backend = CB.SerialBackend(), verbose = false, show_progress = false,
+        backend = CB.SerialBackend(),
     )
 end
 
@@ -112,9 +112,9 @@ Test.@testset "GPU joint2d past the shared-memory fit" begin
         Test.@test gpu.counts == ref.counts
         Test.@test gpu.sums ≈ ref.sums rtol = 1e-5 atol = 1e-5
         wref = SFC.calculate_structure_function(sft, x, u, dist, val, FT;
-            backend = CB.SerialBackend(), weights = w, verbose = false)
+            backend = CB.SerialBackend(), weights = w)
         wgpu = SFC.calculate_structure_function(sft, x, u, dist, val, FT;
-            backend = CB.GPUBackend(KA.CPU()), weights = w, verbose = false)
+            backend = CB.GPUBackend(KA.CPU()), weights = w)
         Test.@test collect(wgpu.counts) ≈ collect(wref.counts) rtol = 1e-5
         Test.@test collect(wgpu.sums) ≈ collect(wref.sums) rtol = 1e-5 atol = 1e-5
 

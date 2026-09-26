@@ -139,7 +139,7 @@ Test.@testset "multi-fields on a grid: scalar, mixed and cross-field moments" be
     x = _grid_points(dims, spacing)
     for (f, ops) in cases, sf in ops
         ref = SFC.calculate_structure_function(sf, x, f, bins, SFO.StructureFunctionSumsAndCounts;
-                                               backend = CB.SerialBackend(), verbose = false, show_progress = false)
+                                               backend = CB.SerialBackend())
         got_s, got_c = _moments_run(sf, f, dims, spacing, (false, false), bins)
         Test.@test got_c == Int.(ref.counts)
         Test.@test isapprox(got_s, ref.sums; rtol = 1e-10, atol = 1e-12)
@@ -175,8 +175,7 @@ Test.@testset "directional output on a grid agrees with the unstructured joint p
 
     x = _grid_points(dims, spacing)
     ref = SFC.calculate_structure_function(SFT.L2SFType(), x, reshape(u, 2, :), bins, ax_bins;
-                                           backend = CB.SerialBackend(), second_axis = src, verbose = false,
-                                           show_progress = false)
+                                           backend = CB.SerialBackend(), second_axis = src)
     Test.@test sc == Float64.(ref.counts)
     Test.@test tc == Float64.(ref.counts)
     Test.@test isapprox(ss, ref.sums; rtol = 1e-10, atol = 1e-12)
@@ -285,10 +284,9 @@ Test.@testset "the grid entry takes a multi-field and a joint request" begin
     f = Fields(vectors = (u,), scalars = (θ,))
     bins = [0.0; collect(range(0.2137, 1.4; length = 7))]
     yag = SFT.MixedSFType{1, 0, 2}()
-    swept = SFC.calculate_structure_function(yag, grid, f, bins, SFO.StructureFunctionSumsAndCounts;
-        verbose = false, show_progress = false)
+    swept = SFC.calculate_structure_function(yag, grid, f, bins, SFO.StructureFunctionSumsAndCounts)
     transformed = SFC.calculate_structure_function(yag, grid, f, bins, FFT_TAG, UInt32,
-        SFO.StructureFunctionSumsAndCounts; verbose = false, show_progress = false)
+        SFO.StructureFunctionSumsAndCounts)
     Test.@test transformed.counts == swept.counts
     Test.@test _moments_close(transformed.sums, swept.sums)
     Test.@test sum(swept.counts) > 0
@@ -296,11 +294,10 @@ Test.@testset "the grid entry takes a multi-field and a joint request" begin
     ax_bins = [prevfloat(0.0); collect(range(0.3011, π - 0.3; length = 5)); π + 1e-9]
     src = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
     joint = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, ax_bins;
-        second_axis = src, verbose = false, show_progress = false)
+        second_axis = src)
     joint_t = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, ax_bins, FFT_TAG;
-        second_axis = src, verbose = false, show_progress = false)
-    plain = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, SFO.StructureFunctionSumsAndCounts;
-        verbose = false, show_progress = false)
+        second_axis = src)
+    plain = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, SFO.StructureFunctionSumsAndCounts)
     Test.@test joint isa SFO.StructureFunction2DSumsAndCounts
     Test.@test vec(sum(joint.counts; dims = 2)) == Float64.(plain.counts)
     Test.@test isapprox(vec(sum(joint.sums; dims = 2)), plain.sums; rtol = 1e-10, atol = 1e-12)

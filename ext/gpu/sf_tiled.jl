@@ -199,14 +199,12 @@ end
     2 * SFC.gpu_localmem_bytes(XT, D * SF_GPU_TILE) + 2 * SFC.gpu_localmem_bytes(UT, W * D * SF_GPU_TILE) +
     SFC.gpu_localmem_bytes(OT, NMOM * SF_GPU_MAX_BINS * W) + SFC.gpu_localmem_bytes(CST, SF_GPU_MAX_BINS * W)
 
-# A histogram wider than the shared-memory cap has no `@localmem` to stage, so this sibling drops
-# the tiling entirely: one thread owns one `(i, b)`, walks every `j > i`, and accumulates straight
-# into the global histogram. It is the arrangement the joint-2D and gridded device routes already
-# take above their own caps, so every device route now widens the same way.
-KA.@kernel unsafe_indices = true function sf_wide_1d_varying!(
+# One thread per `(i, b)` walks every `j > i` and accumulates into the global histogram; it stages
+# nothing in shared memory.
+KA.@kernel unsafe_indices = true function sf_wide_1d!(
     output,                 # (NMOM, NB, B)
     counts,                 # (NMOM, NB, B)
-    @Const(x),              # (D, N, B)
+    @Const(x),              # (D, N, B) varying  /  (D, N, 1) fixed
     @Const(u),              # (D, N, B)
     wts,                    # NoWeights(), or one weight per point
     sf_type,
@@ -216,8 +214,9 @@ KA.@kernel unsafe_indices = true function sf_wide_1d_varying!(
     B::Int,
     ::Val{D},
     ::Val{NMOM},
+    ::Val{FIXED_X},
     geom,
-) where {D, NMOM}
+) where {D, NMOM, FIXED_X}
     g = @index(Global)
     if g <= N * B
         i = (g - 1) % N + 1
@@ -225,11 +224,12 @@ KA.@kernel unsafe_indices = true function sf_wide_1d_varying!(
         if i <= N - 1
             XT = eltype(x)
             UT = eltype(u)
-            Xi = SA.SVector{D, XT}(ntuple(d -> @inbounds(x[d, i, b]), Val(D)))
+            xb = FIXED_X ? 1 : b
+            Xi = SA.SVector{D, XT}(ntuple(d -> @inbounds(x[d, i, xb]), Val(D)))
             Ui = SA.SVector{D, UT}(ntuple(d -> @inbounds(u[d, i, b]), Val(D)))
             wi = SFC._point_weight(wts, i)
             for j in (i + 1):N
-                Xj = SA.SVector{D, XT}(ntuple(d -> @inbounds(x[d, j, b]), Val(D)))
+                Xj = SA.SVector{D, XT}(ntuple(d -> @inbounds(x[d, j, xb]), Val(D)))
                 Uj = SA.SVector{D, UT}(ntuple(d -> @inbounds(u[d, j, b]), Val(D)))
                 ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
                 bin = SFH.digitize(dist, digitizer)
@@ -247,15 +247,17 @@ KA.@kernel unsafe_indices = true function sf_wide_1d_varying!(
     end
 end
 
-"""Launch `sf_wide_1d_varying!`: the global-atomic route for `NB > SF_GPU_MAX_BINS`."""
-function _launch_sf_wide_1d_varying!(
+"""Launch `sf_wide_1d!`, which stages nothing. `x_dev` is `(D, N, B)`, or `(D, N, 1)` when `fixed_x`."""
+function _launch_sf_wide_1d!(
     backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer,
-    N::Int, NB::Int, B::Int, ::Val{D}, ::Val{NMOM}, geom;
+    N::Int, NB::Int, B::Int, ::Val{D}, ::Val{NMOM}, fixed_x::Bool, geom;
     weights = SFC.NoWeights(),
 ) where {D, NMOM}
-    kernel! = sf_wide_1d_varying!(backend, SF_GPU_TILED_WS)
-    kernel!(out_dev, cnt_dev, x_dev, u_dev, _sf_weights_to_device(backend, weights),
-            sf_type, digitizer, N, NB, B, Val(D), Val(NMOM), geom; ndrange = N * B)
+    kernel! = sf_wide_1d!(backend, SF_GPU_TILED_WS)
+    wts = _sf_weights_to_device(backend, weights)
+    launch = (fx) -> kernel!(out_dev, cnt_dev, x_dev, u_dev, wts, sf_type, digitizer, N, NB, B,
+                             Val(D), Val(NMOM), fx, geom; ndrange = N * B)
+    fixed_x ? launch(Val(true)) : launch(Val(false))
     return nothing
 end
 
@@ -279,9 +281,8 @@ function _launch_sf_tiled_1d_varying!(
     Rf = NB > SF_GPU_MAX_BINS ? 0 :
         _sf_fitting_width(r -> _sf_1d_varying_smem_bytes(XT, UT, OT, CST, D, NMOM, r), caps, R)
     if Rf == 0
-        return _launch_sf_wide_1d_varying!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type,
-                                           digitizer, N, NB, B, Val(D), Val(NMOM), geom;
-                                           weights = weights)
+        return _launch_sf_wide_1d!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, digitizer,
+                                   N, NB, B, Val(D), Val(NMOM), false, geom; weights = weights)
     end
     # The cull memo the prologue published names the tile pairs that can hold a pair within
     # `r_max`; taking the full triangle instead is correct and enumerates tile pairs that cannot.
@@ -514,13 +515,9 @@ function _launch_sf_tiled_1d_fixed!(
     XT, UT, OT, CST = eltype(x_dev), eltype(u_dev), eltype(out_dev), eltype(cnt_dev)
     Wf = NB > SF_GPU_MAX_BINS ? 0 :
         _sf_fitting_width(w -> _sf_1d_fixed_smem_bytes(XT, UT, OT, CST, D, NMOM, w), caps, W)
-    # The shared position set is broadcast to the (D, N, B) the global-atomic kernel reads, which
-    # stages nothing and so carries no width or bin limit.
     if Wf == 0
-        return _launch_sf_wide_1d_varying!(
-            backend, out_dev, cnt_dev, repeat(reshape(x_dev, D, N, 1), 1, 1, B), u_dev,
-            sf_type, digitizer, N, NB, B, Val(D), Val(NMOM), geom; weights = weights,
-        )
+        return _launch_sf_wide_1d!(backend, out_dev, cnt_dev, reshape(x_dev, D, N, 1), u_dev, sf_type,
+                                   digitizer, N, NB, B, Val(D), Val(NMOM), true, geom; weights = weights)
     end
     sched = FullUpperTriangle(cld(N, SF_GPU_TILE))
     n_tile_blocks = n_pair_blocks(sched)
@@ -1049,6 +1046,74 @@ function _launch_sf_tiled_2d_fixed!(
     return nothing
 end
 
+# One thread per `(i, b)` walks every `j > i` and accumulates into the global 2D histogram; it stages
+# nothing in shared memory.
+KA.@kernel unsafe_indices = true function sf_wide_2d!(
+    output,                 # (NMOM, n_dist, n_val, B)
+    counts,                 # (NMOM, n_dist, n_val, B)
+    @Const(x),              # (D, N, B) varying  /  (D, N, 1) fixed
+    @Const(u),              # (D, N, B)
+    wts,                    # NoWeights(), or one weight per point
+    sf_type,
+    dist_digitizer,
+    val_plan,
+    N::Int,
+    n_dist::Int,
+    n_val::Int,
+    B::Int,
+    ::Val{D},
+    ::Val{NMOM},
+    ::Val{FIXED_X},
+    geom,
+) where {D, NMOM, FIXED_X}
+    g = @index(Global)
+    if g <= N * B
+        i = (g - 1) % N + 1
+        b = (g - 1) ÷ N + 1
+        if i <= N - 1
+            XT = eltype(x)
+            UT = eltype(u)
+            CT = eltype(counts)
+            xb = FIXED_X ? 1 : b
+            Xi = SA.SVector{D, XT}(ntuple(d -> @inbounds(x[d, i, xb]), Val(D)))
+            Ui = SA.SVector{D, UT}(ntuple(d -> @inbounds(u[d, i, b]), Val(D)))
+            wi = SFC._point_weight(wts, i)
+            for j in (i + 1):N
+                Xj = SA.SVector{D, XT}(ntuple(d -> @inbounds(x[d, j, xb]), Val(D)))
+                Uj = SA.SVector{D, UT}(ntuple(d -> @inbounds(u[d, j, b]), Val(D)))
+                ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
+                dbin = SFH.digitize(dist, dist_digitizer)
+                if ok && 1 <= dbin <= n_dist
+                    dU = SFH.pair_delta(geom, frame, Xi, Xj, Ui, Uj)
+                    moments = _sf_moments(Val(NMOM), sf_type, geom, frame, dist, dU)
+                    pw = wi * SFC._point_weight(wts, j)
+                    @inbounds for m in 1:NMOM
+                        vbin = _sf_value_bin(val_plan, moments[m], m)
+                        if 1 <= vbin <= n_val
+                            @atomic output[m, dbin, vbin, b] += pw * moments[m]
+                            @atomic counts[m, dbin, vbin, b] += CT(pw)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+"""Launch `sf_wide_2d!`, which stages nothing. `x_dev` is `(D, N, B)`, or `(D, N, 1)` when `fixed_x`."""
+function _launch_sf_wide_2d!(
+    backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dist_digitizer, val_plan,
+    N::Int, n_dist::Int, n_val::Int, B::Int, ::Val{D}, ::Val{NMOM}, fixed_x::Bool, geom;
+    weights = SFC.NoWeights(),
+) where {D, NMOM}
+    kernel! = sf_wide_2d!(backend, SF_GPU_TILED_WS)
+    wts = _sf_weights_to_device(backend, weights)
+    launch = (fx) -> kernel!(out_dev, cnt_dev, x_dev, u_dev, wts, sf_type, dist_digitizer, val_plan,
+                             N, n_dist, n_val, B, Val(D), Val(NMOM), fx, geom; ndrange = N * B)
+    fixed_x ? launch(Val(true)) : launch(Val(false))
+    return nothing
+end
+
 # -----------------------------------------------------------------------------
 # Dispatch helpers used when rewiring the public API onto the unified kernels.
 # -----------------------------------------------------------------------------
@@ -1072,8 +1137,8 @@ function _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, 
 end
 
 """Launch a 2D batch on the portable kernels, dispatching a runtime width into the Val-specialized
-launchers: the shared-histogram kernel (fixed or varying) whenever the histogram fits, else the
-staged global-atomic kernels."""
+launchers: the shared-histogram kernel (fixed or varying) whenever it fits, else the staged
+global-atomic kernels whenever their tiles fit, else the wide kernel, which stages nothing."""
 function _sf_launch_2d_batch_portable!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
                                        N, n_dist, n_val, B, D::Int, ::Val{NMOM}, fixed_x::Bool, geom;
                                        weights = SFC.NoWeights()) where {NMOM}
@@ -1082,19 +1147,16 @@ function _sf_launch_2d_batch_portable!(backend, out_dev, cnt_dev, x_dev, u_dev, 
     XT, UT, OT, CST = eltype(x_dev), eltype(u_dev), eltype(out_dev), eltype(cnt_dev)
     use_shared = SFC.gpu_static_smem_fits(
         caps, _sf_2d_shared_smem_bytes(XT, UT, OT, CST, D, NMOM, n_dist * n_val))
+    staged = SFC.gpu_static_smem_fits(caps, _sf_2d_varying_smem_bytes(XT, UT, D))
     W = fixed_x ? _sf_tiled_2d_fixed_strip(caps, XT, UT, D) : 0
-    staging = _sf_2d_varying_smem_bytes(XT, UT, D)
-    use_shared || SFC.gpu_static_smem_fits(caps, staging) || throw(ArgumentError(
-        "the 2D tiled kernels stage four coordinate tiles of width D in shared memory, which at " *
-        "D=$D with coordinates of $XT and fields of $UT takes $staging bytes, more than the " *
-        "$(SFC.gpu_static_smem_budget(caps)) this device offers",
-    ))
+    x3 = fixed_x ? reshape(x_dev, size(x_dev, 1), size(x_dev, 2), 1) : x_dev
     go(Dv) =
         use_shared ?
-            _launch_sf_tiled_2d_shared!(backend, out_dev, cnt_dev,
-                (fixed_x ? reshape(x_dev, size(x_dev, 1), size(x_dev, 2), 1) : x_dev),
-                u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), fixed_x, geom;
-                weights = wts) :
+            _launch_sf_tiled_2d_shared!(backend, out_dev, cnt_dev, x3, u_dev, sf_type, ddig, vplan,
+                N, n_dist, n_val, B, Dv, Val(NMOM), fixed_x, geom; weights = wts) :
+        !staged ?
+            _launch_sf_wide_2d!(backend, out_dev, cnt_dev, x3, u_dev, sf_type, ddig, vplan,
+                N, n_dist, n_val, B, Dv, Val(NMOM), fixed_x, geom; weights = wts) :
         fixed_x ?
             _launch_sf_tiled_2d_fixed!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), geom, W; weights = wts) :
             _launch_sf_tiled_2d_varying!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan, N, n_dist, n_val, B, Dv, Val(NMOM), geom; weights = wts)

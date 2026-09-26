@@ -30,8 +30,8 @@ bench(f) = (f(); f(); ts = Float64[]; for _ in 1:5
     t = time_ns(); f(); push!(ts, (time_ns() - t) / 1e9)
 end; median(ts))
 
-lbe = LinearBinEdges(collect(range(0.05f0, 2.0f0; length = NB + 1)))
-dig = GE._sf_batch_dist_digitizer(BE, lbe)
+lbe = LinearBinEdges(0.05f0, 2.0f0, NB + 1)
+dig = GE._gpu_digitizer(BE, lbe, Val(:sf1d))
 x_fix = rand(FT, D, N); u = randn(FT, D, N, B)
 
 println("warp-replica strip vs N-body, 1D individual fixed-x, N=$N B=$B NB=$NB\n")
@@ -41,12 +41,13 @@ let
     xo, uo = GE._stage_batch_device(BE, x_fix, u; fixed_x = true)
     so = CUDA.zeros(FT, NB, B); co = CUDA.zeros(UInt32, NB, B)
     fo() = (CUDA.fill!(so, 0f0); CUDA.fill!(co, UInt32(0));
-        GE._launch_batch_fixed_x_sf!(BE, so, co, xo, uo, sf2, N, B, lbe, GEOM); CUDA.synchronize())
+        GE._launch_batch_fixed_x_sf!(BE, so, co, xo, uo, sf2, N, B, dig, NB, GEOM); CUDA.synchronize())
     to = bench(fo)
     xn = CuArray(x_fix); un = CuArray(u)
     sn = CUDA.zeros(FT, 1, NB, B); cn = CUDA.zeros(UInt32, 1, NB, B)
+    plan = SFC.gpu_native_1d_plan(BE, FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NB, 1)
     fn() = (CUDA.fill!(sn, 0f0); CUDA.fill!(cn, UInt32(0));
-        SFC.gpu_fast_launch_1d_batch!(BE, sn, cn, xn, un, sf2, dig, N, NB, B, D, 1, true, GEOM, nothing);
+        SFC.gpu_native_launch_1d!(plan, sn, cn, xn, un, SFC.NoWeights(), sf2, dig, N, NB, B, true, GEOM, nothing);
         CUDA.synchronize())
     tn = bench(fn)
     eq = Array(co) == reshape(Array(cn), NB, B)

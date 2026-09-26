@@ -63,8 +63,10 @@ function _timed(label::String, backend, f; warmup::Int, repeat::Int)
     gpu_sync!(backend)
     times = Float64[]
     for _ in 1:repeat
-        t = @elapsed f()
-        gpu_sync!(backend)
+        t = @elapsed begin
+            f()
+            gpu_sync!(backend)
+        end
         push!(times, t)
     end
     return Dict(
@@ -82,7 +84,7 @@ end
 function _explicit_aux_loop_shared_positions(sft, backend, x, u, distance_bins)
     @views for b in axes(u, 3)
         SFC.gpu_calculate_structure_function(
-            sft, backend, x, u[:, :, b], distance_bins)
+            sft, backend, x, u[:, :, b], distance_bins, UInt32)
     end
     return nothing
 end
@@ -90,7 +92,7 @@ end
 function _explicit_aux_loop_varying_positions(sft, backend, x, u, distance_bins)
     @views for b in axes(u, 3)
         SFC.gpu_calculate_structure_function(
-            sft, backend, x[:, :, b], u[:, :, b], distance_bins)
+            sft, backend, x[:, :, b], u[:, :, b], distance_bins, UInt32)
     end
     return nothing
 end
@@ -123,27 +125,27 @@ function main()
 
     ws1d = SFC.GPUSFWorkspace(backend, dist_bins)
     push!(rows, _timed("sf1d_fresh", backend, () -> begin
-        SFC.gpu_calculate_structure_function(sft, backend, xd, ud, dist_bins)
+        SFC.gpu_calculate_structure_function(sft, backend, xd, ud, dist_bins, UInt32)
     end; warmup = warmup, repeat = repeat))
     push!(rows, _timed("sf1d_workspace", backend, () -> begin
         SFC.gpu_calculate_structure_function(
-            sft, backend, xd, ud, dist_bins; workspace = ws1d,
+            sft, backend, xd, ud, dist_bins, UInt32; workspace = ws1d,
         )
     end; warmup = warmup, repeat = repeat))
     push!(rows, _timed("sf1d_3d_workspace", backend, () -> begin
         SFC.gpu_calculate_structure_function(
-            sft, backend, xd3, ud3, dist_bins; workspace = ws1d,
+            sft, backend, xd3, ud3, dist_bins, UInt32; workspace = ws1d,
         )
     end; warmup = warmup, repeat = repeat))
 
     ws_joint = SFC.GPUSFWorkspace(backend, dist_bins, value_bins; kind = :joint2d)
     push!(rows, _timed("joint2d_workspace", backend, () -> begin
-        SFC.gpu_calculate_structure_function_2d(sft, backend, xd, ud, dist_bins, value_bins; workspace = ws_joint)
+        SFC.gpu_calculate_structure_function_2d(sft, backend, xd, ud, dist_bins, value_bins, UInt32; workspace = ws_joint)
     end; warmup = warmup, repeat = repeat))
 
     ws_sp2d = SFC.GPUSFWorkspace(backend, dist_bins, value_bins; kind = :single_pass_2d)
     push!(rows, _timed("sp2d_workspace", backend, () -> begin
-        SFC.gpu_calculate_structure_functions_single_pass_2d(backend, xd, ud, dist_bins, value_bins; workspace = ws_sp2d)
+        SFC.gpu_calculate_structure_functions_single_pass_2d(backend, xd, ud, dist_bins, value_bins, UInt32; workspace = ws_sp2d)
     end; warmup = warmup, repeat = repeat))
 
     u_shared = rand(FT, 2, N, B)
@@ -152,7 +154,7 @@ function main()
     push!(rows, _timed("aux_shared_positions_sf1d", backend, () -> begin
         SFC.calculate_structure_function(
             sft, xd_shared, ud_shared, dist_bins;
-            backend = CB.GPUBackend(backend), verbose = false,
+            backend = CB.GPUBackend(backend),
         )
     end; warmup = warmup, repeat = repeat))
     push!(rows, _timed("aux_shared_positions_explicit_loop", backend, () -> begin
@@ -166,7 +168,7 @@ function main()
     push!(rows, _timed("aux_varying_positions_sf1d", backend, () -> begin
         SFC.calculate_structure_function(
             sft, xd_varying, ud_varying, dist_bins;
-            backend = CB.GPUBackend(backend), verbose = false,
+            backend = CB.GPUBackend(backend),
         )
     end; warmup = warmup, repeat = repeat))
     push!(rows, _timed("aux_varying_positions_explicit_loop", backend, () -> begin

@@ -22,8 +22,7 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
     sft = SFT.L2SFType()
 
     res_ref = SFC.calculate_structure_function(
-        sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
-        verbose = false, show_progress = false,
+        sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts,
     )
     ref_vals = res_ref.sums
     ref_counts = res_ref.counts
@@ -31,7 +30,7 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
     # --- GPU extension (CPU backend for parity test) ---
     res_gpu = SFC.calculate_structure_function(
         sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
-        backend = CB.GPUBackend(KA.CPU()), verbose = false, show_progress = false,
+        backend = CB.GPUBackend(KA.CPU()),
     )
     gpu_vals = res_gpu.sums
     gpu_counts = res_gpu.counts

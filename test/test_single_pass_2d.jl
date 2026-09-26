@@ -47,7 +47,7 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
     for (t, k) in enumerate(SP2D_INV)
         sf2d = SFC.calculate_structure_function(
             SFC.SINGLE_PASS_OPERATORS[k], x, u, distance_bins, value_bins;
-            backend = CB.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(),
         )
         Test.@test sf2d isa SFO.StructureFunction2DSumsAndCounts
         Test.@test sums_2d[t, :, :] ≈ sf2d.sums
@@ -213,12 +213,12 @@ Test.@testset "Single-Pass 2D heterogeneous value-bin tuple" begin
 
     # Correct: each invariant must match a run with that invariant's bins used uniformly.
     got = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, db, het; backend = CB.SerialBackend(), verbose = false, show_progress = false,
+        x, u, db, het; backend = CB.SerialBackend(),
     )
     for (t, k) in enumerate(SP2D_INV)
         ref = SFC.calculate_structure_functions_single_pass_2d(
             x, u, db, ntuple(_ -> het[t], 6);
-            backend = CB.SerialBackend(), verbose = false, show_progress = false,
+            backend = CB.SerialBackend(),
         )
         Test.@test got[k].sums ≈ ref[k].sums
         Test.@test got[k].counts == ref[k].counts
@@ -245,11 +245,11 @@ Test.@testset "Single-Pass 2D counts past Float32's exact integers" begin
     for backend in (CB.SerialBackend(), CB.ThreadedBackend())
         unweighted = SFC.calculate_structure_functions_single_pass_2d(
             x, u, Float32[0, 1], Float32[-1, 1], UInt32;
-            backend, verbose = false, show_progress = false,
+            backend,
         )
         weighted = SFC.calculate_structure_functions_single_pass_2d(
             x, u, Float32[0, 1], Float32[-1, 1], Float64;
-            backend, weights = ones(Float32, N), verbose = false, show_progress = false,
+            backend, weights = ones(Float32, N),
         )
         for k in SP2D_INV
             Test.@test unweighted[k].counts[1, 1] == n_pairs

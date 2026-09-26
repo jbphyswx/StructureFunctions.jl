@@ -1,85 +1,44 @@
-# Examples
+# Recipes
 
-Runnable scripts live in [`examples/`](https://github.com/jbphyswx/StructureFunctions.jl/tree/main/examples)
-and have their own environment:
+These examples use small fixtures and a serial backend. Executable scripts for parallel and GPU calculations are listed in the repository's `examples/README.md`.
 
-```bash
-julia --project=examples examples/simple_2d.jl
+## Six invariants in one pass
+
+```@example recipes
+using Random
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+using ComputationalBackends: SerialBackend
+rng = MersenneTwister(12)
+x = rand(rng, 2, 32)
+u = randn(rng, 2, 32)
+bins = range(0.0, 1.5; length=7)
+result = SFC.calculate_structure_functions_single_pass(x, u, bins;
+    backend=SerialBackend())
+propertynames(result)
 ```
 
-| Script | Shows |
-|---|---|
-| [`simple_2d.jl`](https://github.com/jbphyswx/StructureFunctions.jl/blob/main/examples/simple_2d.jl) | 2D field, 2nd-order SF, K41 scaling, plotting |
-| [`threaded_calculation.jl`](https://github.com/jbphyswx/StructureFunctions.jl/blob/main/examples/threaded_calculation.jl) | `ThreadedBackend` (OhMyThreads), serial-vs-threaded speedup |
-| [`distributed_parallel.jl`](https://github.com/jbphyswx/StructureFunctions.jl/blob/main/examples/distributed_parallel.jl) | `DistributedBackend` across worker processes |
-| [`gpu_acceleration.jl`](https://github.com/jbphyswx/StructureFunctions.jl/blob/main/examples/gpu_acceleration.jl) | `GPUBackend` + reusable `GPUSFWorkspace` |
-| [`gpu_time_slices.jl`](https://github.com/jbphyswx/StructureFunctions.jl/blob/main/examples/gpu_time_slices.jl) | native batch over the trailing `(D, N, T)` axis |
-| [`single_pass.jl`](https://github.com/jbphyswx/StructureFunctions.jl/blob/main/examples/single_pass.jl) | six invariants + Helmholtz in one pair pass |
+The six rows represent `S2`, `L2`, `T2`, `S3`, `L3`, and `L1T2`. Their definitions and the derived Helmholtz quantities are documented in the [operator reference](api/operators.md).
 
-## Featured snippets
+## Resolve separation and increment value
 
-### Single pass: six invariants + Helmholtz
-
-![Single-pass invariants and Helmholtz decomposition](assets/sf_single_pass.png)
-
-One O(N²) pair pass returns all six isotropic invariants (and, for point-field input, the
-rotational/divergent Helmholtz decomposition) as a `NamedTuple` keyed by invariant:
-
-```@example examples
-using StructureFunctions: Calculations as SFC, LogBinEdges, StructureFunctionObjects as SFO
-using ComputationalBackends: ComputationalBackends as CB
-
-x = rand(2, 4096) .* 1.0e4          # (D, N) coordinates
-u = randn(2, 4096)                  # (D, N) velocities
-bins = LogBinEdges(collect(exp10.(range(log10(50.0), log10(5.0e3); length = 41))))
-
-res = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = CB.AutoBackend())
-propertynames(res)   # one entry per invariant, and the Helmholtz split
+```@example recipes
+value_bins = range(-20.0, 20.0; length=9)
+joint = SFC.calculate_structure_function(SFT.L3SFType(), x, u, bins, value_bins;
+    backend=SerialBackend())
+@assert size(joint.counts) == (6, 8)
+size(joint.sums)
 ```
 
-Each entry carries raw sums and counts, which is what adds across slices and processes:
+A value histogram can exclude pairs whose operator values lie outside its edges. Include appropriate end intervals when all values must be retained.
 
-```@example examples
-propertynames(res.L2)
+## Shared positions across snapshots
+
+```@example recipes
+snapshots = cat(u, 2 .* u; dims=3)
+batched = SFC.calculate_structure_function(SFT.S2SFType(), x, snapshots, bins;
+    backend=SerialBackend())
+@assert size(batched.values) == (6, 2)
+batched.values
 ```
 
-`res.helmholtz` is a `HelmholtzDecomposition2D` carrying the rotational and divergent parts, for
-point-field input only. `output_type` asks for the bin averages instead:
-
-```@example examples
-avg = SFC.calculate_structure_functions_single_pass(
-    x, u, bins; output_type = SFO.StructureFunction,
-)
-propertynames(avg.L2)
-```
-
-### 2D joint (distance × value) histogram
-
-![2D joint-probability binning across all invariants, with vs without a cascade](assets/sf_2d_binning.png)
-
-```@example examples
-using StructureFunctions: StructureFunctionTypes as SFT, LinearBinEdges
-
-dist = LogBinEdges(collect(exp10.(range(log10(50.0), log10(5.0e3); length = 41))))
-vbins = LinearBinEdges(collect(range(-5.0, 5.0; length = 51)))
-sf2d = SFC.calculate_structure_function(SFT.L2SFType(), x, u, dist, vbins; backend = CB.AutoBackend())
-size(sf2d.sums), size(sf2d.counts)   # the (n_dist, n_val) joint histogram
-```
-
-### Native batch over time slices
-
-Pass a `(D, N, T)` array (shared positions may be a single `(D, N)` matrix). Geometry is computed
-once per pair and the batch axis is vectorized — far faster than looping `t`:
-
-```@example examples
-n_slices = 4
-u_batch = randn(2, size(x, 2), n_slices)      # (D, N, T); x stays a single (D, N) matrix
-sums = zeros(SFC.SINGLE_PASS_N, length(dist) - 1, length(vbins) - 1, n_slices)
-counts = zeros(Int, size(sums))
-SFC.calculate_structure_functions_single_pass_2d_batch!(sums, counts, x, u_batch, dist, vbins;
-                                                        backend = CB.AutoBackend())
-size(sums)
-```
-
-See [Backends](backends.md) for choosing serial / threaded / distributed / GPU, and
-[GPU Acceleration](gpu.md) for the GPU batch path and `GPUSFWorkspace`.
+Use [data layouts](data.md) for varying positions or additional batch axes. [Spectra, fluxes, and fitting](spectra.md) covers analysis of the resulting statistics.

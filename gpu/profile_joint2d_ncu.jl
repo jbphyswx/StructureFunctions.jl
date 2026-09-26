@@ -30,7 +30,7 @@ const _GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
 _GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded — use julia --project=gpu")
 
 function _dist_bins(n_dist::Int, ::Type{FT}) where {FT}
-    return LogBinEdges(Vector{FT}(exp.(range(log(FT(1000)), log(FT(50000)); length = n_dist + 1))))
+    return LogBinEdges(FT(1000), FT(50000), n_dist + 1)
 end
 
 function _value_bins(route::AbstractString, n_val_inner::Int, ::Type{FT}) where {FT}
@@ -41,10 +41,10 @@ function _value_bins(route::AbstractString, n_val_inner::Int, ::Type{FT}) where 
     return InfPaddedBinEdges(LinearBinEdges(range(FT(-1), FT(2); length = n_val_inner + 1)))
 end
 
-function _resolve_compile_cells(nb2::Int)
+function _resolve_compile_cells(backend, ::Type{FT}) where {FT}
     spec = get(ENV, "COMPILE_CELLS", "exact")
     spec == "exact" && return nothing
-    spec == "max" && return joint2d_smem_max()
+    spec == "max" && return joint2d_smem_max(backend, 2, FT, FT, UInt32)
     return parse(Int, spec)
 end
 
@@ -62,7 +62,7 @@ function main()
     dist = _dist_bins(n_dist, FT)
     value_bins = _value_bins(route, n_val_inner, FT)
     nb2 = (length(dist) - 1) * (length(value_bins) - 1)
-    compile_kw = _resolve_compile_cells(nb2)
+    compile_kw = _resolve_compile_cells(backend, FT)
 
     Random.seed!(42)
     x = rand(FT, 2, N) .* FT(50000)
@@ -81,7 +81,7 @@ function main()
     launch! = function ()
         SFC.reset_histogram!(ws)
         _GPUExt._launch_gpu_joint2d!(
-            sft, backend, x, u, dist, value_bins;
+            sft, backend, x, u, dist, value_bins, UInt32;
             workspace = ws, synchronize = true,
         )
         return nothing
@@ -91,15 +91,11 @@ function main()
         launch!()
     end
 
-    kernel! = _GPUExt._joint2d_tiled_kernel_for(
-        backend, ws.dist_bins, ws.val_plan, ws.joint2d_compile_cells, 2,
-    )
-    dist_r = _GPUExt._joint2d_dist_route(ws.dist_bins)
-    val_r = _GPUExt._joint2d_val_route(ws.val_plan)
-    gpu_fn = nameof(kernel!.f)
+    dist_r = nameof(typeof(ws.dist_digitizer))
+    val_r = nameof(typeof(ws.val_plan))
     msg = Printf.@sprintf(
-        "ncu workload: N=%d n_dist=%d n_val=%d NB2=%d route=%s/%s compile_cells=%d prewarm=%d gpu_fn=%s",
-        N, n_dist, length(value_bins) - 1, nb2, dist_r, val_r, ws.joint2d_compile_cells, prewarm, gpu_fn,
+        "ncu workload: N=%d n_dist=%d n_val=%d NB2=%d digitizers=%s/%s compile_cells=%d prewarm=%d",
+        N, n_dist, length(value_bins) - 1, nb2, dist_r, val_r, ws.joint2d_compile_cells, prewarm,
     )
     println(msg)
     flush(stdout)

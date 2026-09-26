@@ -38,9 +38,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             SF.StructureFunctionSumsAndCounts;
-            backend = CB.SerialBackend(),
-            verbose = false,
-            show_progress = false
+            backend = CB.SerialBackend()
         )
 
         # 2D Joint-Probability Calculation
@@ -50,9 +48,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l2_value_bins;
-            backend = CB.SerialBackend(),
-            verbose = false,
-            show_progress = false
+            backend = CB.SerialBackend()
         )
 
         @test sf2d isa SFO.StructureFunction2DSumsAndCounts
@@ -81,9 +77,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             SF.StructureFunctionSumsAndCounts;
-            backend = CB.SerialBackend(),
-            verbose = false,
-            show_progress = false
+            backend = CB.SerialBackend()
         )
 
         # 2D Joint
@@ -93,9 +87,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l3_value_bins;
-            backend = CB.SerialBackend(),
-            verbose = false,
-            show_progress = false
+            backend = CB.SerialBackend()
         )
 
         @test sf2d isa SFO.StructureFunction2DSumsAndCounts
@@ -116,9 +108,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l2_value_bins;
-            backend = CB.SerialBackend(),
-            verbose = false,
-            show_progress = false
+            backend = CB.SerialBackend()
         )
 
         sf_array = SFC.calculate_structure_function(
@@ -127,9 +117,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l2_value_bins;
-            backend = CB.SerialBackend(),
-            verbose = false,
-            show_progress = false
+            backend = CB.SerialBackend()
         )
 
         @test sf_serial.sums == sf_array.sums
@@ -144,9 +132,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l2_value_bins;
-            backend = CB.SerialBackend(),
-            verbose = false,
-            show_progress = false
+            backend = CB.SerialBackend()
         )
 
         sf_threaded = SFC.calculate_structure_function(
@@ -155,9 +141,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             u_mat,
             distance_bins,
             l2_value_bins;
-            backend = CB.ThreadedBackend(),
-            verbose = false,
-            show_progress = false
+            backend = CB.ThreadedBackend()
         )
 
         @test sf_serial.sums ≈ sf_threaded.sums
@@ -166,8 +150,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 
     # 6. Test Algebraic Operator Support (+)
     @testset "Base algebraic addition (+)" begin
-        sf1 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins; verbose=false, show_progress=false)
-        sf2 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins; verbose=false, show_progress=false)
+        sf1 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins)
+        sf2 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins)
         
         combined = sf1 + sf2
         @test combined.sums == sf1.sums .* 2
@@ -185,9 +169,9 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
         for D in (2, 3), (route, vbins) in routes
             x, u = rand(D, n), randn(D, n)
             ref = SFC.calculate_structure_function(SFT.L2SF, x, u, dbins, vbins;
-                backend = CB.SerialBackend(), verbose = false, show_progress = false)
+                backend = CB.SerialBackend())
             dev = SFC.calculate_structure_function(SFT.L2SF, x, u, dbins, vbins;
-                backend = CB.GPUBackend(KA.CPU()), verbose = false, show_progress = false)
+                backend = CB.GPUBackend(KA.CPU()))
             @test sum(ref.counts) > 0
             @test dev.counts == ref.counts
             @test dev.sums ≈ ref.sums

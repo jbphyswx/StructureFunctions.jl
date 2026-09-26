@@ -282,17 +282,17 @@ Test.@testset "batch kernels cull without changing the result" begin
         runs = (
             (pol, be) -> (s = zeros(FT, nb, B); c = zeros(CT, nb, B);
                 SFC.calculate_structure_function_batch!(s, c, L2, x, u, bins; backend = be, culling = pol,
-                    weights = w, verbose = false); (s, c)),
+                    weights = w); (s, c)),
             (pol, be) -> (s = zeros(FT, nb, nv, B); c = zeros(CT, nb, nv, B);
                 SFC.calculate_structure_function_2d_batch!(s, c, L2, x, u, bins, vbins; backend = be,
-                    culling = pol, weights = w, verbose = false); (s, c)),
+                    culling = pol, weights = w); (s, c)),
             (pol, be) -> (s = zeros(FT, SFC.SINGLE_PASS_N, nb, B); c = zeros(CT, SFC.SINGLE_PASS_N, nb, B);
                 SFC.calculate_structure_functions_single_pass_batch!(s, c, x, u, bins; backend = be,
-                    culling = pol, weights = w, verbose = false); (s, c)),
+                    culling = pol, weights = w); (s, c)),
             (pol, be) -> (s = zeros(FT, SFC.SINGLE_PASS_N, nb, nv, B);
                 c = zeros(CT, SFC.SINGLE_PASS_N, nb, nv, B);
                 SFC.calculate_structure_functions_single_pass_2d_batch!(s, c, x, u, bins, vbins;
-                    backend = be, culling = pol, weights = w, verbose = false); (s, c)),
+                    backend = be, culling = pol, weights = w); (s, c)),
         )
         for run in runs
             s_ref, c_ref = run(SFC.NoCulling(), CB.SerialBackend())
@@ -315,8 +315,7 @@ Test.@testset "tensor kernels cull without changing the result" begin
     for P in (2, 3), (x, u) in ((rand(2, N), randn(2, N)), (rand(2, N), randn(2, N, B)),
                                 (rand(2, N, B), randn(2, N, B))),
         backend in (CB.SerialBackend(), CB.ThreadedBackend())
-        run(pol) = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, TRAW; backend, culling = pol,
-                                                           verbose = false)
+        run(pol) = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, TRAW; backend, culling = pol)
         ref = run(SFC.NoCulling())
         Test.@test sum(ref.counts) > 0
         for pol in (SFC.AlwaysCulling(), SFC.AutoCulling())
@@ -383,18 +382,15 @@ Test.@testset "culling through the public entry" begin
     end
 
     ref = SFC.calculate_structure_function(sf, x, u, bins;
-        backend = CB.SerialBackend(), culling = SFC.NoCulling(), verbose = false,
-        show_progress = false)
+        backend = CB.SerialBackend(), culling = SFC.NoCulling())
     cull = SFC.calculate_structure_function(sf, x, u, bins;
-        backend = CB.SerialBackend(), culling = SFC.AutoCulling(), verbose = false,
-        show_progress = false)
+        backend = CB.SerialBackend(), culling = SFC.AutoCulling())
     Test.@test same_result(cull, ref)
     Test.@test cull.distance == ref.distance
     Test.@test any(.!isnan.(ref.values))               # the bins are not all empty
 
     thr = SFC.calculate_structure_function(sf, x, u, bins;
-        backend = CB.ThreadedBackend(), culling = SFC.AutoCulling(), verbose = false,
-        show_progress = false)
+        backend = CB.ThreadedBackend(), culling = SFC.AutoCulling())
     Test.@test same_result(thr, ref)
 
     # The scalar kernels, for a curved metric and for a flat width past three, cull too.
@@ -415,9 +411,9 @@ Test.@testset "culling through the public entry" begin
         for (xk, uk, bk, kw) in ((xs, us, sbins, (; distance_metric = m)), (x4, u4, bins4, (;)),
                                  (x64, u64, bins64, (;)))
             one_d(pol) = SFC.calculate_structure_function(sf, xk, uk, bk, RAW; backend, culling = pol,
-                verbose = false, show_progress = false, kw...)
+                kw...)
             joint(pol) = SFC.calculate_structure_function(sf, xk, uk, bk, vbins; backend, culling = pol,
-                verbose = false, show_progress = false, kw...)
+                kw...)
             ref1, ref2 = one_d(SFC.NoCulling()), joint(SFC.NoCulling())
             Test.@test sum(ref1.counts) > 0
             for pol in (SFC.AlwaysCulling(), SFC.AutoCulling())

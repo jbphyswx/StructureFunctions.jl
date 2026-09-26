@@ -75,7 +75,7 @@ function generate_kolmogorov_figure()
 
     op = SFT.SecondOrderStructureFunctionType()
     result = SFC.calculate_structure_function(op, x, u, bins;
-        backend=CB.SerialBackend(), show_progress=false, verbose=false)
+        backend=CB.SerialBackend())
 
     sf2   = result.values
     rdist = SF.midpoints(result.distance)
@@ -128,9 +128,9 @@ function generate_long_vs_trans_figure()
     op_T = SFT.TransverseSecondOrderStructureFunctionType()
 
     res_L = SFC.calculate_structure_function(op_L, x, u, bins;
-        backend=CB.SerialBackend(), show_progress=false, verbose=false)
+        backend=CB.SerialBackend())
     res_T = SFC.calculate_structure_function(op_T, x, u, bins;
-        backend=CB.SerialBackend(), show_progress=false, verbose=false)
+        backend=CB.SerialBackend())
 
     sf_L = res_L.values
     sf_T = res_T.values
@@ -171,10 +171,10 @@ function generate_parity_figure()
     op = SFT.SecondOrderStructureFunctionType()
 
     res_serial = SFC.calculate_structure_function(op, x, u, bins;
-        backend=CB.SerialBackend(), show_progress=false, verbose=false)
+        backend=CB.SerialBackend())
 
     res_thread = SFC.calculate_structure_function(op, x, u, bins;
-        backend=CB.ThreadedBackend(), show_progress=false, verbose=false)
+        backend=CB.ThreadedBackend())
 
     sf_s = res_serial.values
     sf_t = res_thread.values
@@ -222,11 +222,12 @@ function generate_gpu_parity_figure()
     sft = SFT.L2SFType()
 
     res_serial = SFC.calculate_structure_function(
-        sft, x, u, bin_edges;
-        verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts,
+        sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
+        backend = CB.SerialBackend(),
     )
-    res_gpu = SFC.gpu_calculate_structure_function(
-        sft, KA.CPU(), x, u, bin_edges,
+    res_gpu = SFC.calculate_structure_function(
+        sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
+        backend = CB.GPUBackend(KA.CPU()),
     )
 
     rd = [(bin_edges[i] + bin_edges[i + 1]) / 2 for i in 1:(length(bin_edges) - 1)]
@@ -336,7 +337,7 @@ function generate_2d_binning_figure()
         x, u = mk(N=2500)
         # Velocity-increment scale σ from L2(r); set per-order value ranges around it.
         l2 = SFC.calculate_structure_function(SFT.LongitudinalSecondOrderStructureFunctionType(),
-            x, u, dist_bins; backend=CB.SerialBackend(), show_progress=false, verbose=false)
+            x, u, dist_bins; backend=CB.SerialBackend())
         σ2 = maximum(filter(isfinite, l2.values)); σ = sqrt(σ2)
         seq(hi) = collect(range(0.0, hi; length=nval + 1))         # ≥0 (2nd order)
         sym(hi) = collect(range(-hi, hi; length=nval + 1))         # ± (3rd order)

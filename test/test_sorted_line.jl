@@ -65,15 +65,13 @@ Test.@testset "every polynomial operator on a line equals the pair loop" begin
         ref_s, ref_c = _line_pair_loop(sf, x, u, bins, ones_w, Val(1), Val(1), Val(0))
         Test.@test sum(ref_c) > 0
         for backend in (SERIAL, THREADED, AUTO)
-            got = SFC.calculate_structure_function(sf, x1, u, bins, RAW; backend, verbose = false,
-                                                   show_progress = false)
+            got = SFC.calculate_structure_function(sf, x1, u, bins, RAW; backend)
             Test.@test got.counts == UInt32.(ref_c)
             Test.@test _close(got.sums, ref_s)
         end
     end
     # the averaged result object comes out of the same route
-    res = SFC.calculate_structure_function(SFT.L2SFType(), x1, u, bins; backend = SERIAL, verbose = false,
-                                           show_progress = false)
+    res = SFC.calculate_structure_function(SFT.L2SFType(), x1, u, bins; backend = SERIAL)
     ref_s, ref_c = _line_pair_loop(SFT.L2SFType(), x, u, bins, ones_w, Val(1), Val(1), Val(0))
     Test.@test _close(res.values, ref_s ./ ref_c)
 end
@@ -101,8 +99,7 @@ Test.@testset "multi-fields on a line" begin
         ref_s, ref_c = _line_pair_loop(sf, x, MF.packed(f), bins, ones_w, Val(D), Val(V), Val(K))
         Test.@test sum(ref_c) > 0
         for backend in (SERIAL, THREADED)
-            got = SFC.calculate_structure_function(sf, x1, f, bins, RAW; backend, verbose = false,
-                                                   show_progress = false)
+            got = SFC.calculate_structure_function(sf, x1, f, bins, RAW; backend)
             Test.@test got.counts == UInt32.(ref_c)
             Test.@test _close(got.sums, ref_s)
         end
@@ -121,8 +118,7 @@ Test.@testset "pair weights on a line" begin
     for sf in (SFT.L2SFType(), SFT.L3SFType(), SFT.ProjectedStructureFunctionType{4, 0}())
         ref_s, ref_c = _line_pair_loop(sf, x, u, bins, w, Val(1), Val(1), Val(0))
         for backend in (SERIAL, THREADED)
-            got = SFC.calculate_structure_function(sf, x1, u, bins, Float64, RAW; backend, weights = w,
-                                                   verbose = false, show_progress = false)
+            got = SFC.calculate_structure_function(sf, x1, u, bins, Float64, RAW; backend, weights = w)
             Test.@test _close(got.counts, ref_c)
             Test.@test _close(got.sums, ref_s)
         end
@@ -130,13 +126,12 @@ Test.@testset "pair weights on a line" begin
     f = Fields(vectors = (u,), scalars = (θ,))
     for sf in (SFT.MixedSFType{1, 0, 2}(), SFT.ScalarSFType{3}())
         ref_s, ref_c = _line_pair_loop(sf, x, MF.packed(f), bins, w, Val(1), Val(1), Val(1))
-        got = SFC.calculate_structure_function(sf, x1, f, bins, Float64, RAW; backend = SERIAL, weights = w,
-                                               verbose = false, show_progress = false)
+        got = SFC.calculate_structure_function(sf, x1, f, bins, Float64, RAW; backend = SERIAL, weights = w)
         Test.@test _close(got.counts, ref_c)
         Test.@test _close(got.sums, ref_s)
     end
     Test.@test_throws ArgumentError SFC.calculate_structure_function(SFT.L2SFType(), x1, u, bins; backend = SERIAL,
-                                                                     weights = w, verbose = false, show_progress = false)
+                                                                     weights = w)
 end
 
 Test.@testset "the order of the points and coincident points change nothing" begin
@@ -152,9 +147,9 @@ Test.@testset "the order of the points and coincident points change nothing" beg
         ref_s, ref_c = _line_pair_loop(sf, x, u, bins, ones_w, Val(1), Val(1), Val(0))
         Test.@test sum(ref_c) > 0
         sorted_res = SFC.calculate_structure_function(sf, reshape(sort(x), 1, :), u[:, sortperm(x)], bins, RAW;
-                                                      backend = SERIAL, verbose = false, show_progress = false)
+                                                      backend = SERIAL)
         shuffled_res = SFC.calculate_structure_function(sf, reshape(x[perm], 1, :), u[:, perm], bins, RAW;
-                                                        backend = SERIAL, verbose = false, show_progress = false)
+                                                        backend = SERIAL)
         Test.@test sorted_res.counts == UInt32.(ref_c)
         Test.@test shuffled_res.counts == UInt32.(ref_c)
         Test.@test _close(sorted_res.sums, ref_s)
@@ -165,8 +160,7 @@ Test.@testset "the order of the points and coincident points change nothing" beg
     fp = Fields(vectors = (u[:, perm],), scalars = (θ[perm],))
     for sf in (SFT.ScalarSFType{3}(), SFT.MixedSFType{1, 0, 1}())
         ref_s, ref_c = _line_pair_loop(sf, x, MF.packed(f), bins, ones_w, Val(1), Val(1), Val(1))
-        got = SFC.calculate_structure_function(sf, reshape(x[perm], 1, :), fp, bins, RAW; backend = SERIAL,
-                                               verbose = false, show_progress = false)
+        got = SFC.calculate_structure_function(sf, reshape(x[perm], 1, :), fp, bins, RAW; backend = SERIAL)
         Test.@test got.counts == UInt32.(ref_c)
         Test.@test _close(got.sums, ref_s)
         Test.@test maximum(abs, ref_s) > 0
@@ -185,8 +179,7 @@ Test.@testset "what the sorted route does not take stays on the pair loop, and i
     Test.@test !SFT.is_polynomial_operator(cubic)
     ref_s, ref_c = _line_pair_loop(cubic, x, u, bins, ones_w, Val(1), Val(1), Val(0))
     for backend in (SERIAL, THREADED)
-        got = SFC.calculate_structure_function(cubic, x1, u, bins, RAW; backend, verbose = false,
-                                               show_progress = false)
+        got = SFC.calculate_structure_function(cubic, x1, u, bins, RAW; backend)
         Test.@test got.counts == UInt32.(ref_c)
         Test.@test _close(got.sums, ref_s)
     end
@@ -198,15 +191,14 @@ Test.@testset "what the sorted route does not take stays on the pair loop, and i
     # the sorted line forms no pair outside the bins, so every culling policy runs it
     for backend in (SERIAL, THREADED)
         always = SFC.calculate_structure_function(SFT.L2SFType(), x1, u, bins, RAW; backend,
-            culling = SFC.AlwaysCulling(), verbose = false, show_progress = false)
+            culling = SFC.AlwaysCulling())
         none = SFC.calculate_structure_function(SFT.L2SFType(), x1, u, bins, RAW; backend,
-            culling = SFC.NoCulling(), verbose = false, show_progress = false)
+            culling = SFC.NoCulling())
         Test.@test always.counts == none.counts
         Test.@test always.sums == none.sums
     end
     # the serial entry on a one-dimensional list returns a result
-    direct = SFC.serial_calculate_structure_function(SFT.L2SFType(), x1, u, bins, UInt32; verbose = false,
-                                                     show_progress = false)
+    direct = SFC.serial_calculate_structure_function(SFT.L2SFType(), x1, u, bins, UInt32)
     ref_s, ref_c = _line_pair_loop(SFT.L2SFType(), x, u, bins, ones_w, Val(1), Val(1), Val(0))
     Test.@test direct isa RAW
     Test.@test direct.counts == UInt32.(ref_c)
@@ -217,13 +209,11 @@ Test.@testset "the sorted route is linear in the points" begin
     Random.seed!(4260)
     bins = collect(range(0.0, 0.5; length = 21))
     small = rand(1, 2000)
-    SFC.calculate_structure_function(SFT.L2SFType(), small, randn(1, 2000), bins, Int64; backend = SERIAL,
-                                     verbose = false, show_progress = false)
+    SFC.calculate_structure_function(SFT.L2SFType(), small, randn(1, 2000), bins, Int64; backend = SERIAL)
     N = 100_000
     x = rand(1, N) .* 100.0
     u = randn(1, N)
-    t = @elapsed res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64, RAW; backend = SERIAL,
-                                                        verbose = false, show_progress = false)
+    t = @elapsed res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64, RAW; backend = SERIAL)
     Test.@test sum(res.counts) > 0
     Test.@test t < 2.0
 end

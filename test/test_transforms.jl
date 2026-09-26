@@ -175,16 +175,14 @@ Test.@testset "a result object transforms back to the wavenumber it was built fr
         kq = collect(range(0.3, 12.0; length = 500))
 
         raw = SFC.calculate_structure_function(
-            SFT.S2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-            verbose = false, show_progress = false)
+            SFT.S2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
         P = SFC.isotropic_spectrum(raw, kq, Val(D); asymptote = A^2)
         Test.@test all(isfinite, P)
         Test.@test kq[argmax(P)] ≈ k0 rtol = 0.05
 
         # the averaged object carries the same information, so it must give the same answer
         avg = SFC.calculate_structure_function(
-            SFT.S2SFType(), x, u, bins; backend = CB.SerialBackend(), verbose = false,
-            show_progress = false)
+            SFT.S2SFType(), x, u, bins; backend = CB.SerialBackend())
         Test.@test SFC.isotropic_spectrum(avg, kq, Val(D); asymptote = A^2) ≈ P
     end
 end
@@ -447,8 +445,7 @@ Test.@testset "the covariance is the variance less half the structure function" 
         end
         bins = collect(range(0.0, 2.0; length = 41))
         raw = SFC.calculate_structure_function(
-            SFT.S2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-            verbose = false, show_progress = false)
+            SFT.S2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
         rr, CC = SFC.covariance(raw, A^2 / 2)
         expect = [(A^2 / 2) * SFC.isotropic_kernel(Val(D), k0 * q) for q in rr]
         Test.@test maximum(abs, CC .- expect) < 0.05 * A^2

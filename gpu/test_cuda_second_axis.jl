@@ -39,9 +39,9 @@ for (route, n_angle) in (("tiled", 5), ("global atomic", 401))
         x, u = rand(D, NP), rand(D, NP)
         src = SFC.SeparationAngleAxis(D == 2 ? SA.SVector(1.0, 0.0) : SA.SVector(1.0, 0.0, 0.0))
         ref = SFC.calculate_structure_function(OP, x, u, DBINS, abins; backend = SER,
-            verbose = false, second_axis = src)
+            second_axis = src)
         got = SFC.calculate_structure_function(OP, x, u, DBINS, abins; backend = DEV,
-            verbose = false, second_axis = src)
+            second_axis = src)
         compare("angle axis $route D=$D", got, ref)
     end
 end
@@ -50,8 +50,8 @@ end
 for (route, n_val) in (("tiled", 5), ("global atomic", 401))
     vbins = collect(range(0.0, 2.0; length = n_val)) .+ 0.011
     x, u = rand(2, NP), rand(2, NP)
-    ref = SFC.calculate_structure_function(OP, x, u, DBINS, vbins; backend = SER, verbose = false)
-    got = SFC.calculate_structure_function(OP, x, u, DBINS, vbins; backend = DEV, verbose = false)
+    ref = SFC.calculate_structure_function(OP, x, u, DBINS, vbins; backend = SER)
+    got = SFC.calculate_structure_function(OP, x, u, DBINS, vbins; backend = DEV)
     compare("value axis UNCHANGED $route", got, ref)
 end
 
@@ -59,7 +59,7 @@ end
 let x = rand(2, 64), u = rand(2, 64)
     abins = collect(range(prevfloat(0.0), π; length = 5))
     refused = try
-        SFC.calculate_structure_function(OP, x, u, DBINS, abins; backend = DEV, verbose = false,
+        SFC.calculate_structure_function(OP, x, u, DBINS, abins; backend = DEV,
             second_axis = SRC, distance_metric = SFC.DI.SphericalAngle())
         false
     catch e

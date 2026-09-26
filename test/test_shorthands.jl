@@ -17,7 +17,7 @@ Test.@testset "Structure function resolver API" begin
     Test.@test SFT.get_structure_function_type(Val(2), Val(:long)) === SFT.L2SF
 
     op = SFT.get_structure_function_type(:L2SF)
-    res = SFC.calculate_structure_function(op, x, u, bins; verbose = false, show_progress = false)
+    res = SFC.calculate_structure_function(op, x, u, bins)
     Test.@test res isa SF.StructureFunction
     Test.@test res.operator === SFT.L2SF
 
@@ -25,18 +25,14 @@ Test.@testset "Structure function resolver API" begin
         :L2SF,
         x,
         u,
-        bins;
-        verbose = false,
-        show_progress = false,
+        bins,
     )
     Test.@test_throws MethodError SFC.calculate_structure_function(
         2,
         :longitudinal,
         x,
         u,
-        bins;
-        verbose = false,
-        show_progress = false,
+        bins,
     )
 
     x_tuple = (vec(x[1, :]), vec(x[2, :]))
@@ -45,9 +41,7 @@ Test.@testset "Structure function resolver API" begin
         SFT.L2SF,
         x_tuple,
         u_tuple,
-        bins;
-        verbose = false,
-        show_progress = false,
+        bins,
     )
 
     Test.@test SFT.S2SF === SFT.SecondOrderStructureFunction
@@ -66,8 +60,6 @@ Test.@testset "Structure function resolver API" begin
         SFT.RotationalSecondOrderStructureFunction,
         x,
         u,
-        bins;
-        verbose = false,
-        show_progress = false,
+        bins,
     )
 end

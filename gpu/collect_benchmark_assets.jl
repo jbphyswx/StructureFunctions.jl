@@ -55,7 +55,7 @@ function _warmup_gpu_session!(backend, warmup::Int)
         ws = SFC.GPUSFWorkspace(backend, bins)
         for _ in 1:warmup
             SFC.gpu_calculate_structure_function(
-                SCALING_SFT, backend, x_dev, u_dev, bins;
+                SCALING_SFT, backend, x_dev, u_dev, bins, UInt32;
                 workspace = ws,
             )
         end
@@ -125,8 +125,8 @@ function collect_slice_batch_scaling!(backend, warmup::Int)
             counts_cpu = zeros(UInt32, NB, T)
             sums_naive = zeros(eltype(bins), NB, T)
             counts_naive = zeros(UInt32, NB, T)
-            sums_slice = zeros(eltype(bins), NB, T)
-            counts_slice = zeros(UInt32, NB, T)
+            sums_slice = KA.zeros(backend, eltype(bins), NB, T)
+            counts_slice = KA.zeros(backend, UInt32, NB, T)
 
             cpu_t = bench_cpu_serial_slice_loop!(
                 x_host, u_host, bins, SCALING_SFT, sums_cpu, counts_cpu; T = T, warmup = warmup,

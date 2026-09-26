@@ -286,11 +286,11 @@ Test.@testset "the grid entry takes a slice batch" begin
     u = randn(2, nx, ny, nt)
     for tag in (SB.AutoSpectralBackend(), FFT)
         sums, counts = zeros(nb, nt), zeros(Int, nb, nt)
-        SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), grid, u, bins, tag; verbose = false)
+        SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), grid, u, bins, tag)
         # each slice must be what the single-slice grid entry returns for that slice
         for t in 1:nt
             res = SFC.calculate_structure_function(SFT.L2SFType(), grid, u[:, :, :, t], bins, tag, Int,
-                                                  SFO.StructureFunctionSumsAndCounts; verbose = false)
+                                                  SFO.StructureFunctionSumsAndCounts)
             Test.@test counts[:, t] == res.counts
             Test.@test maximum(abs, sums[:, t] .- res.sums) <= 1e-11 * max(maximum(abs, res.sums), 1e-12)
         end
@@ -301,21 +301,21 @@ Test.@testset "the grid entry takes a slice batch" begin
     na = length(axis_be) - 1
     js, jc = zeros(nb, na, nt), zeros(nb, na, nt)
     SFC.calculate_structure_function_batch!(js, jc, SFT.L2SFType(), grid, u, bins, axis_be;
-                                            second_axis, verbose = false)
+                                            second_axis)
     fs, fc = zeros(nb, nt), zeros(Float64, nb, nt)
-    SFC.calculate_structure_function_batch!(fs, fc, SFT.L2SFType(), grid, u, bins; verbose = false)
+    SFC.calculate_structure_function_batch!(fs, fc, SFT.L2SFType(), grid, u, bins)
     Test.@test maximum(abs, dropdims(sum(jc; dims = 2); dims = 2) .- fc) <= 1e-9
     # cell weights belong to the grid, so one vector serves every slice
     ws, wc = zeros(nb, nt), zeros(Float64, nb, nt)
     SFC.calculate_structure_function_batch!(ws, wc, SFT.L2SFType(), grid, u, bins;
-                                            weights = SFC.cell_measure(grid), verbose = false)
+                                            weights = SFC.cell_measure(grid))
     Test.@test all(>=(0), wc)
     Test.@test any(>(0), wc)
     # a field that does not cover the grid, and one with no slice axis
     Test.@test_throws DimensionMismatch SFC.calculate_structure_function_batch!(
-        zeros(nb, nt), zeros(Int, nb, nt), SFT.L2SFType(), grid, randn(2, nx, ny + 1, nt), bins; verbose = false)
+        zeros(nb, nt), zeros(Int, nb, nt), SFT.L2SFType(), grid, randn(2, nx, ny + 1, nt), bins)
     Test.@test_throws DimensionMismatch SFC.calculate_structure_function_batch!(
-        zeros(nb, nt), zeros(Int, nb, nt), SFT.L2SFType(), grid, randn(2, nx * ny), bins; verbose = false)
+        zeros(nb, nt), zeros(Int, nb, nt), SFT.L2SFType(), grid, randn(2, nx * ny), bins)
 end
 
 Test.@testset "the scattered mode route takes a slice batch" begin
@@ -328,19 +328,19 @@ Test.@testset "the scattered mode route takes a slice batch" begin
     u = randn(2, N, nt)
     tag = SFC.NonuniformFFTsSpectralBackend()
     sums, counts = zeros(nb, nt), zeros(Float64, nb, nt)
-    SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), s, u, bins, tag; verbose = false)
+    SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), s, u, bins, tag)
     for t in 1:nt
         res = SFC.calculate_structure_function(SFT.L2SFType(), s, u[:, :, t], bins, tag,
-                                               SFO.StructureFunctionSumsAndCounts; verbose = false)
+                                               SFO.StructureFunctionSumsAndCounts)
         Test.@test maximum(abs, counts[:, t] .- res.counts) <= 1e-9 * max(maximum(abs, res.counts), 1e-12)
         Test.@test maximum(abs, sums[:, t] .- res.sums) <= 1e-11 * max(maximum(abs, res.sums), 1e-12)
     end
     # the kernel-weighted pair mass is fractional, so integer counts are refused
     Test.@test_throws ArgumentError SFC.calculate_structure_function_batch!(
-        zeros(nb, nt), zeros(Int, nb, nt), SFT.L2SFType(), s, u, bins, tag; verbose = false)
+        zeros(nb, nt), zeros(Int, nb, nt), SFT.L2SFType(), s, u, bins, tag)
     # an FFT tag names no non-uniform transform for a scattered mode set
     Test.@test_throws ArgumentError SFC.calculate_structure_function_batch!(
-        zeros(nb, nt), zeros(nb, nt), SFT.L2SFType(), s, u, bins, FFT; verbose = false)
+        zeros(nb, nt), zeros(nb, nt), SFT.L2SFType(), s, u, bins, FFT)
 end
 
 Test.@testset "a schedule names how its batch shares each lag's geometry" begin

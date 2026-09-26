@@ -11,7 +11,7 @@ using Distances: Distances as DI
 using Random: Random
 
 const RAW = SF.StructureFunctionSumsAndCounts
-kw(be) = (; backend = be, verbose = false, show_progress = false)
+kw(be) = (; backend = be)
 
 Test.@testset "A pair's value" begin
     rng = Random.Xoshiro(20260925)

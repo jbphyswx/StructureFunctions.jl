@@ -130,7 +130,7 @@ function _bench_explicit_gpu_shared_loop(
         () -> begin
             @views for b in sample_indices
                 SFC.gpu_calculate_structure_function(
-                    sf, ka_backend, xd, ud[:, :, b], edges
+                    sf, ka_backend, xd, ud[:, :, b], edges, UInt32
                 )
             end
         end,
@@ -186,7 +186,7 @@ function _bench_explicit_gpu_varying_sf_loop(
         () -> begin
             @views for b in sample_indices
                 SFC.gpu_calculate_structure_function(
-                    sf, ka_backend, xd[:, :, b], ud[:, :, b], edges
+                    sf, ka_backend, xd[:, :, b], ud[:, :, b], edges, UInt32
                 )
             end
         end,
@@ -329,16 +329,16 @@ function run_batch_matrix_benchmark(;
     u_fix = rand(Float32, 2, N, B)
     x_var = rand(Float32, 2, N, B)
     u_var = rand(Float32, 2, N, B)
-    edges = LinearBinEdges(collect(range(0.0f0, 2.0f0; length = n_dist + 1)))
-    val_edges = LinearBinEdges(collect(range(-1.0f0, 1.0f0; length = n_val + 1)))
+    edges = LinearBinEdges(0.0f0, 2.0f0, n_dist + 1)
+    val_edges = LinearBinEdges(-1.0f0, 1.0f0, n_val + 1)
     sf = SFT.L2SFType()
     gpu_backend, ka_backend = _resolve_gpu_backend(backend)
-    NB = length(edges.edges) - 1
-    nv = length(val_edges.edges) - 1
+    NB = n_dist
+    nv = n_val
 
     n_tile_blocks = cld(N, 128) * (cld(N, 128) + 1) ÷ 2
     @printf(
-        "batch matrix profile=%s N=%d B=%d n_dist=%d n_val=%d strips(1D)=%d strips(SP1D)=%d tile_blocks=%d (NB must be <= 127)\n",
+        "batch matrix profile=%s N=%d B=%d n_dist=%d n_val=%d strips(1D)=%d strips(SP1D)=%d tile_blocks=%d\n",
         profile, N, B, n_dist, n_val, cld(B, 16), cld(B, 8), n_tile_blocks,
     )
     println("cases: $(join(string.(cases), ", "))")
@@ -348,7 +348,7 @@ function run_batch_matrix_benchmark(;
         push!(rows, :individual_fixed => _bench_row("individual 1D fixed-x (GPU batch)", () -> begin
             SFC.calculate_structure_function(
                 sf, x_fix, u_fix, edges;
-                backend = gpu_backend, verbose = false,
+                backend = gpu_backend,
             )
         end, ka_backend; warmup = warmup))
     end
@@ -371,8 +371,8 @@ function run_batch_matrix_benchmark(;
 
     if :individual_varying in cases
         push!(rows, :individual_varying => _bench_row("individual 1D varying-x (GPU slices)", () -> begin
-            s = zeros(Float32, NB, B)
-            c = zeros(UInt32, NB, B)
+            s = KA.zeros(ka_backend, Float32, NB, B)
+            c = KA.zeros(ka_backend, UInt32, NB, B)
             SFC.calculate_structure_function_batch!(s, c, sf, x_var, u_var, edges; backend = gpu_backend)
         end, ka_backend; warmup = warmup))
     end
@@ -401,8 +401,8 @@ function run_batch_matrix_benchmark(;
         elapsed = _bench_row(
             "SP1D six-invariant varying-x (GPU slices sample $B_sample / B=$B)",
             () -> begin
-                s = zeros(Float32, 6, NB, B_sample)
-                c = zeros(UInt32, 6, NB, B_sample)
+                s = KA.zeros(ka_backend, Float32, 6, NB, B_sample)
+                c = KA.zeros(ka_backend, UInt32, 6, NB, B_sample)
                 SFC.calculate_structure_functions_single_pass_batch!(
                     s, c, x_sample, u_sample, edges; backend = gpu_backend,
                 )
@@ -428,8 +428,8 @@ function run_batch_matrix_benchmark(;
 
     if :sp1d_varying in cases
         push!(rows, :sp1d_varying => _bench_row("SP1D six-invariant varying-x (GPU slices full B)", () -> begin
-            s = zeros(Float32, 6, NB, B)
-            c = zeros(UInt32, 6, NB, B)
+            s = KA.zeros(ka_backend, Float32, 6, NB, B)
+            c = KA.zeros(ka_backend, UInt32, 6, NB, B)
             SFC.calculate_structure_functions_single_pass_batch!(s, c, x_var, u_var, edges; backend = gpu_backend)
         end, ka_backend; warmup = warmup))
     end
@@ -448,8 +448,8 @@ function run_batch_matrix_benchmark(;
         elapsed = _bench_row(
             "SP2D six-invariant varying-x (GPU slices sample $B_sample / B=$B)",
             () -> begin
-                s = zeros(Float32, 6, NB, nv, B_sample)
-                c = zeros(UInt32, 6, NB, nv, B_sample)
+                s = KA.zeros(ka_backend, Float32, 6, NB, nv, B_sample)
+                c = KA.zeros(ka_backend, UInt32, 6, NB, nv, B_sample)
                 SFC.calculate_structure_functions_single_pass_2d_batch!(
                     s, c, x_sample, u_sample, edges, val_edges; backend = gpu_backend,
                 )
@@ -475,8 +475,8 @@ function run_batch_matrix_benchmark(;
 
     if :sp2d_varying in cases
         push!(rows, :sp2d_varying => _bench_row("SP2D six-invariant varying-x (GPU slices full B)", () -> begin
-            s = zeros(Float32, 6, NB, nv, B)
-            c = zeros(UInt32, 6, NB, nv, B)
+            s = KA.zeros(ka_backend, Float32, 6, NB, nv, B)
+            c = KA.zeros(ka_backend, UInt32, 6, NB, nv, B)
             SFC.calculate_structure_functions_single_pass_2d_batch!(
                 s, c, x_var, u_var, edges, val_edges; backend = gpu_backend,
             )
@@ -487,7 +487,7 @@ function run_batch_matrix_benchmark(;
         push!(rows, :joint2d_fixed => _bench_row("joint 2D single-type fixed-x (GPU batch)", () -> begin
             SFC.calculate_structure_function(
                 sf, x_fix, u_fix, edges, val_edges;
-                backend = gpu_backend, verbose = false,
+                backend = gpu_backend,
             )
         end, ka_backend; warmup = warmup))
     end
