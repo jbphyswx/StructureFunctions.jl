@@ -2,13 +2,14 @@ using Test
 using StructureFunctions: StructureFunctions as SF, Calculations as C, StructureFunctionTypes as T
 
 @testset "Count-bound arithmetic" begin
-    for n in (0, 1, 24, typemax(Int64), typemax(UInt64), big(2)^100)
-        @test C._pair_count_bound(n) == big(n) * (big(n) - 1) ÷ 2
+    for (n, pairs) in ((0, 0), (1, 0), (2, 1), (24, 276))
+        @test C._pair_count_bound(n) === UInt128(pairs)
     end
+    @test C._pair_count_bound(typemax(Int64)) === 0x1fffffffffffffff4000000000000001
     @test_throws ArgumentError C._pair_count_bound(-1)
-    @test C._assert_counts_representable(UInt128, typemax(UInt64)) === nothing
-    @test_throws ArgumentError C._assert_counts_representable(UInt64, typemax(UInt64))
-    @test_throws ArgumentError C._assert_counts_can_accumulate(Int16[-1, 0], 2)
+    @test C._assert_counts_representable(UInt128, typemax(Int64)) === nothing
+    @test_throws ArgumentError C._assert_counts_representable(UInt64, typemax(Int64))
+    @test_throws ArgumentError C._assert_counts_can_accumulate(Int16[-1, 0], 2, C.NoWeights())
 end
 
 @testset "Host result conversion and normalization" begin

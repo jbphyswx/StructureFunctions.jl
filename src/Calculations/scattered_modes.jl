@@ -247,7 +247,7 @@ _held_monomial_vector(data::AbstractMatrix, valid, weights, key::Tuple, ::Type{F
     _held_monomial_vector!(similar(parent(data), FT, size(data, 2)), data, valid, weights, key)
 
 """
-    calculate_structure_function(sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend[, CT][, OT]; weights, backend, verbose)
+    calculate_structure_function(sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend[, CT][, OT]; weights, backend)
 
 The soft-binned structure function of scattered points by non-uniform FFT. `u` is `(D, N)` over the
 `N` points of `schedule`, or a multi-field over them; `spectral_backend` is a provider tag,
@@ -259,7 +259,7 @@ or `StructureFunctionSumsAndCounts`. See [`ScatteredModesSchedule`](@ref) for wh
 function calculate_structure_function(
     sf::SFT.AbstractPairwiseStructureFunctionType, s::ScatteredModesSchedule, u::Union{AbstractArray, MF.Fields},
     distance_bins::AbstractVector, spectral_backend, ::Type{CT}, ::Type{OT};
-    weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(), verbose::Bool = true,
+    weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _assert_mass_counts(CT)
     data, vD, vV, vK = _packed(u)
@@ -269,7 +269,6 @@ function calculate_structure_function(
     nb = n_histogram_bins(distance_bins)
     sums = zeros(float(eltype(data)), nb)
     counts = zeros(CT, nb)
-    verbose && @info "soft-binned structure function by non-uniform FFT: $N points onto $(s.modes) modes"
     gridded_sweep!(sums, counts, sf, data, s, distance_bins, vD, vV, vK, spectral_backend; valid, weights, backend)
     return _finalize(SFO.StructureFunctionSumsAndCounts(sf, ModeBinEdges(distance_bins, s), sums, counts), OT)
 end
@@ -293,7 +292,7 @@ calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, s::S
     calculate_structure_function(sf, s, u, distance_bins, spectral_backend, _mass_type(u), OT; kwargs...)
 
 """
-    calculate_structure_function_batch!(sums, counts, sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend; weights, backend, verbose)
+    calculate_structure_function_batch!(sums, counts, sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend; weights, backend)
 
 The soft-binned structure function of one set of scattered points sampled repeatedly: `u` is
 `(D, N, slices)` over the `N` points of `schedule` and `sums`/`counts` are
@@ -306,7 +305,7 @@ returns nothing. See [`ScatteredModesSchedule`](@ref) for what is and is not exa
 function calculate_structure_function_batch!(
     sums::AbstractMatrix, counts::AbstractMatrix, sf::SFT.AbstractPairwiseStructureFunctionType,
     s::ScatteredModesSchedule, u::AbstractArray, distance_bins::AbstractVector, spectral_backend;
-    weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(), verbose::Bool = true,
+    weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 )
     ndims(u) >= 3 || throw(DimensionMismatch(
         "a slice batch is stored (component, points, slices) and so has at least three axes; got $(size(u))",
@@ -317,7 +316,6 @@ function calculate_structure_function_batch!(
     N = n_cells(s)
     size(data, 2) == N || throw(DimensionMismatch("each slice covers $(size(data, 2)) points, the schedule $N"))
     valid = batch_validity(u)
-    verbose && @info "soft-binned slice batch by non-uniform FFT: $N points onto $(s.modes) modes × $nt slices"
     gridded_sweep_batch!(sums, counts, sf, data, s, distance_bins, Val(D), Val(1), Val(0), spectral_backend;
                          valid, weights, backend)
     return nothing

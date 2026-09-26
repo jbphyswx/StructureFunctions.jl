@@ -47,10 +47,10 @@ Test.@testset "the device agrees across every axis a route dispatches on" begin
         for D in DA_WIDTHS, nb in (6, 300)
             x, u = rand(D, DA_N), randn(D, DA_N)
             for (spelling, bins) in da_bin_spellings(0.0, 1.0, nb)
-                ref = SFC.calculate_structure_function(DA_OP, x, u, collect(bins), Float64;
-                    backend = DA_SER, verbose = false, output_type = DA_RAW)
-                got = SFC.calculate_structure_function(DA_OP, x, u, bins, Float64;
-                    backend = DA_DEV, verbose = false, output_type = DA_RAW)
+                ref = SFC.calculate_structure_function(DA_OP, x, u, collect(bins), Float64, DA_RAW;
+                    backend = DA_SER, verbose = false)
+                got = SFC.calculate_structure_function(DA_OP, x, u, bins, Float64, DA_RAW;
+                    backend = DA_DEV, verbose = false)
                 Test.@test sum(ref.counts) > 0
                 Test.@test (D, nb, spelling, da_agrees(got.sums, got.counts, ref.sums, ref.counts)) ==
                            (D, nb, spelling, true)
@@ -133,11 +133,11 @@ Test.@testset "the device agrees across every axis a route dispatches on" begin
                 for t in 1:T
                     xt = shared ? x : x[:, :, t]
                     r = SFC.calculate_structure_function(DA_OP, xt, u[:, :, t], collect(bins),
-                        Float64; backend = DA_SER, verbose = false, output_type = DA_RAW)
+                        Float64, DA_RAW; backend = DA_SER, verbose = false)
                     ref_s[:, t] .= r.sums
                     ref_c[:, t] .= r.counts
                 end
-                g = SFC.gpu_calculate_structure_function_batch(DA_OP, KA.CPU(), x, u, bins)
+                g = SFC.calculate_structure_function(DA_OP, x, u, bins, DA_RAW; backend = DA_DEV, verbose = false)
                 Test.@test sum(ref_c) > 0
                 Test.@test (D, shared, spelling,
                             da_agrees(reshape(collect(g.sums), nb, T),

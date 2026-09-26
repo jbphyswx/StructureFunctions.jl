@@ -15,14 +15,7 @@ PrecompileTools.@compile_workload begin
             x_mat = zeros(FT, N, 3)
             u_mat = zeros(FT, N, 3)
             for sf in sfs
-                Calculations.calculate_structure_function(
-                    sf,
-                    x_mat,
-                    u_mat,
-                    bins;
-                    verbose = false,
-                    show_progress = false,
-                )
+                Calculations.calculate_structure_function(sf, x_mat, u_mat, bins)
             end
         end
     end

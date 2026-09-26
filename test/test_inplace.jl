@@ -28,8 +28,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     @testset "1D Serial Mutating Array Correctness & Accumulation" begin
         # Baselines
         bas = SFC.calculate_structure_function(
-            SFT.L2SF, x_mat, u_mat, distance_bins;
-            output_type = SF.StructureFunctionSumsAndCounts, backend = CB.SerialBackend(), verbose = false, show_progress = false
+            SFT.L2SF, x_mat, u_mat, distance_bins, SF.StructureFunctionSumsAndCounts;
+            backend = CB.SerialBackend(), verbose = false, show_progress = false
         )
 
         sums = zeros(Float64, n_dist)
@@ -49,8 +49,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     # 2. 1D Serial mutating Array tests
     @testset "1D Serial Mutating Array Correctness & Accumulation" begin
         bas = SFC.calculate_structure_function(
-            SFT.L2SF, x_mat, u_mat, distance_bins;
-            output_type = SF.StructureFunctionSumsAndCounts, backend = CB.SerialBackend(), verbose = false, show_progress = false
+            SFT.L2SF, x_mat, u_mat, distance_bins, SF.StructureFunctionSumsAndCounts;
+            backend = CB.SerialBackend(), verbose = false, show_progress = false
         )
 
         sums = zeros(Float64, n_dist)
@@ -198,10 +198,8 @@ end
     @test tc2 == 2 .* tc1
 
     # The non-mutating wrappers still own the zeroing, so repeated calls are independent.
-    r1 = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins;
-                                                output_type = SFO.StructureFunctionTensorSumsAndCounts)
-    r2 = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins;
-                                                output_type = SFO.StructureFunctionTensorSumsAndCounts)
+    r1 = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins, SFO.StructureFunctionTensorSumsAndCounts)
+    r2 = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins, SFO.StructureFunctionTensorSumsAndCounts)
     @test r1.sums ≈ r2.sums
     @test r1.counts == r2.counts
 end

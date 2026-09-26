@@ -53,7 +53,7 @@ function _brute_force_histogram(sf, u, dims::NTuple{Dg, Int}, spacing::NTuple{Dg
                 j = findfirst(==(d), amb)
                 (j !== nothing && (m >> (j - 1)) & 1 == 1) ? -dx[d] : dx[d]
             end)
-            acc += SFT._sf_raw(sf, du, dxm, r2)
+            acc += sf(du, dxm / sqrt(r2))
         end
         sums[b] += acc / (1 << length(amb))
         counts[b] += 1

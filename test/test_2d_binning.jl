@@ -36,8 +36,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             SFT.L2SF,
             x_mat,
             u_mat,
-            distance_bins;
-            output_type = SF.StructureFunctionSumsAndCounts,
+            distance_bins,
+            SF.StructureFunctionSumsAndCounts;
             backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false
@@ -79,8 +79,8 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
             SFT.L3SF,
             x_mat,
             u_mat,
-            distance_bins;
-            output_type = SF.StructureFunctionSumsAndCounts,
+            distance_bins,
+            SF.StructureFunctionSumsAndCounts;
             backend = CB.SerialBackend(),
             verbose = false,
             show_progress = false

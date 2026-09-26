@@ -56,8 +56,8 @@ Test.@testset "Single-Pass 2D Core Correctness & Parity" begin
 
     # 1D single-pass (keyed, raw) for marginalization parity.
     sp_1d = SFC.calculate_structure_functions_single_pass(
-        x, u, distance_bins;
-        backend = CB.SerialBackend(), output_type = SF.StructureFunctionSumsAndCounts,
+        x, u, distance_bins, SF.StructureFunctionSumsAndCounts;
+        backend = CB.SerialBackend(),
     )
     for (t, k) in enumerate(SP2D_INV)
         marg_sums = vec(dropdims(sum(sums_2d[t:t, :, :], dims = 3), dims = 1))
@@ -231,4 +231,29 @@ Test.@testset "Single-Pass 2D heterogeneous value-bin tuple" begin
     f() = SFC.serial_calculate_structure_functions_single_pass_2d!(sums, counts, x, u, db, het)
     f()
     Test.@test (@allocated f()) < 100_000
+end
+
+# A cell counts in the count type from its first pair: 6000 coincident points put every one of their
+# 17 997 000 pairs in one cell, past the 2^24 a Float32 accumulator can count.
+Test.@testset "Single-Pass 2D counts past Float32's exact integers" begin
+    N = 6000
+    Random.seed!(7)
+    x = rand(Float32, 2, N) .* 1.0f-3
+    u = zeros(Float32, 2, N)
+    n_pairs = N * (N - 1) ÷ 2
+    Test.@test n_pairs > 2^24
+    for backend in (CB.SerialBackend(), CB.ThreadedBackend())
+        unweighted = SFC.calculate_structure_functions_single_pass_2d(
+            x, u, Float32[0, 1], Float32[-1, 1], UInt32;
+            backend, verbose = false, show_progress = false,
+        )
+        weighted = SFC.calculate_structure_functions_single_pass_2d(
+            x, u, Float32[0, 1], Float32[-1, 1], Float64;
+            backend, weights = ones(Float32, N), verbose = false, show_progress = false,
+        )
+        for k in SP2D_INV
+            Test.@test unweighted[k].counts[1, 1] == n_pairs
+            Test.@test weighted[k].counts[1, 1] == n_pairs
+        end
+    end
 end

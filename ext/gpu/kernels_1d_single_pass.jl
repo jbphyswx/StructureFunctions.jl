@@ -41,10 +41,10 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_u32!(
     ::Val{CST},             # shared count element: UInt32 unweighted, the count type weighted
     geom,
 ) where {FT, CST}
-    shared_xi = @localmem FT (256,)
-    shared_ui = @localmem FT (256,)
-    shared_xj = @localmem FT (256,)
-    shared_uj = @localmem FT (256,)
+    shared_xi = @localmem FT (2 * SF_GPU_TILE,)
+    shared_ui = @localmem FT (2 * SF_GPU_TILE,)
+    shared_xj = @localmem FT (2 * SF_GPU_TILE,)
+    shared_uj = @localmem FT (2 * SF_GPU_TILE,)
     shared_sums = @localmem FT (SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS,)
     shared_cnts = @localmem CST (SF_GPU_MAX_BINS,)
     lid = @index(Local, Linear)
@@ -161,3 +161,15 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_u32!(
         end
     end
 end
+
+"""Static shared bytes of `_sf6_single_pass_kernel_tiled128_u32!` for coordinates and sums of `FT`
+and counts of `CST`."""
+@inline _sp1d_tiled_smem_bytes(::Type{FT}, ::Type{CST}) where {FT, CST} =
+    4 * SFC.gpu_localmem_bytes(FT, 2 * SF_GPU_TILE) +
+    SFC.gpu_localmem_bytes(FT, SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS) +
+    SFC.gpu_localmem_bytes(CST, SF_GPU_MAX_BINS)
+
+"""Whether `_sf6_single_pass_kernel_tiled128_u32!` takes `NB` distance bins, coordinates of `FT`
+and counts of `CST` on the device `caps` describes."""
+@inline _gpu_single_pass_tiled_eligible(caps, NB::Int, ::Type{FT}, ::Type{CST}) where {FT, CST} =
+    NB <= SF_GPU_MAX_BINS && SFC.gpu_static_smem_fits(caps, _sp1d_tiled_smem_bytes(FT, CST))

@@ -1,34 +1,28 @@
 # Production batch tiled128 kernels — fixed-x u-smem strips + block-private merge.
-# Included from StructureFunctionsKernelAbstractionsExt.jl after GPUBatchWorkspace.jl.
 
-"""
-u-smem strip width for `_batch_fixed_x_usmem_priv!`, the widest strip whose static staging fits.
+"""Static shared bytes of `_batch_fixed_x_usmem_priv!` for staging of `FT` and strips of `SW`
+fields."""
+@inline _batch_fixed_x_smem_bytes(::Type{FT}, SW::Int) where {FT} =
+    2 * SFC.gpu_localmem_bytes(FT, 2 * SF_GPU_TILE) + 2 * SFC.gpu_localmem_bytes(FT, 2 * SF_GPU_TILE * SW)
 
-The kernel stages `512 + 512W` elements of `FT`, so `W` is a shared-memory budget question, not a
-constant: 16 for `Float32` (34 KB) but at most 11 for `Float64`, which is why a hardcoded 16
-requested 68 KB against the 48 KB static cap and failed to compile. Rounded down to a power of two
-for a margin under the cap.
-"""
-@inline function _batch_usmem_strip_w(::Type{FT}) where {FT}
-    w = SFC.GPU_SMEM_STATIC_MAX ÷ (512 * sizeof(FT)) - 1
-    return w >= 16 ? 16 : w >= 8 ? 8 : w >= 4 ? 4 : w >= 2 ? 2 : 1
-end
+"""Widest strip of at most 16 fields whose `_batch_fixed_x_usmem_priv!` fits the device `caps`
+describes; 0 when a strip of one does not."""
+@inline _batch_usmem_strip_w(caps::SFC.GPUDeviceCaps, ::Type{FT}) where {FT} =
+    _sf_fitting_width(w -> _batch_fixed_x_smem_bytes(FT, w), caps, 16)
 
-"""Warps per batch tile block (`SF_GPU_TILED_WS ÷ 32`)."""
-const BATCH_USMEM_WARPS = SF_GPU_TILED_WS ÷ 32
+"""`partial_{sums,cnts}` third-axis length: one slot per `(tile_block, warp)` of `warp` threads."""
+@inline _batch_usmem_n_priv(n_tile_blocks::Int, workgroup_size::Int, warp::Int) =
+    n_tile_blocks * (workgroup_size ÷ warp)
 
 # Thread/block index args are ::Integer, not ::Int: CUDA @index(Local/Group, Linear)
 # yields Int32, and ::Int-typed methods fail dispatch inside device code
 # (InvalidIRError at kernel compile; see _sp2d_flush_typeplane_to_output!).
-@inline _batch_warp_id(lid::Integer) = (Int(lid) - 1) >> 5
+"""Private partial slot of thread `lid` of tile block `block_id`: one slot per warp of `WARP`."""
+@inline _batch_usmem_priv_idx(block_id::Integer, lid::Integer, workgroup_size::Integer,
+                              ::Val{WARP}) where {WARP} =
+    (Int(block_id) - 1) * (Int(workgroup_size) ÷ WARP) + (Int(lid) - 1) ÷ WARP + 1
 
-"""`partial_{sums,cnts}` third-axis length: one slot per `(tile_block, warp)`."""
-@inline _batch_usmem_n_priv(n_tile_blocks::Int) = n_tile_blocks * BATCH_USMEM_WARPS
-
-@inline _batch_usmem_priv_idx(block_id::Integer, lid::Integer) =
-    (Int(block_id) - 1) * BATCH_USMEM_WARPS + _batch_warp_id(lid) + 1
-
-"""Production fixed-x 1D batch kernel (u staged in shared memory, strip 16)."""
+"""Production fixed-x 1D batch kernel (u staged in shared memory, strips of up to 16 fields)."""
 _batch_fixed_x_sf_kernel(backend::KA.Backend, ws::Int) =
     _batch_fixed_x_usmem_priv!(backend, ws)
 
@@ -69,52 +63,6 @@ end
         col += 1
     end
     return nothing
-end
-
-@inline _gpu_pow_int(x, ::Val{0}) = one(x)
-@inline _gpu_pow_int(x, ::Val{1}) = x
-@inline _gpu_pow_int(x, ::Val{2}) = x * x
-@inline _gpu_pow_int(x, ::Val{3}) = x * x * x
-@inline _gpu_pow_int(x, ::Val{N}) where {N} = x^N
-
-@inline function _gpu_sf_value_2d(sf::SFT.ProjectedStructureFunctionType{NL, NT}, du_x, du_y, rx, ry) where {NL, NT}
-    du_L = rx * du_x + ry * du_y
-    val = one(du_L)
-    if NL != 0
-        val *= _gpu_pow_int(du_L, Val(NL))
-    end
-    if NT != 0
-        e = SFH.transverse_basis_vector(SA.SVector(rx, ry), sf.basis)
-        du_T = e[1] * du_x + e[2] * du_y
-        val *= _gpu_pow_int(du_T, Val(NT))
-    end
-    return val
-end
-
-@inline function _gpu_sf_value_2d(::SFT.SecondOrderStructureFunctionType, du_x, du_y, rx, ry)
-    return du_x * du_x + du_y * du_y
-end
-
-@inline function _gpu_sf_value_2d(::SFT.ThirdOrderStructureFunctionType, du_x, du_y, rx, ry)
-    du_L = rx * du_x + ry * du_y
-    return du_L * (du_x * du_x + du_y * du_y)
-end
-
-@inline function _gpu_sf_value_2d(::SFT.FullVectorStructureFunctionType{NF}, du_x, du_y, rx, ry) where {NF}
-    n2 = du_x * du_x + du_y * du_y
-    NF == 2 && return n2
-    return _gpu_pow_int(sqrt(n2), Val(NF))
-end
-
-@inline function _gpu_sf_value_2d(::SFT.TransverseComponentSecondOrderStructureFunctionType, du_x, du_y, rx, ry)
-    du_L = rx * du_x + ry * du_y
-    return du_x * du_x + du_y * du_y - du_L * du_L
-end
-
-@inline function _gpu_sf_value_2d(::SFT.LongitudinalTransverseComponentThirdOrderStructureFunctionType, du_x, du_y, rx, ry)
-    du_L = rx * du_x + ry * du_y
-    du_T2 = du_x * du_x + du_y * du_y - du_L * du_L
-    return du_L * du_T2
 end
 
 """Separation, pair frame and distance bin for one staged pair."""
@@ -196,7 +144,7 @@ KA.@kernel unsafe_indices=true function _batch_merge_usmem_sums_grouped!(
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1
     gid = (g - 1) ÷ workgroup_size + 1
-    shared_acc = @localmem eltype(output) (256,)
+    shared_acc = @localmem eltype(output) (SF_GPU_TILED_WS,)
     n_out = NB * bw
     if gid <= n_out
         rem0 = gid - 1
@@ -256,7 +204,7 @@ KA.@kernel unsafe_indices=true function _batch_merge_usmem_cnts_grouped!(
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1
     gid = (g - 1) ÷ workgroup_size + 1
-    shared_acc = @localmem UInt32 (256,)
+    shared_acc = @localmem UInt32 (SF_GPU_TILED_WS,)
     if gid <= NB
         bin = gid
         acc_c = UInt32(0)
@@ -285,8 +233,8 @@ end
 # ---------------------------------------------------------------------------
 # Fixed-x individual SF — u-smem priv strip kernel
 #
-# Histogram levels (warp-private partials do not fit in smem on sm_80 — 48 KiB cap):
-#   1. Pair loop: `@atomic` into `partial_sums[bin, col, priv_idx]` (32 threads / priv slot).
+# Histogram levels:
+#   1. Pair loop: `@atomic` into `partial_sums[bin, col, priv_idx]`, one slot per warp.
 #   2. Host merge kernel: sum all `priv_idx` → strip output (`_batch_merge_usmem_*`, `n_priv` axis).
 # ---------------------------------------------------------------------------
 
@@ -305,12 +253,14 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
     sched,
     n_tile_blocks::Int,
     workgroup_size::Int,
+    ::Val{SW},
+    ::Val{WARP},
     geom,
-) where {FT}
-    shared_xi = @localmem FT (256,)
-    shared_xj = @localmem FT (256,)
-    shared_ui = @localmem FT (256 * _batch_usmem_strip_w(FT),)
-    shared_uj = @localmem FT (256 * _batch_usmem_strip_w(FT),)
+) where {FT, SW, WARP}
+    shared_xi = @localmem FT (2 * SF_GPU_TILE,)
+    shared_xj = @localmem FT (2 * SF_GPU_TILE,)
+    shared_ui = @localmem FT (2 * SF_GPU_TILE * SW,)
+    shared_uj = @localmem FT (2 * SF_GPU_TILE * SW,)
 
     g = @index(Global, Linear)
     lid = (g - 1) % workgroup_size + 1
@@ -318,7 +268,7 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
     block_id = bid
 
     if bid <= n_tile_blocks
-        priv_idx = _batch_usmem_priv_idx(block_id, lid)
+        priv_idx = _batch_usmem_priv_idx(block_id, lid, workgroup_size, Val(WARP))
         slot = lid
         while slot <= NB * bw
             bin = (slot - 1) % NB + 1
@@ -391,14 +341,14 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
                         shared_xi, shared_xj, ia, jb, Val(true), ddig, N_bins, geom,
                     )
                     if pair_ok
-                        priv_idx = _batch_usmem_priv_idx(block_id, lid)
+                        priv_idx = _batch_usmem_priv_idx(block_id, lid, workgroup_size, Val(WARP))
                         # Loop-invariant across the field strip.
                         rhat = SFH.pair_direction(geom, frame, dist)
                         @inbounds for col in 1:bw
                             Ui = SA.SVector{2}(shared_ui[_batch_usmem_idx(1, ia, col)], shared_ui[_batch_usmem_idx(2, ia, col)])
                             Uj = SA.SVector{2}(shared_uj[_batch_usmem_idx(1, jb, col)], shared_uj[_batch_usmem_idx(2, jb, col)])
                             dU = SFH.pair_delta(geom, frame, Xi, Xj, Ui, Uj)
-                            val = _gpu_sf_value_2d(sf_type, dU[1], dU[2], rhat[1], rhat[2])
+                            val = sf_type(dU, rhat)
                             @atomic partial_sums[bin, col, priv_idx] += val
                         end
                         if b_base == 1
@@ -416,14 +366,14 @@ KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
                         shared_xi, shared_xj, ia, jb, Val(false), ddig, N_bins, geom,
                     )
                     if pair_ok
-                        priv_idx = _batch_usmem_priv_idx(block_id, lid)
+                        priv_idx = _batch_usmem_priv_idx(block_id, lid, workgroup_size, Val(WARP))
                         # Loop-invariant across the field strip.
                         rhat = SFH.pair_direction(geom, frame, dist)
                         @inbounds for col in 1:bw
                             Ui = SA.SVector{2}(shared_ui[_batch_usmem_idx(1, ia, col)], shared_ui[_batch_usmem_idx(2, ia, col)])
                             Uj = SA.SVector{2}(shared_ui[_batch_usmem_idx(1, jb, col)], shared_ui[_batch_usmem_idx(2, jb, col)])
                             dU = SFH.pair_delta(geom, frame, Xi, Xj, Ui, Uj)
-                            val = _gpu_sf_value_2d(sf_type, dU[1], dU[2], rhat[1], rhat[2])
+                            val = sf_type(dU, rhat)
                             @atomic partial_sums[bin, col, priv_idx] += val
                         end
                         if b_base == 1

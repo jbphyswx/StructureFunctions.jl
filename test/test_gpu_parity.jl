@@ -1,3 +1,4 @@
+using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
@@ -21,15 +22,16 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
     sft = SFT.L2SFType()
 
     res_ref = SFC.calculate_structure_function(
-        sft, x, u, bin_edges;
-        verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts,
+        sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
+        verbose = false, show_progress = false,
     )
     ref_vals = res_ref.sums
     ref_counts = res_ref.counts
 
     # --- GPU extension (CPU backend for parity test) ---
-    res_gpu = SFC.gpu_calculate_structure_function(
-        sft, KA.CPU(), x, u, bin_edges,
+    res_gpu = SFC.calculate_structure_function(
+        sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
+        backend = CB.GPUBackend(KA.CPU()), verbose = false, show_progress = false,
     )
     gpu_vals = res_gpu.sums
     gpu_counts = res_gpu.counts

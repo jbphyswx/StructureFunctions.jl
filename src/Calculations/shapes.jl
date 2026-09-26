@@ -23,6 +23,26 @@ struct VaryingPositionField{D} <: AbstractFieldShape{D} end
 @inline spatial_dimension(::AbstractFieldShape{D}) where {D} = D
 
 """
+    BatchLeading(u)
+
+Wrap a velocity/position array that is already stored **batch-leading**, shape `(B, D, N)`
+(batch axis innermost/contiguous — the CPU-optimal SoA layout). CPU batch kernels then run
+zero-copy. A plain `(D, N, B...)` array (the default contract, GPU-optimal) is transposed once
+internally. Zero-cost type tag.
+"""
+struct BatchLeading{A <: AbstractArray}
+    data::A
+end
+
+"""Position/velocity input a batch driver accepts: a plain `(D, N, B…)` array, or a
+[`BatchLeading`](@ref) wrapper around a `(B, D, N)` one."""
+const BatchInput = Union{AbstractArray, BatchLeading}
+
+"""Batch input in the `(D, N, B…)` layout of the shape contract; a batch-leading `(B, D, N)` one is viewed, not copied."""
+_contract_layout(a::AbstractArray) = a
+_contract_layout(a::BatchLeading) = PermutedDimsArray(a.data, (2, 3, 1))
+
+"""
     _pair_dims(metric, D) -> (Val{W}, Val{D})
 
 Coordinate and velocity widths as type parameters, for the kernels that take `x`/`u` as `Array`s

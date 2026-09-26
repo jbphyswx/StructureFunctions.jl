@@ -214,6 +214,7 @@ function gridded_lag_sweep!(
     data::AbstractMatrix, s::ScatteredPairs, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {D, V, K}
+    _require_backend(backend)
     n = n_scattered_cells(s)
     size(data) == (V * D + K, n) || throw(DimensionMismatch(
         "field holds $(size(data, 2)) cells of $(size(data, 1)) components, the grid $n cells of " *
@@ -244,6 +245,7 @@ function gridded_tensor_sweep!(
     ::Val{D}, spectral_backend;
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {P, D}
+    _require_backend(backend)
     n = n_scattered_cells(s)
     size(data) == (D, n) || throw(DimensionMismatch(
         "field holds $(size(data, 2)) cells of $(size(data, 1)) components, the grid $n cells of $D",

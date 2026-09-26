@@ -8,6 +8,11 @@ using SpectralBackends: SpectralBackends as SB
 
 const CB = SFC.CB
 
+function __init__()
+    SFC._ABSTRACTFFTS_LOADED[] = true
+    return nothing
+end
+
 """Bytes of monomial scratch the forward stage holds while it transforms a batch of them."""
 const FORWARD_BATCH_BYTES = Ref(1 << 28)
 
@@ -362,6 +367,7 @@ function SFC.gridded_sweep!(
     tag::SB.AbstractFastFourierTransformSpectralBackend;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
 ) where {D, V, K}
+    SFC._require_backend(backend)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
     length(sums) == nb && length(counts) == nb || throw(DimensionMismatch(
@@ -381,6 +387,7 @@ function SFC.gridded_sweep!(
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
     second_axis::SFC.SeparationAngleAxis,
 ) where {D, V, K}
+    SFC._require_backend(backend)
     SFC._require_directional(s)
     SFC._check_half_turn_counts(eltype(counts), s, dist_be)
     plan = SFC.squared_digitize_plan(dist_be)
@@ -408,6 +415,7 @@ function SFC.gridded_sweep!(
     tag::SB.AbstractNonUniformFastFourierTransformSpectralBackend;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
 ) where {CT, D, V, K}
+    SFC._require_backend(backend)
     SFC._assert_mass_counts(CT)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
@@ -427,6 +435,7 @@ function SFC.gridded_sweep!(
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
     second_axis::SFC.SeparationAngleAxis,
 ) where {CT, D, V, K}
+    SFC._require_backend(backend)
     SFC._assert_mass_counts(CT)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
@@ -666,6 +675,7 @@ function SFC.gridded_sweep_batch!(
     tag::BatchTransformTag;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
 ) where {CT, D, V, K}
+    SFC._require_backend(backend)
     _batch_tag_schedule(tag, s)
     nt = SFC._check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
     plan = SFC.squared_digitize_plan(dist_be)
@@ -687,6 +697,7 @@ function SFC.gridded_sweep_batch!(
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
     second_axis::SFC.SeparationAngleAxis,
 ) where {CT, D, V, K}
+    SFC._require_backend(backend)
     _batch_tag_schedule(tag, s)
     SFC._require_directional(s)
     SFC._check_half_turn_counts(CT, s, dist_be)
@@ -772,6 +783,7 @@ function SFC.gridded_tensor_sweep!(
     s::SFC.AbstractSeparableSchedule, dist_be, ::Val{D}, tag::TensorTag;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
 ) where {OT, CT, P, D}
+    SFC._require_backend(backend)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
     size(sums) == (ntuple(_ -> D, P)..., nb) && length(counts) == nb || throw(DimensionMismatch(
@@ -795,6 +807,7 @@ function SFC.gridded_tensor_sweep!(
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
     second_axis::SFC.SeparationAngleAxis,
 ) where {OT, CT, P, D}
+    SFC._require_backend(backend)
     SFC._require_directional(s)
     SFC._check_half_turn_counts(CT, s, dist_be)
     plan = SFC.squared_digitize_plan(dist_be)

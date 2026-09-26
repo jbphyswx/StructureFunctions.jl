@@ -33,7 +33,7 @@ function _brute(op, x, vectors, scalars, bins)
 end
 
 _run(op, x, f, bins) = SFC.calculate_structure_function(
-    op, x, f, bins, UInt32; output_type = SF.StructureFunctionSumsAndCounts,
+    op, x, f, bins, UInt32, SF.StructureFunctionSumsAndCounts;
     verbose = false, show_progress = false)
 
 Test.@testset "a field of one vector field is the array path" begin
@@ -43,8 +43,8 @@ Test.@testset "a field of one vector field is the array path" begin
     u = randn(2, 80)
     bins = collect(range(0.0, 1.5; length = 7))   # spans the unit square diagonal
     for op in (SFT.L2SFType(), SFT.T2SFType(), SFT.S2SFType(), SFT.L3SFType())
-        bare = SFC.calculate_structure_function(op, x, u, bins, UInt32;
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+        bare = SFC.calculate_structure_function(op, x, u, bins, UInt32, SF.StructureFunctionSumsAndCounts;
+            verbose = false, show_progress = false)
         multi = _run(op, x, MF.Fields(vectors = (u,)), bins)
         Test.@test multi.counts == bare.counts
         Test.@test multi.sums == bare.sums          # identical, not merely close
@@ -158,22 +158,22 @@ Test.@testset "odd scalar moments do not depend on how the points are ordered" b
         f = MF.Fields(vectors = (u,), scalars = (th,))
         fp = MF.Fields(vectors = (u[:, perm],), scalars = (th[perm],))
         for sf in (SFT.MixedSFType{1, 0, 1}(), SFT.ScalarSFType{3}())
-            a = SFC.calculate_structure_function(sf, x, f, bins; backend = CB.SerialBackend(),
-                distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
+            a = SFC.calculate_structure_function(sf, x, f, bins, SF.StructureFunctionSumsAndCounts;
+                backend = CB.SerialBackend(), distance_metric = metric,
                 verbose = false, show_progress = false)
-            b = SFC.calculate_structure_function(sf, x[:, perm], fp, bins; backend = CB.SerialBackend(),
-                distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
+            b = SFC.calculate_structure_function(sf, x[:, perm], fp, bins, SF.StructureFunctionSumsAndCounts;
+                backend = CB.SerialBackend(), distance_metric = metric,
                 verbose = false, show_progress = false)
             Test.@test a.counts == b.counts
             Test.@test isapprox(a.sums, b.sums; rtol = 1e-10, atol = 1e-12)
             Test.@test any(!iszero, a.sums)
-            c = SFC.calculate_structure_function(sf, x[:, perm], fp, bins; backend = CB.ThreadedBackend(),
-                distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
+            c = SFC.calculate_structure_function(sf, x[:, perm], fp, bins, SF.StructureFunctionSumsAndCounts;
+                backend = CB.ThreadedBackend(), distance_metric = metric,
                 verbose = false, show_progress = false)
             Test.@test isapprox(c.sums, a.sums; rtol = 1e-10, atol = 1e-12)
-            d = SFC.calculate_structure_function(sf, x[:, perm], fp, bins;
+            d = SFC.calculate_structure_function(sf, x[:, perm], fp, bins, SF.StructureFunctionSumsAndCounts;
                 backend = CB.GPUBackend(KA.CPU()), distance_metric = metric,
-                output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+                verbose = false, show_progress = false)
             Test.@test d.counts == a.counts
             Test.@test isapprox(d.sums, a.sums; rtol = 1e-10, atol = 1e-12)
             if metric isa DI.Euclidean
@@ -246,26 +246,23 @@ Test.@testset "fields are transported on a sphere, scalars are not" begin
     SFC.calculate_structure_function!(bare_s, bare_c, SFT.L2SFType(), x, u, bins;
                                      distance_metric = metric, backend = CB.SerialBackend())
     multi = SFC.calculate_structure_function(
-        SFT.L2SFType(), x, MF.Fields(vectors = (u,)), bins, UInt32; distance_metric = metric,
-        backend = CB.SerialBackend(),
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+        SFT.L2SFType(), x, MF.Fields(vectors = (u,)), bins, UInt32, SF.StructureFunctionSumsAndCounts;
+        distance_metric = metric, backend = CB.SerialBackend(), verbose = false, show_progress = false)
     Test.@test multi.counts == bare_c
     Test.@test multi.sums == bare_s
 
     # a scalar rides along without disturbing the velocity part: L2SF on the multi-field must still equal
     # L2SF on the velocity alone
     with_tracer = SFC.calculate_structure_function(
-        SFT.L2SFType(), x, MF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32;
-        distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
-        verbose = false, show_progress = false)
+        SFT.L2SFType(), x, MF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32, SF.StructureFunctionSumsAndCounts;
+        distance_metric = metric, verbose = false, show_progress = false)
     Test.@test with_tracer.counts == bare_c
     Test.@test isapprox(with_tracer.sums, bare_s; rtol = 1e-12)
 
     # the scalar structure function on a sphere: transport-free, so it is the plain difference
     scalar_only = SFC.calculate_structure_function(
-        SFT.ScalarSFType{2}(), x, MF.Fields(scalars = (th,)), bins, UInt32;
-        distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
-        verbose = false, show_progress = false)
+        SFT.ScalarSFType{2}(), x, MF.Fields(scalars = (th,)), bins, UInt32, SF.StructureFunctionSumsAndCounts;
+        distance_metric = metric, verbose = false, show_progress = false)
     ref_s = zeros(5); ref_c = zeros(Int, 5)
     for i in 1:(N - 1), j in (i + 1):N
         r = SFC.DI.SphericalAngle()(view(x, :, i), view(x, :, j))
@@ -281,9 +278,8 @@ Test.@testset "fields are transported on a sphere, scalars are not" begin
     # Yaglom on a sphere runs and stays finite; its velocity half is transported, so it is not the
     # flat answer
     yag = SFC.calculate_structure_function(
-        SFT.MixedSFType{1, 0, 2}(), x, MF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32;
-        distance_metric = metric, output_type = SF.StructureFunctionSumsAndCounts,
-        verbose = false, show_progress = false)
+        SFT.MixedSFType{1, 0, 2}(), x, MF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32,
+        SF.StructureFunctionSumsAndCounts; distance_metric = metric, verbose = false, show_progress = false)
     Test.@test all(isfinite, yag.sums)
     Test.@test yag.counts == bare_c
 end

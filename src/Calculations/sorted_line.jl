@@ -135,9 +135,11 @@ monomials, `Δ` the range's summed monomials, combined as `Σ_S (−1)^{P−|S|}
     return :(SFT.SymmetricMoments{$W, $P}(SA.SVector{$(length(entries)), $T}($(entries...))))
 end
 
-"""The pair mass of a partner range: its length, or its summed weights."""
-@inline _range_mass(::NoWeights, S, lo::Int, hi::Int) = hi - lo
-@inline _range_mass(::AbstractVector, S, lo::Int, hi::Int) = @inbounds S[1, hi + 1] - S[1, lo + 1]
+"""The count a partner range `(lo, hi]` adds against a point of weight `wi`: its length, or the weighted
+pair mass."""
+@inline _range_count(::Type{CT}, ::NoWeights, wi, S, lo::Int, hi::Int) where {CT} = CT(hi - lo)
+@inline _range_count(::Type{CT}, ::AbstractVector, wi, S, lo::Int, hi::Int) where {CT} =
+    CT(wi * @inbounds(S[1, hi + 1] - S[1, lo + 1]))
 
 # The pairs whose lower coordinate lies in `chunk`. `q[b + 1]` is the last index `j ≥ i − 1` whose
 # separation from `i` digitizes to a bin `≤ b`; the predicate is monotone in `j` and in `i`, so the
@@ -173,7 +175,7 @@ function _sorted_line_chunk!(
             Δ = SA.SVector{NK, OT}(ntuple(k -> S[k, hi + 1] - S[k, lo + 1], Val(NK)))
             M = _line_moments(μi, Δ, Val(W), Val(P))
             sums[b] += wi * SFT.moment_contract(sf, M, r̂, Val(V), Val(K))
-            counts[b] += CT(wi * _range_mass(w, S, lo, hi))
+            counts[b] += _range_count(CT, w, wi, S, lo, hi)
         end
     end
     return nothing

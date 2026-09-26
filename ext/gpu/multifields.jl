@@ -38,9 +38,7 @@ function SFC.gpu_calculate_structure_function_fields!(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
-    verbose::Bool = true, show_progress::Bool = true,
 ) where {D, V, K}
-    _ = (verbose, show_progress)
     # Culling reorders the points on the host; the device sweep enumerates the full triangle, and
     # a permutation does not change a histogram, so the request is honoured by declining to permute.
     geom, xk, data, vF, plan, _, wk = SFC.field_setup(f, x, distance_bins, distance_metric,
@@ -52,8 +50,8 @@ function SFC.gpu_calculate_structure_function_fields!(
 
     ka = backend.backend
     N = size(data, 2)
-    W = SFC.SFC_val_int(SFH.coordinate_width(geom))
-    F = SFC.SFC_val_int(vF)
+    W = SFC._val_int(SFH.coordinate_width(geom))
+    F = SFC._val_int(vF)
     nb = SFC.n_histogram_bins(plan)
 
     x_dev = KA.adapt(ka, Array(xk))

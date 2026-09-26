@@ -9,24 +9,18 @@ using Distances: Distances as DI
 # --- Public CPU Batch APIs ---
 
 """
-    auxiliary_structure_function!(sums, counts, sf_type, x, u, distance_bins; strip_width=32)
+    auxiliary_structure_function!(sums, counts, sf_type, x, u, distance_bins; kwargs...)
 
-Dispatch CPU batch calculation based on `x` rank.
+The CPU batch calculation: shared positions when `x` is a `(W, N)` matrix, varying positions for a
+`(W, N, B…)` array or a [`BatchLeading`](@ref) `(B, W, N)` one.
 """
-function auxiliary_structure_function!(
-    sums,
-    counts,
-    sf_type,
-    x,
-    u,
-    distance_bins;
-    kwargs...,
-)
-    if ndims(x) == 2
-        auxiliary_shared_positions!(sums, counts, x, u, sf_type, distance_bins; kwargs...)
-    else
-        auxiliary_varying_positions!(sums, counts, x, u, sf_type, distance_bins; kwargs...)
-    end
+function auxiliary_structure_function!(sums, counts, sf_type, x::AbstractMatrix, u, distance_bins; kwargs...)
+    auxiliary_shared_positions!(sums, counts, x, u, sf_type, distance_bins; kwargs...)
+    return nothing
+end
+
+function auxiliary_structure_function!(sums, counts, sf_type, x, u, distance_bins; kwargs...)
+    auxiliary_varying_positions!(sums, counts, x, u, sf_type, distance_bins; kwargs...)
     return nothing
 end
 
@@ -37,11 +31,10 @@ Fixed geometry batch: `x` is (N_dims, N), `u` has trailing batch dims.
 """
 function auxiliary_shared_positions!(sums, counts, x_mat::AbstractMatrix, u_batch,
         sf_type::SFT.AbstractPairwiseStructureFunctionType, distance_bins;
-        workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
-        weights = NoWeights(), verbose::Bool = true, show_progress::Bool = true)
-    verbose && @info("calculating batched structure function (serial, shared positions)")
-    _bl_run_1d!(sums, counts, sf_type, x_mat, u_batch, digitize_plan(distance_bins), distance_metric,
-        _bl_serial_exec, workspace; weights)
+        workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(), culling::CullingPolicy = AutoCulling(),
+        weights = NoWeights())
+    _bl_run_1d!(sums, counts, sf_type, x_mat, u_batch, distance_bins, distance_metric,
+        _bl_serial_exec, workspace; weights, culling)
 end
 
 """
@@ -51,11 +44,10 @@ Varying geometry batch: `x` and `u` have matching trailing batch dims.
 """
 function auxiliary_varying_positions!(sums, counts, x_batch, u_batch,
         sf_type::SFT.AbstractPairwiseStructureFunctionType, distance_bins;
-        workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
-        weights = NoWeights(), verbose::Bool = true, show_progress::Bool = true)
-    verbose && @info("calculating batched structure function (serial, varying positions)")
-    _bl_run_1d!(sums, counts, sf_type, x_batch, u_batch, digitize_plan(distance_bins), distance_metric,
-        _bl_serial_exec, workspace; weights)
+        workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(), culling::CullingPolicy = AutoCulling(),
+        weights = NoWeights())
+    _bl_run_1d!(sums, counts, sf_type, x_batch, u_batch, distance_bins, distance_metric,
+        _bl_serial_exec, workspace; weights, culling)
 end
 
 """
@@ -64,11 +56,9 @@ end
 Six-invariant-type single-pass 1D batch (serial).
 """
 function serial_calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins;
-        workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
-        weights = NoWeights(), verbose::Bool = true, show_progress::Bool = true)
-    verbose && @info("calculating batched single-pass invariants (serial)")
-    _bl_run_sp1d!(sums, counts, x, u, digitize_plan(distance_bins), distance_metric, _bl_serial_exec, workspace;
-        weights)
+        workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(), culling::CullingPolicy = AutoCulling(),
+        weights = NoWeights())
+    _bl_run_sp1d!(sums, counts, x, u, distance_bins, distance_metric, _bl_serial_exec, workspace; weights, culling)
 end
 
 """
@@ -78,25 +68,25 @@ Six-invariant-type SP2D batch (serial); output `(6, n_dist, n_val, batch…)`.
 """
 function serial_calculate_structure_functions_single_pass_2d!(sums, counts, x, u, distance_bins,
         value_bins::SinglePass2DValueBins; workspace = nothing,
-        distance_metric::DI.PreMetric = DI.Euclidean(),
-        weights = NoWeights(), verbose::Bool = true, show_progress::Bool = true)
-    verbose && @info("calculating batched single-pass joint invariants (serial)")
-    _bl_run_sp2d!(sums, counts, x, u, digitize_plan(distance_bins), digitize_plan(value_bins),
-        distance_metric, _bl_serial_exec, workspace; weights)
+        distance_metric::DI.PreMetric = DI.Euclidean(), culling::CullingPolicy = AutoCulling(),
+        weights = NoWeights())
+    _bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins, distance_metric, _bl_serial_exec, workspace;
+        weights, culling)
 end
 
 """
-    auxiliary_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins)
+    auxiliary_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins; second_axis)
 
-Single-type joint 2D batch (serial); output `(n_dist, n_val, batch…)`.
+Single-type joint 2D batch (serial); output `(n_dist, n_val, batch…)`, the second axis binning what
+`second_axis` reads from each pair.
 """
 function auxiliary_joint2d!(sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType,
         x, u, distance_bins, value_bins; workspace = nothing,
-        distance_metric::DI.PreMetric = DI.Euclidean(),
-        weights = NoWeights(), verbose::Bool = true, show_progress::Bool = true)
-    verbose && @info("calculating batched joint structure function (serial)")
-    _bl_run_joint2d!(sums, counts, sf_type, x, u, digitize_plan(distance_bins),
-        digitize_plan(value_bins), distance_metric, _bl_serial_exec, workspace; weights)
+        distance_metric::DI.PreMetric = DI.Euclidean(), culling::CullingPolicy = AutoCulling(),
+        second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
+        weights = NoWeights())
+    _bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins, distance_metric, _bl_serial_exec,
+        workspace; weights, culling, second_axis)
 end
 
 """Loop-over-slice gold reference for batch parity."""
@@ -130,9 +120,7 @@ function cpu_slice_baseline!(
             sf_type,
             x_slice,
             u_slice,
-            distance_bins;
-            verbose = false,
-            show_progress = false,
+            distance_bins,
         )
         sums_f[:, b] .= local_output
         counts_f[:, b] .= local_counts
@@ -140,13 +128,6 @@ function cpu_slice_baseline!(
 end
 
 # --- Multi-threaded CPU Batch Reducers ---
-#
-# Threading lives in the OhMyThreads extension (StructureFunctionsOhMyThreadsExt), which
-# defines more-specialized `::AbstractArray` methods that win dispatch and parallelize over
-# the batch axis B (disjoint b-slices of one shared batch-leading accumulator — no threadid,
-# no per-thread replication). These generic core methods run the serial driver, which is what
-# `AutoBackend()` reaches without the extension; an explicit `ThreadedBackend()` is refused before
-# it gets here by `_require_threading`.
 
 """Threaded batch driver over the trailing axis; the OhMyThreads extension supplies the methods."""
 function auxiliary_structure_function_threaded! end
@@ -183,10 +164,6 @@ end
 """Flat geometry of the width a component tuple carries — the default when no metric is in play."""
 @inline default_geometry(u_vecs) = SFH.FlatGeometry{length(u_vecs)}()
 
-"""`kwargs` with `distance_metric` removed, for forwarding to a callee that takes `geometry`."""
-@inline _without_metric(kwargs) =
-    Base.structdiff(NamedTuple(kwargs), NamedTuple{(:distance_metric,)})
-
 function _serial_calculate_structure_function_point(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray{FT1},
@@ -197,8 +174,6 @@ function _serial_calculate_structure_function_point(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {FT1, FT2, D, CT}
     geom = SFH.pair_geometry_for(distance_metric, vD)
     xk, uk = SFH.prepare_pair_inputs(geom, x, u)
@@ -218,8 +193,6 @@ function _serial_calculate_structure_function_point(
         geometry = geom,
         culling = culling,
         weights = weights,
-        verbose = verbose,
-        show_progress = show_progress,
     )
 
     return SFO.StructureFunctionSumsAndCounts(
@@ -272,15 +245,13 @@ function threaded_calculate_structure_function(
     ::Type{CT};
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, CT}
-    if ndims(u) >= 3
-        _require_threading("the auxiliary-axis batch driver")
-        n_bins = n_histogram_bins(distance_bins)
-        bdims = batch_dims(u)
-        FT = promote_type(float(FT1), float(FT2))
-        sums = zeros(FT, n_bins, bdims...)
-        counts = zeros(CT, n_bins, bdims...)
-        auxiliary_structure_function_threaded!(sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
-        return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
-    end
-    throw(ArgumentError("Threaded backend is unavailable for non-batch inputs. Load the OhMyThreads extension or use backend=CB.SerialBackend()."))
+    ndims(u) >= 3 || throw(MethodError(threaded_calculate_structure_function,
+                                       (structure_function_type, x, u, distance_bins, CT)))
+    n_bins = n_histogram_bins(distance_bins)
+    bdims = batch_dims(u)
+    FT = promote_type(float(FT1), float(FT2))
+    sums = zeros(FT, n_bins, bdims...)
+    counts = zeros(CT, n_bins, bdims...)
+    auxiliary_structure_function_threaded!(sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
+    return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
 end

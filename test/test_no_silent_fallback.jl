@@ -1,5 +1,6 @@
 using Test: Test
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads: OhMyThreads
 using Random: Random
@@ -119,11 +120,6 @@ Test.@testset "an explicit threaded backend is refused without the OhMyThreads e
             end
         end
 
-        # `threaded_calculate_structure_function` is the driver name itself, reached without a
-        # `backend` keyword.
-        Test.@test_throws ArgumentError SFC.threaded_calculate_structure_function(
-            NSF_OP, NSF_X, NSF_U, NSF_BINS)
-
         # No shape may resolve to a threaded backend when the extension cannot supply one.
         for shape in (SFC.PointField{3}(), SFC.SharedPositionField{3}(), SFC.VaryingPositionField{3}())
             Test.@test SFC.resolve_auto_backend(shape, SFC._ohmythreads_loaded;
@@ -140,6 +136,71 @@ Test.@testset "an explicit threaded backend is refused without the OhMyThreads e
         thr = entry.run(CB.ThreadedBackend())
         Test.@test all(p -> nsf_same(p[1], p[2]), zip(thr, ref))
     end
+end
+
+const NSF_PX = randn(3, NSF_N)
+const NSF_PU = randn(3, NSF_N)
+
+# Every public entry that takes `backend`, reduced to the call; the backend is the only argument that
+# varies, so a refusal can come from nothing but the boundary check.
+const NSF_BACKEND_ENTRIES = (
+    ("1-D", be -> SFC.calculate_structure_function(NSF_OP, NSF_PX, NSF_PU, NSF_BINS; backend = be)),
+    ("joint", be -> SFC.calculate_structure_function(NSF_OP, NSF_PX, NSF_PU, NSF_BINS, NSF_VBINS; backend = be)),
+    ("1-D !", be -> SFC.calculate_structure_function!(zeros(NSF_NB), zeros(Int, NSF_NB), NSF_OP, NSF_PX, NSF_PU,
+                                                       NSF_BINS; backend = be)),
+    ("joint !", be -> SFC.calculate_structure_function!(zeros(NSF_NB, NSF_NV), zeros(Int, NSF_NB, NSF_NV), NSF_OP,
+                                                         NSF_PX, NSF_PU, NSF_BINS, NSF_VBINS; backend = be)),
+    ("single pass", be -> SFC.calculate_structure_functions_single_pass(NSF_PX, NSF_PU, NSF_BINS; backend = be)),
+    ("single pass !", be -> SFC.calculate_structure_functions_single_pass!(zeros(SFC.SINGLE_PASS_N, NSF_NB),
+                                zeros(Int, SFC.SINGLE_PASS_N, NSF_NB), NSF_PX, NSF_PU, NSF_BINS; backend = be)),
+    ("single pass 2D", be -> SFC.calculate_structure_functions_single_pass_2d(NSF_PX, NSF_PU, NSF_BINS, NSF_VBINS;
+                                                                              backend = be)),
+    ("single pass 2D !", be -> SFC.calculate_structure_functions_single_pass_2d!(
+                                   zeros(SFC.SINGLE_PASS_N, NSF_NB, NSF_NV), zeros(Int, SFC.SINGLE_PASS_N, NSF_NB, NSF_NV),
+                                   NSF_PX, NSF_PU, NSF_BINS, NSF_VBINS; backend = be)),
+    ("tensor", be -> SFC.calculate_structure_function_tensor(Val(2), NSF_PX, NSF_PU, NSF_BINS; backend = be)),
+    ("tensor !", be -> SFC.calculate_structure_function_tensor!(zeros(3, 3, NSF_NB), zeros(Int, NSF_NB), Val(2),
+                                                                 NSF_PX, NSF_PU, NSF_BINS; backend = be)),
+    ("multi-field", be -> SFC.calculate_structure_function(NSF_OP, NSF_PX, Fields(vectors = (NSF_PU,)), NSF_BINS;
+                                                           backend = be)),
+    ("gridded lag sweep", be -> SFC.gridded_lag_sweep!(zeros(NSF_NB), zeros(Int, NSF_NB), NSF_OP, NSF_GRID_U,
+                                    NSF_SCHEDULE, NSF_GBINS, Val(2), Val(1), Val(0); backend = be)),
+    ("gridded lag sweep batch", be -> SFC.gridded_lag_sweep_batch!(zeros(NSF_NB, 2), zeros(Int, NSF_NB, 2), NSF_OP,
+                                          randn(2, 64, 2), NSF_SCHEDULE, NSF_GBINS, Val(2), Val(1), Val(0); backend = be)),
+    (map(e -> (e.name, be -> e.run(be)), NSF_THREADED_ENTRIES[1:4])...),
+)
+
+Test.@testset "an explicit backend is refused, naming its package, without the extension that supplies it" begin
+    families = (
+        (SFC._OHMYTHREADS_LOADED, CB.ThreadedBackend(), "OhMyThreads"),
+        (SFC._KERNELABSTRACTIONS_LOADED, CB.GPUBackend(nothing), "KernelAbstractions"),
+        (SFC._DISTRIBUTED_LOADED, CB.DistributedBackend(), "Distributed"),
+        (SFC._MPI_LOADED, CB.MPIBackend(), "MPI"),
+        # a wrapper is available only when its local backend is
+        (SFC._OHMYTHREADS_LOADED, CB.DistributedBackend(CB.ThreadedBackend()), "OhMyThreads"),
+    )
+    for (flag, backend, package) in families, (name, run) in NSF_BACKEND_ENTRIES
+        was = flag[]
+        err = try
+            flag[] = false
+            run(backend)
+            nothing
+        catch e
+            e
+        finally
+            flag[] = was
+        end
+        Test.@test (name, package, err isa ArgumentError && occursin("using $package", err.msg)) ==
+                   (name, package, true)
+    end
+end
+
+Test.@testset "with the extensions loaded, a call no method takes is a MethodError" begin
+    Test.@test SFC._ohmythreads_loaded()
+    Test.@test_throws MethodError SFC.threaded_calculate_structure_function!(NSF_OP)
+    Test.@test_throws MethodError SFC.gpu_calculate_structure_function_batch!(NSF_OP)
+    Test.@test_throws MethodError SFC.threaded_calculate_structure_function_tensor!(NSF_OP)
+    Test.@test_throws MethodError SFC.threaded_calculate_structure_function(NSF_OP, NSF_PX, NSF_PU, NSF_BINS, UInt32, 1)
 end
 
 Test.@testset "core defines no threaded driver that runs serially" begin

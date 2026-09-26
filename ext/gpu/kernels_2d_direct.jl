@@ -178,7 +178,7 @@ end
 
 # --- merge: serial (per-cell loop over blocks) and parallel (workgroup tree-reduce) ---
 
-KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_serial_u32!(
+KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_serial!(
     output_sums,
     output_counts,
     partition_sums,
@@ -193,7 +193,7 @@ KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_serial_u32!(
         t, dbin, vbin = _sp2d_decode_flat_index(g, n_dist, n_val)
         FT = eltype(output_sums)
         s = zero(FT)
-        c = zero(UInt32)
+        c = zero(eltype(output_counts))
         @inbounds for block_id in 1:n_tile_blocks
             s += partition_sums[t, dbin, vbin, block_id]
             c += partition_counts[t, dbin, vbin, block_id]
@@ -206,16 +206,16 @@ KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_serial_u32!(
 end
 
 """Parallel merge: one workgroup per joint cell (`ndrange = C × workgroup_size`)."""
-KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_parallel_u32!(
+KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_parallel!(
     output_sums::AbstractArray{FT, 3},
-    output_counts::AbstractArray{UInt32, 3},
+    output_counts::AbstractArray{CT, 3},
     partition_sums::AbstractArray{FT, 4},
-    partition_counts::AbstractArray{UInt32, 4},
+    partition_counts::AbstractArray{<:Any, 4},
     n_dist::Int,
     n_val::Int,
     n_tile_blocks::Int,
     workgroup_size::Int,
-) where {FT}
+) where {FT, CT}
     g_global = @index(Global, Linear)
     g = (g_global - 1) ÷ workgroup_size + 1
     lid = (g_global - 1) % workgroup_size + 1
@@ -224,8 +224,8 @@ KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_parallel_u32!(
     shared_dbin = @localmem Int (1,)
     shared_vbin = @localmem Int (1,)
     shared_stride = @localmem Int (1,)
-    shared_s = @localmem FT (256,)
-    shared_c = @localmem UInt32 (256,)
+    shared_s = @localmem FT (SF_GPU_TILED_WS,)
+    shared_c = @localmem CT (SF_GPU_TILED_WS,)
 
     if lid == 1 && g <= SF_GPU_SINGLE_PASS_N * n_dist * n_val
         t, dbin, vbin = _sp2d_decode_flat_index(g, n_dist, n_val)
@@ -245,7 +245,7 @@ KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_parallel_u32!(
         dbin = @inbounds(shared_dbin[1])
         vbin = @inbounds(shared_vbin[1])
         partial_s = zero(FT)
-        partial_c = zero(UInt32)
+        partial_c = zero(CT)
         bid = lid
         while bid <= n_tile_blocks
             @inbounds begin
@@ -259,7 +259,7 @@ KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_parallel_u32!(
     else
         @inbounds begin
             shared_s[lid] = zero(FT)
-            shared_c[lid] = zero(UInt32)
+            shared_c[lid] = zero(CT)
         end
     end
     @synchronize
@@ -270,8 +270,8 @@ KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_parallel_u32!(
     end
     @synchronize
 
-    # 256-lane fixed workgroup tree reduction.
-    for _ in 1:8
+    # Tree reduction over the `SF_GPU_TILED_WS`-lane workgroup.
+    for _ in 1:trailing_zeros(SF_GPU_TILED_WS)
         g_global = @index(Global, Linear)
         g = (g_global - 1) ÷ workgroup_size + 1
         lid = (g_global - 1) % workgroup_size + 1
@@ -304,13 +304,6 @@ KA.@kernel unsafe_indices=true function _merge_sp2d_partitions_parallel_u32!(
             output_counts[t, dbin, vbin] = shared_c[1]
         end
     end
-end
-
-const _SP2D_MERGE_MODES = (:parallel, :serial)
-
-function _sp2d_merge_mode()
-    sym = Symbol(lowercase(get(ENV, "SP2D_MERGE", "serial")))
-    return sym in _SP2D_MERGE_MODES ? sym : :serial
 end
 
 """
@@ -675,35 +668,45 @@ KA.@kernel unsafe_indices=true function _sf6_sp2d_directpartition_tiled128_u32!(
     end
 end
 
+"""Static shared bytes every HTP-EJ pair kernel stages for `D`-wide points of `FT`: four coordinate
+tiles and the block id and tile coordinates, which the kernels index by constants."""
+@inline _sp2d_staging_smem_bytes(::Type{FT}, D::Int) where {FT} =
+    4 * SFC.gpu_localmem_bytes(FT, D * SF_GPU_TILE) + SFC.gpu_localmem_scalar_bytes(Int, 1 + 4)
+
+"""Static shared bytes of `_sf6_sp2d_sharedhist_tiled128_u32!` with an `HC`-cell histogram of sums
+`OT` and counts `CST`."""
+@inline _sp2d_sharedhist_smem_bytes(::Type{FT}, ::Type{OT}, ::Type{CST}, D::Int, HC::Int) where {FT, OT, CST} =
+    _sp2d_staging_smem_bytes(FT, D) + SFC.gpu_localmem_bytes(OT, HC) + SFC.gpu_localmem_bytes(CST, HC)
+
+"""Static shared bytes of `_sf6_sp2d_typeplane_tiled128_u32!`: the shared-histogram kernel's and the
+type pass it holds."""
+@inline _sp2d_typeplane_smem_bytes(::Type{FT}, ::Type{OT}, ::Type{CST}, D::Int, HC::Int) where {FT, OT, CST} =
+    _sp2d_sharedhist_smem_bytes(FT, OT, CST, D, HC) + SFC.gpu_localmem_scalar_bytes(Int, 1)
+
+"""Static shared bytes of `_sf6_sp2d_directpartition_tiled128_u32!`."""
+@inline _sp2d_direct_smem_bytes(::Type{FT}, D::Int) where {FT} = _sp2d_staging_smem_bytes(FT, D)
+
+"""Merge `n_tile_blocks` block partitions `(6, n_dist, n_val, n_tile_blocks)` into the output
+`(6, n_dist, n_val)` by `merge`."""
 function _launch_merge_sp2d_partitions!(
-    backend::KA.Backend,
-    out_sums_dev,
-    out_cnts_dev,
-    partition_sums_dev,
-    partition_counts_dev,
-    n_dist::Int,
-    n_val::Int,
-    n_tile_blocks::Int;
-    merge_mode::Symbol = _sp2d_merge_mode(),
+    backend::KA.Backend, out_sums_dev, out_cnts_dev, partition_sums_dev, partition_counts_dev,
+    n_dist::Int, n_val::Int, n_tile_blocks::Int, ::SerialMerge,
 )
-    C = SF_GPU_SINGLE_PASS_N * n_dist * n_val
-    if merge_mode == :serial
-        kernel! = _merge_sp2d_partitions_serial_u32!(backend, 256)
-        kernel!(
-            out_sums_dev, out_cnts_dev, partition_sums_dev, partition_counts_dev,
-            n_dist, n_val, n_tile_blocks;
-            ndrange = C,
-        )
-    else
-        ws = 256
-        kernel! = _merge_sp2d_partitions_parallel_u32!(backend, ws)
-        kernel!(
-            out_sums_dev, out_cnts_dev, partition_sums_dev, partition_counts_dev,
-            n_dist, n_val, n_tile_blocks, ws;
-            ndrange = C * ws,
-            workgroupsize = (ws,),
-        )
-    end
+    kernel! = _merge_sp2d_partitions_serial!(backend, SF_GPU_TILED_WS)
+    kernel!(out_sums_dev, out_cnts_dev, partition_sums_dev, partition_counts_dev, n_dist, n_val, n_tile_blocks;
+            ndrange = SF_GPU_SINGLE_PASS_N * n_dist * n_val)
+    KA.synchronize(backend)
+    return nothing
+end
+
+function _launch_merge_sp2d_partitions!(
+    backend::KA.Backend, out_sums_dev, out_cnts_dev, partition_sums_dev, partition_counts_dev,
+    n_dist::Int, n_val::Int, n_tile_blocks::Int, ::ParallelMerge,
+)
+    ws = SF_GPU_TILED_WS
+    kernel! = _merge_sp2d_partitions_parallel!(backend, ws)
+    kernel!(out_sums_dev, out_cnts_dev, partition_sums_dev, partition_counts_dev, n_dist, n_val, n_tile_blocks, ws;
+            ndrange = SF_GPU_SINGLE_PASS_N * n_dist * n_val * ws, workgroupsize = (ws,))
     KA.synchronize(backend)
     return nothing
 end

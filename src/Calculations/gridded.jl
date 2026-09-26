@@ -149,9 +149,6 @@ end
     return MF.FieldIncrement{D, V, K, T}(vectors, scalars)
 end
 
-@inline _pair_value(sf, δu::SA.SVector, dx, r2) = SFT._sf_raw(sf, δu, dx, r2)
-@inline _pair_value(sf, δu::MF.FieldIncrement, dx, r2) = sf(δu, dx / sqrt(r2))
-
 # Which end of a lag's pairs is read first: the sign of the displacement along the first direction
 # that separates the ends — unless that direction half-turns, when neither end comes first (see
 # `pair_orientation`). An operator odd in a scalar increment takes this as a factor; the rest see 1.
@@ -277,9 +274,11 @@ A schedule provides [`uniform_axes`](@ref), [`n_slabs`](@ref), `enumerated_pairs
 """
 abstract type AbstractSeparableSchedule end
 
-# A transform's tag with no transform loaded: a separable schedule wants the AbstractFFTs extension; any
+# A transform's tag no loaded method takes: a separable schedule wants the AbstractFFTs extension; any
 # other schedule has no lag to transform along.
-_no_transform_loaded(tag, ::AbstractSeparableSchedule) = throw(ArgumentError(
+_no_transform_loaded(tag, ::AbstractSeparableSchedule) = throw(ArgumentError(_ABSTRACTFFTS_LOADED[] ?
+    "no loaded extension transforms a grid with $(typeof(tag)); FastFourierTransformSpectralBackend() is the " *
+    "transform, and DirectSumSpectralBackend() or AutoSpectralBackend() enumerate the lags." :
     "$(typeof(tag)) needs a transform this session has not loaded: `using FFTW: FFTW` on CPU, or another AbstractFFTs " *
     "implementation, supplies it for every grid with a uniform direction. DirectSumSpectralBackend and " *
     "AutoSpectralBackend need none.",
@@ -705,10 +704,8 @@ function sweep_reduce!(sums, counts, ::CB.AbstractSerialBackend, items, make_scr
     return nothing
 end
 
-function sweep_reduce!(sums, counts, ::CB.AbstractThreadedBackend, items, make_scratch, body!)
-    _require_threading("a gridded sweep")
-    return threaded_sweep_reduce!(sums, counts, items, make_scratch, body!)
-end
+sweep_reduce!(sums, counts, ::CB.AbstractThreadedBackend, items, make_scratch, body!) =
+    threaded_sweep_reduce!(sums, counts, items, make_scratch, body!)
 
 function sweep_reduce!(sums, counts, ::CB.AbstractAutoBackend, items, make_scratch, body!)
     _gridded_threads() > 1 && return threaded_sweep_reduce!(sums, counts, items, make_scratch, body!)
@@ -744,10 +741,7 @@ The transform engine on a device backend, supplied by the KernelAbstractions ext
 an AbstractFFTs implementation for the device's arrays. `axis` is `nothing` for the distance
 histogram or `(axis_edges, n_angle, second_axis)` for the joint one.
 """
-device_transform_sweep!(sums, counts, backend, args...) = throw(ArgumentError(
-    "a transform on $(typeof(backend)) needs `using KernelAbstractions` for the device lag kernel, and an " *
-    "AbstractFFTs implementation on the device's arrays (`using CUDA` supplies CUFFT) for the transforms.",
-))
+function device_transform_sweep! end
 
 """Tasks a backend sweeps with, which is how far the work is split."""
 @inline sweep_tasks(::CB.AbstractSerialBackend) = 1
@@ -798,7 +792,7 @@ end
     ::Val{D}, ::Val{V}, ::Val{K}, ::Type{T},
 ) where {M, D, V, K, T}
     δu = _lag_increment(Val(D), Val(V), Val(K), data, k, kp)
-    return ntuple(m -> T(_pair_value(sf, δu, frames[m].dir, r2)), Val(M))
+    return ntuple(m -> T(SFT.flat_pair_value(sf, δu, frames[m].dir, r2)), Val(M))
 end
 
 @inline function _lag_values(
@@ -917,6 +911,7 @@ function gridded_lag_sweep!(
     data::AbstractMatrix, s::AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {OT, CT, D, V, K}
+    _require_backend(backend)
     _check_grid_field(sf, data, s, Val(D), Val(V), Val(K))
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
     _assert_counts_can_accumulate(counts, size(data, 2), w)
@@ -948,10 +943,7 @@ Accumulate the direct lag sweep on a device: one work item per (slab pair, lag),
 the cells of the uniform directions. Supplied by the KernelAbstractions extension; this is the
 route a non-polynomial operator takes on a grid, which the transform cannot express.
 """
-device_lag_sweep!(sums, counts, backend, args...) = throw(ArgumentError(
-    "a gridded sweep on $(typeof(backend)) needs KernelAbstractions: run `using KernelAbstractions` " *
-    "and a device backend such as CUDA.",
-))
+function device_lag_sweep! end
 
 function _sweep_item!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, s, su::UniformLagSchedule{Dg}, data, valid, weights,
@@ -985,6 +977,7 @@ function gridded_lag_sweep!(
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     second_axis::SeparationAngleAxis,
 ) where {OT, CT, D, V, K}
+    _require_backend(backend)
     _check_grid_field(sf, data, s, Val(D), Val(V), Val(K))
     _require_directional(s)
     _check_half_turn_counts(CT, s, dist_be)
@@ -1244,6 +1237,7 @@ function gridded_lag_sweep_batch!(
     data::AbstractArray{<:Any, 3}, s::AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {OT, CT, D, V, K}
+    _require_backend(backend)
     nt = _check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
     _assert_counts_can_accumulate(counts, size(data, 2), w)
@@ -1297,6 +1291,7 @@ function gridded_lag_sweep_batch!(
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     second_axis::SeparationAngleAxis,
 ) where {OT, CT, D, V, K}
+    _require_backend(backend)
     nt = _check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
     _require_directional(s)
     _check_half_turn_counts(CT, s, dist_be)
@@ -1357,10 +1352,7 @@ KernelAbstractions extension together with an AbstractFFTs implementation for th
 `axis` is `nothing` for the distance histogram or `(axis_edges, n_angle, second_axis)` for the joint
 one.
 """
-device_transform_sweep_batch!(sums, counts, backend, args...) = throw(ArgumentError(
-    "a transform on $(typeof(backend)) needs `using KernelAbstractions` for the device lag kernel, and an " *
-    "AbstractFFTs implementation on the device's arrays (`using CUDA` supplies CUFFT) for the transforms.",
-))
+function device_transform_sweep_batch! end
 
 # Each equal-length image carries its share of the lag's pairs to its own angle bin.
 @inline function _scatter_joint!(

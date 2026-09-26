@@ -18,11 +18,12 @@ grid form is supplied by the FlowGeometries extension and the schedule forms by
 [`gridded_sweep_batch!`](@ref).
 """
 function calculate_structure_function_batch!(
-    sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
+    sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType, x::BatchInput, u::BatchInput,
     distance_bins::AbstractVector;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing, kwargs...
 )
+    _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _dispatch_batch!(backend, sums, counts, sf_type, x, u, distance_bins; distance_metric, weights = w, kwargs...)
     return nothing
@@ -35,26 +36,13 @@ The one validation of a batch entry: the shapes, a trailing axis on `u`, the wei
 `OT`, and room in `counts` for every pair.
 """
 function _batch_boundary(counts, x, u, distance_metric, weights, ::Type{OT}) where {OT}
-    shape = _validate_array_shape(x, u, distance_metric)
+    xc, uc = _contract_layout(x), _contract_layout(u)
+    shape = _validate_array_shape(xc, uc, distance_metric)
     has_auxiliary_axes(shape) || throw(ArgumentError("batch fields require at least one trailing axis"))
-    w = _pair_weights(weights, size(x, 2), OT)
-    _assert_counts_can_accumulate(counts, size(x, 2), w)
+    w = _pair_weights(weights, size(xc, 2), OT)
+    _assert_counts_can_accumulate(counts, size(xc, 2), w)
     return w
 end
-
-"""
-    _require_threading(what)
-
-Refuse an explicit `ThreadedBackend()` when the OhMyThreads extension is not loaded. The threaded
-batch drivers are defined in core as the serial ones so that results stay correct, and a caller who
-asked for threading is told rather than quietly given one task; `AutoBackend()` reaches the serial
-driver directly and is unaffected.
-"""
-_require_threading(what::AbstractString) = _ohmythreads_loaded() ? nothing : throw(ArgumentError(
-    "backend = ThreadedBackend() needs the OhMyThreads extension for $what; `using OhMyThreads` " *
-    "enables it, or pass backend = SerialBackend() for the serial driver, or AutoBackend() to take " *
-    "whichever is available.",
-))
 
 function _dispatch_batch!(
     ::CB.AbstractSerialBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...
@@ -66,7 +54,6 @@ end
 function _dispatch_batch!(
     ::CB.AbstractThreadedBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...
 )
-    _require_threading("the slice batch driver")
     auxiliary_structure_function_threaded!(sums, counts, sf_type, x, u, distance_bins; kwargs...)
     return nothing
 end
@@ -75,22 +62,6 @@ function _dispatch_batch!(
     ::CB.AbstractAutoBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...
 )
     return _dispatch_batch!(_auto_local_backend(), sums, counts, sf_type, x, u, distance_bins; kwargs...)
-end
-
-function _dispatch_batch!(
-    ::CB.AbstractDistributedBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...
-)
-    throw(ArgumentError(
-        "Distributed backend is unavailable for the slice batch driver. Load Distributed " *
-        "(`using Distributed`) to enable StructureFunctionsDistributedExt, or use a different backend.",
-    ))
-end
-
-function _dispatch_batch!(::CB.AbstractMPIBackend, args...; kwargs...)
-    throw(ArgumentError(
-        "MPI backend is unavailable for the slice batch driver. Load MPI (`using MPI`) to enable " *
-        "StructureFunctionsMPIExt, or use a different backend.",
-    ))
 end
 
 function _dispatch_batch!(
@@ -108,11 +79,12 @@ end
 Batch 2D joint histograms over `(N_dims, N_points, T)`; outputs `(n_dist, n_val, T)`.
 """
 function calculate_structure_function_2d_batch!(
-    sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
+    sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType, x::BatchInput, u::BatchInput,
     distance_bins::AbstractVector, value_bins::AbstractVector;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing, kwargs...
 )
+    _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _dispatch_2d_batch!(backend, sums, counts, sf_type, x, u, distance_bins, value_bins;
         distance_metric, weights = w, kwargs...)
@@ -129,7 +101,6 @@ end
 function _dispatch_2d_batch!(
     ::CB.AbstractThreadedBackend, sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...
 )
-    _require_threading("the 2D joint slice batch driver")
     auxiliary_joint2d_threaded!(sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...)
     return nothing
 end
@@ -139,22 +110,6 @@ function _dispatch_2d_batch!(
 )
     return _dispatch_2d_batch!(_auto_local_backend(), sums, counts, sf_type, x, u, distance_bins,
                                value_bins; kwargs...)
-end
-
-function _dispatch_2d_batch!(
-    ::CB.AbstractDistributedBackend, args...; kwargs...
-)
-    throw(ArgumentError(
-        "Distributed backend is unavailable for the 2D joint slice batch driver. Load Distributed " *
-        "(`using Distributed`) to enable StructureFunctionsDistributedExt, or use a different backend.",
-    ))
-end
-
-function _dispatch_2d_batch!(::CB.AbstractMPIBackend, args...; kwargs...)
-    throw(ArgumentError(
-        "MPI backend is unavailable for the 2D joint slice batch driver. Load MPI (`using MPI`) to " *
-        "enable StructureFunctionsMPIExt, or use a different backend.",
-    ))
 end
 
 function _dispatch_2d_batch!(
@@ -176,14 +131,11 @@ const SINGLE_PASS_WITH_HELMHOLTZ_N = 8
     single_pass_invariants(δu_L, δu_norm2) -> NTuple{SINGLE_PASS_N}
 
 The six single-pass invariants of one pair — `(S2, L2, T2, S3, L3, L1T2)`, the stacked-row order — from the
-longitudinal increment and the squared norm, which is what every geometry returns
-([`HelperFunctions.pair_invariants`](@ref)).
-
-`S2` is the norm as measured and `S3` is `δu_L` times it, so every backend sums one expression.
+longitudinal increment and the squared norm of [`HelperFunctions.increment_invariants`](@ref).
 """
 @inline function single_pass_invariants(du_L, du_norm2)
     du_L2 = du_L * du_L
-    du_T2 = du_norm2 - du_L2
+    du_T2 = SFH.transverse_energy(du_L, du_norm2)
     return (du_norm2, du_L2, du_T2, du_L * du_norm2, du_L * du_L2, du_L * du_T2)
 end
 
@@ -244,10 +196,11 @@ Batch six invariant 1D distance histograms over `(N_dims, N_points, T)`;
 outputs `(6, NB, T)`.
 """
 function calculate_structure_functions_single_pass_batch!(
-    sums, counts, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector;
+    sums, counts, x::BatchInput, u::BatchInput, distance_bins::AbstractVector;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing, kwargs...
 )
+    _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _dispatch_single_pass_batch!(backend, sums, counts, x, u, distance_bins; distance_metric, weights = w, kwargs...)
     return nothing
@@ -263,7 +216,6 @@ end
 function _dispatch_single_pass_batch!(
     ::CB.AbstractThreadedBackend, sums, counts, x, u, distance_bins; kwargs...
 )
-    _require_threading("the single-pass slice batch driver")
     threaded_calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins; kwargs...)
     return nothing
 end
@@ -272,22 +224,6 @@ function _dispatch_single_pass_batch!(
     ::CB.AbstractAutoBackend, sums, counts, x, u, distance_bins; kwargs...
 )
     return _dispatch_single_pass_batch!(_auto_local_backend(), sums, counts, x, u, distance_bins; kwargs...)
-end
-
-function _dispatch_single_pass_batch!(
-    ::CB.AbstractDistributedBackend, args...; kwargs...
-)
-    throw(ArgumentError(
-        "Distributed backend is unavailable for the single-pass slice batch driver. Load Distributed " *
-        "(`using Distributed`) to enable StructureFunctionsDistributedExt, or use a different backend.",
-    ))
-end
-
-function _dispatch_single_pass_batch!(::CB.AbstractMPIBackend, args...; kwargs...)
-    throw(ArgumentError(
-        "MPI backend is unavailable for the single-pass slice batch driver. Load MPI (`using MPI`) " *
-        "to enable StructureFunctionsMPIExt, or use a different backend.",
-    ))
 end
 
 function _dispatch_single_pass_batch!(
@@ -307,11 +243,12 @@ outputs `(6, NB, n_val, T)`. Pass shared bin types or `NTuple{6,...}`; use `Tupl
 if you have a length-6 vector of bin objects.
 """
 function calculate_structure_functions_single_pass_2d_batch!(
-    sums, counts, x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector,
+    sums, counts, x::BatchInput, u::BatchInput, distance_bins::AbstractVector,
     value_bins::SinglePass2DValueBins;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing, kwargs...
 )
+    _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _dispatch_single_pass_2d_batch!(
         backend, sums, counts, x, u, distance_bins, value_bins; distance_metric, weights = w, kwargs...
@@ -329,7 +266,6 @@ end
 function _dispatch_single_pass_2d_batch!(
     ::CB.AbstractThreadedBackend, sums, counts, x, u, distance_bins, value_bins::SinglePass2DValueBins; kwargs...
 )
-    _require_threading("the single-pass 2D slice batch driver")
     threaded_calculate_structure_functions_single_pass_2d!(sums, counts, x, u, distance_bins, value_bins; kwargs...)
     return nothing
 end
@@ -339,22 +275,6 @@ function _dispatch_single_pass_2d_batch!(
 )
     return _dispatch_single_pass_2d_batch!(_auto_local_backend(), sums, counts, x, u, distance_bins,
                                            value_bins; kwargs...)
-end
-
-function _dispatch_single_pass_2d_batch!(
-    ::CB.AbstractDistributedBackend, args...; kwargs...
-)
-    throw(ArgumentError(
-        "Distributed backend is unavailable for the single-pass 2D slice batch driver. Load Distributed " *
-        "(`using Distributed`) to enable StructureFunctionsDistributedExt, or use a different backend.",
-    ))
-end
-
-function _dispatch_single_pass_2d_batch!(::CB.AbstractMPIBackend, args...; kwargs...)
-    throw(ArgumentError(
-        "MPI backend is unavailable for the single-pass 2D slice batch driver. Load MPI (`using MPI`) " *
-        "to enable StructureFunctionsMPIExt, or use a different backend.",
-    ))
 end
 
 function _dispatch_single_pass_2d_batch!(
@@ -372,17 +292,19 @@ function (sf::SFT.AbstractPairwiseStructureFunctionType)(x, u, bins; kwargs...)
 end
 
 function calculate_structure_functions_single_pass!(sums::AbstractArray, counts::AbstractArray,
-        x::AbstractArray, u::AbstractArray, bins::AbstractVector; backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
+        x::BatchInput, u::BatchInput, bins::AbstractVector; backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
         distance_metric::DI.PreMetric = DI.Euclidean(), weights = nothing, kwargs...)
+    _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _dispatch_single_pass_batch!(backend, sums, counts, x, u, bins; distance_metric, weights = w, kwargs...)
     return sums, counts
 end
 
 function calculate_structure_functions_single_pass_2d!(sums::AbstractArray, counts::AbstractArray,
-        x::AbstractArray, u::AbstractArray, bins::AbstractVector, value_bins::SinglePass2DValueBins;
+        x::BatchInput, u::BatchInput, bins::AbstractVector, value_bins::SinglePass2DValueBins;
         backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
         weights = nothing, kwargs...)
+    _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _dispatch_single_pass_2d_batch!(backend, sums, counts, x, u, bins, value_bins; distance_metric, weights = w, kwargs...)
     return sums, counts

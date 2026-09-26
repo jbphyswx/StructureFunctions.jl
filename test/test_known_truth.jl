@@ -42,11 +42,10 @@ Test.@testset "the tensor trace is the second-order structure function" begin
     u = randn(2, N)
     bins = collect(range(0.0, 1.4; length = 6))
     t = SFC.calculate_structure_function_tensor(
-        Val(2), x, u, bins; backend = serial,
-        output_type = SF.StructureFunctionTensorSumsAndCounts)
+        Val(2), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = serial)
     s2 = SFC.calculate_structure_function(
-        SFT.S2SFType(), x, u, bins; backend = serial,
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+        SFT.S2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts; backend = serial,
+        verbose = false, show_progress = false)
     Test.@test t.counts == s2.counts
     Test.@test isapprox([sum(t.sums[d, d, b] for d in 1:2) for b in 1:(length(bins) - 1)], s2.sums;
                         rtol = 1e-10, atol = 1e-12)
@@ -57,11 +56,11 @@ Test.@testset "the tensor trace is the second-order structure function" begin
     us = randn(2, N)
     sbins = collect(range(0.0, 2.4; length = 6))
     ts = SFC.calculate_structure_function_tensor(
-        Val(2), xs, us, sbins; backend = serial, distance_metric = DI.SphericalAngle(),
-        output_type = SF.StructureFunctionTensorSumsAndCounts)
+        Val(2), xs, us, sbins, SF.StructureFunctionTensorSumsAndCounts; backend = serial,
+        distance_metric = DI.SphericalAngle())
     s2s = SFC.calculate_structure_function(
-        SFT.S2SFType(), xs, us, sbins; backend = serial, distance_metric = DI.SphericalAngle(),
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+        SFT.S2SFType(), xs, us, sbins, SF.StructureFunctionSumsAndCounts; backend = serial,
+        distance_metric = DI.SphericalAngle(), verbose = false, show_progress = false)
     Test.@test sum(ts.counts) > 0
     Test.@test ts.counts == s2s.counts
     Test.@test isapprox([sum(ts.sums[d, d, b] for d in 1:2) for b in 1:(length(sbins) - 1)],
@@ -69,8 +68,8 @@ Test.@testset "the tensor trace is the second-order structure function" begin
 
     # on a sphere the pair frame is the basis, so the longitudinal direction is ê₁
     l2s = SFC.calculate_structure_function(
-        SFT.L2SFType(), xs, us, sbins; backend = serial, distance_metric = DI.SphericalAngle(),
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+        SFT.L2SFType(), xs, us, sbins, SF.StructureFunctionSumsAndCounts; backend = serial,
+        distance_metric = DI.SphericalAngle(), verbose = false, show_progress = false)
     Test.@test isapprox(ts.sums[1, 1, :], l2s.sums; rtol = 1e-10, atol = 1e-12)
 end
 

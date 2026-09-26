@@ -17,6 +17,11 @@ using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionObjects as SFO, StructureFunctionTypes as SFT, n_histogram_bins
 
+function __init__()
+    SFC._MPI_LOADED[] = true
+    return nothing
+end
+
 @inline _comm(b::CB.AbstractMPIBackend) = isnothing(b.comm) ? MPI.COMM_WORLD : b.comm
 
 # Round-robin outer-index share: work for index i is ~ N - i, so a strided subset of the
@@ -58,18 +63,15 @@ function SFC._dispatch_execution_backend(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = SFC.NoWeights(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
-    verbose = false,
-    show_progress = false,
 ) where {CT}
     if SFC.has_auxiliary_axes(shape)
-        SFC._cull_reject_unsupported(culling, "the auxiliary-axis batch kernels")
         OT = promote_type(float(eltype(x)), float(eltype(u)))
         nb = n_histogram_bins(distance_bins)
         bdims = size(u)[3:end]
         sums = zeros(OT, nb, bdims...)
         counts = zeros(CT, nb, bdims...)
-        SFC._bl_run_1d!(sums, counts, structure_function_type, x, u,
-            SFC.digitize_plan(distance_bins), distance_metric, _mpi_bl_exec(_comm(b), _inner_exec(b)); weights)
+        SFC._bl_run_1d!(sums, counts, structure_function_type, x, u, distance_bins, distance_metric,
+            _mpi_bl_exec(_comm(b), _inner_exec(b)); weights, culling)
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
     return _mpi_point_1d(b, structure_function_type, x, u, distance_bins, CT; distance_metric, weights, culling)
@@ -95,7 +97,6 @@ function _mpi_point_1d(
     # through `sweep_reduce!`, which this extension implements — so it splits across ranks here
     # without a second decomposition. The pair loop below would cost `O(N²)`.
     if SFC._on_a_line(geom, structure_function_type)
-        SFC._cull_reject_unsupported(culling, "the sorted line route")
         nb0 = SFC.n_histogram_bins(distance_bins)
         OT0 = promote_type(float(eltype(x)), float(eltype(u)))
         lsums = zeros(OT0, nb0)
@@ -127,10 +128,9 @@ function SFC._dispatch_execution_backend(
     value_bins::AbstractVector,
     ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
     second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
-    verbose = false,
-    show_progress = false,
 ) where {CT}
     comm = _comm(b)
     OT = promote_type(float(eltype(x)), float(eltype(u)))
@@ -138,15 +138,11 @@ function SFC._dispatch_execution_backend(
     nv = n_histogram_bins(value_bins)
 
     if SFC.has_auxiliary_axes(shape)
-        second_axis isa SFC.InvariantValueAxis || throw(ArgumentError(
-            "the auxiliary-axis joint kernels bin each pair's operator value; $(nameof(typeof(second_axis))) " *
-            "is taken by a field without auxiliary axes"))
         bdims = size(u)[3:end]
         sums = zeros(OT, nd, nv, bdims...)
         counts = zeros(CT, nd, nv, bdims...)
-        SFC._bl_run_joint2d!(sums, counts, structure_function_type, x, u,
-            SFC.digitize_plan(distance_bins), SFC.digitize_plan(value_bins), distance_metric,
-            _mpi_bl_exec(comm, _inner_exec(b)); weights)
+        SFC._bl_run_joint2d!(sums, counts, structure_function_type, x, u, distance_bins, value_bins, distance_metric,
+            _mpi_bl_exec(comm, _inner_exec(b)); weights, culling, second_axis)
         return SFO.StructureFunction2DSumsAndCounts(
             structure_function_type, distance_bins, value_bins, sums, counts)
     end
@@ -156,7 +152,7 @@ function SFC._dispatch_execution_backend(
     s, c = SFC._partial_2d_sums_counts(
         CB.local_backend(b), structure_function_type, x_vecs, u_vecs, distance_bins, value_bins,
         _rank_share(comm, 1:(N - 1)), CT;
-        geometry = geom, weights, second_axis,
+        geometry = geom, culling, weights, second_axis,
     )
     sums, counts = _allreduce_pair!(comm, s, c)
     return SFO.StructureFunction2DSumsAndCounts(
@@ -180,12 +176,11 @@ function SFC._dispatch_single_pass(
     nb = n_histogram_bins(distance_bins)
 
     if SFC.has_auxiliary_axes(shape)
-        SFC._cull_reject_unsupported(culling, "the auxiliary-axis batch kernels")
         bdims = size(u)[3:end]
         sums = zeros(OT, SFC.SINGLE_PASS_N, nb, bdims...)
         counts = zeros(CT, SFC.SINGLE_PASS_N, nb, bdims...)
-        SFC._bl_run_sp1d!(sums, counts, x, u, SFC.digitize_plan(distance_bins), distance_metric,
-            _mpi_bl_exec(comm, _inner_exec(b)); weights)
+        SFC._bl_run_sp1d!(sums, counts, x, u, distance_bins, distance_metric,
+            _mpi_bl_exec(comm, _inner_exec(b)); weights, culling)
         return (sums = sums, counts = counts)
     end
 
@@ -216,12 +211,11 @@ function SFC._dispatch_single_pass_2d(
     nv = length(SFC._sp2d_value_bin_at(value_bins, 1)) - 1
 
     if SFC.has_auxiliary_axes(shape)
-        SFC._cull_reject_unsupported(culling, "the auxiliary-axis batch kernels")
         bdims = size(u)[3:end]
         sums = zeros(OT, SFC.SINGLE_PASS_N, nb, nv, bdims...)
         counts = zeros(CT, SFC.SINGLE_PASS_N, nb, nv, bdims...)
-        SFC._bl_run_sp2d!(sums, counts, x, u, SFC.digitize_plan(distance_bins), SFC.digitize_plan(value_bins),
-            distance_metric, _mpi_bl_exec(comm, _inner_exec(b)); weights)
+        SFC._bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins,
+            distance_metric, _mpi_bl_exec(comm, _inner_exec(b)); weights, culling)
         return (sums = sums, counts = counts)
     end
 
@@ -311,10 +305,11 @@ function SFC._dispatch_batch!(
     sf_type::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = SFC.NoWeights(), verbose::Bool = true, show_progress::Bool = true,
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    weights = SFC.NoWeights(),
 )
-    SFC._bl_run_1d!(sums, counts, sf_type, x, u, SFC.digitize_plan(distance_bins), distance_metric,
-        _mpi_bl_exec(_comm(b), _inner_exec(b)); weights)
+    SFC._bl_run_1d!(sums, counts, sf_type, x, u, distance_bins, distance_metric,
+        _mpi_bl_exec(_comm(b), _inner_exec(b)); weights, culling)
     return nothing
 end
 
@@ -323,10 +318,12 @@ function SFC._dispatch_2d_batch!(
     sf_type::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector, value_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = SFC.NoWeights(), verbose::Bool = true, show_progress::Bool = true,
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
+    weights = SFC.NoWeights(),
 )
-    SFC._bl_run_joint2d!(sums, counts, sf_type, x, u, SFC.digitize_plan(distance_bins),
-        SFC.digitize_plan(value_bins), distance_metric, _mpi_bl_exec(_comm(b), _inner_exec(b)); weights)
+    SFC._bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins, distance_metric,
+        _mpi_bl_exec(_comm(b), _inner_exec(b)); weights, culling, second_axis)
     return nothing
 end
 
@@ -334,10 +331,11 @@ function SFC._dispatch_single_pass_batch!(
     b::CB.AbstractMPIBackend, sums::AbstractArray, counts::AbstractArray,
     x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = SFC.NoWeights(), verbose::Bool = true, show_progress::Bool = true,
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    weights = SFC.NoWeights(),
 )
-    SFC._bl_run_sp1d!(sums, counts, x, u, SFC.digitize_plan(distance_bins), distance_metric,
-        _mpi_bl_exec(_comm(b), _inner_exec(b)); weights)
+    SFC._bl_run_sp1d!(sums, counts, x, u, distance_bins, distance_metric,
+        _mpi_bl_exec(_comm(b), _inner_exec(b)); weights, culling)
     return nothing
 end
 
@@ -346,10 +344,11 @@ function SFC._dispatch_single_pass_2d_batch!(
     x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector,
     value_bins::SFC.SinglePass2DValueBins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = SFC.NoWeights(), verbose::Bool = true, show_progress::Bool = true,
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    weights = SFC.NoWeights(),
 )
-    SFC._bl_run_sp2d!(sums, counts, x, u, SFC.digitize_plan(distance_bins), SFC.digitize_plan(value_bins),
-        distance_metric, _mpi_bl_exec(_comm(b), _inner_exec(b)); weights)
+    SFC._bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins,
+        distance_metric, _mpi_bl_exec(_comm(b), _inner_exec(b)); weights, culling)
     return nothing
 end
 
@@ -359,12 +358,12 @@ function SFC.mpi_calculate_structure_function_tensor!(
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
     backend::CB.AbstractMPIBackend, distance_metric::DI.PreMetric = DI.Euclidean(),
-    axis = nothing, weights = SFC.NoWeights(), kwargs...,
+    axis = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(), weights = SFC.NoWeights(),
 ) where {P, D}
     comm = _comm(backend)
     ps, pc = SFC.tensor_partial(order, shape, x, u, distance_bins,
         _rank_share(comm, 1:(size(u, 2) - 1)), eltype(counts);
-        distance_metric = distance_metric, axis = axis, weights = weights)
+        distance_metric = distance_metric, axis = axis, culling = culling, weights = weights)
     rs, rc = _allreduce_pair!(comm, _dense(ps), _dense(pc))
     sums .+= rs
     counts .+= rc
@@ -376,11 +375,9 @@ function SFC.mpi_calculate_structure_function!(
     sums::AbstractVector, counts::AbstractVector,
     sf::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractMatrix, f::SFC.MF.Fields, distance_bins;
-    backend::CB.AbstractMPIBackend, verbose::Bool = false, show_progress::Bool = false, kwargs...,
+    backend::CB.AbstractMPIBackend, kwargs...,
 )
-    _ = show_progress
     comm = _comm(backend)
-    verbose && MPI.Comm_rank(comm) == 0 && @info("calculating multi-field structure function (MPI)")
     N = size(SFC.MF.packed(f), 2)
     ps, pc = SFC.field_partial(sf, x, f, distance_bins, _rank_share(comm, 1:(N - 1)), eltype(counts); kwargs...)
     rs, rc = _allreduce_pair!(comm, _dense(ps), _dense(pc))

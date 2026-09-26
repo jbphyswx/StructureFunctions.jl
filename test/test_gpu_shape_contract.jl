@@ -16,16 +16,16 @@ const GPU_SHAPE_CPU_BE = CB.SerialBackend()
 
 function _gpu_shape_pairwise(sf, x, u, bins)
     return SFC.calculate_structure_function(
-        sf, x, u, bins;
-        backend = GPU_SHAPE_BE, output_type = SFO.StructureFunctionSumsAndCounts,
+        sf, x, u, bins, SFO.StructureFunctionSumsAndCounts;
+        backend = GPU_SHAPE_BE,
         verbose = false, show_progress = false,
     )
 end
 
 function _cpu_shape_pairwise(sf, x, u, bins)
     return SFC.calculate_structure_function(
-        sf, x, u, bins;
-        backend = GPU_SHAPE_CPU_BE, output_type = SFO.StructureFunctionSumsAndCounts,
+        sf, x, u, bins, SFO.StructureFunctionSumsAndCounts;
+        backend = GPU_SHAPE_CPU_BE,
         verbose = false, show_progress = false,
     )
 end
@@ -109,10 +109,10 @@ end
         u = rand(Float32, 2, 10, 2, 3)
 
         gpu = SFC.calculate_structure_functions_single_pass(
-            x, u, bins; backend = GPU_SHAPE_BE, output_type = SFO.StructureFunctionSumsAndCounts,
+            x, u, bins, SFO.StructureFunctionSumsAndCounts; backend = GPU_SHAPE_BE,
         )
         cpu = SFC.calculate_structure_functions_single_pass(
-            x, u, bins; backend = GPU_SHAPE_CPU_BE, output_type = SFO.StructureFunctionSumsAndCounts,
+            x, u, bins, SFO.StructureFunctionSumsAndCounts; backend = GPU_SHAPE_CPU_BE,
         )
         @test keys(gpu) == inv
         for k in inv
@@ -138,11 +138,11 @@ end
         u1 = randn(Float32, 1, 200)
         b1 = collect(Float32, range(0.0f0, 0.9f0; length = 9))
         cpu1 = SFC.calculate_structure_function(
-            sf, x1, u1, b1; backend = CB.SerialBackend(),
-            output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+            sf, x1, u1, b1, SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+            verbose = false, show_progress = false)
         gpu1 = SFC.calculate_structure_function(
-            sf, x1, u1, b1; backend = GPU_SHAPE_BE,
-            output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+            sf, x1, u1, b1, SFO.StructureFunctionSumsAndCounts; backend = GPU_SHAPE_BE,
+            verbose = false, show_progress = false)
         @test gpu1.counts == cpu1.counts
         @test isapprox(gpu1.sums, cpu1.sums; rtol = 1f-5)
     end
@@ -181,11 +181,11 @@ Test.@testset "GPU point-field families honour a spherical metric" begin
 
     for (name, call) in (
             ("sf1d", (be,) -> SFC.calculate_structure_function(
-                sft, x, u, db; backend = be, output_type = SFO.StructureFunctionSumsAndCounts, kw...)),
+                sft, x, u, db, SFO.StructureFunctionSumsAndCounts; backend = be, kw...)),
             ("joint2d", (be,) -> SFC.calculate_structure_function(
                 sft, x, u, db, vb; backend = be, kw...)),
             ("sp1d", (be,) -> SFC.calculate_structure_functions_single_pass(
-                x, u, db; backend = be, output_type = SFO.StructureFunctionSumsAndCounts,
+                x, u, db, SFO.StructureFunctionSumsAndCounts; backend = be,
                 distance_metric = m)),
             ("sp2d", (be,) -> SFC.calculate_structure_functions_single_pass_2d(
                 x, u, db, vb; backend = be, distance_metric = m)),
@@ -205,8 +205,8 @@ Test.@testset "GPU point-field families honour a spherical metric" begin
 
     # The metric genuinely changes the answer: the transported result is not the flat one.
     raw(mm) = SFC.calculate_structure_function(
-        sft, x, u, db; backend = CB.SerialBackend(), verbose = false, show_progress = false,
-        distance_metric = mm, output_type = SFO.StructureFunctionSumsAndCounts,
+        sft, x, u, db, SFO.StructureFunctionSumsAndCounts;
+        backend = CB.SerialBackend(), verbose = false, show_progress = false, distance_metric = mm,
     )
     Test.@test raw(DI.Euclidean()).counts != raw(m).counts
 
@@ -233,9 +233,9 @@ Test.@testset "GPU batch families honour a spherical metric" begin
 
     for (name, call) in (
             ("sf1d batch", (be,) -> SFC.calculate_structure_function(
-                sft, x, u3, db; backend = be, output_type = SFO.StructureFunctionSumsAndCounts, kw...)),
+                sft, x, u3, db, SFO.StructureFunctionSumsAndCounts; backend = be, kw...)),
             ("sp1d batch", (be,) -> SFC.calculate_structure_functions_single_pass(
-                x, u3, db; backend = be, output_type = SFO.StructureFunctionSumsAndCounts, kw...)),
+                x, u3, db, SFO.StructureFunctionSumsAndCounts; backend = be, kw...)),
             ("sp2d batch", (be,) -> SFC.calculate_structure_functions_single_pass_2d(
                 x, u3, db, vb; backend = be, kw...)),
         )

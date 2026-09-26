@@ -17,12 +17,9 @@ function _batch_buffers(backend, ::Type{FT}, ::Type{CT}, dims, workspace) where 
     return cached.sums, cached.counts
 end
 
-"""Unified 1D batch device launch (individual `NMOM=1` or single-pass `NMOM=6`).
-Routes through `_sf_launch_1d_batch!`, taking the CUDA fast path (N-body
-broadcast + static-shared privatized histogram, TILE=256) when
-`StructureFunctionsCUDAExt` is active, else the portable KA tiled kernel. Covers
-fixed-x and varying-x, `D ∈ {2,3}`, any distance-bin type. Returns device `(sums, counts)` of shape
-`(NMOM, NB, B)`. `u` is staged `(D,N,B)` with NO batch-major permute."""
+"""Unified 1D batch device launch (individual `NMOM=1` or single-pass `NMOM=6`) through
+`_sf_launch_1d_batch!`: fixed-x and varying-x, any width, any distance-bin type. Returns device
+`(sums, counts)` of shape `(NMOM, NB, B)`. `u` is staged `(D,N,B)` with no batch-major permute."""
 function _gpu_1d_unified_device(
     backend, x, u, sf_type, distance_bins,
     ::Val{NMOM}, NB::Int, B::Int, fixed_x::Bool, ::Type{OT}, ::Type{CT}, geom;
@@ -57,7 +54,8 @@ function _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins,
                SFC._val_int(SFH.field_width(geom)) == 2
     _validate_batch_workspace!(workspace, backend, :sf1d, distance_bins, OT)
     if fixed_x && two_wide && weights isa SFC.NoWeights && NB <= SF_GPU_MAX_BINS &&
-       _sf_worst_case_pairs(size(x, 2)) <= typemax(UInt32)
+       _sf_worst_case_pairs(size(x, 2)) <= typemax(UInt32) &&
+       _batch_usmem_strip_w(SFC.gpu_device_caps(backend), OT) > 0
         N = size(x,2)
         sums_dev, counts_dev = _batch_buffers(backend, OT,
             _sf_count_type(weights, CT, _sf_worst_case_pairs(N)), (NB,B), workspace)
@@ -86,8 +84,6 @@ function _gpu_calculate_structure_function_batch(
     ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = SFC.NoWeights(), workspace = nothing,
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {FT, CT}
     fixed_x = ndims(x) == 2
     NB = length(distance_bins) - 1
@@ -116,8 +112,6 @@ function _gpu_calculate_structure_function_batch!(
     distance_bins::AbstractVector{FT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = SFC.NoWeights(), workspace = nothing,
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {FT}
     _check_gpu_outputs(output_sums, output_counts, backend, (length(distance_bins)-1, SFC.batch_dims(u)...); workspace)
     fixed_x = ndims(x) == 2
@@ -148,8 +142,6 @@ function _gpu_dispatch_single_pass_batch(
     ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = SFC.NoWeights(), workspace = nothing,
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {FT1, FT2, FT3, CT}
     FT = promote_type(float(FT1), float(FT2))
     fixed_x = ndims(x) == 2
@@ -177,8 +169,6 @@ function _gpu_dispatch_single_pass_batch!(
     distance_bins::AbstractVector{FT3};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = SFC.NoWeights(), workspace = nothing,
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {OT, CT, FT1, FT2, FT3}
     _check_gpu_outputs(sums, counts, backend, (SFC.SINGLE_PASS_N, length(distance_bins)-1, SFC.batch_dims(u)...);
                        workspace)
@@ -201,13 +191,10 @@ function _gpu_dispatch_single_pass_batch!(
     return sums, counts
 end
 
-"""Unified single-pass 2D batch device launch. Routes through the same
-`_sf_launch_2d_batch!` chokepoint as joint 2D, so it takes the CUDA fast path
-(N-body broadcast + dynamic-shared privatized histogram, TILE=1024) when
-`StructureFunctionsCUDAExt` is active, and the portable KA tiled kernel
-otherwise. Covers fixed-x and varying-x, `D ∈ {2,3}`, and any distance- and value-bin type.
-Returns device `(sums, counts)` of shape `(6, n_dist, n_val, B)`. `u` is staged `(D,N,B)` with NO
-batch-major permute (the unified kernels read `u[d, point, b]` directly)."""
+"""Unified 2D batch device launch (joint `NMOM=1` or single-pass `NMOM=6`) through
+`_sf_launch_2d_batch!`: fixed-x and varying-x, and any distance- and value-bin type. Returns device
+`(sums, counts)` of shape `(NMOM, n_dist, n_val, B)`. `u` is staged `(D,N,B)` with no batch-major
+permute."""
 function _gpu_2d_unified_device(
     backend, x, u, sf_type, distance_bins, value_bins, ::Val{NMOM},
     n_dist::Int, n_val::Int, B::Int, fixed_x::Bool, ::Type{OT}, ::Type{CT}, geom;
@@ -252,8 +239,6 @@ function _gpu_dispatch_single_pass_2d_batch(
     ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = SFC.NoWeights(), workspace = nothing,
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {FT1, FT2, FT3, CT}
     FT = promote_type(float(FT1), float(FT2))
     fixed_x = ndims(x) == 2
@@ -284,8 +269,6 @@ function _gpu_dispatch_single_pass_2d_batch!(
     value_bins::SFC.SinglePass2DValueBins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = SFC.NoWeights(), workspace = nothing,
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {OT, CT, FT1, FT2, FT3}
     _check_gpu_outputs(sums, counts, backend,
         (SFC.SINGLE_PASS_N, length(distance_bins)-1, _n_value_edges(value_bins)-1, SFC.batch_dims(u)...); workspace)
@@ -325,8 +308,6 @@ function _gpu_calculate_structure_function_2d_batch(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = SFC.NoWeights(), workspace = nothing,
     second_axis = SFC.InvariantValueAxis(),
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {FT, CT}
     second_axis isa SFC.InvariantValueAxis || throw(ArgumentError(
         "the device joint slice batch bins each pair's own value; $(typeof(second_axis)) runs on " *

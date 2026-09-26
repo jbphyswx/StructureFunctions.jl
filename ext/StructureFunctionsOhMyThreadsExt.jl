@@ -14,8 +14,6 @@ using StructureFunctions:
     digitize_plan,
     n_histogram_bins
 
-# Signal to AutoBackend that threading is available (see backends.jl). A Ref set in `__init__` at
-# load time, because overwriting a method during this extension's precompilation is illegal.
 function __init__()
     SFC._OHMYTHREADS_LOADED[] = true
     return nothing
@@ -75,15 +73,12 @@ function SFC.threaded_calculate_structure_function!(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {OT, CT, D, V, K}
     Np = size(SFC.MF.packed(f), 2)
     size(x, 2) == Np || throw(DimensionMismatch(
         "x covers $(size(x, 2)) points and the field $Np",
     ))
     if SFC._on_a_line(SFC._field_geometry(distance_metric, Val(D), Val(V), x), sf)
-        SFC._cull_reject_unsupported(culling, "the sorted line route")
         return SFC.sorted_line_sweep!(sums, counts, sf, SFC._line_coordinates(x), SFC.MF.packed(f),
                                       distance_bins, Val(D), Val(V), Val(K); weights,
                                       backend = CB.ThreadedBackend())
@@ -92,7 +87,7 @@ function SFC.threaded_calculate_structure_function!(
     # variable boxes it, which OhMyThreads rejects outright.
     geom, xk, data, vF, plan, grid, wk = SFC.field_setup(f, x, distance_bins, distance_metric, culling, weights)
     nb = n_histogram_bins(distance_bins)
-    vW = Val(SFC.SFC_val_int(SFH.coordinate_width(geom)))
+    vW = SFH.coordinate_width(geom)
     result = OMT.tmapreduce(+, _outer_chunks(grid, 1:(Np - 1), Threads.nthreads())) do chunk
         local_sums = zeros(OT, nb)
         local_counts = zeros(CT, nb)
@@ -118,21 +113,11 @@ function SFC.threaded_calculate_structure_function!(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
-    verbose = true,
-    show_progress = true,
 ) where {OT, CT, FT1 <: Number, FT2 <: Number}
-    if verbose
-        @info("calculating structure function (threaded reduction via OhMyThreads)")
-    end
-    _ = show_progress
-
-    N3 = n_histogram_bins(distance_bins)
-
     N = size(x_arr, 1)
     geom = SFH.pair_geometry_for(distance_metric, Val(size(u_arr, 1)))
 
     if SFC._on_a_line(geom, structure_function_type)
-        SFC._cull_reject_unsupported(culling, "the sorted line route")
         return SFC.sorted_line_sweep!(output_sums, output_counts, structure_function_type,
                                       SFC._line_coordinates(x_arr), u_arr, distance_bins, Val(1), Val(1), Val(0);
                                       weights, backend = CB.ThreadedBackend())
@@ -146,28 +131,31 @@ function SFC.threaded_calculate_structure_function!(
         return _threaded_pf_simd!(output_sums, output_counts, structure_function_type, x_arr,
             u_arr, distance_bins, Val(3); geometry = geom, culling = culling, weights)
     end
-    SFC._cull_reject_unsupported(culling, "the scalar per-point threaded kernel this geometry uses")
-
-    # Fallback: scalar per-i over chunks
     xk, uk = SFH.prepare_pair_inputs(geom, x_arr, u_arr)
-    x_tuple = SFC._component_vector_views(xk, SFH.coordinate_width(geom))
-    u_tuple = SFC._component_vector_views(uk, SFH.field_width(geom))
-    be = digitize_plan(distance_bins)
-    result = OMT.tmapreduce(+, _triangle_outer_chunks(axes(x_arr, 2), Threads.nthreads())) do chunk
-        local_output = zeros(OT, N3)
-        local_counts = zeros(CT, N3)
-        for i in chunk
-            SFC.calculate_structure_function_i!(
-                local_output, local_counts, geom, structure_function_type, i,
-                x_tuple, u_tuple, be, weights,
-            )
-        end
-        SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, local_output, local_counts)
-    end
-
+    result = _threaded_scalar_1d(structure_function_type, geom,
+        SFC._component_vector_views(xk, SFH.coordinate_width(geom)),
+        SFC._component_vector_views(uk, SFH.field_width(geom)), distance_bins, 1:(size(x_arr, 2) - 1),
+        OT, CT, culling, weights)
     output_sums .+= result.sums
     output_counts .+= result.counts
     return nothing
+end
+
+# The scalar kernel over the outer indices `ilist`, threaded; inputs sorted into the cull grid once and
+# shared read-only by the tasks, `ilist` indexing the sorted order.
+function _threaded_scalar_1d(sf, geom, x_vecs, u_vecs, distance_bins, ilist, ::Type{OT}, ::Type{CT},
+                             culling, weights) where {OT, CT}
+    grid, xc, uc, wc = SFC._cull_sorted(x_vecs, u_vecs, weights, geom, distance_bins, culling)
+    be = digitize_plan(distance_bins)
+    nb = n_histogram_bins(distance_bins)
+    N = length(xc[1])
+    return OMT.tmapreduce(+, _outer_chunks(grid, ilist, Threads.nthreads())) do chunk
+        local_output = zeros(OT, nb)
+        local_counts = zeros(CT, nb)
+        SFC._pf_scalar_pairs!(local_output, local_counts, geom, sf, xc, uc, be,
+                              SFC.pair_blocks(N, chunk; grid), wc)
+        SFO.StructureFunctionSumsAndCounts(sf, distance_bins, local_output, local_counts)
+    end
 end
 
 # Threaded point-field SIMD compute/scatter split: contiguous component vectors materialized
@@ -194,9 +182,10 @@ function _threaded_pf_simd!(
     result = OMT.tmapreduce(+, _outer_chunks(grid, 1:(Np - 1), Threads.nthreads())) do chunk
         local_output = zeros(OT, nb)
         local_counts = zeros(CT, nb)
-        r2buf = Vector{FTx}(undef, Np)
-        valbuf = Vector{OT}(undef, Np)
-        idxbuf = Vector{Int32}(undef, Np)
+        L = SFC._pair_scratch_length(Np)
+        r2buf = Vector{FTx}(undef, L)
+        valbuf = Vector{OT}(undef, L)
+        idxbuf = Vector{Int32}(undef, L)
         SFC._pf_run_blocks!(local_output, local_counts, sf, xc, uc, plan, Val(D),
             r2buf, valbuf, idxbuf, chunk, Np, grid, wc)
         SFO.StructureFunctionSumsAndCounts(sf, dist_be, local_output, local_counts)
@@ -249,46 +238,42 @@ function SFC.threaded_calculate_structure_function!(
     value_bins::AbstractVector;
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
-    verbose = true,
-    show_progress = true,
 ) where {OT, CT}
-    if verbose
-        @info("calculating 2D joint structure function (threaded reduction via OhMyThreads)")
-    end
-    _ = show_progress
-
     val_be = digitize_plan(value_bins)
-    N3 = n_histogram_bins(distance_bins)
-    N4 = n_histogram_bins(value_bins)
 
     # Fast path: Euclidean + D ∈ (2,3) threads the 2D SIMD compute/scatter kernel.
     D = length(u_vecs)
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         _threaded_2d_simd!(sums_2d, counts_2d, structure_function_type, x_vecs, u_vecs,
                            distance_bins, val_be, D == 2 ? Val(2) : Val(3),
-                           SFC.AutoCulling(), weights, second_axis)
+                           culling, weights, second_axis)
         return nothing
     end
 
     SFC._require_value_axis(second_axis, geometry)
-    dist_be = digitize_plan(distance_bins)
-    # Chunked tmapreduce: O(n_tasks) allocations, not O(N_points)
-    result = OMT.tmapreduce(+, _triangle_outer_chunks(eachindex(x_vecs[1]), Threads.nthreads())) do chunk
-        local_sums = zeros(OT, N3, N4)
-        local_counts = zeros(CT, N3, N4)
-        for i in chunk
-            SFC.calculate_structure_function_2d_i!(
-                local_sums, local_counts, geometry, structure_function_type, i,
-                x_vecs, u_vecs, dist_be, val_be, weights, second_axis,
-            )
-        end
-        SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, local_sums, local_counts)
-    end
-
+    result = _threaded_scalar_2d(structure_function_type, geometry, x_vecs, u_vecs, distance_bins, value_bins,
+                                 val_be, OT, CT, culling, weights, second_axis)
     sums_2d .+= result.sums
     counts_2d .+= result.counts
     return nothing
+end
+
+# The joint scalar kernel, threaded; inputs sorted into the cull grid once and shared read-only.
+function _threaded_scalar_2d(sf, geom, x_vecs, u_vecs, distance_bins, value_bins, val_be, ::Type{OT},
+                             ::Type{CT}, culling, weights, second_axis) where {OT, CT}
+    grid, xc, uc, wc = SFC._cull_sorted(x_vecs, u_vecs, weights, geom, distance_bins, culling)
+    dist_be = digitize_plan(distance_bins)
+    nd, nv = n_histogram_bins(distance_bins), n_histogram_bins(value_bins)
+    N = length(xc[1])
+    return OMT.tmapreduce(+, _outer_chunks(grid, 1:(N - 1), Threads.nthreads())) do chunk
+        local_sums = zeros(OT, nd, nv)
+        local_counts = zeros(CT, nd, nv)
+        SFC._pf_2d_scalar_pairs!(local_sums, local_counts, geom, sf, xc, uc, dist_be, val_be,
+                                 SFC.pair_blocks(N, chunk; grid), wc, second_axis)
+        SFO.StructureFunction2DSumsAndCounts(sf, distance_bins, value_bins, local_sums, local_counts)
+    end
 end
 
 # Threaded 2D-joint point-field SIMD: contiguous components shared, per-task buffers + local
@@ -316,10 +301,11 @@ function _threaded_2d_simd!(
     result = OMT.tmapreduce(+, _outer_chunks(grid, 1:(Np - 1), Threads.nthreads())) do chunk
         local_sums = zeros(OT, n_dist, n_val)
         local_counts = zeros(CT, n_dist, n_val)
-        keybuf = Vector{FTx}(undef, Np)
-        valbuf = Vector{OT}(undef, Np)
-        idxbuf = Vector{Int32}(undef, Np)
-        axbuf = SFC.needs_axis_buffer(second_axis) ? Vector{OT}(undef, Np) : valbuf
+        L = SFC._pair_scratch_length(Np)
+        keybuf = Vector{FTx}(undef, L)
+        valbuf = Vector{OT}(undef, L)
+        idxbuf = Vector{Int32}(undef, L)
+        axbuf = SFC.needs_axis_buffer(second_axis) ? Vector{OT}(undef, L) : valbuf
         SFC._pf_2d_run_blocks!(local_sums, local_counts, sf, xc, uc, j2d_plan, val_be, Val(D),
             keybuf, valbuf, idxbuf, chunk, Np, grid, second_axis, axbuf, wc)
         SFO.StructureFunction2DSumsAndCounts(sf, dist_be, val_be, local_sums, local_counts)
@@ -339,11 +325,10 @@ function SFC.threaded_calculate_structure_function!(
     u_arr::AbstractMatrix{FT2},
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     kwargs...,
 ) where {OT, FT1 <: Number, FT2 <: Number}
-    geom, x_tuple, u_tuple = SFC._prepared_tuples(
-        get(kwargs, :distance_metric, DI.Euclidean()), x_arr, u_arr,
-    )
+    geom, x_tuple, u_tuple = SFC._prepared_tuples(distance_metric, x_arr, u_arr)
     return SFC.threaded_calculate_structure_function!(
         sums_2d,
         counts_2d,
@@ -353,7 +338,7 @@ function SFC.threaded_calculate_structure_function!(
         distance_bins,
         value_bins;
         geometry = geom,
-        SFC._without_metric(kwargs)...,
+        kwargs...,
     )
 end
 
@@ -527,10 +512,11 @@ function _threaded_sp_simd!(
     ) do chunk
         ls = zeros(OT, SFC.SINGLE_PASS_N, nb)
         lc = zeros(CT, SFC.SINGLE_PASS_N, nb)
-        keybuf = Vector{FTx}(undef, Np)
-        duLbuf = Vector{OT}(undef, Np)
-        dn2buf = Vector{OT}(undef, Np)
-        idxbuf = Vector{Int32}(undef, Np)
+        L = SFC._pair_scratch_length(Np)
+        keybuf = Vector{FTx}(undef, L)
+        duLbuf = Vector{OT}(undef, L)
+        dn2buf = Vector{OT}(undef, L)
+        idxbuf = Vector{Int32}(undef, L)
         SFC._sp_run_blocks!(ls, lc, xc, uc, sp_plan, Val(D), keybuf, duLbuf, dn2buf, idxbuf,
             chunk, Np, grid, wc)
         (ls, lc)
@@ -597,7 +583,7 @@ function _threaded_sp2d!(
         (a, b) -> (a .+= b; a),
         _outer_chunks(grid, 1:n_points, Threads.nthreads()),
     ) do chunk
-        hloc = SFC._sp2d_histogram(OT, n_bins, n_val)
+        hloc = SFC._sp2d_histogram(OT, CT, n_bins, n_val)
         SFC._sp2d_fill!(hloc, xs, us, distance_bins, value_bins, distance_metric, n_bins, n_val,
             chunk, grid, wk)
         hloc
@@ -661,39 +647,44 @@ function SFC.auxiliary_structure_function_threaded!(
     sums::AbstractArray, counts::AbstractArray,
     sf_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins;
     workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = SFC.NoWeights(), verbose::Bool = true, show_progress::Bool = true,
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    weights = SFC.NoWeights(),
 )
-    SFC._bl_run_1d!(sums, counts, sf_type, x, u, digitize_plan(distance_bins), distance_metric,
-        _bl_threaded_exec, workspace; weights)
+    SFC._bl_run_1d!(sums, counts, sf_type, x, u, distance_bins, distance_metric,
+        _bl_threaded_exec, workspace; weights, culling)
 end
 
 function SFC.auxiliary_joint2d_threaded!(
     sums::AbstractArray, counts::AbstractArray,
     sf_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins;
     workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = SFC.NoWeights(), verbose::Bool = true, show_progress::Bool = true,
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
+    weights = SFC.NoWeights(),
 )
-    SFC._bl_run_joint2d!(sums, counts, sf_type, x, u, digitize_plan(distance_bins), digitize_plan(value_bins),
-        distance_metric, _bl_threaded_exec, workspace; weights)
+    SFC._bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins,
+        distance_metric, _bl_threaded_exec, workspace; weights, culling, second_axis)
 end
 
 function SFC.threaded_calculate_structure_functions_single_pass!(
     sums::AbstractArray, counts::AbstractArray, x, u, distance_bins;
     workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = SFC.NoWeights(), verbose::Bool = true, show_progress::Bool = true,
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    weights = SFC.NoWeights(),
 )
-    SFC._bl_run_sp1d!(sums, counts, x, u, digitize_plan(distance_bins), distance_metric,
-        _bl_threaded_exec, workspace; weights)
+    SFC._bl_run_sp1d!(sums, counts, x, u, distance_bins, distance_metric,
+        _bl_threaded_exec, workspace; weights, culling)
 end
 
 function SFC.threaded_calculate_structure_functions_single_pass_2d!(
     sums::AbstractArray, counts::AbstractArray, x, u, distance_bins,
     value_bins::SFC.SinglePass2DValueBins;
     workspace = nothing, distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = SFC.NoWeights(), verbose::Bool = true, show_progress::Bool = true,
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    weights = SFC.NoWeights(),
 )
-    SFC._bl_run_sp2d!(sums, counts, x, u, digitize_plan(distance_bins), digitize_plan(value_bins),
-        distance_metric, _bl_threaded_exec, workspace; weights)
+    SFC._bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins,
+        distance_metric, _bl_threaded_exec, workspace; weights, culling)
 end
 
 # Batched (ndims(u) >= 3) non-mutating joint-2D. The AbstractMatrix method earlier is more
@@ -734,27 +725,41 @@ function SFC._partial_sums_counts(
 ) where {CT}
     OT = promote_type(float(eltype(eltype(x_vecs))), float(eltype(eltype(u_vecs))))
     nb = n_histogram_bins(distance_bins)
-    be = digitize_plan(distance_bins)
     D = length(u_vecs)
-    simd = geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
-    simd || SFC._cull_reject_unsupported(culling, "the scalar per-point kernel that this geometry uses")
-    result = OMT.tmapreduce(+, _triangle_outer_chunks(ilist, Threads.nthreads())) do chunk
+    if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
+        return _threaded_partial_simd(structure_function_type, x_vecs, u_vecs, distance_bins, D == 2 ? Val(2) : Val(3),
+                                      ilist, OT, CT, geometry, culling, weights)
+    end
+    return _threaded_scalar_1d(structure_function_type, geometry, x_vecs, u_vecs, distance_bins, ilist, OT, CT,
+                               culling, weights)
+end
+
+# The SIMD share of `_partial_sums_counts`: inputs, plan and cull sort staged once and shared read-only by
+# the tasks; `ilist` indexes the sorted order, as on the serial partial.
+function _threaded_partial_simd(
+    sf, x_vecs, u_vecs, dist_be, ::Val{D}, ilist, ::Type{OT}, ::Type{CT}, geometry, culling, weights,
+) where {D, OT, CT}
+    x_raw = ntuple(d -> collect(x_vecs[d]), Val(D))
+    u_raw = ntuple(d -> collect(u_vecs[d]), Val(D))
+    Np = length(x_raw[1])
+    nb = n_histogram_bins(dist_be)
+    FTx = eltype(x_raw[1])
+    plan = SF.squared_digitize_plan(dist_be)
+    grid = (culling isa SFC.NoCulling) ? nothing : SFC.cull_grid_for(x_raw, geometry, dist_be, culling)
+    xc, uc = isnothing(grid) ? (x_raw, u_raw) :
+             (SFC.apply_perm(x_raw, grid.perm), SFC.apply_perm(u_raw, grid.perm))
+    wc = (isnothing(grid) || weights isa SFC.NoWeights) ? weights : collect(weights)[grid.perm]
+    return OMT.tmapreduce(+, _triangle_outer_chunks(ilist, Threads.nthreads())) do chunk
         local_sums = zeros(OT, nb)
         local_counts = zeros(CT, nb)
-        if simd
-            D == 2 ?
-                SFC._pf_simd_partial!(local_sums, local_counts, structure_function_type, x_vecs, u_vecs, distance_bins, Val(2), chunk, culling; geometry = geometry, weights = weights) :
-                SFC._pf_simd_partial!(local_sums, local_counts, structure_function_type, x_vecs, u_vecs, distance_bins, Val(3), chunk, culling; geometry = geometry, weights = weights)
-        else
-            for i in chunk
-                SFC.calculate_structure_function_i!(
-                    local_sums, local_counts, geometry, structure_function_type, i, x_vecs, u_vecs, be, weights,
-                )
-            end
-        end
-        SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, local_sums, local_counts)
+        L = SFC._pair_scratch_length(Np)
+        r2buf = Vector{FTx}(undef, L)
+        valbuf = Vector{OT}(undef, L)
+        idxbuf = Vector{Int32}(undef, L)
+        SFC._pf_run_blocks!(local_sums, local_counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, chunk,
+                            Np, grid, wc)
+        SFO.StructureFunctionSumsAndCounts(sf, dist_be, local_sums, local_counts)
     end
-    return result
 end
 
 
@@ -797,19 +802,22 @@ end
 
 # Each task takes a round-robin share of the outer index and accumulates into its own buffers; the
 # partials add because a histogram is order-independent. The setup (widening, bin edges) happens
-# once per task, as on the 1-D threaded path.
+# once, shared read-only by the tasks.
 function SFC.threaded_calculate_structure_function_tensor!(
     sums::AbstractArray, counts::AbstractArray, order::Val{P},
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
-    weights = SFC.NoWeights(),
+    culling::SFC.CullingPolicy = SFC.AutoCulling(), weights = SFC.NoWeights(),
 ) where {P, D}
-    N = size(u, 2)
-    chunks = _triangle_outer_chunks(1:N, Threads.nthreads())
+    s = SFC._tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric, axis, weights, culling)
+    chunks = _triangle_outer_chunks(1:s.N, Threads.nthreads())
     part = OMT.tmapreduce(_tensor_add, chunks) do chunk
-        SFC.tensor_partial(order, shape, x, u, distance_bins, chunk, eltype(counts);
-                           distance_metric, axis, weights)
+        ls = zeros(eltype(sums), size(sums))
+        lc = zeros(eltype(counts), size(counts))
+        sf, cf = SFC._tensor_flat(ls, lc, s)
+        SFC._tensor_pairs!(sf, cf, order, s, chunk)
+        (ls, lc)
     end
     sums .+= part[1]
     counts .+= part[2]

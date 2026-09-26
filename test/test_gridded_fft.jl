@@ -131,11 +131,11 @@ Test.@testset "the grid entry takes the tag positionally" begin
     u = randn(2, nx, ny)
     bins = collect(range(0.0, 1.4; length = 8))
     swept = SFC.calculate_structure_function(
-        SFT.L2SFType(), grid, u, bins; output_type = SF.StructureFunctionSumsAndCounts,
+        SFT.L2SFType(), grid, u, bins, SF.StructureFunctionSumsAndCounts;
         verbose = false, show_progress = false)
     transformed = SFC.calculate_structure_function(
-        SFT.L2SFType(), grid, u, bins, UInt32, SB.FastFourierTransformSpectralBackend();
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+        SFT.L2SFType(), grid, u, bins, SB.FastFourierTransformSpectralBackend(), UInt32,
+        SF.StructureFunctionSumsAndCounts; verbose = false, show_progress = false)
     Test.@test transformed.counts == swept.counts
     Test.@test isapprox(transformed.sums, swept.sums; rtol = 1e-8, atol = 1e-10)
     Test.@test sum(swept.counts) > 0

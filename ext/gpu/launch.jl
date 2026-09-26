@@ -15,22 +15,21 @@ function _launch_joint_2d_tiled_kernel!(
     n_val_edges::Int,
     n_dist::Int,
     n_val::Int,
+    hist::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
     second_axis = SFC.InvariantValueAxis(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
-    NB2 = n_dist * n_val
-    compile_cells = workspace === nothing ? NB2 : workspace.joint2d_compile_cells
     W = SFC._val_int(SFH.coordinate_width(geom))
     kernel! = _sf2d_kernel_tiled128_u32!(backend, ws)
     kernel!(
         out_sums_dev, out_cnts_dev, x_dev, u_dev, _sf_weights_to_device(backend, weights),
         ddig, vdig, sf_type,
-        N_points, n_dist_edges, n_val_edges, n_val, NB2,
+        N_points, n_dist_edges, n_val_edges, n_val, n_dist * n_val,
         sched, n_tile_blocks, ws,
-        Val(W), Val(compile_cells), Val(eltype(out_cnts_dev)), geom, second_axis;
+        Val(W), Val(hist), Val(eltype(out_cnts_dev)), geom, second_axis;
         ndrange = ndrange,
     )
     return nothing
@@ -186,13 +185,13 @@ function _launch_sp2d_direct_partitioned!(
     config.needs_partition_merge ||
         throw(ArgumentError("_launch_sp2d_direct_partitioned! requires needs_partition_merge"))
     partition_sums, partition_counts, n_tb = _sp2d_partition_pair_bufs_and_launch!(
-        backend, out_sums_dev, x_dev, u_dev, ddig, vplan,
+        backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, ddig, vplan,
         N_points, n_dist_edges, n_val_edges, n_dist, config, geom;
         workspace = workspace, weights = weights,
     )
     _launch_merge_sp2d_partitions!(
         backend, out_sums_dev, out_cnts_dev, partition_sums, partition_counts,
-        n_dist, n_val_edges - 1, n_tb,
+        n_dist, n_val_edges - 1, n_tb, config.merge,
     )
     return nothing
 end
@@ -201,6 +200,7 @@ end
 function _sp2d_partition_pair_bufs_and_launch!(
     backend::KA.Backend,
     out_sums_dev,
+    out_cnts_dev,
     x_dev,
     u_dev,
     ddig,
@@ -217,16 +217,14 @@ function _sp2d_partition_pair_bufs_and_launch!(
     config.needs_partition_merge ||
         throw(ArgumentError("_sp2d_partition_pair_bufs_and_launch! requires needs_partition_merge (direct mode)"))
     _, n_tile_blocks, _, _ = _tiled_launch_params(N_points, workspace)
-    if workspace === nothing
-        partition_sums, partition_counts = _alloc_sp2d_partition_bufs(
-            backend, eltype(out_sums_dev), n_dist, n_val_edges - 1, n_tile_blocks,
-        )
-        fill!(partition_sums, zero(eltype(out_sums_dev)))
-        fill!(partition_counts, zero(UInt32))
+    # One tile block holds at most `SF_GPU_TILE^2` pairs, so an unweighted partition counts in `UInt32`
+    # whatever the output count type; the merge widens.
+    CST = _sf_count_type(weights, eltype(out_cnts_dev), SF_GPU_TILE^2)
+    partition_sums, partition_counts = if workspace === nothing
+        _alloc_sp2d_partition_bufs(backend, eltype(out_sums_dev), CST, n_dist, n_val_edges - 1,
+                                   n_tile_blocks)
     else
-        partition_sums, partition_counts = _ensure_sp2d_partition_bufs!(workspace, n_tile_blocks)
-        fill!(partition_sums, zero(eltype(out_sums_dev)))
-        fill!(partition_counts, zero(UInt32))
+        _ensure_sp2d_partition_bufs!(workspace, n_tile_blocks, CST)
     end
     n_tb = _sp2d_pair_launch_kernel!(
         backend, partition_sums, partition_counts, x_dev, u_dev,
@@ -264,24 +262,9 @@ function _launch_single_pass_2d_kernel!(
     return nothing
 end
 
-"""
-Offer a non-batch single-pass 2D launch to the batch dispatcher as `B=1`, reaching the CUDA N-body
-+ dynamic-shared kernel; `false` means the hook declined and the caller continues unchanged.
-"""
-@inline function _sp2d_try_fast_batch!(
-    backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, ddig, vplan,
-    N_points::Int, N_dims::Int, n_dist::Int, n_val::Int, geom, cull,
-)
-    return SFC.gpu_fast_launch_2d_batch!(
-        backend,
-        reshape(out_sums_dev, SF_GPU_SINGLE_PASS_N, n_dist, n_val, 1),
-        reshape(out_cnts_dev, SF_GPU_SINGLE_PASS_N, n_dist, n_val, 1),
-        x_dev, reshape(u_dev, N_dims, N_points, 1),
-        nothing, ddig, vplan,
-        N_points, n_dist, n_val, 1, N_dims, SF_GPU_SINGLE_PASS_N, true, geom, cull,
-    )
-end
-
+"""Launch a point list's six single-pass invariant joint histograms `(6, n_dist, n_val)`: the native
+kernel with its plan for the call ([`SFC.gpu_native_2d_plan`](@ref)), or
+[`_launch_single_pass_2d_portable!`](@ref) when there is none."""
 function _launch_single_pass_2d!(
     backend::KA.Backend,
     workgroup_size::Int,
@@ -297,33 +280,58 @@ function _launch_single_pass_2d!(
     n_val_edges::Int,
     geom;
     workspace::Union{GPUSFWorkspace, Nothing} = nothing,
-    force_global_atomic::Bool = false,
+    weights = SFC.NoWeights(),
+)
+    n_dist, n_val = n_dist_edges - 1, n_val_edges - 1
+    plan = SFC.gpu_native_2d_plan(backend, eltype(x_dev), eltype(u_dev), eltype(out_sums_dev),
+                                  eltype(out_cnts_dev), weights, geom, SF_GPU_SINGLE_PASS_N, n_dist, n_val)
+    if plan === nothing
+        _launch_single_pass_2d_portable!(backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
+                                         ddig, vplan, N_points, N_dims, n_dist_edges, n_val_edges, geom;
+                                         workspace, weights)
+    else
+        SFC.gpu_native_launch_2d!(plan, reshape(out_sums_dev, SF_GPU_SINGLE_PASS_N, n_dist, n_val, 1),
+                                  reshape(out_cnts_dev, SF_GPU_SINGLE_PASS_N, n_dist, n_val, 1), x_dev, u_dev,
+                                  weights, nothing, ddig, vplan, N_points, n_dist, n_val, 1, true, geom,
+                                  SFC.InvariantValueAxis(), _active_cull(workspace))
+    end
+    return nothing
+end
+
+"""Launch a point list's six single-pass invariant joint histograms on the portable kernels: the
+strategy kernels at `D ∈ {2, 3}` while their histogram mode keeps up, the global-atomic kernel
+otherwise."""
+function _launch_single_pass_2d_portable!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    ddig,
+    vplan,
+    N_points::Int,
+    N_dims::Int,
+    n_dist_edges::Int,
+    n_val_edges::Int,
+    geom;
+    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
 )
     n_dist = n_dist_edges - 1
-    if !force_global_atomic
-        weights isa SFC.NoWeights &&
-            _sp2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, ddig, vplan,
-                              N_points, N_dims, n_dist, n_val_edges - 1, geom,
-                              _active_cull(workspace)) && return nothing
-        # D ∈ {2,3}: the tiled kernel stages D components and builds D-vectors from `Val{D}`, and its
-        # invariants use |du_T|² = |du|² - du_L², which needs no transverse basis and so no gauge choice.
-        # `:shared` and `:typeplane` keep the histogram on chip. `:direct` gives it up for block-private
-        # global partitions plus a merge, so past `SP2D_GLOBAL_ATOMIC_HIST_BYTES` the plain global-atomic
-        # kernel takes the call instead.
-        if (N_dims == 2 || N_dims == 3) && _gpu_single_pass_2d_tiled_eligible(n_dist) &&
-           !_sp2d_prefers_global_atomics(n_dist, n_val_edges - 1, eltype(out_sums_dev),
-                                         SFC.gpu_device_caps(backend))
-            config = workspace === nothing ?
-                _sp2d_accumulation_strategy(n_dist, n_val_edges - 1, eltype(out_sums_dev),
-                    SFC.gpu_device_caps(backend)) :
-                workspace.sp2d_accumulation_strategy
+    # The strategy kernels stage `D ∈ {2, 3}` components; past `SP2D_GLOBAL_ATOMIC_HIST_BYTES` a
+    # `:direct` histogram goes to the global-atomic kernel.
+    caps = SFC.gpu_device_caps(backend)
+    FT, OT, CST = eltype(x_dev), eltype(out_sums_dev), eltype(out_cnts_dev)
+    if (N_dims == 2 || N_dims == 3) && _gpu_single_pass_2d_tiled_eligible(n_dist) &&
+       SFC.gpu_static_smem_fits(caps, _sp2d_direct_smem_bytes(FT, N_dims))
+        config = _sp2d_accumulation_strategy(caps, n_dist, n_val_edges - 1, N_dims, FT, OT, CST)
+        _sp2d_prefers_global_atomics(config, OT, CST) ||
             return _launch_single_pass_2d_strategy!(
                 backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
                 ddig, vplan, N_points, n_dist_edges, n_val_edges, n_dist, config, geom;
                 workspace = workspace, weights = weights,
             )
-        end
     end
     return _launch_single_pass_2d_kernel!(
         backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
@@ -336,7 +344,7 @@ end
 #
 # Fixed-x launch invariant (do not regress):
 # - `ndrange = n_tile_blocks * workgroup_size` only — never multiply by `cld(B, strip_w)`.
-# - Host strip loop over `_batch_usmem_strip_w(FT)` via `_batch_fixed_x_usmem_priv!`.
+# - Host strip loop over `_batch_usmem_strip_w(caps, FT)` via `_batch_fixed_x_usmem_priv!`.
 # - `KA.CPU`: serial merge; other backends: grouped merge. Same kernel on both.
 
 function _launch_batch_fixed_x_sf!(
@@ -353,14 +361,13 @@ function _launch_batch_fixed_x_sf!(
     geom,
 )
     FT = eltype(sums_dev)
-    NB > SF_GPU_MAX_BINS &&
-        error("batch tiled128 supports at most $SF_GPU_MAX_BINS bins (got NB=$NB)")
+    caps = SFC.gpu_device_caps(backend)
+    strip_w = _batch_usmem_strip_w(caps, FT)
     sched, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
-    n_priv = _batch_usmem_n_priv(n_tile_blocks)
+    n_priv = _batch_usmem_n_priv(n_tile_blocks, ws, caps.warp)
     kernel! = _batch_fixed_x_sf_kernel(backend, ws)
     merge_sums! = _batch_merge_usmem_sums!(backend, ws)
     merge_cnts! = _batch_merge_usmem_cnts!(backend, ws)
-    strip_w = _batch_usmem_strip_w(FT)
     partial_sums = KA.zeros(backend, FT, NB, strip_w, n_priv)
     partial_cnts = KA.zeros(backend, UInt32, NB, n_priv)
     b_base = 1
@@ -371,7 +378,7 @@ function _launch_batch_fixed_x_sf!(
         kernel!(
             partial_sums, partial_cnts, x_dev, u_dev, sf_type,
             N, NB + 1, NB, b_base, bw, ddig,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, Val(strip_w), Val(caps.warp), geom;
             ndrange = ndrange,
         )
         merge_sums!(
@@ -408,14 +415,13 @@ function _launch_batch_fixed_x_sf!(
     geom,
 )
     FT = eltype(sums_dev)
-    NB > SF_GPU_MAX_BINS &&
-        error("batch tiled128 supports at most $SF_GPU_MAX_BINS bins (got NB=$NB)")
+    caps = SFC.gpu_device_caps(backend)
+    strip_w = _batch_usmem_strip_w(caps, FT)
     sched, n_tile_blocks, ws, ndrange = _batch_tiled_launch_params(N)
-    n_priv = _batch_usmem_n_priv(n_tile_blocks)
+    n_priv = _batch_usmem_n_priv(n_tile_blocks, ws, caps.warp)
     kernel! = _batch_fixed_x_sf_kernel(backend, ws)
     merge_sums! = _batch_merge_usmem_sums_grouped!(backend, ws)
     merge_cnts! = _batch_merge_usmem_cnts_grouped!(backend, ws)
-    strip_w = _batch_usmem_strip_w(FT)
     partial_sums = KA.zeros(backend, FT, NB, strip_w, n_priv)
     partial_cnts = KA.zeros(backend, UInt32, NB, n_priv)
     b_base = 1
@@ -426,7 +432,7 @@ function _launch_batch_fixed_x_sf!(
         kernel!(
             partial_sums, partial_cnts, x_dev, u_dev, sf_type,
             N, NB + 1, NB, b_base, bw, ddig,
-            sched, n_tile_blocks, ws, geom;
+            sched, n_tile_blocks, ws, Val(strip_w), Val(caps.warp), geom;
             ndrange = ndrange,
         )
         merge_sums!(

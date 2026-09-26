@@ -203,7 +203,7 @@ on histogram shape, batch size, and selected kernel. Prepared input conversion,
 weighted snapshot scratch, and digitizer reuse vary by route; this interface
 does not guarantee allocation-free execution.
 """
-struct GPUSFWorkspace{kind, FT, BE, DB, VB, S, C, DD, VP, ST, L}
+struct GPUSFWorkspace{kind, FT, BE, DB, VB, S, C, DD, VP, L}
     backend::BE
     dist_bins::DB
     val_bins::VB
@@ -212,14 +212,7 @@ struct GPUSFWorkspace{kind, FT, BE, DB, VB, S, C, DD, VP, ST, L}
     dist_digitizer::DD
     val_plan::VP
     NB::Int
-    n_bins::Int
-    n_dist::Int
     n_val::Int
-    n_val_edges::Int
-    host_sums_scratch::Vector{FT}
-    host_counts_scratch::Vector{UInt32}
-    sp2d_accumulation_strategy::ST
-    joint2d_nb2::Int
     joint2d_compile_cells::Int
     lazy::L
 end
@@ -303,9 +296,5 @@ end
 GPUSFLazyBuffers() = GPUSFLazyBuffers(
     nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing,
 )
-
-"""Tile blocks the partition buffers are currently sized for; 0 when unallocated."""
-@inline _partition_n_tile_blocks(lazy::GPUSFLazyBuffers) =
-    lazy.partition_sums_dev === nothing ? 0 : size(lazy.partition_sums_dev, 4)
 
 @inline _ws_float_type(::GPUSFWorkspace{<:Any, FT}) where {FT} = FT

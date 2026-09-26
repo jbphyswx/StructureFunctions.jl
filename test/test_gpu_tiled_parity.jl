@@ -12,14 +12,15 @@ Random.seed!(42)
 
 function _cpu_ref(sft, x, u, bin_edges)
     return SFC.calculate_structure_function(
-        sft, x, u, bin_edges;
-        verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts,
+        sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
+        verbose = false, show_progress = false,
     )
 end
 
 function _gpu_tiled(sft, x, u, bin_edges)
-    return SFC.gpu_calculate_structure_function(
-        sft, KA.CPU(), x, u, bin_edges,
+    return SFC.calculate_structure_function(
+        sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
+        backend = CB.GPUBackend(KA.CPU()), verbose = false, show_progress = false,
     )
 end
 
@@ -218,10 +219,10 @@ Test.@testset "GPU parity above the tiled kernel's shared-memory cap" begin
     sft = SFT.L2SFType()
     for nb in (128, 129, 4000)
         bin_edges = collect(FT, range(0.0, 2.0; length = nb + 1))
-        ref = SFC.calculate_structure_function(sft, x, u, bin_edges, FT;
-            backend = CB.SerialBackend(), verbose = false,
-            output_type = SF.StructureFunctionSumsAndCounts)
-        got = SFC.gpu_calculate_structure_function(sft, KA.CPU(), x, u, bin_edges)
+        ref = SFC.calculate_structure_function(sft, x, u, bin_edges, FT, SF.StructureFunctionSumsAndCounts;
+            backend = CB.SerialBackend(), verbose = false)
+        got = SFC.calculate_structure_function(sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
+            backend = CB.GPUBackend(KA.CPU()), verbose = false)
         Test.@test sum(ref.counts) > 0
         Test.@test collect(got.counts) == collect(ref.counts)
         Test.@test isapprox(collect(got.sums), collect(ref.sums); rtol = 1e-10, atol = 1e-12)
@@ -253,20 +254,20 @@ Test.@testset "GPU batch — NB > SF_GPU_MAX_BINS errors (no silent shared-mem o
                 ref_c = zeros(Int, nb, B)
                 for b in 1:B
                     xb = ndims(x) == 2 ? x : x[:, :, b]
-                    r = SFC.calculate_structure_function(sft, xb, u[:, :, b], bins, FT;
-                        backend = CB.SerialBackend(), verbose = false,
-                        output_type = SF.StructureFunctionSumsAndCounts)
+                    r = SFC.calculate_structure_function(sft, xb, u[:, :, b], bins, FT,
+                        SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(), verbose = false)
                     ref_s[:, b] .= r.sums
                     ref_c[:, b] .= r.counts
                 end
-                g = SFC.gpu_calculate_structure_function_batch(sft, KA.CPU(), x, u, bins)
+                g = SFC.calculate_structure_function(sft, x, u, bins, SF.StructureFunctionSumsAndCounts;
+                    backend = gpu_be)
                 Test.@test reshape(collect(g.counts), nb, B) == ref_c
                 Test.@test isapprox(reshape(collect(g.sums), nb, B), ref_s; rtol = 1e-5)
             end
         end
         Test.@testset "single-pass 1D batch $name" begin
-            Test.@test SFC._dispatch_single_pass(gpu_be, x, u, under) isa Any
-            Test.@test SFC._dispatch_single_pass(gpu_be, x, u, over) isa Any
+            Test.@test SFC.calculate_structure_functions_single_pass(x, u, under; backend = gpu_be) isa Any
+            Test.@test SFC.calculate_structure_functions_single_pass(x, u, over; backend = gpu_be) isa Any
         end
     end
 end

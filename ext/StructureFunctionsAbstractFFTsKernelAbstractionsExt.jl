@@ -178,6 +178,10 @@ KA.@kernel unsafe_indices = true function _lag_kernel!(
     end
 end
 
+"""Static shared bytes of `_lag_kernel!` with an `NC`-cell histogram of sums `OT` and counts `CT`."""
+@inline _lag_hist_smem_bytes(::Type{OT}, ::Type{CT}, NC::Int) where {OT, CT} =
+    SFC.gpu_localmem_bytes(OT, NC) + SFC.gpu_localmem_bytes(CT, NC)
+
 # Every column's terms as one flat table with per-column offsets.
 function _term_table(columns)
     terms = NTuple{3, Int32}[]
@@ -286,7 +290,9 @@ function SFC.device_transform_sweep_batch!(
     s_dev = to(s)
     plan_dev = to(plan)
     cells = nb * na * nt
-    shared = axis === nothing && cells * (sizeof(OT) + sizeof(CT)) <= SFC.GPU_SMEM_STATIC_MAX ÷ 2
+    # The shared histogram takes at most half the static budget.
+    shared = axis === nothing &&
+        SFC.gpu_static_smem_fits(SFC.gpu_device_caps(dev), 2 * _lag_hist_smem_bytes(OT, CT, cells))
     NC = shared ? cells : 1
     dsums = KA.zeros(dev, OT, size(sums)...)
     dcounts = KA.zeros(dev, CT, size(counts)...)

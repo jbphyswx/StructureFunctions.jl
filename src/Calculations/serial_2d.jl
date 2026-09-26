@@ -26,15 +26,10 @@ function serial_calculate_structure_function!(
     value_bins::AbstractVector;
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
+    culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {OT, CT, T1, T2}
     val_be = digitize_plan(value_bins)
-
-    if verbose
-        @info("calculating 2D joint structure function (serial reduction)")
-    end
 
     # Fast path: Euclidean + D ∈ (2,3) via the SIMD compute/scatter split (distance + SF value
     # vectorize over j; the 2D (dist,value) scatter stays scalar).
@@ -42,30 +37,28 @@ function serial_calculate_structure_function!(
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         _pf_2d_simd_run!(sums_2d, counts_2d, structure_function_type, x_vecs, u_vecs,
                          distance_bins, val_be, D == 2 ? Val(2) : Val(3);
-                         second_axis, weights)
+                         second_axis, culling, weights)
         return nothing
     end
 
     _require_value_axis(second_axis, geometry)
-    dist_be = digitize_plan(distance_bins)
-    PM.@showprogress enabled = show_progress for i in eachindex(x_vecs[1])
-        calculate_structure_function_2d_i!(
-            sums_2d, counts_2d, geometry, structure_function_type, i, x_vecs, u_vecs,
-            dist_be, val_be, weights, second_axis,
-        )
-    end
+    grid, xc, uc, wc = _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling)
+    N = length(xc[1])
+    blocks = pair_blocks(N, 1:(N - 1); grid)
+    _pf_2d_scalar_pairs!(sums_2d, counts_2d, geometry, structure_function_type, xc, uc,
+                         digitize_plan(distance_bins), val_be, blocks, wc, second_axis)
     return nothing
 end
 
 """
     _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf,
-                       idxbuf, blocks)
+                       idxbuf, window, blocks)
 
 2D-joint point-field SIMD compute/scatter kernel over the pairs `blocks` covers: `@simd` over each
-`j` block computes distance + SF value into buffers (no scatter ⇒ vectorizes), then a scalar loop
-digitizes both axes and scatters into the (dist, second-axis) cell. What the second axis bins is
-`second_axis`; binning the operator's own value reads the buffer the kernel already filled, so it
-costs no extra store. Takes `(i-block, j-block)` pairs (see
+`j` block computes distance + SF value into buffers indexed by `window` (no scatter ⇒ vectorizes),
+then a scalar loop digitizes both axes and scatters into the (dist, second-axis) cell. What the
+second axis bins is `second_axis`; binning the operator's own value reads the buffer the kernel
+already filled, so it costs no extra store. Takes `(i-block, j-block)` pairs (see
 [`block_pairs`](@ref)), so it gets cache blocking and culling; the loop lives in this one kernel so
 the `@simd` vectorizes. Shared by serial + threaded.
 """
@@ -73,7 +66,8 @@ function _pf_2d_simd_pairs!(
     sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, val_be, ::Val{D},
-    keybuf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32}, blocks,
+    keybuf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32},
+    window::PairWindow, blocks,
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
     axbuf::AbstractVector = valbuf,
     weights = NoWeights(),
@@ -83,6 +77,8 @@ function _pf_2d_simd_pairs!(
     FTx = eltype(xc[1])
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
+        _check_run_fits(window, valbuf, jr)
+        o = _slot_offset(window, jr)
         for i in ir
             jlo = max(i + 1, j_first)
             jlo > j_last && continue
@@ -90,26 +86,25 @@ function _pf_2d_simd_pairs!(
             Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
             Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
             @simd for j in jlo:j_last
-                Xj = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D)))
-                dx = Xj - Xi
+                dx = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D))) - Xi
                 r2 = SFH.norm2(dx)
                 Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
-                keybuf[j] = digitize_key(plan, r2)
-                valbuf[j] = SFT._sf_raw(sf, Uj - Ui, dx, r2)
+                keybuf[j - o] = digitize_key(plan, r2)
+                valbuf[j - o] = SFT.flat_pair_value(sf, Uj - Ui, dx, r2)
                 if has_vector_index(plan)
-                    idxbuf[j] = squared_approx_index(plan, r2)
+                    idxbuf[j - o] = squared_approx_index(plan, r2)
                 end
                 if needs_axis_buffer(second_axis)   # constant-folded on the operator-value axis
-                    axbuf[j] = axis_quantity(second_axis, dx, r2)
+                    axbuf[j - o] = axis_quantity(second_axis, dx, r2)
                 end
             end
-            for j in jlo:j_last
-                dbin = squared_bin(plan, keybuf[j], idxbuf[j])
+            for k in (jlo - o):(j_last - o)
+                dbin = squared_bin(plan, keybuf[k], idxbuf[k])
                 if 1 <= dbin <= n_dist
-                    vbin = SFH.digitize(axis_key(second_axis, valbuf, axbuf, j), val_be)
+                    vbin = SFH.digitize(axis_key(second_axis, valbuf, axbuf, k), val_be)
                     if 1 <= vbin <= n_val
-                        w = wi * _point_weight(weights, j)
-                        sums2d[dbin, vbin] += w * valbuf[j]
+                        w = wi * _point_weight(weights, k + o)
+                        sums2d[dbin, vbin] += w * valbuf[k]
                         counts2d[dbin, vbin] += CT(w)
                     end
                 end
@@ -130,25 +125,26 @@ concretely typed schedule.
     ilist, N, ::Nothing, second_axis = InvariantValueAxis(), axbuf = valbuf,
     weights = NoWeights(),
 ) where {D} = _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D),
-    keybuf, valbuf, idxbuf, pair_blocks(N, ilist), second_axis, axbuf, weights)
+    keybuf, valbuf, idxbuf, _pair_window(N), pair_blocks(N, ilist), second_axis, axbuf, weights)
 
 @inline _pf_2d_run_blocks!(
     sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf,
     ilist, N, grid::CellGrid, second_axis = InvariantValueAxis(), axbuf = valbuf,
     weights = NoWeights(),
 ) where {D} = _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D),
-    keybuf, valbuf, idxbuf, pair_blocks(N, ilist; grid = grid), second_axis, axbuf, weights)
+    keybuf, valbuf, idxbuf, _pair_window(N), pair_blocks(N, ilist; grid = grid), second_axis, axbuf, weights)
 
 function _pf_2d_simd_run!(
     sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     x_vecs::Tuple, u_vecs::Tuple, dist_be, val_be, ::Val{D};
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
+    culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {OT, CT, D}
     N = length(x_vecs[1])
     return _pf_2d_simd_partial!(sums2d, counts2d, sf, x_vecs, u_vecs, dist_be, val_be, Val(D),
-                                1:(N - 1), AutoCulling(); second_axis, weights)
+                                1:(N - 1), culling; second_axis, weights)
 end
 
 """
@@ -169,10 +165,11 @@ function _pf_2d_simd_partial!(
     x_raw = ntuple(d -> collect(x_vecs[d]), Val(D))
     u_raw = ntuple(d -> collect(u_vecs[d]), Val(D))
     N = length(x_raw[1])
-    keybuf = Vector{eltype(x_raw[1])}(undef, N)
-    valbuf = Vector{OT}(undef, N)
-    idxbuf = Vector{Int32}(undef, N)
-    axbuf = needs_axis_buffer(second_axis) ? Vector{OT}(undef, N) : valbuf
+    L = _pair_scratch_length(N)
+    keybuf = Vector{eltype(x_raw[1])}(undef, L)
+    valbuf = Vector{OT}(undef, L)
+    idxbuf = Vector{Int32}(undef, L)
+    axbuf = needs_axis_buffer(second_axis) ? Vector{OT}(undef, L) : valbuf
     plan = squared_digitize_plan(dist_be)
     grid = culling isa NoCulling ? nothing :
            cull_grid_for(x_raw, SFH.FlatGeometry{D}(), dist_be, culling)
@@ -201,6 +198,7 @@ function _partial_2d_sums_counts(
     ilist,
     ::Type{CT};
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
+    culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
 ) where {CT}
@@ -215,18 +213,14 @@ function _partial_2d_sums_counts(
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         vD = D == 2 ? Val(2) : Val(3)
         _pf_2d_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, distance_bins, val_be,
-                             vD, ilist; weights = weights, second_axis = second_axis)
+                             vD, ilist, culling; weights = weights, second_axis = second_axis)
         return sums, counts
     end
 
     _require_value_axis(second_axis, geometry)
-    dist_be = digitize_plan(distance_bins)
-    for i in ilist
-        calculate_structure_function_2d_i!(
-            sums, counts, geometry, structure_function_type, i, x_vecs, u_vecs, dist_be, val_be,
-            weights, second_axis,
-        )
-    end
+    grid, xc, uc, wc = _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling)
+    _pf_2d_scalar_pairs!(sums, counts, geometry, structure_function_type, xc, uc, digitize_plan(distance_bins),
+                         val_be, pair_blocks(length(xc[1]), ilist; grid), wc, second_axis)
     return sums, counts
 end
 
@@ -284,50 +278,54 @@ function serial_calculate_structure_function(
     return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums_2d, counts_2d)
 end
 
-function calculate_structure_function_2d_i!(
+"""
+    _pf_2d_scalar_pairs!(sums_2d, counts_2d, geom, sf, x_vecs, u_vecs, dist_be, val_be, blocks, weights,
+                         second_axis)
+
+Joint analogue of [`_pf_scalar_pairs!`](@ref): each pair of `blocks` binned by distance and by what
+`second_axis` reads.
+"""
+function _pf_2d_scalar_pairs!(
     sums_2d::AbstractMatrix{OT},
-    counts_2d::AbstractMatrix,
+    counts_2d::AbstractMatrix{CT},
     geom,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
-    i::Int,
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
-    distance_bins::AbstractVector,
-    value_bins::AbstractVector,
+    dist_be,
+    val_be,
+    blocks,
     weights = NoWeights(),
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
-) where {OT, T1, T2}
+) where {OT, CT, T1, T2}
     FT1 = eltype(T1)
     FT2 = eltype(T2)
-    N3 = length(distance_bins)
-    N4 = length(value_bins)
-
+    n_dist = n_histogram_bins(dist_be)
+    n_val = n_histogram_bins(val_be)
     # The geometry carries the coordinate width, the field width and the velocity dimension; none of
     # them need equal another.
     vW = SFH.coordinate_width(geom)
     vF = SFH.field_width(geom)
     W = _val_int(vW)
     F = _val_int(vF)
-    X1 = SA.SVector{W, FT1}(ntuple(k -> x_vecs[k][i], vW))
-    U1 = SA.SVector{F, FT2}(ntuple(k -> u_vecs[k][i], vF))
-
-    iter_inds = eachindex(x_vecs[1])
-    wi = _point_weight(weights, i)
-    for j in (i + 1):last(iter_inds)
-        X2 = SA.SVector{W, FT1}(ntuple(k -> x_vecs[k][j], vW))
-        U2 = SA.SVector{F, FT2}(ntuple(k -> u_vecs[k][j], vF))
-
-        ok, distance, frame = SFH.pair_frame(geom, X1, X2)
-        dist_bin = SFH.digitize(distance, distance_bins)
-        if ok && 1 <= dist_bin < N3
-            δu, rh = SFH.pair_increments(geom, frame, distance, X1, X2, U1, U2)
-            val = structure_function_type(δu, rh)
-            val_bin = SFH.digitize(pair_axis_key(second_axis, val, X1, X2, distance), value_bins)
-
-            if 1 <= val_bin < N4
-                w = wi * _point_weight(weights, j)
-                @inbounds sums_2d[dist_bin, val_bin] += w * val
-                @inbounds counts_2d[dist_bin, val_bin] += eltype(counts_2d)(w)
+    for (ir, jr) in blocks, i in ir
+        X1 = SA.SVector{W, FT1}(ntuple(k -> @inbounds(x_vecs[k][i]), vW))
+        U1 = SA.SVector{F, FT2}(ntuple(k -> @inbounds(u_vecs[k][i]), vF))
+        wi = _point_weight(weights, i)
+        for j in max(i + 1, first(jr)):last(jr)
+            X2 = SA.SVector{W, FT1}(ntuple(k -> @inbounds(x_vecs[k][j]), vW))
+            ok, distance, frame = SFH.pair_frame(geom, X1, X2)
+            dist_bin = SFH.digitize(distance, dist_be)
+            if ok && 1 <= dist_bin <= n_dist
+                U2 = SA.SVector{F, FT2}(ntuple(k -> @inbounds(u_vecs[k][j]), vF))
+                δu = SFH.pair_delta(geom, frame, X1, X2, U1, U2)
+                val = SFT.pair_value(structure_function_type, geom, frame, distance, δu)
+                val_bin = SFH.digitize(pair_axis_key(second_axis, val, X1, X2, distance), val_be)
+                if 1 <= val_bin <= n_val
+                    w = wi * _point_weight(weights, j)
+                    @inbounds sums_2d[dist_bin, val_bin] += w * val
+                    @inbounds counts_2d[dist_bin, val_bin] += CT(w)
+                end
             end
         end
     end

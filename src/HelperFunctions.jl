@@ -307,23 +307,24 @@ On the sphere the frame IS the basis, so the longitudinal direction is `ê₁` b
     SA.SVector{D}(ntuple(i -> i == 1 ? one(eltype(frame[1])) : zero(eltype(frame[1])), Val(D)))
 
 """
+    increment_invariants(geometry, frame, r, δu) -> (δu_L, ‖δu‖²)
+
+The longitudinal increment and the squared norm of the pair increment `δu` from [`pair_delta`](@ref),
+given the `frame` and separation `r` from [`pair_frame`](@ref). Every isotropic operator and every
+single-pass invariant is a function of these two numbers. A geometry without its own method takes
+`δu_L` along [`pair_direction`](@ref).
+"""
+@inline increment_invariants(g, frame, r, δu) = (fma_dot(δu, pair_direction(g, frame, r)), fma_dot(δu, δu))
+@inline increment_invariants(::FlatGeometry, frame, r, δu) = (fma_dot(δu, frame) * inv(r), fma_dot(δu, δu))
+@inline increment_invariants(::SphericalGeometry, frame, r, δu) = (δu[1], fma_dot(δu, δu))
+
+"""
     pair_invariants(geometry, frame, r, u1, u2) -> (δu_L, ‖δu‖²)
 
-The only two scalars the six isotropic invariants consume: every one of them is built from `δu_L`,
-`δu_L²` and `δu_T² = ‖δu‖² − δu_L²`. A kernel that needs no separation direction calls this and never
-forms `r̂`; [`pair_increments`](@ref) is the form that does.
+[`increment_invariants`](@ref) of the pair's increment, from the two endpoint velocities.
 """
-@inline function pair_invariants(::FlatGeometry, frame, r, u1, u2)
-    δu = u2 - u1
-    # `dot(δu, frame) / r`, not `dot(δu, frame / r)`: one rounding, and the same operation order the
-    # flat kernels have always used.
-    return fma_dot(δu, frame) / r, fma_dot(δu, δu)
-end
-
-@inline function pair_invariants(g::SphericalGeometry, frame, r, u1, u2)
-    δu = pair_delta(g, frame, nothing, nothing, u1, u2)
-    return δu[1], fma_dot(δu, δu)
-end
+@inline pair_invariants(g, frame, r, u1, u2) =
+    increment_invariants(g, frame, r, pair_delta(g, frame, nothing, nothing, u1, u2))
 
 """
     pair_orientation(geometry, frame) -> Int
@@ -779,20 +780,21 @@ ensure `r_hat` is a unit vector.
 end
 
 """
+    transverse_energy(δu_L, ‖δu‖²)
+
+``‖δu‖² - δu_L²``, the squared norm of the transverse increment. Its two terms cancel to within
+round-off when the increment is almost parallel to the separation, so it can be a round-off below
+zero; a caller taking its square root floors it first.
+"""
+@inline transverse_energy(du_l, du_norm2) = du_norm2 - du_l * du_l
+
+"""
     transverse_norm2(δu, r̂)
 
-Squared norm of the full transverse vector ``δu - (δu⋅r̂)r̂``. This is the
-invariant transverse energy used by `T2SF` and `L1T2SF`.
-
-Formed as ``‖δu‖² - (δu⋅r̂)²``, whose two terms cancel to within round-off when the increment is
-almost parallel to `r̂`, so the difference is floored at zero — the value is a squared norm and the
-only negative it can take is that cancellation, which a `sqrt` downstream would throw on.
+Squared norm of the full transverse vector ``δu - (δu⋅r̂)r̂``, the [`transverse_energy`](@ref) at
+`δu_L = δu⋅r̂`. This is the invariant transverse energy used by `T2SF` and `L1T2SF`.
 """
-@inline function transverse_norm2(δu, r_hat)
-    du_l = magnitude_δu_longitudinal(δu, r_hat)
-    t2 = norm2(δu) - du_l * du_l
-    return max(t2, zero(t2))
-end
+@inline transverse_norm2(δu, r_hat) = transverse_energy(magnitude_δu_longitudinal(δu, r_hat), norm2(δu))
 
 """
     transverse_component_norm2(δu, r̂)

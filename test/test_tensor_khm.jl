@@ -19,8 +19,7 @@ Test.@testset "Tensor Structure Functions" begin
     bins = [0.0, 1.1, 2.0]
 
     t2 = SFC.calculate_structure_function_tensor(
-        Val(2), x, u, bins; backend = CB.SerialBackend(),
-        output_type = SF.StructureFunctionTensorSumsAndCounts,
+        Val(2), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend(),
     )
     Test.@test t2 isa SF.StructureFunctionTensorSumsAndCounts{2}
     Test.@test size(t2.sums) == (2, 2, 2)
@@ -42,15 +41,14 @@ Test.@testset "Tensor Structure Functions" begin
     Test.@test t2_mean.values[:, :, 2] ≈ expected_bin2 ./ 1
 
     s2 = SFC.calculate_structure_function(
-        SFT.S2SF, x, u, bins; backend = CB.SerialBackend(), output_type = SF.StructureFunctionSumsAndCounts
+        SFT.S2SF, x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend()
     )
     trace_sums = [sum(t2.sums[a, a, bin] for a in 1:2) for bin in axes(t2.sums, 3)]
     Test.@test trace_sums ≈ s2.sums
     Test.@test t2.counts == s2.counts
 
     t3 = SFC.calculate_structure_function_tensor(
-        Val(3), x, u, bins; backend = CB.SerialBackend(),
-        output_type = SF.StructureFunctionTensorSumsAndCounts,
+        Val(3), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend(),
     )
     Test.@test t3 isa SF.StructureFunctionTensorSumsAndCounts{3}
     Test.@test size(t3.sums) == (2, 2, 2, 2)
@@ -60,8 +58,7 @@ Test.@testset "Tensor Structure Functions" begin
 
     u_aux = cat(u, 2u; dims = 3)
     t2_aux = SFC.calculate_structure_function_tensor(
-        Val(2), x, u_aux, bins; backend = CB.SerialBackend(),
-        output_type = SF.StructureFunctionTensorSumsAndCounts,
+        Val(2), x, u_aux, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend(),
     )
     Test.@test size(t2_aux.sums) == (2, 2, 2, 2)
     Test.@test size(t2_aux.counts) == (2, 2)
@@ -119,24 +116,20 @@ Test.@testset "every backend computes the same tensor" begin
     bins = collect(range(0.0, 1.2; length = 9))
 
     ref = SFC.calculate_structure_function_tensor(
-        Val(2), x, u, bins; backend = CB.SerialBackend(),
-        output_type = SF.StructureFunctionTensorSumsAndCounts)
+        Val(2), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend())
 
     for be in (CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
         got = SFC.calculate_structure_function_tensor(
-            Val(2), x, u, bins; backend = be,
-            output_type = SF.StructureFunctionTensorSumsAndCounts)
+            Val(2), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = be)
         Test.@test got.counts == ref.counts
         Test.@test isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)
     end
 
     # order 3 as well, since the accumulator rank is a type parameter
     r3 = SFC.calculate_structure_function_tensor(
-        Val(3), x, u, bins; backend = CB.SerialBackend(),
-        output_type = SF.StructureFunctionTensorSumsAndCounts)
+        Val(3), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend())
     t3 = SFC.calculate_structure_function_tensor(
-        Val(3), x, u, bins; backend = CB.ThreadedBackend(),
-        output_type = SF.StructureFunctionTensorSumsAndCounts)
+        Val(3), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.ThreadedBackend())
     Test.@test t3.counts == r3.counts
     Test.@test isapprox(t3.sums, r3.sums; rtol = 1e-10, atol = 1e-12)
 
@@ -144,13 +137,11 @@ Test.@testset "every backend computes the same tensor" begin
     xs = vcat(reshape(2π .* rand(N), 1, N), reshape((rand(N) .- 0.5) .* 1.4, 1, N))
     sbins = collect(range(0.0, 2.4; length = 6))
     rs = SFC.calculate_structure_function_tensor(
-        Val(2), xs, u, sbins; backend = CB.SerialBackend(),
-        distance_metric = DI.SphericalAngle(),
-        output_type = SF.StructureFunctionTensorSumsAndCounts)
+        Val(2), xs, u, sbins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend(),
+        distance_metric = DI.SphericalAngle())
     ts = SFC.calculate_structure_function_tensor(
-        Val(2), xs, u, sbins; backend = CB.ThreadedBackend(),
-        distance_metric = DI.SphericalAngle(),
-        output_type = SF.StructureFunctionTensorSumsAndCounts)
+        Val(2), xs, u, sbins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.ThreadedBackend(),
+        distance_metric = DI.SphericalAngle())
     Test.@test sum(ts.counts) > 0
     Test.@test ts.counts == rs.counts
     Test.@test isapprox(ts.sums, rs.sums; rtol = 1e-10, atol = 1e-12)
@@ -210,11 +201,11 @@ Test.@testset "the tensor from the transform equals the point tensor on a grid's
         r_max = 0.7 * sum(d -> spacing[d] * dims[d], 1:Dg)
         bins = collect(range(0.0, r_max; length = 7)) .+ 1e-3
         for P in orders
-            ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, Dg, N), bins; backend = CB.SerialBackend(),
-                                                          output_type = RAW_T)
+            ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, Dg, N), bins, RAW_T;
+                                                          backend = CB.SerialBackend())
             for tag in (FFT_TAG, SB.AutoSpectralBackend()), backend in (CB.SerialBackend(), CB.ThreadedBackend())
-                got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, tag; backend, verbose = false,
-                                                              output_type = RAW_T)
+                got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, tag, RAW_T; backend,
+                                                              verbose = false)
                 Test.@test got.counts == ref.counts
                 Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
             end
@@ -223,15 +214,14 @@ Test.@testset "the tensor from the transform equals the point tensor on a grid's
             umf = reshape(um, Dg, N)
             held = rand(N) .< 0.75
             umf[1, .!held] .= NaN
-            refm = SFC.calculate_structure_function_tensor(Val(P), x[:, held], umf[:, held], bins;
-                                                           backend = CB.SerialBackend(), output_type = RAW_T)
-            gotm = SFC.calculate_structure_function_tensor(Val(P), grid, um, bins, FFT_TAG; verbose = false,
-                                                           output_type = RAW_T)
+            refm = SFC.calculate_structure_function_tensor(Val(P), x[:, held], umf[:, held], bins, RAW_T;
+                                                           backend = CB.SerialBackend())
+            gotm = SFC.calculate_structure_function_tensor(Val(P), grid, um, bins, FFT_TAG, RAW_T; verbose = false)
             Test.@test gotm.counts == refm.counts
             Test.@test isapprox(gotm.sums, refm.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, refm.sums))
             # weights of one change nothing but the count type
-            gotw = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG; weights = ones(N),
-                                                           count_eltype = Float64, verbose = false, output_type = RAW_T)
+            gotw = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, Float64, RAW_T;
+                                                           weights = ones(N), verbose = false)
             Test.@test gotw.counts ≈ ref.counts
             Test.@test isapprox(gotw.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
         end
@@ -259,9 +249,9 @@ Test.@testset "the tensor on a lat-lon grid is the point tensor in the geodesic 
     x = Matrix(hcat(coords[1], coords[2])')
     bins = collect(range(0.0, π; length = 7)) .+ 1e-3
     for P in (2, 3)
-        ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, 2, :), bins; backend = CB.SerialBackend(),
-                                                      distance_metric = SFH.SphericalDistance(1.0), output_type = RAW_T)
-        got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG; verbose = false, output_type = RAW_T)
+        ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, 2, :), bins, RAW_T; backend = CB.SerialBackend(),
+                                                      distance_metric = SFH.SphericalDistance(1.0))
+        got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, RAW_T; verbose = false)
         Test.@test got.counts == ref.counts
         Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
         Test.@test sum(ref.counts) > 0
@@ -277,7 +267,7 @@ Test.@testset "higher orders on points match brute force on every CPU backend" b
     for P in (1, 4, 5)
         ref_s, ref_c = _brute_tensor(P, x, u, bins)
         for backend in (CB.SerialBackend(), CB.ThreadedBackend())
-            got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins; backend, output_type = RAW_T)
+            got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, RAW_T; backend)
             Test.@test got.counts == ref_c
             Test.@test isapprox(got.sums, ref_s; rtol = 1e-11, atol = 1e-12)
         end
@@ -295,7 +285,7 @@ Test.@testset "the joint tensor over angle marginalises to the tensor and to the
     bins = collect(range(0.0, 1.0; length = 6))
     θbins = collect(range(prevfloat(0.0), π; length = 5))
     axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
-    t1 = SFC.calculate_structure_function_tensor(Val(2), x, u, bins; backend = CB.SerialBackend(), output_type = RAW_T)
+    t1 = SFC.calculate_structure_function_tensor(Val(2), x, u, bins, RAW_T; backend = CB.SerialBackend())
     for backend in (CB.SerialBackend(), CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
         joint = SFC.calculate_structure_function_tensor(Val(2), x, u, bins, θbins; second_axis = axis, backend)
         Test.@test joint isa RAW_T2
@@ -303,8 +293,8 @@ Test.@testset "the joint tensor over angle marginalises to the tensor and to the
         Test.@test dropdims(sum(joint.counts; dims = 2); dims = 2) == t1.counts
         Test.@test isapprox(dropdims(sum(joint.sums; dims = 4); dims = 4), t1.sums; rtol = 1e-11, atol = 1e-12)
         # the trace of the joint tensor is the joint histogram of S2
-        s2 = SFC.serial_calculate_structure_function(SFT.S2SFType(), x, u, bins, θbins; second_axis = axis,
-                                                     verbose = false, show_progress = false)
+        s2 = SFC.calculate_structure_function(SFT.S2SFType(), x, u, bins, θbins; backend = CB.SerialBackend(),
+                                              second_axis = axis, verbose = false, show_progress = false)
         Test.@test joint.counts == s2.counts
         Test.@test isapprox(joint.sums[1, 1, :, :] .+ joint.sums[2, 2, :, :], s2.sums; rtol = 1e-11, atol = 1e-12)
     end

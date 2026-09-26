@@ -17,12 +17,12 @@ Random.seed!(42)
         u3 = rand(3, 8)
 
         r2 = SFC.calculate_structure_function(
-            sf, x2, u2, bins; backend = CB.SerialBackend(),
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false,
+            sf, x2, u2, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+            verbose = false, show_progress = false,
         )
         r3 = SFC.calculate_structure_function(
-            sf, x3, u3, bins; backend = CB.SerialBackend(),
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false,
+            sf, x3, u3, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+            verbose = false, show_progress = false,
         )
 
         @test size(r2.sums) == (n_bins,)
@@ -33,15 +33,15 @@ Random.seed!(42)
         x = rand(2, 9)
         u = rand(2, 9, 3)
         r = SFC.calculate_structure_function(
-            sf, x, u, bins; backend = CB.SerialBackend(),
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false,
+            sf, x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+            verbose = false, show_progress = false,
         )
         ref_sums = zeros(eltype(r.sums), n_bins, 3)
         ref_counts = zeros(eltype(r.counts), n_bins, 3)
         for t in 1:3
             rt = SFC.calculate_structure_function(
-                sf, x, @view(u[:, :, t]), bins; backend = CB.SerialBackend(),
-                output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false,
+                sf, x, @view(u[:, :, t]), bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+                verbose = false, show_progress = false,
             )
             ref_sums[:, t] .= rt.sums
             ref_counts[:, t] .= rt.counts
@@ -54,8 +54,8 @@ Random.seed!(42)
         x = rand(2, 7)
         u = rand(2, 7, 2, 3)
         r = SFC.calculate_structure_function(
-            sf, x, u, bins; backend = CB.SerialBackend(),
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false,
+            sf, x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+            verbose = false, show_progress = false,
         )
         @test size(r.sums) == (n_bins, 2, 3)
         @test size(r.counts) == (n_bins, 2, 3)
@@ -65,15 +65,15 @@ Random.seed!(42)
         x = rand(2, 8, 3)
         u = rand(2, 8, 3)
         r = SFC.calculate_structure_function(
-            sf, x, u, bins; backend = CB.SerialBackend(),
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false,
+            sf, x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+            verbose = false, show_progress = false,
         )
         ref_sums = zeros(eltype(r.sums), n_bins, 3)
         ref_counts = zeros(eltype(r.counts), n_bins, 3)
         for t in 1:3
             rt = SFC.calculate_structure_function(
-                sf, @view(x[:, :, t]), @view(u[:, :, t]), bins; backend = CB.SerialBackend(),
-                output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false,
+                sf, @view(x[:, :, t]), @view(u[:, :, t]), bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+                verbose = false, show_progress = false,
             )
             ref_sums[:, t] .= rt.sums
             ref_counts[:, t] .= rt.counts
@@ -88,8 +88,8 @@ Random.seed!(42)
         x1 = reshape(collect(0.0:0.2:1.8), 1, :)
         u1 = reshape(randn(10), 1, :)
         r = SFC.calculate_structure_function(
-            sf, x1, u1, bins; backend = CB.SerialBackend(),
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false,
+            sf, x1, u1, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+            verbose = false, show_progress = false,
         )
         ref_sums = zeros(eltype(r.sums), n_bins)
         ref_counts = zeros(eltype(r.counts), n_bins)

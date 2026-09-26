@@ -315,10 +315,48 @@ function cull_grid_for(
     cutoff === nothing && return nothing
     span = SF_CULL_CELLS_PER_CUTOFF
     inv_h = inv(FT(cutoff) / span)
-    dims = ntuple(d -> max(1, floor(Int, (maximum(xc[d]) - minimum(xc[d])) * inv_h) + 1), Val(D))
+    xg = _cull_grid_coordinates(xc)
+    dims = _cull_dims(xg, inv_h)
+    dims === nothing && return _cull_grid_too_fine(policy)
     _cull_is_worthwhile(policy, dims, span) || return nothing
-    return build_cell_grid(xc, cutoff, span)
+    return build_cell_grid(xg, cutoff, span)
 end
+
+"""
+Coordinates a cull grid is built over at most. A pair within the cutoff is within it on every subset of
+its coordinates, so a grid over some of them culls exactly, and over three its stencil has at most
+`(2span+1)^2` rows per cell.
+"""
+const SF_CULL_GRID_DIMS = 3
+
+"""The coordinates of `xc` a cull grid is built over: all of them, or the `SF_CULL_GRID_DIMS` widest."""
+@inline _cull_grid_coordinates(xc::NTuple{D}) where {D} =
+    D <= SF_CULL_GRID_DIMS ? xc : _widest_coordinates(xc, Val(SF_CULL_GRID_DIMS))
+
+function _widest_coordinates(xc::NTuple{D}, ::Val{K}) where {D, K}
+    order = sortperm([maximum(xc[d]) - minimum(xc[d]) for d in 1:D]; rev = true)
+    return ntuple(k -> xc[order[k]], Val(K))
+end
+
+"""Cells per coordinate over the bounding box of `xc` at `inv_h` cells per unit, or `nothing` when
+their product does not fit an `Int`."""
+function _cull_dims(xc::NTuple{D, <:AbstractVector}, inv_h) where {D}
+    ext = ntuple(d -> (maximum(xc[d]) - minimum(xc[d])) * inv_h, Val(D))
+    all(e -> e < typemax(Int) ÷ 2, ext) || return nothing
+    dims = ntuple(d -> max(1, floor(Int, ext[d]) + 1), Val(D))
+    n = 1
+    for m in dims
+        n, overflow = Base.mul_with_overflow(n, m)
+        overflow && return nothing
+    end
+    return dims
+end
+
+_cull_grid_too_fine(::AutoCulling) = nothing
+_cull_grid_too_fine(::AlwaysCulling) = throw(ArgumentError(
+    "culling = AlwaysCulling() cannot build the cull grid: at this cutoff its cell count over the data's " *
+    "extent does not fit an Int. Pass culling = AutoCulling() or NoCulling().",
+))
 
 """
     cull_multi_index(dims, c)

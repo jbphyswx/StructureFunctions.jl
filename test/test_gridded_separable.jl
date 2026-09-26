@@ -80,9 +80,8 @@ function _reference(sf, x, u, bins; metric = DI.Euclidean())
     s = zeros(nb)
     c = zeros(Int, nb)
     if u isa Fields
-        ref = SFC.calculate_structure_function(sf, x, u, bins; distance_metric = metric,
-            backend = CB.SerialBackend(), output_type = SFO.StructureFunctionSumsAndCounts,
-            verbose = false, show_progress = false)
+        ref = SFC.calculate_structure_function(sf, x, u, bins, SFO.StructureFunctionSumsAndCounts;
+            distance_metric = metric, backend = CB.SerialBackend(), verbose = false, show_progress = false)
         return ref.sums, Int.(ref.counts)
     end
     SFC.calculate_structure_function!(s, c, sf, x, u, bins; distance_metric = metric)
@@ -300,8 +299,6 @@ Test.@testset "the threaded backend gives the serial answer" begin
     Test.@test _close(ts, ss)
     Test.@test _close(hs, ss)
     Test.@test sum(sc) > 0
-    # a GPU tag has no gridded method, and says so
-    Test.@test_throws ArgumentError _run(SFT.L2SFType(), u, sched, bins; backend = CB.GPUBackend(nothing))
 end
 
 Test.@testset "the sphere's radius reaches every route" begin
@@ -335,10 +332,10 @@ Test.@testset "the sphere's radius reaches every route" begin
     Test.@test Base.invokelatest(ext._lag_schedule, scattered) isa SFC.ScatteredPairs
     Test.@test Base.invokelatest(ext._lag_schedule, scattered).metric == SFH.SphericalDistance(RE)
     metre_bins = RE .* collect(range(0.0, 1.9; length = 8))
-    rz = SFC.calculate_structure_function(SFT.L2SFType(), zonal, u, metre_bins;
-        output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
-    rs = SFC.calculate_structure_function(SFT.L2SFType(), scattered, u, metre_bins;
-        output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+    rz = SFC.calculate_structure_function(SFT.L2SFType(), zonal, u, metre_bins, SFO.StructureFunctionSumsAndCounts;
+        verbose = false, show_progress = false)
+    rs = SFC.calculate_structure_function(SFT.L2SFType(), scattered, u, metre_bins,
+        SFO.StructureFunctionSumsAndCounts; verbose = false, show_progress = false)
     Test.@test rz.counts == rs.counts
     Test.@test isapprox(rz.sums, rs.sums; rtol = 1e-9, atol = 1e-10)
     Test.@test sum(rz.counts) > 0
@@ -362,10 +359,10 @@ Test.@testset "axis types decide the route, and the routes agree" begin
     Random.seed!(7700)
     u = randn(2, n_lon, n_lat)
     bins = collect(range(0.013, 0.9π; length = 7))
-    r1 = SFC.calculate_structure_function(SFT.L2SFType(), recipe, u, bins;
-        output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
-    r2 = SFC.calculate_structure_function(SFT.L2SFType(), ranged, u, bins;
-        output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+    r1 = SFC.calculate_structure_function(SFT.L2SFType(), recipe, u, bins, SFO.StructureFunctionSumsAndCounts;
+        verbose = false, show_progress = false)
+    r2 = SFC.calculate_structure_function(SFT.L2SFType(), ranged, u, bins, SFO.StructureFunctionSumsAndCounts;
+        verbose = false, show_progress = false)
     Test.@test r1.counts == r2.counts
     Test.@test isapprox(r1.sums, r2.sums; rtol = 1e-9, atol = 1e-10)
     Test.@test sum(r1.counts) > 0
@@ -387,8 +384,8 @@ Test.@testset "axis types decide the route, and the routes agree" begin
     u_yx = randn(2, length(ys), length(xs))
     x_yx = _grid_points((ys, xs))
     bins_yx = _separated_bins(x_yx, 6)
-    got = SFC.calculate_structure_function(SFT.L3SFType(), grid_yx, u_yx, bins_yx, UInt32, FFT_TAG;
-        output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+    got = SFC.calculate_structure_function(SFT.L3SFType(), grid_yx, u_yx, bins_yx, FFT_TAG, UInt32,
+        SFO.StructureFunctionSumsAndCounts; verbose = false, show_progress = false)
     ref_s, ref_c = _reference(SFT.L3SFType(), x_yx, reshape(u_yx, 2, :), bins_yx)
     Test.@test got.counts == ref_c
     Test.@test _close(got.sums, ref_s)

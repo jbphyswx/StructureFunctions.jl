@@ -1,8 +1,7 @@
 using Test
 using Random
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
-using Distances: Euclidean
-using KernelAbstractions: KernelAbstractions as KA
+using ComputationalBackends: ComputationalBackends as CB
 using FFTW
 using SpectralBackends: SpectralBackends as SB
 
@@ -29,27 +28,20 @@ using SpectralBackends: SpectralBackends as SB
                        kind == :single_pass ? (6, 1, 2) : (6, 1, 1, 2)
                 sums, counts = zeros(dims), fill(initial, dims)
                 @test_throws ArgumentError if kind == :sf1d
-                    SFC._bl_run_1d!(sums, counts, SFT.S2SFType(), x, u, bins, Euclidean(), SFC._bl_serial_exec)
+                    SFC.calculate_structure_function_batch!(sums, counts, SFT.S2SFType(), x, u, bins;
+                        backend = CB.SerialBackend(), verbose = false)
                 elseif kind == :joint2d
-                    SFC._bl_run_joint2d!(sums, counts, SFT.S2SFType(), x, u, bins, value_bins, Euclidean(), SFC._bl_serial_exec)
+                    SFC.calculate_structure_function_2d_batch!(sums, counts, SFT.S2SFType(), x, u, bins, value_bins;
+                        backend = CB.SerialBackend(), verbose = false)
                 elseif kind == :single_pass
-                    SFC._bl_run_sp1d!(sums, counts, x, u, bins, Euclidean(), SFC._bl_serial_exec)
+                    SFC.calculate_structure_functions_single_pass_batch!(sums, counts, x, u, bins;
+                        backend = CB.SerialBackend(), verbose = false)
                 else
-                    SFC._bl_run_sp2d!(sums, counts, x, u, bins, value_bins, Euclidean(), SFC._bl_serial_exec)
+                    SFC.calculate_structure_functions_single_pass_2d_batch!(sums, counts, x, u, bins, value_bins;
+                        backend = CB.SerialBackend(), verbose = false)
                 end
                 @test all(iszero, sums)
                 @test all(==(initial), counts)
-            end
-        end
-    end
-    @testset "GPU count staging retains mass and width" begin
-        ext = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-        for incoming in ([0.25, 2.5], UInt64[UInt64(typemax(UInt32)) + 2, 7]), with_workspace in (false, true)
-            sums, counts = zeros(2), zeros(eltype(incoming), 2)
-            ws = with_workspace ? SFC.GPUSFWorkspace(KA.CPU(), [0.0, 1.0, 2.0]) : nothing
-            @test begin
-                ext._accumulate_gpu_sf_host!(sums, counts, [1.0, 2.0], incoming; workspace=ws)
-                counts == incoming && sums == [1.0, 2.0]
             end
         end
     end
@@ -101,8 +93,8 @@ end
     for D in (9, 12)
         x = zeros(D, 3); x[1, :] = [0, 1, 2]
         u = zeros(D, 3); u[end, :] = [0, 2, 5]
-        r = SFC.calculate_structure_function(SFT.S2SFType(), x, u, [0.0, 3.0]; backend=SerialBackend(),
-            output_type=SF.StructureFunctionSumsAndCounts, verbose=false, show_progress=false)
+        r = SFC.calculate_structure_function(SFT.S2SFType(), x, u, [0.0, 3.0], SF.StructureFunctionSumsAndCounts;
+            backend=SerialBackend(), verbose=false, show_progress=false)
         @test r.counts == [3]
         @test r.sums == [38.0]
     end

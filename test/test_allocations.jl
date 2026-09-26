@@ -53,8 +53,8 @@ end
 const AL_POINT_ROUTES = (
     ("point 1D", (n -> begin
         x, u = al_points(n)
-        () -> SFC.calculate_structure_function(AL_OP, x, u, AL_BINS; backend = AL_SER,
-            verbose = false, output_type = AL_RAW)
+        () -> SFC.calculate_structure_function(AL_OP, x, u, AL_BINS, AL_RAW; backend = AL_SER,
+            verbose = false)
     end)),
     ("point joint value", (n -> begin
         x, u = al_points(n)
@@ -69,13 +69,12 @@ const AL_POINT_ROUTES = (
     ("point multi-field", (n -> begin
         x, u = al_points(n)
         f = MF.Fields(vectors = (u,))
-        () -> SFC.calculate_structure_function(AL_OP, x, f, AL_BINS; backend = AL_SER,
-            verbose = false, output_type = AL_RAW)
+        () -> SFC.calculate_structure_function(AL_OP, x, f, AL_BINS, AL_RAW; backend = AL_SER,
+            verbose = false)
     end)),
     ("moment tensor", (n -> begin
         x, u = al_points(n)
-        () -> SFC.calculate_structure_function_tensor(Val(2), x, u, AL_BINS; backend = AL_SER,
-            output_type = AL_TRAW)
+        () -> SFC.calculate_structure_function_tensor(Val(2), x, u, AL_BINS, AL_TRAW; backend = AL_SER)
     end)),
     ("single-pass 1D", (n -> begin
         x, u = al_points(n)

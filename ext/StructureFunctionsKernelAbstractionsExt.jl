@@ -10,7 +10,7 @@ The `gpu_calculate_structure_function` entry point accepts any KA-compatible bac
 For `N_dims ∈ {2,3}` the fast path uses tiled128 pair blocks with block-local
 `UInt32` histograms. Joint 2D SF
 (`calculate_structure_function` with `value_bins`) uses the same tiled schedule
-when `n_dist × n_val ≤ SF_GPU_MAX_2D_HIST`. Six-invariant-type single-pass 1D uses
+when its histogram fits the device's shared memory. Six-invariant-type single-pass 1D uses
 tiled128 block-local `(6, NB)` histograms when `NB ≤ SF_GPU_MAX_BINS`; six-invariant-type
 single-pass 2D uses tiled128 pair traversal with **HTP-EJ** when `n_dist ≤ SF_GPU_MAX_BINS`:
 
@@ -18,8 +18,6 @@ single-pass 2D uses tiled128 pair traversal with **HTP-EJ** when `n_dist ≤ SF_
   block-end `@atomic` flush into final output (the joint 2D pattern), with no private partition and
   no merge.
 - **Direct** (`:direct`): block-private global atomics during one pair pass, then a merge kernel.
-
-Pass `force_global_atomic=true` to bypass HTP-EJ and use the global-atomic path.
 
 ## Count types on GPU
 
@@ -42,9 +40,13 @@ using Distances: Distances as DI
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     HelperFunctions as SFH, StructureFunctionTypes as SFT
-using StructureFunctions.Calculations: GPUSFWorkspace, GPUSFLazyBuffers,
-    _partition_n_tile_blocks, _ws_float_type,
+using StructureFunctions.Calculations: GPUSFWorkspace, GPUSFLazyBuffers, _ws_float_type,
     FullUpperTriangle, TilePairWorkList, tile_for, n_pair_blocks, schedule_for
+
+function __init__()
+    SFC._KERNELABSTRACTIONS_LOADED[] = true
+    return nothing
+end
 
 # ---------------------------------------------------------------------------
 # Tiled128 + block-local UInt32 histogram (2D/3D production fast path)
@@ -58,24 +60,6 @@ const SF_GPU_TILED_WS = 256
 
 """Maximum distance-bin count compiled into tiled `@localmem` histograms."""
 const SF_GPU_MAX_BINS = 128
-
-"""
-Maximum flat joint histogram cells ``n_dist × n_val`` for tiled128 2D joint SF
-(``@localmem`` sums + counts). Requires ``n_dist ≤ SF_GPU_MAX_BINS``,
-``n_val ≤ SF_GPU_MAX_BINS``, and ``n_dist * n_val ≤ SF_GPU_MAX_2D_HIST``.
-"""
-const SF_GPU_MAX_2D_HIST = SF_GPU_MAX_BINS * SF_GPU_MAX_BINS
-
-"""True when the 2D joint histogram and the four coordinate tiles of width `D` fit the tiled128
-block-local path. A width whose tiles do not fit takes the global-atomic kernel, which stages
-nothing."""
-@inline function _gpu_joint_2d_tiled_eligible(n_dist::Int, n_val::Int, D::Int,
-                                              ::Type{FT}) where {FT}
-    return n_dist <= SF_GPU_MAX_BINS &&
-           n_val <= SF_GPU_MAX_BINS &&
-           n_dist * n_val <= SF_GPU_MAX_2D_HIST &&
-           4 * D * SF_GPU_TILE * sizeof(FT) <= 44 * 1024
-end
 
 """Map 1-based upper-triangle pair index within a tile to `(ia, jb)` with `ia < jb`."""
 @inline function _pair_from_linear(k, N)
@@ -140,7 +124,7 @@ function _stage_sf_device_inputs(
     W::Int,
     F::Int,
     N_points::Int;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
 ) where {FT}
     if _array_on_backend(x_mat, backend) && _array_on_backend(u_mat, backend)
         d_x, n_x = size(x_mat)
@@ -191,7 +175,7 @@ dimension only before the conversion, so this is the one place it can be read.
 """
 function _gpu_prepare_and_stage(
     backend::KA.Backend, x, u, distance_metric, N_points::Int;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     distance_bins = nothing,
     culling::SFC.CullingPolicy = SFC.NoCulling(),
     weights = SFC.NoWeights(),
@@ -265,15 +249,16 @@ end
 
 """The memo the current call culls with, or `nothing` without a workspace."""
 _active_cull(::Nothing) = nothing
-_active_cull(workspace::GPUSFWorkspace) = workspace.lazy.active
+_active_cull(workspace::SFC.GPUSFWorkspace) = workspace.lazy.active
 
 _gpu_cull_no_workspace(::SFC.AutoCulling, xk, uk) = (xk, uk, nothing)
 _gpu_cull_no_workspace(::SFC.NoCulling, xk, uk) = (xk, uk, nothing)
 _gpu_cull_no_workspace(::SFC.AlwaysCulling, _, _) = throw(ArgumentError(
-    "GPU culling needs a GPUSFWorkspace to carry the tile-pair work list. Pass " *
-    "workspace = GPUSFWorkspace(...), or culling = AutoCulling() / NoCulling().",
+    "GPU culling needs a SFC.GPUSFWorkspace to carry the tile-pair work list. Pass " *
+    "workspace = SFC.GPUSFWorkspace(...), or culling = AutoCulling() / NoCulling().",
 ))
-_gpu_cull_device_inputs(::SFC.AutoCulling, xk, uk) = (xk, uk, nothing)
+"""The `(grid, x, u)` of device inputs the backend built no cull grid for: every pair, or a refusal."""
+_gpu_cull_device_inputs(::SFC.AutoCulling, xk, uk) = (nothing, xk, uk)
 _gpu_cull_device_inputs(::SFC.AlwaysCulling, _, _) = throw(ArgumentError(
     "the selected GPU backend does not implement device-resident culling for these coordinates; " *
     "pass culling = AutoCulling() / NoCulling(), or use a backend with device sort and compaction.",
@@ -298,8 +283,6 @@ Compute structure functions on `backend` (any KernelAbstractions backend).
 - `sf_type`: any `AbstractPairwiseStructureFunctionType`.
 - `CT`: result count type; weighted counts require a floating type.
 
-`verbose` and `show_progress` are accepted, as on the CPU backends, and have no effect here.
-
 # Returns
 A raw `StructureFunctionSumsAndCounts` accumulator on `backend`, with the input
 floating-point sum type and count type `CT`. Workspace results own their
@@ -312,13 +295,11 @@ function SFC.gpu_calculate_structure_function(
     u_mat::AbstractMatrix{FT},
     distance_bins::AbstractVector{FT},
     ::Type{CT};
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     synchronize::Bool = true,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {FT, CT}
     out_dev, cnt_dev, edges_host = _launch_gpu_structure_function!(
         sf_type, backend, x_mat, u_mat, distance_bins, CT;
@@ -332,7 +313,7 @@ end
 _tiled_launch_params(N_points::Int) = _tiled_launch_params(N_points, nothing)
 
 # The prologue sets `workspace.lazy.active` on every call, so the schedule is always this call's.
-function _tiled_launch_params(N_points::Int, workspace::Union{GPUSFWorkspace, Nothing})
+function _tiled_launch_params(N_points::Int, workspace::Union{SFC.GPUSFWorkspace, Nothing})
     sched = schedule_for(_active_cull(workspace), N_points, SF_GPU_TILE)
     n_tile_blocks = n_pair_blocks(sched)
     ws = SF_GPU_TILED_WS
@@ -340,15 +321,17 @@ function _tiled_launch_params(N_points::Int, workspace::Union{GPUSFWorkspace, No
 end
 
 """
-    _launch_sf_kernel!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, dig,
+    _launch_sf_kernel!(backend, plan, out_dev, cnt_dev, x_dev, u_dev, sf_type, dig,
                        N_points, N_dims, N_bins, geom; workspace, weights)
 
-Run a point list's distance histogram as the unified tiled kernel over a single slice: `out_dev`
-and `cnt_dev` are `(NB,)`, viewed as the `(NMOM, NB, B)` the kernel writes with `NMOM = B = 1`.
-`dig` is the device digitizer of the distance bins.
+Run a point list's distance histogram over a single slice: the native kernel with `plan`, from
+[`SFC.gpu_native_1d_plan`](@ref), or the portable tiled kernel when `plan` is `nothing`. `out_dev` and
+`cnt_dev` are `(NB,)`, viewed as the `(NMOM, NB, B)` a kernel writes with `NMOM = B = 1`. `dig` is the
+device digitizer of the distance bins.
 """
 function _launch_sf_kernel!(
     backend::KA.Backend,
+    plan,
     out_dev,
     cnt_dev,
     x_dev,
@@ -359,76 +342,26 @@ function _launch_sf_kernel!(
     N_dims::Int,
     N_bins::Int,
     geom;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
 )
     NB = N_bins - 1
     D = N_dims
-    if weights isa SFC.NoWeights
-        handled = SFC.gpu_fast_launch_1d_batch!(
-            backend,
-            reshape(out_dev, 1, NB, 1),
-            reshape(cnt_dev, 1, NB, 1),
-            x_dev,
-            reshape(u_dev, D, N_points, 1),
-            sf_type,
-            dig,
-            N_points,
-            NB,
-            1,
-            D,
-            1,
-            true,
-            geom,
-            _active_cull(workspace),
+    out3, cnt3 = reshape(out_dev, 1, NB, 1), reshape(cnt_dev, 1, NB, 1)
+    if plan === nothing
+        go = Dv -> _launch_sf_tiled_1d_varying!(
+            backend, out3, cnt3, reshape(x_dev, D, N_points, 1), reshape(u_dev, D, N_points, 1),
+            sf_type, dig, N_points, NB, 1, Dv, Val(1), geom;
+            weights = weights, workspace = workspace,
         )
-        handled && return nothing
+        # 2 and 3 are the widths the package compiles ahead of time; any other is one more kernel
+        # instantiation, paid once on its first launch.
+        D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : go(Val(D))
+    else
+        SFC.gpu_native_launch_1d!(plan, out3, cnt3, x_dev, u_dev, weights, sf_type, dig, N_points, NB, 1,
+                                  true, geom, _active_cull(workspace))
     end
-    go = Dv -> _launch_sf_tiled_1d_varying!(
-        backend,
-        reshape(out_dev, 1, NB, 1),
-        reshape(cnt_dev, 1, NB, 1),
-        reshape(x_dev, D, N_points, 1),
-        reshape(u_dev, D, N_points, 1),
-        sf_type, dig, N_points, NB, 1,
-        Dv, Val(1), geom;
-        weights = weights, workspace = workspace,
-    )
-    # 2 and 3 are the widths the package compiles ahead of time; any other is one more kernel
-    # instantiation, paid once on its first launch.
-    D == 2 ? go(Val(2)) : D == 3 ? go(Val(3)) : go(Val(D))
     return nothing
-end
-
-"""
-    _launch_gpu_structure_function_core!(sf_type, backend, x_dev, u_dev, dig, N_points, N_dims, N_bins; out_dev, cnt_dev, workspace=nothing, synchronize=true)
-
-Launch the tiled GPU structure-function kernel into pre-allocated device buffers (no allocation).
-"""
-function _launch_gpu_structure_function_core!(
-    sf_type::SFT.AbstractPairwiseStructureFunctionType,
-    backend::KA.Backend,
-    x_dev,
-    u_dev,
-    dig,
-    N_points::Int,
-    N_dims::Int,
-    N_bins::Int;
-    out_dev,
-    cnt_dev,
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
-    synchronize::Bool = true,
-    weights = SFC.NoWeights(),
-    geom,
-)
-    _launch_sf_kernel!(
-        backend,
-        out_dev, cnt_dev, x_dev, u_dev,
-        sf_type, dig, N_points, N_dims, N_bins, geom;
-        workspace = workspace, weights = weights,
-    )
-    synchronize && KA.synchronize(backend)
-    return out_dev, cnt_dev
 end
 
 """
@@ -445,7 +378,7 @@ function _launch_gpu_structure_function!(
     u_mat::AbstractMatrix{FT},
     distance_bins::AbstractVector{FT},
     ::Type{CT};
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     synchronize::Bool = true,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
@@ -463,13 +396,11 @@ function _launch_gpu_structure_function!(
     # which is the converted width, not the width the caller passed.
     N_dims = SFC._val_int(SFH.coordinate_width(geom))
 
-    # The workspace's count buffer is `UInt32`; a weighted sweep accumulates a pair mass, so it
-    # takes its own buffer while the rest of the workspace (staging, cull memo) is still reused.
-    n_pairs = _sf_worst_case_pairs(N_points)
-    fast_count_type = SFC.gpu_fast_1d_count_type(
-        backend, w_dev, CT, n_pairs, N_dims, NB, 1,
-    )
-    CNT = fast_count_type === nothing ? _sf_count_type(w_dev, CT, n_pairs) : fast_count_type
+    # The native kernel counts straight into `CT`; the portable kernels count in `_sf_count_type`. A
+    # count type other than the workspace buffer's takes its own buffer, and the rest of the workspace
+    # (staging, cull memo) is still reused.
+    plan = SFC.gpu_native_1d_plan(backend, eltype(x_dev), eltype(u_dev), FT, CT, w_dev, geom, NB, 1)
+    CNT = plan === nothing ? _sf_count_type(w_dev, CT, _sf_worst_case_pairs(N_points)) : CT
     use_destination = destination_sums !== nothing && destination_counts !== nothing &&
                       size(destination_sums) == (NB,) && size(destination_counts) == (NB,) &&
                       eltype(destination_sums) === FT && eltype(destination_counts) === CNT
@@ -491,12 +422,12 @@ function _launch_gpu_structure_function!(
         ws = workspace
     end
 
-    _launch_gpu_structure_function_core!(
-        sf_type, backend, x_dev, u_dev, _dist_digitizer(workspace, backend, distance_bins, Val(:sf1d)),
-        N_points, N_dims, N_bins;
-        out_dev = out_dev, cnt_dev = cnt_dev, workspace = ws,
-        synchronize = synchronize, weights = w_dev, geom = geom,
+    _launch_sf_kernel!(
+        backend, plan, out_dev, cnt_dev, x_dev, u_dev, sf_type,
+        _dist_digitizer(workspace, backend, distance_bins, Val(:sf1d)), N_points, N_dims, N_bins, geom;
+        workspace = ws, weights = w_dev,
     )
+    synchronize && KA.synchronize(backend)
     return out_dev, cnt_dev, distance_bins
 end
 
@@ -524,118 +455,6 @@ function _check_gpu_outputs(sums, counts, backend, shape; workspace = nothing)
     return nothing
 end
 
-"""Download device sums/counts and accumulate into caller-owned host buffers."""
-function _accumulate_gpu_sf_host!(
-    output_sums::AbstractVector{OT},
-    output_counts::AbstractVector{CT},
-    out_dev,
-    cnt_dev;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
-) where {OT, CT}
-    NB = length(output_sums)
-    length(output_counts) == NB ||
-        throw(ArgumentError("GPUExt: output_counts length ($(length(output_counts))) must match output_sums ($NB)"))
-    count_scratch = if workspace !== nothing && eltype(workspace.host_counts_scratch) === eltype(cnt_dev)
-        copyto!(workspace.host_counts_scratch, cnt_dev)
-    else
-        Array(cnt_dev)
-    end
-    if CT <: Integer
-        all(c -> c >= 0 && c <= typemax(CT), count_scratch) || throw(ArgumentError("device counts exceed the output count type"))
-        all(eachindex(output_counts, count_scratch)) do k
-            count_scratch[k] <= typemax(CT) - output_counts[k]
-        end || throw(ArgumentError("accumulated counts exceed the output count type"))
-    end
-    if !isnothing(workspace) && OT === _ws_float_type(workspace)
-        copyto!(workspace.host_sums_scratch, out_dev)
-        output_sums .+= workspace.host_sums_scratch
-    elseif OT === eltype(out_dev) && _array_on_backend(out_dev, KA.CPU())
-        @. output_sums += out_dev
-    else
-        tmp_s = Vector{OT}(undef, NB)
-        copyto!(tmp_s, out_dev)
-        output_sums .+= tmp_s
-    end
-    output_counts .+= count_scratch
-    return nothing
-end
-
-"""Owning download for the allocating API (no caller buffers)."""
-function _download_gpu_sf_results(out_dev, cnt_dev, ::Type{FT}, ::Type{CT}) where {FT, CT}
-    NB = length(out_dev)
-    output = Vector{FT}(undef, NB)
-    copyto!(output, out_dev)
-    return output, _download_gpu_counts(cnt_dev, CT)
-end
-
-"""Download a device count histogram to a host array of type `CT`.
-
-The device element type is [`_sf_count_type`](@ref)'s: `UInt32` for an unweighted sweep whose pair
-count fits it, and `CT` when weights make the count a pair mass or the pair count needs the wider
-type. The staging vector therefore takes the device's own element type, and the conversion to `CT`
-happens on the host.
-"""
-function _download_gpu_counts(cnt_dev, ::Type{CT}) where {CT}
-    tmp_c = Array(cnt_dev)
-    return eltype(tmp_c) === CT ? tmp_c : CT.(tmp_c)
-end
-
-"""Copy device ``UInt32`` counts into a pre-allocated host buffer (``count_eltype``)."""
-function _copy_gpu_counts!(host_counts, cnt_dev, ::Type{CT}) where {CT}
-    tmp_c = Array(cnt_dev)
-    if CT === eltype(host_counts)
-        copyto!(host_counts, tmp_c)
-    else
-        copyto!(host_counts, CT.(tmp_c))
-    end
-    return host_counts
-end
-
-"""
-    _download_gpu_sf_time_slice!(sums_sl, counts_sl, out_sums_dev, out_cnts_dev, ws)
-
-Download one time slice of device histograms into host `sums_sl` / `counts_sl`.
-
-CUDA/GPUArrays do **not** support `copyto!(cpu_subarray, cuarray)` with scalar
-indexing disabled — see [GPUArrays.jl#422](https://github.com/JuliaGPU/GPUArrays.jl/issues/422)
-and [CUDA.jl#1634](https://github.com/JuliaGPU/CUDA.jl/issues/1634).  Workaround:
-DMA into a dense host `Vector` (`copyto!(scratch, cuarray)` or `Array(cuarray)`),
-then host→host into the destination column/slice (`sums_sl .= scratch`).
-"""
-function _download_gpu_sf_time_slice!(
-    sums_sl::AbstractArray{OT},
-    counts_sl::AbstractArray{CT},
-    out_sums_dev,
-    out_cnts_dev,
-    ws::GPUSFWorkspace,
-) where {OT, CT}
-    # Step 1: CuArray → dense host Vector (CUDA memcpy; never into SubArray dest)
-    if ndims(out_sums_dev) == 1 && length(out_sums_dev) == length(ws.host_sums_scratch)
-        copyto!(ws.host_sums_scratch, out_sums_dev)
-        tmp_s = ws.host_sums_scratch
-    else
-        tmp_s = Array(out_sums_dev)
-    end
-    if ndims(out_cnts_dev) == 1 && length(out_cnts_dev) == length(ws.host_counts_scratch)
-        copyto!(ws.host_counts_scratch, out_cnts_dev)
-        tmp_c = ws.host_counts_scratch
-    else
-        tmp_c = Array(out_cnts_dev)
-    end
-    # Step 2: host → host (including `sums[:, t]` SubArray columns)
-    if OT === eltype(tmp_s)
-        copyto!(sums_sl, reshape(tmp_s, size(sums_sl)))
-    else
-        copyto!(sums_sl, OT.(reshape(tmp_s, size(sums_sl))))
-    end
-    if CT === UInt32
-        copyto!(counts_sl, reshape(tmp_c, size(counts_sl)))
-    else
-        copyto!(counts_sl, CT.(reshape(tmp_c, size(counts_sl))))
-    end
-    return nothing
-end
-
 function SFC.gpu_calculate_structure_function!(
     output_sums::AbstractVector{OT},
     output_counts::AbstractVector{CT},
@@ -644,12 +463,10 @@ function SFC.gpu_calculate_structure_function!(
     x_mat::AbstractMatrix{FT},
     u_mat::AbstractMatrix{FT},
     distance_bins::AbstractVector{FT};
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {OT, CT, FT}
     _check_gpu_outputs(output_sums, output_counts, backend, (length(distance_bins)-1,); workspace)
     out_dev, cnt_dev, _ = _launch_gpu_structure_function!(
@@ -667,10 +484,7 @@ end
 
 
 
-"""True when six-invariant-type 1D single-pass can use tiled128 block-local histograms."""
-@inline _gpu_single_pass_tiled_eligible(n_bins::Int) = n_bins <= SF_GPU_MAX_BINS
-
-"""True when six-invariant-type 2D single-pass can use HTP-EJ tiled128 (`n_dist ≤ 64`, typed dist bins)."""
+"""True when six-invariant-type 2D single-pass can use HTP-EJ tiled128 (`n_dist ≤ SF_GPU_MAX_BINS`)."""
 @inline _gpu_single_pass_2d_tiled_eligible(n_dist::Int) = n_dist <= SF_GPU_MAX_BINS
 
 function _launch_single_pass_tiled_kernel!(
@@ -684,7 +498,7 @@ function _launch_single_pass_tiled_kernel!(
     n_edges::Int,
     NB::Int,
     geom;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
 )
     sched, n_tile_blocks, ws, ndrange = _tiled_launch_params(N_points, workspace)
@@ -767,27 +581,9 @@ KA.@kernel unsafe_indices=true function _sf_single_pass_kernel!(
     end
 end
 
-"""
-Offer a non-batch single-pass 1D launch to the batch dispatcher as `B=1`, which reaches the CUDA
-N-body kernel; `false` means the hook declined and the caller stays on the tiled128 path.
-
-The offer is made per regime, not globally: a fixed-x 1D-individual launch at `B=1` pays strip
-staging and two merge kernels for a strip of one, so it stays on its own path.
-"""
-@inline function _sp1d_try_fast_batch!(
-    backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, dig,
-    N_points::Int, N_dims::Int, NB::Int, geom, cull,
-)
-    return SFC.gpu_fast_launch_1d_batch!(
-        backend,
-        reshape(out_sums_dev, SF_GPU_SINGLE_PASS_N, NB, 1),
-        reshape(out_cnts_dev, SF_GPU_SINGLE_PASS_N, NB, 1),
-        x_dev, reshape(u_dev, N_dims, N_points, 1),
-        nothing, dig,
-        N_points, NB, 1, N_dims, SF_GPU_SINGLE_PASS_N, true, geom, cull,
-    )
-end
-
+"""Launch a point list's six single-pass invariant histograms `(6, NB)`: the native kernel with its plan
+for the call ([`SFC.gpu_native_1d_plan`](@ref)), or [`_launch_single_pass_portable!`](@ref) when there
+is none."""
 function _launch_single_pass_kernel!(
     backend::KA.Backend,
     workgroup_size::Int,
@@ -800,14 +596,43 @@ function _launch_single_pass_kernel!(
     N_dims::Int,
     n_edges::Int,
     geom;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
 )
     NB = n_edges - 1
-    weights isa SFC.NoWeights &&
-        _sp1d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
-                          dig, N_points, N_dims, NB, geom, _active_cull(workspace)) && return nothing
-    if N_dims == 2 && _gpu_single_pass_tiled_eligible(NB)
+    plan = SFC.gpu_native_1d_plan(backend, eltype(x_dev), eltype(u_dev), eltype(out_sums_dev),
+                                  eltype(out_cnts_dev), weights, geom, NB, SF_GPU_SINGLE_PASS_N)
+    if plan === nothing
+        _launch_single_pass_portable!(backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
+                                      dig, N_points, N_dims, n_edges, geom; workspace, weights)
+    else
+        SFC.gpu_native_launch_1d!(plan, reshape(out_sums_dev, SF_GPU_SINGLE_PASS_N, NB, 1),
+                                  reshape(out_cnts_dev, SF_GPU_SINGLE_PASS_N, NB, 1), x_dev, u_dev, weights,
+                                  nothing, dig, N_points, NB, 1, true, geom, _active_cull(workspace))
+    end
+    return nothing
+end
+
+"""Launch a point list's six single-pass invariant histograms on the portable kernels: the tiled
+kernel when its histogram fits, the global-atomic kernel otherwise."""
+function _launch_single_pass_portable!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    dig,
+    N_points::Int,
+    N_dims::Int,
+    n_edges::Int,
+    geom;
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
+)
+    NB = n_edges - 1
+    if N_dims == 2 && _gpu_single_pass_tiled_eligible(SFC.gpu_device_caps(backend), NB,
+                                                      eltype(x_dev), eltype(out_cnts_dev))
         return _launch_single_pass_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
             dig, N_points, n_edges, NB, geom; workspace = workspace, weights = weights,
@@ -854,8 +679,8 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel!(
         ok, dist, frame = SFH.pair_frame(geom, X1, X2)
         dbin = SFH.digitize(dist, ddig)
         if ok && 1 <= dbin < N_dist_bins
-            dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
-            val = sf_type(dU, r̂)
+            dU = SFH.pair_delta(geom, frame, X1, X2, U1, U2)
+            val = SFT.pair_value(sf_type, geom, frame, dist, dU)
             akey = SFC.pair_axis_key(second_axis, val, X1, X2, dist)
             vbin = SFH.digitize(akey, vdig)
             if 1 <= vbin < N_val_edges
@@ -867,28 +692,9 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel!(
     end
 end
 
-"""
-Offer a non-batch joint 2D launch to the batch dispatcher as `B=1` (`NMOM=1`, so `sf_type` is
-carried through and does the per-pair math); `false` means the hook declined and the caller
-continues unchanged. `(n_dist, n_val)` reshapes to `(1, n_dist, n_val, 1)` at no cost — column-major
-layout is identical.
-"""
-@inline function _joint2d_try_fast_batch!(
-    backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type, ddig, vdig,
-    N_points::Int, n_dist::Int, n_val::Int, geom, cull,
-)
-    D = size(x_dev, 1)
-    return SFC.gpu_fast_launch_2d_batch!(
-        backend,
-        reshape(out_sums_dev, 1, n_dist, n_val, 1),
-        reshape(out_cnts_dev, 1, n_dist, n_val, 1),
-        x_dev, reshape(u_dev, D, N_points, 1),
-        sf_type, ddig, vdig,
-        N_points, n_dist, n_val, 1, D, 1, true, geom, cull,
-    )
-end
-
-"""Launch one joint distance × value histogram with device digitizers `ddig` and `vdig`."""
+"""Launch one joint distance × value histogram `(n_dist, n_val)` with device digitizers `ddig` and
+`vdig`: the native kernel with its plan for the call ([`SFC.gpu_native_2d_plan`](@ref)), or
+[`_launch_joint_2d_portable!`](@ref) when there is none."""
 function _launch_joint_2d_kernel!(
     backend::KA.Backend,
     workgroup_size::Int,
@@ -903,21 +709,56 @@ function _launch_joint_2d_kernel!(
     n_dist_edges::Int,
     n_val_edges::Int,
     geom;
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
+    weights = SFC.NoWeights(),
+    second_axis = SFC.InvariantValueAxis(),
+)
+    n_dist = n_dist_edges - 1
+    n_val = n_val_edges - 1
+    plan = SFC.gpu_native_2d_plan(backend, eltype(x_dev), eltype(u_dev), eltype(out_sums_dev),
+                                  eltype(out_cnts_dev), weights, geom, 1, n_dist, n_val)
+    if plan === nothing
+        _launch_joint_2d_portable!(backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
+                                   sf_type, ddig, vdig, N_points, n_dist_edges, n_val_edges, geom;
+                                   workspace, weights, second_axis)
+    else
+        SFC.gpu_native_launch_2d!(plan, reshape(out_sums_dev, 1, n_dist, n_val, 1),
+                                  reshape(out_cnts_dev, 1, n_dist, n_val, 1), x_dev, u_dev, weights, sf_type,
+                                  ddig, vdig, N_points, n_dist, n_val, 1, true, geom, second_axis,
+                                  _active_cull(workspace))
+    end
+    return nothing
+end
+
+"""Launch one joint distance × value histogram on the portable kernels: the tiled kernel when its
+shared histogram at the compile width fits the device, the global-atomic kernel otherwise."""
+function _launch_joint_2d_portable!(
+    backend::KA.Backend,
+    workgroup_size::Int,
+    out_sums_dev,
+    out_cnts_dev,
+    x_dev,
+    u_dev,
+    sf_type,
+    ddig,
+    vdig,
+    N_points::Int,
+    n_dist_edges::Int,
+    n_val_edges::Int,
+    geom;
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     weights = SFC.NoWeights(),
     second_axis = SFC.InvariantValueAxis(),
 )
     n_dist = n_dist_edges - 1
     n_val = n_val_edges - 1
     W = SFC._val_int(SFH.coordinate_width(geom))
-    weights isa SFC.NoWeights && second_axis isa SFC.InvariantValueAxis &&
-        _joint2d_try_fast_batch!(backend, out_sums_dev, out_cnts_dev, x_dev, u_dev, sf_type,
-                             ddig, vdig, N_points, n_dist, n_val, geom,
-                             _active_cull(workspace)) && return nothing
-    if _gpu_joint_2d_tiled_eligible(n_dist, n_val, W, eltype(out_sums_dev))
+    hist = workspace === nothing ? n_dist * n_val : workspace.joint2d_compile_cells
+    if _gpu_joint_2d_tiled_eligible(SFC.gpu_device_caps(backend), W, eltype(x_dev),
+                                    eltype(out_sums_dev), eltype(out_cnts_dev), hist)
         return _launch_joint_2d_tiled_kernel!(
             backend, out_sums_dev, out_cnts_dev, x_dev, u_dev,
-            sf_type, ddig, vdig, N_points, n_dist_edges, n_val_edges, n_dist, n_val, geom;
+            sf_type, ddig, vdig, N_points, n_dist_edges, n_val_edges, n_dist, n_val, hist, geom;
             workspace = workspace, weights = weights, second_axis = second_axis,
         )
     end
@@ -940,7 +781,7 @@ function _launch_gpu_joint2d!(
     value_bins,
     ::Type{CT};
     workgroup_size::Int = 64,
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     synchronize::Bool = true,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
@@ -994,10 +835,9 @@ end
 Compute one 2D joint histogram (distance × SF value) for `sf_type` on `backend`.
 Returns [`StructureFunction2DSumsAndCounts`](@ref) with the same flat edge vectors passed in.
 
-Uses tiled128 block-local histograms when ``n_dist × n_val ≤ SF_GPU_MAX_2D_HIST``
-(with each axis ``≤ SF_GPU_MAX_BINS``); otherwise falls back to ``(N_points, N_points)``
-global-atomic pair kernels. Default compile-time shared histogram width is exact
-``n_dist × n_val``; override on [`GPUSFWorkspace`](@ref) via `joint2d_compile_cells`
+Uses tiled128 block-local histograms when the histogram fits the device's shared memory, and
+``(N_points, N_points)`` global-atomic pair kernels otherwise. The shared histogram is compiled
+``n_dist × n_val`` wide unless a [`SFC.GPUSFWorkspace`](@ref) sets `joint2d_compile_cells`
 (see [`joint2d_smem_max`](@ref), [`joint2d_smem_align256`](@ref)). Results remain
 on the selected backend and own their buffers, with counts of type `CT`. Use `to_host` for host
 conversion.
@@ -1031,13 +871,11 @@ function _gpu_calculate_structure_function_2d_snapshot(
     value_bins::AbstractVector{FT4},
     ::Type{CT};
     workgroup_size::Int = 64,
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
     second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, FT4 <: Number, CT}
     SFC._require_value_axis(
         second_axis, SFH.pair_geometry_for(distance_metric, Val(size(u_mat, 1))),
@@ -1053,7 +891,7 @@ end
 
 function SFC.gpu_calculate_structure_function_2d!(sums, counts, sf, backend::KA.Backend,
         x::AbstractMatrix, u::AbstractMatrix, distance_bins, value_bins;
-        workspace=nothing, weights=SFC.NoWeights(), verbose=false, show_progress=false, kwargs...)
+        workspace=nothing, weights=SFC.NoWeights(), kwargs...)
     shape = (length(distance_bins)-1, length(value_bins)-1)
     _check_gpu_outputs(sums, counts, backend, shape; workspace)
     ds, dc = _launch_gpu_joint2d!(sf, backend, x, u, distance_bins, value_bins, eltype(counts);
@@ -1134,9 +972,8 @@ function _gpu_run_single_pass_2d!(
     distance_bins::AbstractVector{FT3},
     value_bins::_SinglePass2DValueBins;
     workgroup_size::Int = 64,
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     synchronize::Bool = true,
-    force_global_atomic::Bool = false,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
@@ -1180,7 +1017,6 @@ function _gpu_run_single_pass_2d!(
         _value_digitizer(workspace, backend, value_bins),
         N_points, N_dims, n_dist_edges, _n_value_edges(value_bins), geom;
         workspace = workspace, weights = w_dev,
-        force_global_atomic = force_global_atomic,
     )
     synchronize && KA.synchronize(backend)
 
@@ -1204,7 +1040,7 @@ function SFC._dispatch_single_pass(
     distance_bins::AbstractVector{FT3},
     ::Type{CT};
     workgroup_size::Int = 64,
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
@@ -1264,9 +1100,8 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d(
     value_bins::_SinglePass2DValueBins,
     ::Type{CT};
     workgroup_size::Int = 64,
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     synchronize::Bool = true,
-    force_global_atomic::Bool = false,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
@@ -1279,8 +1114,7 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d(
     counts = KA.zeros(backend, CT, SF_GPU_SINGLE_PASS_N, n_bins, n_val)
     return _gpu_run_single_pass_2d!(
         CB.GPUBackend(backend), sums, counts, x, u, distance_bins, value_bins;
-        workgroup_size = workgroup_size, workspace = workspace,
-        synchronize = synchronize, force_global_atomic = force_global_atomic,
+        workgroup_size = workgroup_size, workspace = workspace, synchronize = synchronize,
         distance_metric = distance_metric, culling = culling, weights = weights,
     )
 end
@@ -1294,9 +1128,8 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d!(
     distance_bins::AbstractVector{FT3},
     value_bins::_SinglePass2DValueBins;
     workgroup_size::Int = 64,
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     synchronize::Bool = true,
-    force_global_atomic::Bool = false,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
@@ -1309,8 +1142,7 @@ function SFC.gpu_calculate_structure_functions_single_pass_2d!(
         throw(DimensionMismatch("counts must match sums shape $(size(sums_3d))"))
     _gpu_run_single_pass_2d!(
         CB.GPUBackend(backend), sums_3d, counts_3d, x, u, distance_bins, value_bins;
-        workgroup_size = workgroup_size, workspace = workspace,
-        synchronize = synchronize, force_global_atomic = force_global_atomic,
+        workgroup_size = workgroup_size, workspace = workspace, synchronize = synchronize,
         distance_metric = distance_metric, culling = culling, weights = weights,
     )
     return sums_3d, counts_3d
@@ -1373,7 +1205,7 @@ function SFC._dispatch_single_pass!(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
     workgroup_size::Int = 64,
-    workspace::Union{GPUSFWorkspace, Nothing} = nothing,
+    workspace::Union{SFC.GPUSFWorkspace, Nothing} = nothing,
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),

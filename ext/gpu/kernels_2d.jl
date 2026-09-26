@@ -107,8 +107,8 @@ KA.@kernel unsafe_indices=true function _sf2d_kernel_tiled128_u32!(
                 ok, dist, frame = SFH.pair_frame(geom, X1, X2)
                 dbin = SFH.digitize(dist, ddig)
                 if ok && 1 <= dbin < N_dist_edges
-                    dU, r̂ = SFH.pair_increments(geom, frame, dist, X1, X2, U1, U2)
-                    val = sf_type(dU, r̂)
+                    dU = SFH.pair_delta(geom, frame, X1, X2, U1, U2)
+                    val = SFT.pair_value(sf_type, geom, frame, dist, dU)
                     akey = SFC.pair_axis_key(second_axis, val, X1, X2, dist)
                     vbin = SFH.digitize(akey, vdig)
                     if 1 <= vbin < N_val_edges
@@ -140,3 +140,15 @@ KA.@kernel unsafe_indices=true function _sf2d_kernel_tiled128_u32!(
         end
     end
 end
+
+"""Static shared bytes of `_sf2d_kernel_tiled128_u32!` for `W`-wide coordinates of `FT`, sums of
+`OT` and `HIST` histogram cells counted in `CST`."""
+@inline _joint2d_tiled_smem_bytes(::Type{FT}, ::Type{OT}, ::Type{CST}, W::Int, HIST::Int) where {FT, OT, CST} =
+    4 * SFC.gpu_localmem_bytes(FT, W * SF_GPU_TILE) +
+    SFC.gpu_localmem_bytes(OT, HIST) + SFC.gpu_localmem_bytes(CST, HIST)
+
+"""Whether `_sf2d_kernel_tiled128_u32!` compiled at width `HIST` fits the device `caps` describes;
+the global-atomic joint kernel takes the call when it does not."""
+@inline _gpu_joint_2d_tiled_eligible(caps, W::Int, ::Type{FT}, ::Type{OT}, ::Type{CST},
+                                     HIST::Int) where {FT, OT, CST} =
+    SFC.gpu_static_smem_fits(caps, _joint2d_tiled_smem_bytes(FT, OT, CST, W, HIST))

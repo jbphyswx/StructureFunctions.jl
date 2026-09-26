@@ -210,8 +210,8 @@ Test.@testset "a scalar's kernel-binned moments are the pseudo-spectral series e
                 weights = w, valid, verbose = false)
             continue
         end
-        res = SFC.calculate_structure_function(sf, x, Fields(scalars = (f,)), nodes, DS; weights = w, valid,
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false)
+        res = SFC.calculate_structure_function(sf, x, Fields(scalars = (f,)), nodes, DS,
+            SF.StructureFunctionSumsAndCounts; weights = w, valid, verbose = false)
         for (k, β) in enumerate(nodes.separations)
             ss = 0.0
             cc = 0.0
@@ -264,8 +264,8 @@ Test.@testset "second-order vector statistics equal the spin-1 closed forms on a
     DLL, DTT = 2 .* (C0 .- CLL), 2 .* (C0 .- CTT)
     for (sf, ref) in ((SFT.L2SFType(), DLL), (SFT.T2SFType(), DTT), (SFT.S2SFType(), DLL .+ DTT),
                       (SFT.T2ComponentSFType(), DTT))
-        r = SFC.calculate_structure_function(sf, x, ug, nodes, DS; weights = w,
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false)
+        r = SFC.calculate_structure_function(sf, x, ug, nodes, DS, SF.StructureFunctionSumsAndCounts; weights = w,
+            verbose = false)
         Test.@test maximum(abs, r.counts .- 1) < 1e-12               # ∫∫ K dΩ dΩ′ = 1 on the full sphere
         Test.@test maximum(abs, r.sums ./ r.counts .- ref) < 1e-12 * maximum(abs, ref)
     end
@@ -300,8 +300,8 @@ Test.@testset "higher-order statistics on a band-limited field equal the exact r
     nodes = HarmonicNodes([0.4, 1.1, 1.9, 2.6], 10)
     for sf in (SFT.L3SFType(), SFT.S3SFType(), SFT.L1T2SFType(), SFT.L2T1SFType(), SFT.T3SFType(),
                SFT.ProjectedStructureFunctionType{4, 0}(), SFT.L2SFType(), SFT.T2SFType())
-        r = SFC.calculate_structure_function(sf, x, ug, nodes, DS; weights = w,
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false)
+        r = SFC.calculate_structure_function(sf, x, ug, nodes, DS, SF.StructureFunctionSumsAndCounts; weights = w,
+            verbose = false)
         Test.@test maximum(abs, r.counts .- 1) < 1e-12
         ref = [_rotation_average(sf, β) for β in nodes.separations]
         scale = max(maximum(abs, ref), 1e-3)
@@ -309,13 +309,13 @@ Test.@testset "higher-order statistics on a band-limited field equal the exact r
     end
     # a mixed multi-field: the scalar with the vector, at third order
     fb = Fields(vectors = (ug,), scalars = (Φ,))
-    r = SFC.calculate_structure_function(SFT.MixedSFType{1, 0, 2}(), x, fb, nodes, DS; weights = w,
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false)
+    r = SFC.calculate_structure_function(SFT.MixedSFType{1, 0, 2}(), x, fb, nodes, DS,
+        SF.StructureFunctionSumsAndCounts; weights = w, verbose = false)
     ref = [_rotation_average(SFT.MixedSFType{1, 0, 2}(), β) for β in nodes.separations]
     Test.@test maximum(abs, r.sums .- ref) < 1e-9 * maximum(abs, ref)
     # the scalar alone at fourth order
-    r4 = SFC.calculate_structure_function(SFT.ScalarSFType{4}(), x, Fields(scalars = (Φ,)), nodes, DS; weights = w,
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false)
+    r4 = SFC.calculate_structure_function(SFT.ScalarSFType{4}(), x, Fields(scalars = (Φ,)), nodes, DS,
+        SF.StructureFunctionSumsAndCounts; weights = w, verbose = false)
     ref4 = [_rotation_average(SFT.ScalarSFType{4}(), β; scalar = true) for β in nodes.separations]
     Test.@test maximum(abs, r4.sums .- ref4) < 1e-9 * maximum(abs, ref4)
 end
@@ -345,10 +345,10 @@ Test.@testset "the fast transform gives the direct sum's answer" begin
     nodes = HarmonicNodes(6, 24; taper = SF.Bartlett())
     fb = Fields(vectors = (u,), scalars = (Φ,))
     for sf in (SFT.L2SFType(), SFT.L3SFType(), SFT.L1T2SFType(), SFT.ScalarSFType{2}(), SFT.MixedSFType{1, 0, 2}())
-        a = SFC.calculate_structure_function(sf, x, fb, nodes, DS; weights = w, valid,
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false)
-        b = SFC.calculate_structure_function(sf, x, fb, nodes, NU; weights = w, valid,
-            output_type = SF.StructureFunctionSumsAndCounts, verbose = false)
+        a = SFC.calculate_structure_function(sf, x, fb, nodes, DS, SF.StructureFunctionSumsAndCounts; weights = w,
+            valid, verbose = false)
+        b = SFC.calculate_structure_function(sf, x, fb, nodes, NU, SF.StructureFunctionSumsAndCounts; weights = w,
+            valid, verbose = false)
         Test.@test maximum(abs, a.sums .- b.sums) < 1e-8 * maximum(abs, a.sums)
         Test.@test maximum(abs, a.counts .- b.counts) < 1e-8 * maximum(abs, a.counts)
     end
@@ -388,11 +388,11 @@ Test.@testset "a spherical grid reaches the harmonic route with its cell measure
     end
     nodes = HarmonicNodes(6, 10)
     ug = reshape(u, 2, size(FG.Grids.mask(grid))...)
-    got = SFC.calculate_structure_function(SFT.L2SFType(), grid, ug, nodes, DS; verbose = false,
-        output_type = SF.StructureFunctionSumsAndCounts)
+    got = SFC.calculate_structure_function(SFT.L2SFType(), grid, ug, nodes, DS, SF.StructureFunctionSumsAndCounts;
+        verbose = false)
     x = Matrix(hcat(coords[1], coords[2])')
-    ref = SFC.calculate_structure_function(SFT.L2SFType(), x, u, nodes, DS; weights = vec(FG.Grids.measure_array(grid)),
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false)
+    ref = SFC.calculate_structure_function(SFT.L2SFType(), x, u, nodes, DS, SF.StructureFunctionSumsAndCounts;
+        weights = vec(FG.Grids.measure_array(grid)), verbose = false)
     Test.@test got.sums ≈ ref.sums rtol = 1e-12
     Test.@test got.counts ≈ ref.counts rtol = 1e-12
     Test.@test got.distance === nodes
@@ -481,12 +481,11 @@ Test.@testset "the harmonic route splits its point loop across backends" begin
     x = permutedims(hcat(φ, π / 2 .- θ))
     u = randn(2, N)
     nodes = HarmonicNodes(collect(range(0.2, 2.5; length = 7)), lmax)
-    base = SFC.calculate_structure_function(SFT.L2SFType(), x, u, nodes, DS;
-        backend = CB.SerialBackend(), verbose = false,
-        output_type = SFO.StructureFunctionSumsAndCounts)
+    base = SFC.calculate_structure_function(SFT.L2SFType(), x, u, nodes, DS, SFO.StructureFunctionSumsAndCounts;
+        backend = CB.SerialBackend(), verbose = false)
     for be in (CB.ThreadedBackend(), CB.AutoBackend())
-        got = SFC.calculate_structure_function(SFT.L2SFType(), x, u, nodes, DS;
-            backend = be, verbose = false, output_type = SFO.StructureFunctionSumsAndCounts)
+        got = SFC.calculate_structure_function(SFT.L2SFType(), x, u, nodes, DS, SFO.StructureFunctionSumsAndCounts;
+            backend = be, verbose = false)
         Test.@test maximum(abs, got.sums .- base.sums) <= 1e-9 * max(maximum(abs, base.sums), 1e-9)
         Test.@test maximum(abs, got.counts .- base.counts) <= 1e-9 * max(maximum(abs, base.counts), 1e-9)
     end

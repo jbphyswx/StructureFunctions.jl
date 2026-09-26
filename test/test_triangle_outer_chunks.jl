@@ -61,14 +61,12 @@ Test.@testset "Triangle outer chunks (OMT RoundRobin)" begin
 
         sf_type = SFT.LongitudinalSecondOrderStructureFunctionType()
         r1 = SFC.calculate_structure_function(
-            sf_type, x, u, distance_bins;
+            sf_type, x, u, distance_bins, SFO.StructureFunctionSumsAndCounts;
             backend = CB.SerialBackend(), verbose = false, show_progress = false,
-            output_type = SFO.StructureFunctionSumsAndCounts,
         )
         r2 = SFC.calculate_structure_function(
-            sf_type, x, u, distance_bins;
+            sf_type, x, u, distance_bins, SFO.StructureFunctionSumsAndCounts;
             backend = CB.ThreadedBackend(), verbose = false, show_progress = false,
-            output_type = SFO.StructureFunctionSumsAndCounts,
         )
         Test.@test r2.counts == r1.counts
         Test.@test r2.sums ≈ r1.sums

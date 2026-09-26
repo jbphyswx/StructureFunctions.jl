@@ -72,6 +72,9 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running Operator Polynomial Contract Test ---")
     include("test_operator_contract.jl")
 
+    println("--- Running Pair Value Test ---")
+    include("test_pair_value.jl")
+
     println("--- Running Single-Pass & Helmholtz Test ---")
     include("test_single_pass.jl")
 

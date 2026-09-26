@@ -3,7 +3,6 @@ The workhorse of this package, split into focused files under src/Calculations/
 """
 module Calculations
 
-using ProgressMeter: ProgressMeter as PM
 using Distances: Distances as DI
 using SpectralBackends: SpectralBackends as SB
 using ..HelperFunctions: HelperFunctions as SFH

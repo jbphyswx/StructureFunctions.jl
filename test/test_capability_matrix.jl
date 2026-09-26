@@ -56,8 +56,8 @@ const CM_NUTAG = SFC.NonuniformFFTsSpectralBackend()
 
 """Every route, as the entry a user calls, returning `(sums, counts)`."""
 const CM_ROUTES = (
-    ("point 1D", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XP, CM_UP, CM_BINS;
-        backend = be, verbose = false, output_type = CM_RAW); (r.sums, r.counts)))),
+    ("point 1D", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XP, CM_UP, CM_BINS, CM_RAW;
+        backend = be, verbose = false); (r.sums, r.counts)))),
     ("point 1D in-place", (be -> (s = zeros(CM_NB); c = zeros(Int, CM_NB);
         SFC.calculate_structure_function!(s, c, CM_OP, CM_XP, CM_UP, CM_BINS; backend = be,
             verbose = false); (s, c)))),
@@ -67,12 +67,12 @@ const CM_ROUTES = (
         CM_BINS, CM_ABINS; backend = be, verbose = false, second_axis = CM_AX);
         (r.sums, r.counts)))),
     ("point sorted line", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_X1, CM_U1,
-        CM_BINS; backend = be, verbose = false, output_type = CM_RAW); (r.sums, r.counts)))),
+        CM_BINS, CM_RAW; backend = be, verbose = false); (r.sums, r.counts)))),
     ("point multi-field", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XP,
-        MF.Fields(vectors = (CM_UP,)), CM_BINS; backend = be, verbose = false,
-        output_type = CM_RAW); (r.sums, r.counts)))),
+        MF.Fields(vectors = (CM_UP,)), CM_BINS, CM_RAW; backend = be, verbose = false);
+        (r.sums, r.counts)))),
     ("moment tensor", (be -> (r = SFC.calculate_structure_function_tensor(Val(2), CM_XP, CM_UP,
-        CM_BINS; backend = be, output_type = CM_TRAW); (r.sums, r.counts)))),
+        CM_BINS, CM_TRAW; backend = be); (r.sums, r.counts)))),
     ("moment tensor joint", (be -> (r = SFC.calculate_structure_function_tensor(Val(2), CM_XP,
         CM_UP, CM_BINS, CM_ABINS; second_axis = CM_AX, backend = be); (r.sums, r.counts)))),
     ("single-pass 1D", (be -> (s = zeros(SFC.SINGLE_PASS_N, CM_NB);
@@ -83,8 +83,8 @@ const CM_ROUTES = (
         c = zeros(Int, SFC.SINGLE_PASS_N, CM_NB, CM_NV);
         SFC.calculate_structure_functions_single_pass_2d!(s, c, CM_XP, CM_UP, CM_BINS, CM_VBINS;
             backend = be); (s, c)))),
-    ("aux axes 1D", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XB, CM_UB, CM_BINS;
-        backend = be, verbose = false, output_type = CM_RAW); (r.sums, r.counts)))),
+    ("aux axes 1D", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XB, CM_UB, CM_BINS, CM_RAW;
+        backend = be, verbose = false); (r.sums, r.counts)))),
     ("aux axes joint", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_XB, CM_UB, CM_BINS,
         CM_VBINS; backend = be, verbose = false); (r.sums, r.counts)))),
     ("slice batch 1D", (be -> (s = zeros(CM_NB, CM_T); c = zeros(Int, CM_NB, CM_T);
@@ -115,10 +115,10 @@ const CM_ROUTES = (
         SFC.gridded_tensor_sweep!(s, c, Val(2), CM_GU, CM_GS, CM_GB, Val(2), CM_FFT;
             backend = be); (s, c)))),
     ("harmonic direct sum", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_HX, CM_HU,
-        CM_NODES, SB.DirectSumSpectralBackend(); backend = be, verbose = false,
-        output_type = CM_RAW); (r.sums, r.counts)))),
+        CM_NODES, SB.DirectSumSpectralBackend(), CM_RAW; backend = be, verbose = false);
+        (r.sums, r.counts)))),
     ("scattered modes NUFFT", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_SM, CM_UP,
-        CM_BINS, CM_NUTAG; backend = be, verbose = false, output_type = CM_RAW);
+        CM_BINS, CM_NUTAG, CM_RAW; backend = be, verbose = false);
         (r.sums, r.counts)))),
 )
 

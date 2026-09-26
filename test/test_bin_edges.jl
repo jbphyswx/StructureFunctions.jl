@@ -222,8 +222,8 @@ Test.@testset "BinEdges Tests" begin
                 b = count(e -> e < sqrt(SF.HelperFunctions.norm2(dx)), edges)
                 1 <= b <= length(want) && (want[b] += 1)
             end
-            one = [SFC.calculate_structure_function(sf, x, u, bins; backend, verbose = false,
-                       show_progress = false, output_type = SF.StructureFunctionSumsAndCounts) for backend in backends]
+            one = [SFC.calculate_structure_function(sf, x, u, bins, SF.StructureFunctionSumsAndCounts; backend,
+                       verbose = false, show_progress = false) for backend in backends]
             six = [SFC.calculate_structure_functions_single_pass(x, u, bins; backend).S2 for backend in backends
                    if !(bins isa SF.InfPaddedBinEdges)]
             Test.@test Int.(one[1].counts) == want
@@ -242,14 +242,12 @@ Test.@testset "BinEdges Tests" begin
         sft = SFT.L2SF
         for bins in (SF.LinearBinEdges(0.01, 2.0, 11), SF.LogBinEdges(0.01, 2.0, 11))
             typed = SFC.calculate_structure_function(
-                sft, x, u, bins;
+                sft, x, u, bins, SF.StructureFunctionSumsAndCounts;
                 backend = CB.SerialBackend(), verbose = false, show_progress = false,
-                output_type = SF.StructureFunctionSumsAndCounts,
             )
             via_vector = SFC.calculate_structure_function(
-                sft, x, u, collect(bins);
+                sft, x, u, collect(bins), SF.StructureFunctionSumsAndCounts;
                 backend = CB.SerialBackend(), verbose = false, show_progress = false,
-                output_type = SF.StructureFunctionSumsAndCounts,
             )
             Test.@test via_vector.sums ≈ typed.sums
             Test.@test via_vector.counts == typed.counts

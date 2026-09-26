@@ -44,7 +44,7 @@ Test.@testset "a uniform Cartesian grid gives the unstructured answer" begin
         nb = length(bins) - 1
 
         got = SFC.calculate_structure_function(
-            SF1D, grid, u, bins; output_type = SF.StructureFunctionSumsAndCounts,
+            SF1D, grid, u, bins, SF.StructureFunctionSumsAndCounts;
             verbose = false, show_progress = false,
         )
         ref_s = zeros(Float64, nb)
@@ -73,10 +73,10 @@ Test.@testset "the adapter reads the grid's topology" begin
     Test.@test FG.Grids.periodic_flags(bounded) == (false, false)
     Test.@test FG.Grids.periodic_flags(wrapped) == (true, false)
 
-    rb = SFC.calculate_structure_function(SF1D, bounded, u, bins;
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
-    rw = SFC.calculate_structure_function(SF1D, wrapped, u, bins;
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+    rb = SFC.calculate_structure_function(SF1D, bounded, u, bins, SF.StructureFunctionSumsAndCounts;
+        verbose = false, show_progress = false)
+    rw = SFC.calculate_structure_function(SF1D, wrapped, u, bins, SF.StructureFunctionSumsAndCounts;
+        verbose = false, show_progress = false)
     N = nx * ny
     Test.@test sum(rb.counts) == N * (N - 1) ÷ 2
     Test.@test sum(rw.counts) == N * (N - 1) ÷ 2
@@ -95,8 +95,8 @@ Test.@testset "the adapter refuses only what is genuinely ill-posed" begin
                                   range(0.0, step = 0.1, length = 6),
                                   range(-0.3, step = 0.1, length = 5))
     r_sph = SFC.calculate_structure_function(
-        SF1D, sph, randn(2, 6, 5), collect(range(0.0, 3.2; length = 5)), UInt32;
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+        SF1D, sph, randn(2, 6, 5), collect(range(0.0, 3.2; length = 5)), UInt32,
+        SF.StructureFunctionSumsAndCounts; verbose = false, show_progress = false)
     Test.@test sum(r_sph.counts) == 30 * 29 ÷ 2
 
     uniform = FG.Grids.StructuredGrid(geo, range(0.0, step = 0.2, length = 4),
@@ -144,7 +144,7 @@ Test.@testset "a stretched axis keeps the lags of the uniform one beside it; no 
     Test.@test sched_of(stretched) isa SFC.RectilinearLagSchedule
     Test.@test SFC.n_cells(sched_of(stretched)) == N
     got = SFC.calculate_structure_function(
-        SF1D, stretched, u, bins, UInt32; output_type = SF.StructureFunctionSumsAndCounts,
+        SF1D, stretched, u, bins, UInt32, SF.StructureFunctionSumsAndCounts;
         verbose = false, show_progress = false)
     ref_s = zeros(nb); ref_c = zeros(UInt32, nb)
     SFC.calculate_structure_function!(ref_s, ref_c, SF1D, x, reshape(u, 2, N), bins)
@@ -157,7 +157,7 @@ Test.@testset "a stretched axis keeps the lags of the uniform one beside it; no 
     Test.@test sched_of(structureless) isa SFC.ScatteredPairs
     Test.@test SFC.n_scattered_cells(sched_of(structureless)) == N
     got2 = SFC.calculate_structure_function(
-        SF1D, structureless, u, bins, UInt32; output_type = SF.StructureFunctionSumsAndCounts,
+        SF1D, structureless, u, bins, UInt32, SF.StructureFunctionSumsAndCounts;
         verbose = false, show_progress = false)
     Test.@test got2.counts == ref_c
     Test.@test isapprox(got2.sums, ref_s; rtol = 1e-10, atol = 1e-12)
@@ -176,7 +176,7 @@ Test.@testset "a pixelized sphere is enumerated too" begin
     u = randn(2, n)
     bins = collect(range(0.0, 3.2; length = 6))
     got = SFC.calculate_structure_function(
-        SF1D, grid, u, bins, UInt32; output_type = SF.StructureFunctionSumsAndCounts,
+        SF1D, grid, u, bins, UInt32, SF.StructureFunctionSumsAndCounts;
         verbose = false, show_progress = false)
     # Every pair except those the geometry itself refuses: at exactly antipodal separation there is
     # no unique geodesic, and `pair_frame` reports the pair as degenerate rather than inventing one.

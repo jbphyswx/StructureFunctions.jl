@@ -36,8 +36,8 @@ Test.@testset "Single-Pass Core Correctness & Helmholtz Parity" begin
 
     # 1. Test SerialBackend single-pass execution (raw output for sums/counts comparison)
     sp = SFC.calculate_structure_functions_single_pass(
-        x, u, distance_bins;
-        backend = CB.SerialBackend(), output_type = SF.StructureFunctionSumsAndCounts,
+        x, u, distance_bins, SF.StructureFunctionSumsAndCounts;
+        backend = CB.SerialBackend(),
     )
 
     # Keyed-collection shape: six invariants + a helmholtz entry for point-field input.
@@ -53,8 +53,8 @@ Test.@testset "Single-Pass Core Correctness & Helmholtz Parity" begin
     distance_bins_ref = Float64[0.1, 1.0, 2.0]
     for t in 1:6
         res = SFC.calculate_structure_function(
-            SP_REF_TYPES[t], x, u, distance_bins_ref;
-            verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts,
+            SP_REF_TYPES[t], x, u, distance_bins_ref, SF.StructureFunctionSumsAndCounts;
+            verbose = false, show_progress = false,
         )
         entry = sp[SP_INV[t]]
         Test.@test isapprox(entry.sums, res.sums, atol = 1e-12)
@@ -81,8 +81,8 @@ Test.@testset "Single-Pass Core Correctness & Helmholtz Parity" begin
 
     # 4. Compare AutoBackend against SerialBackend (per invariant, NaN-safe)
     sp_auto = SFC.calculate_structure_functions_single_pass(
-        x, u, distance_bins;
-        backend = CB.AutoBackend(), output_type = SF.StructureFunctionSumsAndCounts,
+        x, u, distance_bins, SF.StructureFunctionSumsAndCounts;
+        backend = CB.AutoBackend(),
     )
     for k in SP_INV
         Test.@test _sp_nan_safe(sp_auto[k].sums, sp[k].sums; atol = 1e-12)
@@ -100,19 +100,16 @@ Test.@testset "Single-Pass 3D point parity" begin
     distance_bins = Float32[0.1, 1.0, 2.0]
 
     sp = SFC.calculate_structure_functions_single_pass(
-        x, u, distance_bins; backend = CB.SerialBackend(),
-        output_type = SF.StructureFunctionSumsAndCounts,
+        x, u, distance_bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
     )
     Test.@test keys(sp) == (SP_INV..., :helmholtz)
     Test.@test length(sp.S2.sums) == 2
 
     sp_auto = SFC.calculate_structure_functions_single_pass(
-        x, u, distance_bins; backend = CB.AutoBackend(),
-        output_type = SF.StructureFunctionSumsAndCounts,
+        x, u, distance_bins, SF.StructureFunctionSumsAndCounts; backend = CB.AutoBackend(),
     )
     sp_gpu = SFC.calculate_structure_functions_single_pass(
-        x, u, distance_bins; backend = CB.GPUBackend(KA.CPU()),
-        output_type = SF.StructureFunctionSumsAndCounts,
+        x, u, distance_bins, SF.StructureFunctionSumsAndCounts; backend = CB.GPUBackend(KA.CPU()),
     )
     for k in SP_INV
         Test.@test sp_auto[k].sums ≈ sp[k].sums
@@ -128,15 +125,13 @@ Test.@testset "Single-Pass 3D auxiliary axes" begin
     distance_bins = Float32[0.0, 0.75, 1.5, 3.0]
 
     batched = SFC.calculate_structure_functions_single_pass(
-        x, u, distance_bins; backend = CB.SerialBackend(),
-        output_type = SF.StructureFunctionSumsAndCounts,
+        x, u, distance_bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
     )
     # Batched (auxiliary-axis) input has no Helmholtz entry — just the six invariants.
     Test.@test keys(batched) == SP_INV
     for b in 1:2
         spb = SFC.calculate_structure_functions_single_pass(
-            x, @view(u[:, :, b]), distance_bins; backend = CB.SerialBackend(),
-            output_type = SF.StructureFunctionSumsAndCounts,
+            x, @view(u[:, :, b]), distance_bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
         )
         for k in SP_INV
             Test.@test batched[k].sums[:, b] ≈ spb[k].sums

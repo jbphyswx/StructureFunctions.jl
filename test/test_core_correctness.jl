@@ -30,14 +30,14 @@ Test.@testset "Core Correctness - Block A" begin
         bins = SA.SVector(0.0, 3.0)
         sf_type = SFT.SecondOrderStructureFunction
 
-        res = SFC.calculate_structure_function(sf_type, x, u, bins;
-            verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts)
+        res = SFC.calculate_structure_function(sf_type, x, u, bins, SF.StructureFunctionSumsAndCounts;
+            verbose = false, show_progress = false)
         Test.@test sum(res.counts) == 3
 
         # N=4 points -> 4*3/2 = 6 pairs
         x4 = [0.0 1.0 2.0 3.0; 0.0 0.0 0.0 0.0]
-        res4 = SFC.calculate_structure_function(sf_type, x4, zeros(2, 4), bins;
-            verbose = false, show_progress = false, output_type = SF.StructureFunctionSumsAndCounts)
+        res4 = SFC.calculate_structure_function(sf_type, x4, zeros(2, 4), bins, SF.StructureFunctionSumsAndCounts;
+            verbose = false, show_progress = false)
         Test.@test sum(res4.counts) == 6
     end
 
@@ -202,9 +202,8 @@ Test.@testset "a projected operator's convention decides its signed transverse c
             end
             for backend in (CB.SerialBackend(), CB.ThreadedBackend())
                 res = SFC.calculate_structure_function(
-                    sf, x, u, bins;
+                    sf, x, u, bins, SF.StructureFunctionSumsAndCounts;
                     backend, verbose = false, show_progress = false,
-                    output_type = SF.StructureFunctionSumsAndCounts,
                 )
                 Test.@test res.counts == [N * (N - 1) ÷ 2]
                 Test.@test res.sums[1] ≈ expected rtol = 1e-12
@@ -229,8 +228,6 @@ Test.@testset "Type Stability and Performance - Block C" begin
 
     # Test inference of the calculator
     Test.@testset "Inference of calculate_structure_function" begin
-        # We manually check the type to account for the intentional Union return
-        # from the output_type keyword.
         res = Test.@test_nowarn SFC.calculate_structure_function(
             sf_type,
             x,
@@ -258,9 +255,8 @@ Test.@testset "Type Stability and Performance - Block C" begin
     end
 end
 
-# `count_eltype` defaults to UInt32 everywhere (device histograms are UInt32 for shared-memory
-# reasons). Every pair can land in one bin, so past N = 92682 an unsigned counter wraps silently and
-# `_bin_average` then divides by the wrapped value — a plausible, wrong mean. The bound is checked.
+# The count type defaults to UInt32. Every pair can land in one bin, so past N = 92682 a UInt32 counter
+# would wrap and `_bin_average` would divide by the wrapped value; the bound is checked.
 Test.@testset "Count element type must represent the worst-case pair count" begin
     Test.@test SFC._assert_counts_representable(UInt32, 92682) === nothing   # 4_294_930_821 pairs
     Test.@test_throws ArgumentError SFC._assert_counts_representable(UInt32, 92683)

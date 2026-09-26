@@ -21,9 +21,7 @@ Test.@testset "JET Stability Audit" begin
         # `StructureFunctionSumsAndCounts`) plus `_finalize`, so any kernel instability surfaces
         # here. The audit takes `SerialBackend`, which is concrete: `AutoBackend`'s backend
         # selection is an intended runtime branch, not a fixable instability. It
-        # only audit the SF module to ignore internal Base.Threads dispatches. (Passing a
-        # non-default `output_type` explicitly incurs a single by-design dynamic-dispatch barrier
-        # in `_finalize`; it is checked for error-freedom via @test_call below, not @test_opt.)
+        # only audit the SF module to ignore internal Base.Threads dispatches.
         JET.@test_opt target_modules = (SF,) SFC.calculate_structure_function(
             sf_type,
             x,
@@ -33,7 +31,7 @@ Test.@testset "JET Stability Audit" begin
             verbose = false,
             show_progress = false,
         )
-        # Error-freedom of the default and explicit-output_type convenience entries.
+        # Error-freedom of the default and explicit result-type convenience entries.
         # Only analyze StructureFunctions module code, not external packages like ProgressMeter
         # which do compile-time checks for Main.IJulia that may not be present.
         # See: https://github.com/timholy/ProgressMeter.jl/issues/348
@@ -49,8 +47,8 @@ Test.@testset "JET Stability Audit" begin
             sf_type,
             x,
             u,
-            bins;
-            output_type = SF.StructureFunctionSumsAndCounts,
+            bins,
+            SF.StructureFunctionSumsAndCounts;
             verbose = false,
             show_progress = false,
         )
@@ -68,7 +66,7 @@ Test.@testset "JET Stability Audit" begin
             verbose = false,
             show_progress = false,
         )
-        # Error-freedom of the default and explicit-output_type convenience entries.
+        # Error-freedom of the default and explicit result-type convenience entries.
         # Only analyze StructureFunctions module code, not external packages like ProgressMeter
         # which do compile-time checks for Main.IJulia that may not be present.
         # See: https://github.com/timholy/ProgressMeter.jl/issues/348
@@ -84,8 +82,8 @@ Test.@testset "JET Stability Audit" begin
             sf_type,
             xa,
             ua,
-            bins;
-            output_type = SF.StructureFunctionSumsAndCounts,
+            bins,
+            SF.StructureFunctionSumsAndCounts;
             verbose = false,
             show_progress = false,
         )
@@ -109,9 +107,9 @@ Test.@testset "JET Stability Audit" begin
         op = SFT.L2SFType()
 
         JET.@test_opt target_modules = (SF,) SFC._partial_sums_counts(
-            CB.SerialBackend(), op, xv, uv, dbins, 1:Np)
+            CB.SerialBackend(), op, xv, uv, dbins, 1:Np, UInt32)
         JET.@test_opt target_modules = (SF,) SFC._partial_2d_sums_counts(
-            CB.SerialBackend(), op, xv, uv, dbins, vbins, 1:Np)
+            CB.SerialBackend(), op, xv, uv, dbins, vbins, 1:Np, UInt32)
     end
 
     Test.@testset "HelperFunctions" begin

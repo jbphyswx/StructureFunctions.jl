@@ -116,11 +116,10 @@ Test.@testset "GPU single-pass global fallback parity — 2D and 3D" begin
         inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         for bins in bin_sets
             sp_cpu = SFC.calculate_structure_functions_single_pass(
-                x, u, bins; backend = CB.SerialBackend(),
-                output_type = SF.StructureFunctionSumsAndCounts,
+                x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
             )
             sp_gpu = SFC.calculate_structure_functions_single_pass(
-                x, u, bins; backend, output_type = SF.StructureFunctionSumsAndCounts,
+                x, u, bins, SF.StructureFunctionSumsAndCounts; backend,
             )
             for k in inv
                 Test.@test sp_gpu[k].counts == sp_cpu[k].counts
@@ -152,11 +151,16 @@ Test.@testset "GPU single-pass 2D global fallback parity" begin
         sp_cpu = SFC.calculate_structure_functions_single_pass_2d(
             x, u, bins, value_bins; backend = CB.SerialBackend(),
         )
-        # `force_global_atomic` is a GPU routing override, so it goes to the GPU entry; the
-        # backend-generic entry has no meaning for it on a CPU backend.
-        gs, gc = SFC.gpu_calculate_structure_functions_single_pass_2d(
-            backend.backend, x, u, bins, value_bins; force_global_atomic = true,
+        GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+        gs = zeros(FT, 6, length(bins) - 1, length(value_bins) - 1)
+        gc = zeros(UInt32, 6, length(bins) - 1, length(value_bins) - 1)
+        GE._launch_single_pass_2d_kernel!(
+            backend.backend, 64, gs, gc, x, u,
+            GE._gpu_digitizer(backend.backend, bins, Val(:single_pass_2d)),
+            GE._value_digitizer(nothing, backend.backend, value_bins),
+            N, 2, length(bins), length(value_bins), SF.HelperFunctions.FlatGeometry{2}(),
         )
+        KA.synchronize(backend.backend)
         for (t, k) in enumerate(inv)
             Test.@test gc[t, :, :] == sp_cpu[k].counts
             Test.@test gs[t, :, :] ≈ sp_cpu[k].sums atol = FT(1e-4)

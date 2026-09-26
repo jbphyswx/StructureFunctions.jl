@@ -12,7 +12,7 @@ function _run_blocks(sf, xc, uc, bins, ::Val{D}, blocks, N, ::Type{FT}) where {D
     nb = SFC.n_histogram_bins(plan)
     s = zeros(FT, nb); c = zeros(UInt32, nb)
     SFC._pf_simd_pairs!(s, c, sf, xc, uc, plan, Val(D),
-        Vector{FT}(undef, N), Vector{FT}(undef, N), Vector{Int32}(undef, N), blocks, SFC.NoWeights())
+        Vector{FT}(undef, N), Vector{FT}(undef, N), Vector{Int32}(undef, N), SFC.WholeRun(), blocks, SFC.NoWeights())
     return s, c
 end
 
@@ -178,12 +178,14 @@ end
 
 Test.@testset "single-pass kernel is invariant to the block schedule" begin
     FT = Float64
-    for D in (2, 3), N in (41, 700)
+    for D in (2, 3), (N, dmax) in ((41, 1.6), (700, 1.6), (3000, 0.08))
         Random.seed!(77 + N + D)
         x = rand(FT, D, N)
         u = randn(FT, D, N)
-        bins = LinearBinEdges(range(FT(0.0), FT(1.6); length = 17))
+        bins = LinearBinEdges(range(FT(0.0), FT(dmax); length = 17))
         nb = SFC.n_histogram_bins(bins)
+        engages = SFC.cull_grid_for(_comp(x, D), SFH.FlatGeometry{D}(), bins, SFC.AutoCulling()) !== nothing
+        Test.@test engages == (dmax < 1)
 
         run(pol) = begin
             s = zeros(FT, SFC.SINGLE_PASS_N, nb); c = zeros(UInt32, SFC.SINGLE_PASS_N, nb)
@@ -196,35 +198,39 @@ Test.@testset "single-pass kernel is invariant to the block schedule" begin
         Test.@test isapprox(s_cull, s_ref; rtol = 1e-9, atol = 1e-12)
         Test.@test sum(view(c_ref, 1, :)) > 0
 
-        # tiling alone (no culling): every tile size must give the same histogram
+        # tiling alone (no culling): every tile size gives the same histogram, whether the buffers span
+        # every point or one tile
         xc = _comp(x, D); uc = _comp(u, D)
         plan = SFC.squared_digitize_plan(bins)
-        tile_run(tile) = begin
+        tile_run(tile, window, L) = begin
             s = zeros(FT, SFC.SINGLE_PASS_N, nb); c = zeros(UInt32, SFC.SINGLE_PASS_N, nb)
             SFC._pf_sp_simd_pairs!(s, c, xc, uc, plan, Val(D),
-                Vector{FT}(undef, N), Vector{FT}(undef, N), Vector{FT}(undef, N),
-                Vector{Int32}(undef, N), SFC.pair_blocks(N, 1:(N - 1); tile = tile))
+                Vector{FT}(undef, L), Vector{FT}(undef, L), Vector{FT}(undef, L),
+                Vector{Int32}(undef, L), window, SFC.pair_blocks(N, 1:(N - 1); tile = tile))
             (s, c)
         end
-        s0, c0 = tile_run(N)
-        for tile in (1, 13, 128, N)
-            s1, c1 = tile_run(tile)
+        s0, c0 = tile_run(N, SFC.WholeRun(), N)
+        for tile in (1, 13, 128, N), (window, L) in ((SFC.WholeRun(), N), (SFC.BlockRun(), tile))
+            s1, c1 = tile_run(tile, window, L)
             Test.@test c1 == c0
             Test.@test isapprox(s1, s0; rtol = 1e-12, atol = 1e-14)
         end
+        Test.@test_throws ArgumentError tile_run(128, SFC.BlockRun(), min(N, 128) - 1)
     end
 end
 
 Test.@testset "2D kernels are invariant to the block schedule" begin
     FT = Float64
-    for D in (2, 3), N in (43, 600)
+    for D in (2, 3), (N, dmax) in ((43, 1.5), (600, 1.5), (3000, 0.08))
         Random.seed!(303 + N + D)
         x = rand(FT, D, N)
         u = randn(FT, D, N)
-        dist = LinearBinEdges(range(FT(0.0), FT(1.5); length = 13))
+        dist = LinearBinEdges(range(FT(0.0), FT(dmax); length = 13))
         val = LinearBinEdges(range(FT(-4.0), FT(4.0); length = 11))
         n_dist = SFC.n_histogram_bins(dist)
         n_val = SFC.n_histogram_bins(val)
+        engages = SFC.cull_grid_for(_comp(x, D), SFH.FlatGeometry{D}(), dist, SFC.AutoCulling()) !== nothing
+        Test.@test engages == (dmax < 1)
 
         # joint 2D
         joint(pol) = begin
@@ -241,17 +247,83 @@ Test.@testset "2D kernels are invariant to the block schedule" begin
 
         # single-pass 2D
         vb = ntuple(_ -> val, SFC.SINGLE_PASS_N)
-        # h is (sum/count, invariant, value bin, distance bin) — the kernel scatters with
-        # @inbounds, so a wrong shape here corrupts the heap and never errors.
         sp2d(pol) = begin
-            h = zeros(FT, 2, SFC.SINGLE_PASS_N, n_val, n_dist)
-            SFC._sp2d_simd_partial!(h, x, u, dist, vb, Val(D), n_val, 1:(N - 1), pol)
-            h
+            s = zeros(FT, SFC.SINGLE_PASS_N, n_dist, n_val); c = zeros(UInt32, SFC.SINGLE_PASS_N, n_dist, n_val)
+            SFC._sp2d_accumulate_range!(s, c, x, u, dist, SFC.digitize_plan(vb), DI.Euclidean(), n_dist, n_val,
+                                        1:(N - 1), pol)
+            (s, c)
         end
-        h_ref = sp2d(SFC.NoCulling())
-        h_cull = sp2d(SFC.AutoCulling())
-        Test.@test isapprox(h_cull, h_ref; rtol = 1e-9, atol = 1e-12)
-        Test.@test sum(h_ref) != 0
+        s_ref, c_ref = sp2d(SFC.NoCulling())
+        s_cull, c_cull = sp2d(SFC.AutoCulling())
+        Test.@test c_cull == c_ref
+        Test.@test isapprox(s_cull, s_ref; rtol = 1e-9, atol = 1e-12)
+        Test.@test sum(c_ref) > 0
+    end
+end
+
+Test.@testset "batch kernels cull without changing the result" begin
+    # Shared positions are sorted once for every slice, varying ones per slice; on bins tight enough
+    # that the cull engages on every slice, every policy must count the same pairs.
+    FT = Float64
+    N, B = 1500, 3
+    bins = collect(FT, range(0.0, 0.08; length = 9))
+    vbins = collect(FT, range(-0.02, 0.05; length = 11))
+    nb, nv = length(bins) - 1, length(vbins) - 1
+    L2 = SFT.L2SFType()
+    for D in (2, 3), fixed in (true, false), weighted in (false, true)
+        Random.seed!(990 + D + 2fixed + 4weighted)
+        x = fixed ? rand(FT, D, N) : rand(FT, D, N, B)
+        u = randn(FT, D, N, B) .* 0.1
+        w = weighted ? rand(FT, N) .+ 0.5 : nothing
+        CT = weighted ? FT : UInt32
+        slices = fixed ? (x,) : Tuple(x[:, :, b] for b in 1:B)
+        Test.@test all(xs -> SFC.cull_grid_for(_comp(xs, D), SFH.FlatGeometry{D}(), bins,
+                                               SFC.AutoCulling()) !== nothing, slices)
+        runs = (
+            (pol, be) -> (s = zeros(FT, nb, B); c = zeros(CT, nb, B);
+                SFC.calculate_structure_function_batch!(s, c, L2, x, u, bins; backend = be, culling = pol,
+                    weights = w, verbose = false); (s, c)),
+            (pol, be) -> (s = zeros(FT, nb, nv, B); c = zeros(CT, nb, nv, B);
+                SFC.calculate_structure_function_2d_batch!(s, c, L2, x, u, bins, vbins; backend = be,
+                    culling = pol, weights = w, verbose = false); (s, c)),
+            (pol, be) -> (s = zeros(FT, SFC.SINGLE_PASS_N, nb, B); c = zeros(CT, SFC.SINGLE_PASS_N, nb, B);
+                SFC.calculate_structure_functions_single_pass_batch!(s, c, x, u, bins; backend = be,
+                    culling = pol, weights = w, verbose = false); (s, c)),
+            (pol, be) -> (s = zeros(FT, SFC.SINGLE_PASS_N, nb, nv, B);
+                c = zeros(CT, SFC.SINGLE_PASS_N, nb, nv, B);
+                SFC.calculate_structure_functions_single_pass_2d_batch!(s, c, x, u, bins, vbins;
+                    backend = be, culling = pol, weights = w, verbose = false); (s, c)),
+        )
+        for run in runs
+            s_ref, c_ref = run(SFC.NoCulling(), CB.SerialBackend())
+            Test.@test sum(c_ref) > 0
+            for be in (CB.SerialBackend(), CB.ThreadedBackend()),
+                pol in (SFC.NoCulling(), SFC.AlwaysCulling(), SFC.AutoCulling())
+                s, c = run(pol, be)
+                Test.@test weighted ? isapprox(c, c_ref; rtol = 1e-12) : c == c_ref
+                Test.@test isapprox(s, s_ref; rtol = 1e-9, atol = 1e-12)
+            end
+        end
+    end
+end
+
+Test.@testset "tensor kernels cull without changing the result" begin
+    # Shared positions sorted once for every slice, varying ones per slice.
+    N, B = 1500, 3
+    bins = collect(range(0.0, 0.08; length = 9))
+    TRAW = StructureFunctions.StructureFunctionObjects.StructureFunctionTensorSumsAndCounts
+    for P in (2, 3), (x, u) in ((rand(2, N), randn(2, N)), (rand(2, N), randn(2, N, B)),
+                                (rand(2, N, B), randn(2, N, B))),
+        backend in (CB.SerialBackend(), CB.ThreadedBackend())
+        run(pol) = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, TRAW; backend, culling = pol,
+                                                           verbose = false)
+        ref = run(SFC.NoCulling())
+        Test.@test sum(ref.counts) > 0
+        for pol in (SFC.AlwaysCulling(), SFC.AutoCulling())
+            got = run(pol)
+            Test.@test got.counts == ref.counts
+            Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-12)
+        end
     end
 end
 
@@ -325,15 +397,38 @@ Test.@testset "culling through the public entry" begin
         show_progress = false)
     Test.@test same_result(thr, ref)
 
-    # An explicit request must fail loudly on a path that cannot cull, not silently do nothing.
+    # The scalar kernels, for a curved metric and for a flat width past three, cull too.
+    RAW = StructureFunctions.StructureFunctionSumsAndCounts
     lon = rand(N) .* 360 .- 180
     lat = rand(N) .* 120 .- 60
     xs = permutedims(hcat(lon, lat))
     us = randn(2, N)
     sbins = collect(range(1.0e4, 3.0e5; length = 9))
-    Test.@test_throws ArgumentError SFC.calculate_structure_function(sf, xs, us, sbins;
-        backend = CB.SerialBackend(), distance_metric = DI.Haversine(6.371e6),
-        culling = SFC.AlwaysCulling(), verbose = false, show_progress = false)
+    vbins = collect(range(-4.0, 4.0; length = 9))
+    m = DI.Haversine(6.371e6)
+    x4, u4 = rand(4, N), randn(4, N)
+    bins4 = collect(range(0.0, 0.2; length = 9))
+    Test.@test SFC.cull_grid_for(_comp(x4, 4), SFH.FlatGeometry{4}(), bins4, SFC.AutoCulling()) !== nothing
+    x64, u64 = rand(64, 600), randn(64, 600)
+    bins64 = collect(range(0.0, 3.0; length = 9))
+    for backend in (CB.SerialBackend(), CB.ThreadedBackend())
+        for (xk, uk, bk, kw) in ((xs, us, sbins, (; distance_metric = m)), (x4, u4, bins4, (;)),
+                                 (x64, u64, bins64, (;)))
+            one_d(pol) = SFC.calculate_structure_function(sf, xk, uk, bk, RAW; backend, culling = pol,
+                verbose = false, show_progress = false, kw...)
+            joint(pol) = SFC.calculate_structure_function(sf, xk, uk, bk, vbins; backend, culling = pol,
+                verbose = false, show_progress = false, kw...)
+            ref1, ref2 = one_d(SFC.NoCulling()), joint(SFC.NoCulling())
+            Test.@test sum(ref1.counts) > 0
+            for pol in (SFC.AlwaysCulling(), SFC.AutoCulling())
+                got1, got2 = one_d(pol), joint(pol)
+                Test.@test got1.counts == ref1.counts
+                Test.@test isapprox(got1.sums, ref1.sums; rtol = 1e-9, atol = 1e-12)
+                Test.@test got2.counts == ref2.counts
+                Test.@test isapprox(got2.sums, ref2.sums; rtol = 1e-9, atol = 1e-12)
+            end
+        end
+    end
 end
 Test.@testset "tile_for enumerates exactly the upper triangle" begin
     # B2a: every GPU kernel maps its linear block id through this. It must be a bijection onto

@@ -80,6 +80,10 @@ Compute the structure function kernel for longitudinal/transverse components.
 - `NT` : power of transverse component ||δu_t||
 """
 @generated function (sf::ProjectedStructureFunctionType{NL, NT})(δu_in, r̂) where {NL, NT}
+    (NT == 0 || NT == 2) && return quote
+        $(Expr(:meta, :inline))
+        _direction_value(sf, δu_in, r̂)
+    end
     ex = :(one(eltype(δu)))
 
     # Longitudinal contribution (always scalar, integer power)
@@ -93,12 +97,9 @@ Compute the structure function kernel for longitudinal/transverse components.
         end
     end
 
-    # Transverse contribution: NT = 2 is the invariant energy; any other NT is the signed component
-    # along the operator's basis.
+    # Transverse contribution: the signed component along the operator's basis.
     if !iszero(NT)
-        if NT == 2
-            ex = :($ex * SFH.transverse_norm2(δu, r̂))
-        elseif NT == 1
+        if NT == 1
             ex = :($ex * SFH.mδu_t(δu, r̂, sf.basis))
         else
             ex = :($ex * (SFH.mδu_t(δu, r̂, sf.basis)^$NT))
@@ -106,6 +107,7 @@ Compute the structure function kernel for longitudinal/transverse components.
     end
 
     return quote
+        $(Expr(:meta, :inline))
         δu = SFC_field_vector(δu_in, 1)
         $ex
     end
@@ -159,14 +161,11 @@ FullVectorStructureFunctionType(NF::Integer) = FullVectorStructureFunctionType{N
 
 @inline (::SecondOrderStructureFunctionType)(δu, r̂) = SFH.norm2(SFC_field_vector(δu, 1))
 
-@inline function (::ThirdOrderStructureFunctionType)(δu, r̂)
-    v = SFC_field_vector(δu, 1)
-    return SFH.mδu_l(v, r̂) * SFH.norm2(v)
-end
+@inline (sf::ThirdOrderStructureFunctionType)(δu, r̂) = _direction_value(sf, δu, r̂)
 
 @generated function (::FullVectorStructureFunctionType{NF})(δu, r̂) where {NF}
-    NF == 2 && return :(SFH.norm2(SFC_field_vector(δu, 1)))
-    return :(LA.norm(SFC_field_vector(δu, 1))^$NF)
+    NF == 2 && return :($(Expr(:meta, :inline)); SFH.norm2(SFC_field_vector(δu, 1)))
+    return :($(Expr(:meta, :inline)); LA.norm(SFC_field_vector(δu, 1))^$NF)
 end
 
 """
@@ -186,13 +185,10 @@ Per-component variant of `L1T2SF`,
 """
 struct LongitudinalTransverseComponentThirdOrderStructureFunctionType <: AbstractPairwiseStructureFunctionType end
 
-@inline (::TransverseComponentSecondOrderStructureFunctionType)(δu, r̂) =
-    SFH.transverse_component_norm2(SFC_field_vector(δu, 1), r̂)
+@inline (sf::TransverseComponentSecondOrderStructureFunctionType)(δu, r̂) = _direction_value(sf, δu, r̂)
 
-@inline function (::LongitudinalTransverseComponentThirdOrderStructureFunctionType)(δu, r̂)
-    v = SFC_field_vector(δu, 1)
-    return SFH.mδu_l(v, r̂) * SFH.transverse_component_norm2(v, r̂)
-end
+@inline (sf::LongitudinalTransverseComponentThirdOrderStructureFunctionType)(δu, r̂) =
+    _direction_value(sf, δu, r̂)
 
 # ---------------------------------------------------------------------------
 # Named Constants: Type Aliases (longhand and shorthands)
@@ -283,42 +279,6 @@ const L2T1SF = DiagonalInconsistentThirdOrderStructureFunction
 """The instance `L1T2SFType()`."""
 const L1T2SF = OffDiagonalInconsistentThirdOrderStructureFunction
 
-# ---------------------------------------------------------------------------
-# Raw-geometry evaluation (pair kernels)
-# ---------------------------------------------------------------------------
-
-"""
-    _sf_raw(sf, δu, dx, r2)
-
-Evaluate `sf` from raw pair geometry: separation `dx`, its squared length `r2 = dx⋅dx`, and `δu`.
-
-Identical to `sf(δu, dx/√r2)` for every operator. The second-order specializations below are
-polynomials in `p = δu⋅dx` and `‖δu‖²` over a power of `r²`, so they need no `sqrt`; odd orders and
-odd transverse orders need `r̂` and fall through to the generic method.
-"""
-@inline _sf_raw(sf::AbstractStructureFunctionType, δu, dx, r2) = sf(δu, dx / sqrt(r2))
-
-@inline _sf_raw(::SecondOrderStructureFunctionType, δu, dx, r2) = SFH.norm2(δu)
-
-@inline function _sf_raw(::ProjectedStructureFunctionType{2, 0}, δu, dx, r2)
-    p = SFH.fma_dot(δu, dx)
-    return p * p / r2
-end
-
-@inline function _sf_raw(::ProjectedStructureFunctionType{0, 2}, δu, dx, r2)
-    p = SFH.fma_dot(δu, dx)
-    return SFH.norm2(δu) - p * p / r2
-end
-
-@inline function _sf_raw(::TransverseComponentSecondOrderStructureFunctionType, δu, dx, r2)
-    D = length(dx)
-    D > 1 || throw(ArgumentError(
-        "T2ComponentSF averages over the transverse directions, of which there are none at D = 1",
-    ))
-    p = SFH.fma_dot(δu, dx)
-    return (SFH.norm2(δu) - p * p / r2) / (D - 1)
-end
-
 """
     ScalarStructureFunctionType{P}(field = 1)
 
@@ -355,17 +315,10 @@ MixedStructureFunctionType{NL, NT, P}() where {NL, NT, P} =
 """Shorthand for [`MixedStructureFunctionType`](@ref)."""
 const MixedSFType = MixedStructureFunctionType
 
-@inline function (sf::MixedStructureFunctionType{NL, NT, P})(δu, r̂) where {NL, NT, P}
+@inline function (sf::MixedStructureFunctionType)(δu, r̂)
     v = SFC_field_vector(δu, sf.vector_field)
-    θ = SFC_field_scalar(δu, sf.scalar_field)
-    l = SFH.mδu_l(v, r̂)
-    return l^NL * _transverse_magnitude_power(v, r̂, Val(NT)) * θ^P
+    return _mixed_value(sf, SFH.mδu_l(v, r̂), SFH.norm2(v), SFC_field_scalar(δu, sf.scalar_field))
 end
-
-"""``‖δu_T‖^NT``, with no transverse work at all when `NT` is zero."""
-@inline _transverse_magnitude_power(v, r̂, ::Val{0}) = one(eltype(v))
-@inline _transverse_magnitude_power(v, r̂, ::Val{NT}) where {NT} =
-    sqrt(SFH.transverse_norm2(v, r̂))^NT
 
 """
     ScalarDotStructureFunctionType(a, b)
@@ -427,6 +380,103 @@ end
     "this field carries no scalar fields; asked for scalar field $i. Build the field with " *
     "Fields(scalars = (...), ...) to carry one.",
 ))
+
+# ---------------------------------------------------------------------------
+# One pair's value
+# ---------------------------------------------------------------------------
+
+"""The operators whose value on a pair is a function of `δu_L` and `‖δu‖²` of its vector field alone."""
+const InvariantOperator = Union{
+    ThirdOrderStructureFunctionType,
+    ProjectedStructureFunctionType{NL, 0} where {NL},
+    ProjectedStructureFunctionType{NL, 2} where {NL},
+    TransverseComponentSecondOrderStructureFunctionType,
+    LongitudinalTransverseComponentThirdOrderStructureFunctionType,
+}
+
+@inline _power(x, ::Val{N}) where {N} = Base.literal_pow(^, x, Val(N))
+
+"""The `D - 1` transverse directions a component operator averages over."""
+@inline function _transverse_count(D::Integer)
+    D > 1 || throw(ArgumentError(
+        "a transverse component operator averages over the transverse directions, of which there are none at D = 1",
+    ))
+    return D - 1
+end
+
+"""
+    _invariant_value(sf::InvariantOperator, δu_L, ‖δu‖², D)
+
+The value of `sf` on a pair whose `D`-dimensional increment has longitudinal part `δu_L` and squared
+norm `‖δu‖²`.
+"""
+@inline _invariant_value(::ThirdOrderStructureFunctionType, L, n2, D) = L * n2
+@inline _invariant_value(::ProjectedStructureFunctionType{NL, 0}, L, n2, D) where {NL} = _power(L, Val(NL))
+@inline _invariant_value(::ProjectedStructureFunctionType{NL, 2}, L, n2, D) where {NL} =
+    _power(L, Val(NL)) * SFH.transverse_energy(L, n2)
+@inline _invariant_value(::TransverseComponentSecondOrderStructureFunctionType, L, n2, D) =
+    SFH.transverse_energy(L, n2) / _transverse_count(D)
+@inline _invariant_value(::LongitudinalTransverseComponentThirdOrderStructureFunctionType, L, n2, D) =
+    L * (SFH.transverse_energy(L, n2) / _transverse_count(D))
+
+"""``‖δu_T‖^NT`` from `δu_T² = t2`, with no transverse work at all when `NT` is zero; an odd power takes
+the square root of `t2` floored at zero."""
+@inline _transverse_power(t2, ::Val{0}) = one(t2)
+@inline _transverse_power(t2, ::Val{NT}) where {NT} =
+    iseven(NT) ? _power(t2, Val(NT ÷ 2)) : _power(sqrt(max(t2, zero(t2))), Val(NT))
+
+"""The value of a mixed operator on a pair: `δu_L` and `‖δu‖²` of its vector field, `θ` its scalar increment."""
+@inline _mixed_value(::MixedStructureFunctionType{NL, NT, P}, L, n2, θ) where {NL, NT, P} =
+    _power(L, Val(NL)) * _transverse_power(SFH.transverse_energy(L, n2), Val(NT)) * _power(θ, Val(P))
+
+"""An invariant operator along a unit separation `r̂`."""
+@inline function _direction_value(sf::InvariantOperator, δu, r̂)
+    v = SFC_field_vector(δu, 1)
+    return _invariant_value(sf, SFH.mδu_l(v, r̂), SFH.norm2(v), length(v))
+end
+
+"""
+    pair_value(sf, geometry, frame, r, δu)
+
+The value of `sf` on one pair, from the `frame` and separation `r` of [`SFH.pair_frame`](@ref) and the
+increment `δu` of [`SFH.pair_delta`](@ref). Every pair kernel sums this.
+"""
+@inline pair_value(sf::AbstractPairwiseStructureFunctionType, geometry, frame, r, δu) =
+    sf(δu, SFH.pair_direction(geometry, frame, r))
+
+@inline function pair_value(sf::InvariantOperator, geometry, frame, r, δu)
+    v = SFC_field_vector(δu, 1)
+    L, n2 = SFH.increment_invariants(geometry, frame, r, v)
+    return _invariant_value(sf, L, n2, length(v))
+end
+
+@inline function pair_value(sf::MixedStructureFunctionType, geometry, frame, r, δu)
+    L, n2 = SFH.increment_invariants(geometry, frame, r, SFC_field_vector(δu, sf.vector_field))
+    return _mixed_value(sf, L, n2, SFC_field_scalar(δu, sf.scalar_field))
+end
+
+"""
+    flat_pair_value(sf, δu, dx, r2)
+
+[`pair_value`](@ref) of a flat pair from its displacement `dx` and `r2 = dx⋅dx`, for kernels that hold
+`r2`. The second-order operators are polynomials in `p = δu⋅dx` and `‖δu‖²` over `r2` and take no
+square root.
+"""
+@inline flat_pair_value(sf::AbstractPairwiseStructureFunctionType, δu, dx, r2) =
+    pair_value(sf, SFH.FlatGeometry{length(dx)}(), dx, sqrt(r2), δu)
+
+@inline flat_pair_value(::ProjectedStructureFunctionType{2, 0}, δu::SA.StaticVector, dx, r2) =
+    (p = SFH.fma_dot(δu, dx); p * p / r2)
+
+@inline function flat_pair_value(::ProjectedStructureFunctionType{0, 2}, δu::SA.StaticVector, dx, r2)
+    p = SFH.fma_dot(δu, dx)
+    return SFH.norm2(δu) - p * p / r2
+end
+
+@inline function flat_pair_value(::TransverseComponentSecondOrderStructureFunctionType, δu::SA.StaticVector, dx, r2)
+    p = SFH.fma_dot(δu, dx)
+    return (SFH.norm2(δu) - p * p / r2) / _transverse_count(length(dx))
+end
 
 """
     RotationalSecondOrderStructureFunctionType()

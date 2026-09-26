@@ -25,7 +25,7 @@ function _brute_masked(sf, u, dims::NTuple{Dg, Int}, spacing::NTuple{Dg, T},
         b = SFC.squared_digitize(plan, r2)
         1 <= b <= nb || continue
         du = SA.SVector{D, T}(ntuple(c -> uf[c, k2] - uf[c, k1], Val(D)))
-        sums[b] += SFT._sf_raw(sf, du, dx, r2)
+        sums[b] += sf(du, dx / sqrt(r2))
         counts[b] += 1
     end
     return sums, counts
@@ -152,18 +152,18 @@ Test.@testset "a grid entry honours the grid's own mask" begin
     holed = FG.Grids.StructuredGrid(geo, ax, ay, cellmask)
     whole = FG.Grids.StructuredGrid(geo, ax, ay)
 
-    r_whole = SFC.calculate_structure_function(SFT.L2SFType(), whole, u, bins;
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
-    r_holed = SFC.calculate_structure_function(SFT.L2SFType(), holed, u, bins;
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+    r_whole = SFC.calculate_structure_function(SFT.L2SFType(), whole, u, bins, SF.StructureFunctionSumsAndCounts;
+        verbose = false, show_progress = false)
+    r_holed = SFC.calculate_structure_function(SFT.L2SFType(), holed, u, bins, SF.StructureFunctionSumsAndCounts;
+        verbose = false, show_progress = false)
     N = nx * ny
     Test.@test sum(r_whole.counts) == N * (N - 1) ÷ 2
     Test.@test sum(r_holed.counts) == (N - 2) * (N - 3) ÷ 2
 
     # a NaN in the field is excluded the same way, with no mask on the grid at all
     u2 = copy(u); u2[1, 5, 5] = NaN
-    r_nan = SFC.calculate_structure_function(SFT.L2SFType(), whole, u2, bins;
-        output_type = SF.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+    r_nan = SFC.calculate_structure_function(SFT.L2SFType(), whole, u2, bins, SF.StructureFunctionSumsAndCounts;
+        verbose = false, show_progress = false)
     Test.@test sum(r_nan.counts) == (N - 1) * (N - 2) ÷ 2
     Test.@test all(isfinite, r_nan.sums)
 end

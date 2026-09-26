@@ -118,20 +118,20 @@ The measure of every cell of a FlowGeometries grid, in the gridded entries' cell
 SFC.cell_measure(grid::FG.Grids.AbstractGrid) = vec(FG.Grids.measure_array(grid))
 
 """
-    _gridded_setup(grid, u, kwargs, verbose) -> (schedule, data, vD, vV, vK, valid)
+    _gridded_setup(grid, u, kwargs) -> (schedule, data, vD, vV, vK, valid)
 
 Validate a gridded call and settle which cells hold a datum: the grid must be one the lag
 enumeration describes and the field must cover it. The schedule entry the call reaches checks the
 weights and the counts.
 """
-function _gridded_setup(grid, u::GriddedField, kwargs, verbose::Bool)
+function _gridded_setup(grid, u::GriddedField, kwargs)
     isempty(kwargs) || throw(ArgumentError(
         "unsupported keyword(s) $(join(keys(kwargs), ", ")) for a gridded calculation",
     ))
     sched = _lag_schedule(grid)
     data, vD, vV, vK = SFC._packed(u)
-    D = SFC.SFC_val_int(vD)
-    V = SFC.SFC_val_int(vV)
+    D = SFC._val_int(vD)
+    V = SFC._val_int(vV)
     cells = SFC.n_cells(sched)
     size(data, 2) == cells || throw(DimensionMismatch(
         "u must be (component, cells...) covering the grid's $cells cells; got $(size(data, 2)) cells",
@@ -143,7 +143,6 @@ function _gridded_setup(grid, u::GriddedField, kwargs, verbose::Bool)
     # The grid says which cells exist and the field says which hold a datum; a pair needs both ends.
     cm = FG.Grids.mask(grid)
     valid = SFC.field_validity(data, cm isa FG.Grids.AllActive ? nothing : vec(cm))
-    verbose && @info "gridded structure function: $(nameof(typeof(sched))) over $cells cells"
     return sched, data, vD, vV, vK, valid
 end
 
@@ -161,12 +160,12 @@ const _Tag = SB.AbstractSpectralBackend
                   OT)
 
 """
-    calculate_structure_function(sf_type, grid, u, distance_bins[, spectral_backend][, CT][, OT]; weights, backend, verbose)
+    calculate_structure_function(sf_type, grid, u, distance_bins[, spectral_backend][, CT][, OT]; weights, backend)
 
 Structure function of the field `u` sampled on `grid`, computed by sweeping lag vectors wherever the
 grid has a uniform direction: every pair sharing a lag shares its separation, direction and distance
 bin. Which enumeration the grid gets is decided by the types of its axes (see
-[`_lag_schedule`](@ref)) and reported when `verbose = true`.
+[`_lag_schedule`](@ref)).
 
 `u` is `(component, cells...)` with its trailing axes matching the grid, and its component count may
 exceed the grid's dimension — a lag then lies in the grid's directions and is zero along the rest. A
@@ -192,11 +191,9 @@ function SFC.calculate_structure_function(
     ::Type{CT}, ::Type{OT};
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
-    verbose::Bool = true,
-    show_progress::Bool = true,
     kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
-    sched, data, vD, vV, vK, valid = _gridded_setup(grid, u, kwargs, verbose)
+    sched, data, vD, vV, vK, valid = _gridded_setup(grid, u, kwargs)
     nb = SFC.n_histogram_bins(distance_bins)
     sums = zeros(float(eltype(data)), nb)
     counts = zeros(CT, nb)
@@ -227,7 +224,7 @@ SFC.calculate_structure_function(sf::_Pairwise, grid::_Grid, u::GriddedField, bi
     SFC.calculate_structure_function(sf, grid, u, bins, tag, SFC.DEFAULT_COUNT_TYPE, OT; kw...)
 
 """
-    calculate_structure_function(sf_type, grid, u, distance_bins, axis_bins[, spectral_backend][, CT][, OT]; second_axis, weights, backend, verbose)
+    calculate_structure_function(sf_type, grid, u, distance_bins, axis_bins[, spectral_backend][, CT][, OT]; second_axis, weights, backend)
 
 The joint histogram in separation and the angle `second_axis` reads from each lag's direction, on a
 Cartesian grid: `S(r, θ)` from the same lags as the 1-D result, with `sums` and `counts` of shape
@@ -243,11 +240,9 @@ function SFC.calculate_structure_function(
     second_axis::SFC.SeparationAngleAxis,
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
-    verbose::Bool = true,
-    show_progress::Bool = true,
     kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
-    sched, data, vD, vV, vK, valid = _gridded_setup(grid, u, kwargs, verbose)
+    sched, data, vD, vV, vK, valid = _gridded_setup(grid, u, kwargs)
     nb = SFC.n_histogram_bins(distance_bins)
     na = SFC.n_histogram_bins(axis_bins)
     sums = zeros(float(eltype(data)), nb, na)
@@ -287,13 +282,13 @@ SFC.calculate_structure_function(sf::_Pairwise, grid::_Grid, u::GriddedField, bi
     SFC.calculate_structure_function(sf, grid, u, bins, axis_bins, tag, SFC.DEFAULT_SPLIT_COUNT_TYPE, OT; kw...)
 
 """
-    _gridded_batch_setup(grid, u, kwargs, verbose) -> (schedule, data, vD, vV, vK, valid, n_slices)
+    _gridded_batch_setup(grid, u, kwargs) -> (schedule, data, vD, vV, vK, valid, n_slices)
 
 As [`_gridded_setup`](@ref) for a field sampled repeatedly on one grid, stored
 `(component, cells..., slices)`: the grid must be one the lag enumeration describes, every slice must
 cover it, and the validity is settled per slice.
 """
-function _gridded_batch_setup(grid, u::AbstractArray, kwargs, verbose::Bool)
+function _gridded_batch_setup(grid, u::AbstractArray, kwargs)
     isempty(kwargs) || throw(ArgumentError(
         "unsupported keyword(s) $(join(keys(kwargs), ", ")) for a gridded calculation",
     ))
@@ -312,13 +307,12 @@ function _gridded_batch_setup(grid, u::AbstractArray, kwargs, verbose::Bool)
     _grid_geometry(grid, D)          # refuses a geometry the schedules do not describe
     cm = FG.Grids.mask(grid)
     valid = SFC.batch_validity(u, cm isa FG.Grids.AllActive ? nothing : vec(cm))
-    verbose && @info "gridded slice batch: $(nameof(typeof(sched))) over $cells cells × $nt slices"
     return sched, data, Val(D), Val(1), Val(0), valid, nt
 end
 
 """
-    calculate_structure_function_batch!(sums, counts, sf_type, grid, u, distance_bins[, spectral_backend]; weights, backend, verbose)
-    calculate_structure_function_batch!(sums, counts, sf_type, grid, u, distance_bins, axis_bins[, spectral_backend]; second_axis, weights, backend, verbose)
+    calculate_structure_function_batch!(sums, counts, sf_type, grid, u, distance_bins[, spectral_backend]; weights, backend)
+    calculate_structure_function_batch!(sums, counts, sf_type, grid, u, distance_bins, axis_bins[, spectral_backend]; second_axis, weights, backend)
 
 Structure functions of a field sampled repeatedly on one `grid`: `u` is
 `(component, cells..., slices)` and `sums`/`counts` are `(n_distance, n_slices)`, or with
@@ -339,10 +333,9 @@ function SFC.calculate_structure_function_batch!(
     spectral_backend = SB.AutoSpectralBackend();
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
-    verbose::Bool = true,
     kwargs...,
 )
-    sched, data, vD, vV, vK, valid, nt = _gridded_batch_setup(grid, u, kwargs, verbose)
+    sched, data, vD, vV, vK, valid, nt = _gridded_batch_setup(grid, u, kwargs)
     SFC.gridded_sweep_batch!(sums, counts, sf_type, data, sched, distance_bins, vD, vV, vK, spectral_backend;
                              valid, weights, backend)
     return nothing
@@ -359,17 +352,16 @@ function SFC.calculate_structure_function_batch!(
     second_axis::SFC.SeparationAngleAxis,
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
-    verbose::Bool = true,
     kwargs...,
 )
-    sched, data, vD, vV, vK, valid, nt = _gridded_batch_setup(grid, u, kwargs, verbose)
+    sched, data, vD, vV, vK, valid, nt = _gridded_batch_setup(grid, u, kwargs)
     SFC.gridded_sweep_batch!(sums, counts, sf_type, data, sched, distance_bins, axis_bins, vD, vV, vK,
                              spectral_backend; valid, weights, backend, second_axis)
     return nothing
 end
 
 """
-    calculate_structure_function_tensor(order, grid, u, distance_bins[, axis_bins], spectral_backend[, CT][, OT]; second_axis, weights, backend, verbose)
+    calculate_structure_function_tensor(order, grid, u, distance_bins[, axis_bins], spectral_backend[, CT][, OT]; second_axis, weights, backend)
 
 The rank-`P` increment moment tensor of the vector field `u` on `grid`, by the transform
 `spectral_backend` names — `AutoSpectralBackend()` or `FastFourierTransformSpectralBackend()` on a
@@ -383,12 +375,11 @@ function SFC.calculate_structure_function_tensor(
     ::Type{CT}, ::Type{OT};
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
-    verbose::Bool = true,
     kwargs...,
 ) where {P, CT <: Real, OT <: SFO.AbstractStructureFunction}
-    sched, data, vD, vV, vK, valid = _gridded_setup(grid, u, kwargs, verbose)
+    sched, data, vD, vV, vK, valid = _gridded_setup(grid, u, kwargs)
     _one_vector_field(vV, vK)
-    D = SFC.SFC_val_int(vD)
+    D = SFC._val_int(vD)
     nb = SFC.n_histogram_bins(distance_bins)
     sums = zeros(float(eltype(data)), ntuple(_ -> D, P)..., nb)
     counts = zeros(CT, nb)
@@ -414,12 +405,11 @@ function SFC.calculate_structure_function_tensor(
     second_axis::SFC.SeparationAngleAxis,
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
-    verbose::Bool = true,
     kwargs...,
 ) where {P, CT <: Real, OT <: SFO.AbstractStructureFunction}
-    sched, data, vD, vV, vK, valid = _gridded_setup(grid, u, kwargs, verbose)
+    sched, data, vD, vV, vK, valid = _gridded_setup(grid, u, kwargs)
     _one_vector_field(vV, vK)
-    D = SFC.SFC_val_int(vD)
+    D = SFC._val_int(vD)
     nb = SFC.n_histogram_bins(distance_bins)
     na = SFC.n_histogram_bins(axis_bins)
     sums = zeros(float(eltype(data)), ntuple(_ -> D, P)..., nb, na)
@@ -449,7 +439,7 @@ _one_vector_field(::Val{V}, ::Val{K}) where {V, K} = throw(ArgumentError(
 ))
 
 """
-    calculate_structure_function(sf_type, grid, u, nodes::HarmonicNodes, spectral_backend[, CT][, OT]; verbose)
+    calculate_structure_function(sf_type, grid, u, nodes::HarmonicNodes, spectral_backend[, CT][, OT])
 
 The kernel-binned structure function of a field on a spherical grid by spherical harmonic
 pseudo-coefficients (see [`harmonic_sweep!`](@ref SFC.harmonic_sweep!)), the cells' measure serving as
@@ -463,9 +453,7 @@ function SFC.calculate_structure_function(
     nodes::SF.HarmonicNodes,
     spectral_backend,
     ::Type{CT},
-    ::Type{OT};
-    verbose::Bool = true,
-    show_progress::Bool = true,
+    ::Type{OT},
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     coords = FG.Grids.materialize(grid)
     length(coords) == 2 || throw(ArgumentError(
@@ -482,9 +470,8 @@ function SFC.calculate_structure_function(
     cm = FG.Grids.mask(grid)
     valid = SFC.field_validity(data, cm isa FG.Grids.AllActive ? nothing : vec(cm))
     weights = SFC.cell_measure(grid)
-    verbose && @info "harmonic structure function on the grid: $(length(nodes)) nodes, lmax = $(nodes.lmax)"
     return SFC.calculate_structure_function(sf_type, x, u, nodes, spectral_backend, CT, OT;
-        distance_metric = _grid_metric(grid), weights, valid, verbose = false, show_progress)
+        distance_metric = _grid_metric(grid), weights, valid)
 end
 
 const _SphereGrid = FG.Grids.AbstractGrid{<:FG.Geometry.AbstractSphericalGeometry}

@@ -125,11 +125,6 @@ _direct_coefficients(::CB.AbstractSerialBackend, f, θ, φ, s, lmax) =
 _direct_coefficients(::CB.AbstractAutoBackend, f, θ, φ, s, lmax) =
     _direct_coefficients(_auto_local_backend(), f, θ, φ, s, lmax)
 
-_direct_coefficients(backend::CB.AbstractExecutionBackend, f, θ, φ, s, lmax) = throw(ArgumentError(
-    "the harmonic direct sum has no method for $(typeof(backend)); its extension supplies one, so " *
-    "load the package that provides it or pass backend = SerialBackend().",
-))
-
 """
     direct_sum_provider(θ, φ, lmax) -> (f, s) -> coefficients
 
@@ -400,11 +395,13 @@ pair, so such a moment is identically zero here.
 provider computes the pseudo-coefficients itself and parallelises them its own way, so `backend`
 reaches no loop of ours on that route.
 """
-harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::HarmonicNodes, ::Val{D}, ::Val{V}, ::Val{K},
-                ::SB.AbstractDirectSumSpectralBackend; valid = AllValid(),
-                backend::CB.AbstractExecutionBackend = CB.AutoBackend()) where {D, V, K} =
-    _harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes, Val(D), Val(V), Val(K), valid,
-                     (θ, φ, L) -> direct_sum_provider(θ, φ, L; backend))
+function harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::HarmonicNodes, ::Val{D}, ::Val{V},
+                         ::Val{K}, ::SB.AbstractDirectSumSpectralBackend; valid = AllValid(),
+                         backend::CB.AbstractExecutionBackend = CB.AutoBackend()) where {D, V, K}
+    _require_backend(backend)
+    return _harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes, Val(D), Val(V), Val(K), valid,
+                            (θ, φ, L) -> direct_sum_provider(θ, φ, L; backend))
+end
 
 harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::HarmonicNodes, ::Val{D}, ::Val{V}, ::Val{K},
                 spectral_backend; valid = AllValid(), kwargs...) where {D, V, K} =
@@ -521,13 +518,12 @@ function calculate_structure_function(
     sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, u::Union{AbstractArray, MF.Fields},
     nodes::HarmonicNodes, spectral_backend, ::Type{CT}, ::Type{OT};
     distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing,
-    verbose::Bool = true, show_progress::Bool = true,
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _assert_mass_counts(CT)
     data, vD, vV, vK = _packed(u)
-    D = SFC_val_int(vD)
-    V = SFC_val_int(vV)
+    D = _val_int(vD)
+    V = _val_int(vV)
     geometry = SFH.pair_geometry_for(distance_metric, Val(V == 0 ? 2 : D))
     geometry isa SFH.SphericalGeometry || throw(ArgumentError(
         "a harmonic structure function lives on a sphere; $(typeof(distance_metric)) describes none. " *
@@ -539,7 +535,6 @@ function calculate_structure_function(
     nb = length(nodes)
     sums = zeros(float(eltype(data)), nb)
     counts = zeros(CT, nb)
-    verbose && @info "harmonic structure function: $(nb) nodes, lmax = $(nodes.lmax), $(nameof(typeof(spectral_backend)))"
     harmonic_sweep!(sums, counts, sf, geometry, x, w, data, nodes, vD, vV, vK, spectral_backend;
                     valid = v, backend)
     return _finalize(SFO.StructureFunctionSumsAndCounts(sf, nodes, sums, counts), OT)
@@ -578,11 +573,13 @@ so that `Σ_l (2l+1)/(4π) (C^E_l + C^B_l)` is the mean square of `u` on a compl
 quadrature weights. On a masked or unevenly sampled sphere these are the pseudo-spectra of the
 window and the field together, the input to the kernel-binned statistics.
 """
-harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, ::SB.AbstractDirectSumSpectralBackend;
-                 distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing,
-                 backend::CB.AbstractExecutionBackend = CB.AutoBackend()) =
-    _harmonic_spectra(x, u, lmax, distance_metric, weights, valid,
-                      (θ, φ, L) -> direct_sum_provider(θ, φ, L; backend))
+function harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, ::SB.AbstractDirectSumSpectralBackend;
+                          distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing,
+                          backend::CB.AbstractExecutionBackend = CB.AutoBackend())
+    _require_backend(backend)
+    return _harmonic_spectra(x, u, lmax, distance_metric, weights, valid,
+                             (θ, φ, L) -> direct_sum_provider(θ, φ, L; backend))
+end
 
 harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, spectral_backend;
                  distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing,

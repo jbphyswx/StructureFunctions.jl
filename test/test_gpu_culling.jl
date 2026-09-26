@@ -42,9 +42,12 @@ Test.@testset "GPU culling through a workspace" begin
     Test.@test isapprox(s_cull, s_ref; rtol = 1e-10, atol = 1e-12)
     Test.@test sum(c_ref) > 0
 
-    # a later call on the SAME workspace with bins that do not cull must not see the stale memo
-    run1d(x, u, WIDE, SFC.AutoCulling(), ws)
+    # a later call on the SAME workspace with points that do not cull must not see the stale memo
+    run1d(0.1 .* x, u, TIGHT, SFC.AutoCulling(), ws)
     Test.@test ws.lazy.active === nothing
+
+    # the workspace digitizes with the bins it was built for, so it refuses any other bins
+    Test.@test_throws ArgumentError run1d(x, u, WIDE, SFC.AutoCulling(), ws)
 
     # an explicit demand without a workspace cannot be honoured and must say so
     Test.@test_throws ArgumentError run1d(x, u, TIGHT, SFC.AlwaysCulling(), nothing)
@@ -52,10 +55,10 @@ Test.@testset "GPU culling through a workspace" begin
     # joint distance x value
     val = collect(range(-4.0, 4.0; length = 9))
     wj_ref = SFC.GPUSFWorkspace(BE, TIGHT, val; kind = :joint2d)
-    ref2 = SFC.gpu_calculate_structure_function_2d(SF1D, BE, x, u, TIGHT, val;
+    ref2 = SFC.gpu_calculate_structure_function_2d(SF1D, BE, x, u, TIGHT, val, UInt32;
         workspace = wj_ref, culling = SFC.NoCulling())
     wj = SFC.GPUSFWorkspace(BE, TIGHT, val; kind = :joint2d)
-    got2 = SFC.gpu_calculate_structure_function_2d(SF1D, BE, x, u, TIGHT, val;
+    got2 = SFC.gpu_calculate_structure_function_2d(SF1D, BE, x, u, TIGHT, val, UInt32;
         workspace = wj, culling = SFC.AutoCulling())
     Test.@test wj.lazy.active !== nothing && length(wj.lazy.active.schedules) == 1
     Test.@test got2.counts == ref2.counts
@@ -118,22 +121,13 @@ Test.@testset "the cull memo is reused for the same points and invalidated other
     Test.@test isapprox(s3, s_ref; rtol = 1e-10, atol = 1e-12)
     memo = ws.lazy.cull
 
-    # a different cutoff is a different grid
-    tighter = collect(range(0.0, 0.03; length = 9))
-    run1d(x, u2, tighter, SFC.AutoCulling(), ws)
-    Test.@test ws.lazy.cull !== memo
-    Test.@test ws.lazy.cull.cutoff == last(tighter)
-    memo = ws.lazy.cull
+    # a workspace refuses bins it was not built for, so its memo is never read at another cutoff
+    Test.@test_throws ArgumentError run1d(x, u2, collect(range(0.0, 0.03; length = 9)), SFC.AutoCulling(), ws)
 
     # a different policy is a different decision
-    run1d(x, u2, tighter, SFC.AlwaysCulling(), ws)
+    run1d(x, u2, TIGHT, SFC.AlwaysCulling(), ws)
     Test.@test ws.lazy.cull !== memo
     Test.@test ws.lazy.cull.policy === SFC.AlwaysCulling()
-
-    # bins that do not cull publish no memo for the call and leave the stored one for the next
-    run1d(x, u2, WIDE, SFC.AutoCulling(), ws)
-    Test.@test ws.lazy.active === nothing
-    Test.@test ws.lazy.cull !== nothing
 
     # a second tile size gets its own list from the same grid, built once
     memo = ws.lazy.cull
@@ -143,6 +137,12 @@ Test.@testset "the cull memo is reused for the same points and invalidated other
     Test.@test Int(s_other.n_tiles) == cld(N, tile2)
     Test.@test SFC.schedule_for(memo, N, tile2) === s_other
     Test.@test_throws ArgumentError SFC.schedule_for(memo, N + 1, tile2)
+
+    # points the stencil already spans are not culled: the call publishes no memo and stores that
+    # decision for those points
+    run1d(0.1 .* x, u2, TIGHT, SFC.AutoCulling(), ws)
+    Test.@test ws.lazy.active === nothing
+    Test.@test ws.lazy.cull isa SFC.GPUNoCullMemo
 
     SFC.release!(ws)
     Test.@test ws.lazy.cull === nothing

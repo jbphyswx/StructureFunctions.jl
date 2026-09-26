@@ -66,11 +66,12 @@ function SFC.gpu_calculate_structure_function_tensor!(
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
-    weights = SFC.NoWeights(),
+    culling::SFC.CullingPolicy = SFC.AutoCulling(), weights = SFC.NoWeights(),
 ) where {P, D}
     2 <= P <= 3 || throw(ArgumentError(
         "the GPU tensor kernel accumulates orders 2 and 3; order $P runs on the CPU backends",
     ))
+    SFC._cull_reject_unsupported(culling, "the device tensor kernel")
     s = SFC._tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric,
                           axis, weights)
     s.fixed_x || throw(ArgumentError(

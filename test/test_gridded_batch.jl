@@ -289,9 +289,8 @@ Test.@testset "the grid entry takes a slice batch" begin
         SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), grid, u, bins, tag; verbose = false)
         # each slice must be what the single-slice grid entry returns for that slice
         for t in 1:nt
-            res = SFC.calculate_structure_function(SFT.L2SFType(), grid, u[:, :, :, t], bins, Int, tag;
-                                                  output_type = SFO.StructureFunctionSumsAndCounts,
-                                                  verbose = false)
+            res = SFC.calculate_structure_function(SFT.L2SFType(), grid, u[:, :, :, t], bins, tag, Int,
+                                                  SFO.StructureFunctionSumsAndCounts; verbose = false)
             Test.@test counts[:, t] == res.counts
             Test.@test maximum(abs, sums[:, t] .- res.sums) <= 1e-11 * max(maximum(abs, res.sums), 1e-12)
         end
@@ -331,8 +330,8 @@ Test.@testset "the scattered mode route takes a slice batch" begin
     sums, counts = zeros(nb, nt), zeros(Float64, nb, nt)
     SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), s, u, bins, tag; verbose = false)
     for t in 1:nt
-        res = SFC.calculate_structure_function(SFT.L2SFType(), s, u[:, :, t], bins, tag;
-                                               output_type = SFO.StructureFunctionSumsAndCounts, verbose = false)
+        res = SFC.calculate_structure_function(SFT.L2SFType(), s, u[:, :, t], bins, tag,
+                                               SFO.StructureFunctionSumsAndCounts; verbose = false)
         Test.@test maximum(abs, counts[:, t] .- res.counts) <= 1e-9 * max(maximum(abs, res.counts), 1e-12)
         Test.@test maximum(abs, sums[:, t] .- res.sums) <= 1e-11 * max(maximum(abs, res.sums), 1e-12)
     end

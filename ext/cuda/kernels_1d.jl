@@ -5,8 +5,9 @@
 # bins use compile-time shared-memory capacity classes. Each class reserves only
 # enough storage for its bin range, leaving the remaining block budget available
 # for pair tiles and replicated accumulator lanes.
-# Covers individual (NMOM=1) and single-pass (NMOM=6), fixed-x and varying-x,
-# D ∈ {2,3}. Output is (NMOM, NB, B); counts are per-bin (shared across moments).
+# Covers individual (NMOM=1) and single-pass (NMOM=6), fixed-x and varying-x, weighted or not, at
+# the coordinate and field widths of the geometry. Output is (NMOM, NB, B); counts are per-bin
+# (shared across moments).
 # =============================================================================
 
 """Compiled-in cap on distance bins for the static shared 1D histogram."""
@@ -14,20 +15,33 @@ const CU_MAX_BINS = 128
 """Block size for the 1D N-body kernel."""
 const CU_TILE_1D = 256
 
-# Shared atomics are striped across lanes chosen from the thread id. These are
-# compile-time parameters so the launch planner can balance atomic contention,
-# shared storage, and tile size without duplicating the pair kernel.
-@inline _cuda_1d_replica_plan(::Val{1}) = (Val(8), Val(8))
-@inline _cuda_1d_replica_plan(::Val{6}) = (Val(2), Val(2))
-
 # The 64-bin S2 plan is the measured A100 optimum for N=20_000, D=2, Float32.
 # Other capacity classes retain the conservative launch until their workload
 # sweeps establish a better plan.
-@inline _cuda_1d_launch_plan(::Val{1}, ::Val{64}) = (Val(384), Val(32), Val(32))
-@inline _cuda_1d_launch_plan(::Val{1}, ::Val{H}) where {H} =
-    (Val(CU_TILE_1D), Val(8), Val(8))
-@inline _cuda_1d_launch_plan(::Val{6}, ::Val{H}) where {H} =
-    (Val(CU_TILE_1D), Val(2), Val(2))
+"""Launch plans `(TILE, R, S)` of the `NMOM`-moment kernel at bin capacity `H`, preferred first."""
+@inline _cuda_1d_launch_plans(::Val{1}, ::Val{64}) =
+    ((Val(384), Val(32), Val(32)), (Val(CU_TILE_1D), Val(8), Val(8)))
+@inline _cuda_1d_launch_plans(::Val{1}, ::Val{H}) where {H} = ((Val(CU_TILE_1D), Val(8), Val(8)),)
+@inline _cuda_1d_launch_plans(::Val{6}, ::Val{H}) where {H} = ((Val(CU_TILE_1D), Val(2), Val(2)),)
+
+"""Static shared bytes of `_cuda_sf_1d_kernel!` for coordinates of `XT` at width `W`, fields of `UT` at
+width `F`, sums of `FT` and counts of `CST`, `NMOM` moments, `TILE`-point tiles and a histogram of `H`
+bins at stride `S`."""
+@inline _cuda_1d_smem_bytes(::Type{XT}, ::Type{UT}, ::Type{FT}, ::Type{CST}, W::Int, F::Int, NMOM::Int,
+                            TILE::Int, S::Int, H::Int) where {XT, UT, FT, CST} =
+    2 * SFC.gpu_localmem_bytes(XT, W * TILE) + 2 * SFC.gpu_localmem_bytes(UT, F * TILE) +
+    SFC.gpu_localmem_bytes(FT, NMOM * H * S) + SFC.gpu_localmem_bytes(CST, H * S)
+
+"""The first of `plans` whose kernel fits the device `caps` describes, or `nothing`."""
+function _cuda_1d_fitting_plan(caps::SFC.GPUDeviceCaps, ::Type{XT}, ::Type{UT}, ::Type{FT}, ::Type{CST},
+                               W::Int, F::Int, NMOM::Int, H::Int, plans::Tuple) where {XT, UT, FT, CST}
+    for plan in plans
+        TILE, S = SFC._val_int(plan[1]), SFC._val_int(plan[3])
+        SFC.gpu_static_smem_fits(caps, _cuda_1d_smem_bytes(XT, UT, FT, CST, W, F, NMOM, TILE, S, H)) &&
+            return plan
+    end
+    return nothing
+end
 
 @inline function _cuda_1d_bin_capacity(NB::Int)
     NB <= 16 && return Val(16)
@@ -39,15 +53,16 @@ end
 function _cuda_sf_1d_kernel!(
     output,                 # (NMOM, NB, B)
     counts,                 # (NMOM, NB, B)
-    x,                      # (D, N, B) varying / (D, N, 1) fixed
-    u,                      # (D, N, B)
+    x,                      # (W, N, B) varying / (W, N, 1) fixed
+    u,                      # (F, N, B)
+    wts,                    # NoWeights(), or one weight per point
     sf_type,
     ddig,                   # device digitize plan of the distance bins
     N::Int, NB::Int,
     sched, ntb::Int,
-    ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, ::Val{R}, ::Val{S}, ::Val{H},
+    ::Val{W}, ::Val{F}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, ::Val{R}, ::Val{S}, ::Val{H}, ::Val{CST},
     geom,
-) where {D, NMOM, FIXED_X, TILE, R, S, H}
+) where {W, F, NMOM, FIXED_X, TILE, R, S, H, CST}
     FT = eltype(output)
     lid = Int(threadIdx().x)
     wg = Int(blockDim().x)
@@ -55,12 +70,12 @@ function _cuda_sf_1d_kernel!(
     bid = (lb - 1) % ntb + 1
     b = (lb - 1) ÷ ntb + 1
 
-    sxi = CuStaticSharedArray(FT, D * TILE)
-    sxj = CuStaticSharedArray(FT, D * TILE)
-    sui = CuStaticSharedArray(FT, D * TILE)
-    suj = CuStaticSharedArray(FT, D * TILE)
+    sxi = CuStaticSharedArray(eltype(x), W * TILE)
+    sxj = CuStaticSharedArray(eltype(x), W * TILE)
+    sui = CuStaticSharedArray(eltype(u), F * TILE)
+    suj = CuStaticSharedArray(eltype(u), F * TILE)
     ssum = CuStaticSharedArray(FT, NMOM * H * S)
-    scnt = CuStaticSharedArray(UInt32, H * S)
+    scnt = CuStaticSharedArray(CST, H * S)
 
     c = lid
     while c <= NMOM * NB * S
@@ -69,7 +84,7 @@ function _cuda_sf_1d_kernel!(
     end
     c = lid
     while c <= NB * S
-        @inbounds scnt[c] = UInt32(0)
+        @inbounds scnt[c] = zero(CST)
         c += wg
     end
 
@@ -82,15 +97,19 @@ function _cuda_sf_1d_kernel!(
 
     if lid <= ni
         @inbounds gi = i0 + lid - 1
-        @inbounds for d in 1:D
+        @inbounds for d in 1:W
             sxi[(d - 1) * TILE + lid] = x[d, gi, xb]
+        end
+        @inbounds for d in 1:F
             sui[(d - 1) * TILE + lid] = u[d, gi, b]
         end
     end
     if ti < tj && lid <= nj
         @inbounds gj = j0 + lid - 1
-        @inbounds for d in 1:D
+        @inbounds for d in 1:W
             sxj[(d - 1) * TILE + lid] = x[d, gj, xb]
+        end
+        @inbounds for d in 1:F
             suj[(d - 1) * TILE + lid] = u[d, gj, b]
         end
     end
@@ -98,28 +117,31 @@ function _cuda_sf_1d_kernel!(
 
     if lid <= ni
         lane = (lid - 1) % R + 1
-        Xi = _cuda_ld(sxi, Val(D), Val(TILE), lid)
-        Ui = _cuda_ld(sui, Val(D), Val(TILE), lid)
+        Xi = _cuda_ld(sxi, Val(W), Val(TILE), lid)
+        Ui = _cuda_ld(sui, Val(F), Val(TILE), lid)
+        wi = SFC._point_weight(wts, i0 + lid - 1)
         diag = !(ti < tj)
+        jbase = diag ? i0 : j0
         jj = diag ? lid + 1 : 1
         jend = diag ? ni : nj
         while jj <= jend
             if diag
-                Xj = _cuda_ld(sxi, Val(D), Val(TILE), jj)
-                Uj = _cuda_ld(sui, Val(D), Val(TILE), jj)
+                Xj = _cuda_ld(sxi, Val(W), Val(TILE), jj)
+                Uj = _cuda_ld(sui, Val(F), Val(TILE), jj)
             else
-                Xj = _cuda_ld(sxj, Val(D), Val(TILE), jj)
-                Uj = _cuda_ld(suj, Val(D), Val(TILE), jj)
+                Xj = _cuda_ld(sxj, Val(W), Val(TILE), jj)
+                Uj = _cuda_ld(suj, Val(F), Val(TILE), jj)
             end
             ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
             bin = SFH.digitize(dist, ddig)
             if ok && 1 <= bin <= NB
-                dU, rhat = SFH.pair_increments(geom, frame, dist, Xi, Xj, Ui, Uj)
-                moments = GE._sf_moments(Val(NMOM), sf_type, dU, rhat)
+                dU = SFH.pair_delta(geom, frame, Xi, Xj, Ui, Uj)
+                moments = GE._sf_moments(Val(NMOM), sf_type, geom, frame, dist, dU)
+                pw = wi * SFC._point_weight(wts, jbase + jj - 1)
                 @inbounds for m in GE._sf_accum_moments(Val(NMOM))
-                    CUDA.@atomic ssum[((m - 1) * NB + bin - 1) * S + lane] += moments[m]
+                    CUDA.@atomic ssum[((m - 1) * NB + bin - 1) * S + lane] += pw * moments[m]
                 end
-                @inbounds CUDA.@atomic scnt[(bin - 1) * S + lane] += UInt32(1)
+                @inbounds CUDA.@atomic scnt[(bin - 1) * S + lane] += CST(pw)
             end
             jj += 1
         end
@@ -139,7 +161,7 @@ function _cuda_sf_1d_kernel!(
     bcell = lid
     while bcell <= NB
         cnt = _cuda_sum_replicas(scnt, (bcell - 1) * S, Val(R))
-        if cnt != UInt32(0)
+        if cnt != zero(CST)
             @inbounds for m in 1:NMOM
                 CUDA.@atomic counts[m, bcell, b] += cnt
             end
@@ -173,79 +195,49 @@ end
 end
 
 
-"""Launch the CUDA 1D fast kernel. Returns `true` if launched, `false` if NB exceeds the
-static-shared cap or the width is not one this kernel is compiled for (caller uses the KA
-fallback). `out`/`cnt` are `(NMOM, NB, B)`; `x` is `(D,N,B)` varying or `(D,N)`/`(D,N,1)` fixed;
-`u` is `(D,N,B)`."""
-function _cuda_launch_1d!(out, cnt, x, u, sf_type, ddig,
-                          N::Int, NB::Int, B::Int, D::Int, NMOM::Int, fixed_x::Bool, geom, cull)
-    NB > CU_MAX_BINS && return false
-    (D == 2 || D == 3) || return false
-    xv = fixed_x ? reshape(x, D, N, 1) : reshape(x, D, N, B)
-    uv = reshape(u, D, N, B)
-    _cuda_launch_1d_specialized!(out, cnt, xv, uv, sf_type, ddig, N, NB, B, D, NMOM, fixed_x, geom,
-                                 cull)
-    return true
+"""Launch plan of `_cuda_sf_1d_kernel!`: coordinate width `W`, field width `F`, `NMOM` moments,
+`TILE`-point tiles, `R` histogram replicas at stride `S`, bin capacity `H` and shared counts of `CST`."""
+struct CUDA1DPlan{W, F, NMOM, TILE, R, S, H, CST}
+    function CUDA1DPlan{W, F, NMOM, TILE, R, S, H, CST}() where {W, F, NMOM, TILE, R, S, H, CST}
+        S >= R || throw(ArgumentError("a shared histogram stride of $S does not cover $R replicas"))
+        return new{W, F, NMOM, TILE, R, S, H, CST}()
+    end
 end
 
-
-function _cuda_launch_1d_specialized!(out, cnt, x, u, sf_type, ddig, N, NB, B, D, NMOM, fixed_x, geom,
-                                      cull)
-    Dv = D == 2 ? Val(2) : D == 3 ? Val(3) : error(
-        "CUDA 1D fast kernel is compiled for D ∈ {2,3}; a caller must decline other widths " *
-        "rather than reach here (got D=$D)")
+"""The plan of `_cuda_sf_1d_kernel!` on the device `caps` describes, or `nothing` when `NB` exceeds
+`CU_MAX_BINS`, `NMOM` is neither 1 nor 6, the sum or count type has no native atomic add, or no launch
+plan fits."""
+function _cuda_1d_plan(caps::SFC.GPUDeviceCaps, ::Type{XT}, ::Type{UT}, ::Type{OT}, ::Type{CT}, wts, geom,
+                       NB::Int, NMOM::Int) where {XT, UT, OT, CT}
+    (NB <= CU_MAX_BINS && (NMOM == 1 || NMOM == 6) && _cuda_atomic_add(OT) && _cuda_atomic_add(CT)) ||
+        return nothing
+    vW, vF = SFH.coordinate_width(geom), SFH.field_width(geom)
+    CST = _cuda_shared_count_type(wts, CT)
     Mv = NMOM == 6 ? Val(6) : Val(1)
-    Fv = fixed_x ? Val(true) : Val(false)
     Hv = _cuda_1d_bin_capacity(NB)
-    tile, replicas, stride = _cuda_1d_launch_plan(Mv, Hv)
-    _cuda_launch_1d_valed_capacity!(
-        out, cnt, x, u, sf_type, ddig, N, NB, B,
-        Dv, Mv, Fv, tile, replicas, stride, Hv, geom, cull,
-    )
-    return nothing
+    launch = _cuda_1d_fitting_plan(caps, XT, UT, OT, CST, SFC._val_int(vW), SFC._val_int(vF), NMOM,
+                                   SFC._val_int(Hv), _cuda_1d_launch_plans(Mv, Hv))
+    launch === nothing && return nothing
+    return _cuda_1d_plan_of(vW, vF, Mv, launch..., Hv, Val(CST))
 end
 
-function _cuda_launch_1d_valed!(out, cnt, x, u, sf_type, ddig, N, NB, B,
-                                ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, geom,
-                                cull) where {D, NMOM, FIXED_X, TILE}
-    replicas, stride = _cuda_1d_replica_plan(Val(NMOM))
-    return _cuda_launch_1d_valed_striped!(
-        out, cnt, x, u, sf_type, ddig, N, NB, B,
-        Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), replicas, stride, geom, cull,
-    )
-end
+@inline _cuda_1d_plan_of(::Val{W}, ::Val{F}, ::Val{NMOM}, ::Val{TILE}, ::Val{R}, ::Val{S}, ::Val{H},
+                         ::Val{CST}) where {W, F, NMOM, TILE, R, S, H, CST} =
+    CUDA1DPlan{W, F, NMOM, TILE, R, S, H, CST}()
 
-function _cuda_launch_1d_valed_replicated!(out, cnt, x, u, sf_type, ddig, N, NB, B,
-                                           ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X},
-                                           ::Val{TILE}, ::Val{R}, geom,
-                                           cull) where {D, NMOM, FIXED_X, TILE, R}
-    return _cuda_launch_1d_valed_striped!(
-        out, cnt, x, u, sf_type, ddig, N, NB, B,
-        Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), Val(R), Val(R), geom, cull,
-    )
-end
-
-function _cuda_launch_1d_valed_striped!(out, cnt, x, u, sf_type, ddig, N, NB, B,
-                                        ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X},
-                                        ::Val{TILE}, ::Val{R}, ::Val{S}, geom,
-                                        cull) where {D, NMOM, FIXED_X, TILE, R, S}
-    S >= R || throw(ArgumentError("shared histogram stride must cover every replica"))
-    return _cuda_launch_1d_valed_capacity!(
-        out, cnt, x, u, sf_type, ddig, N, NB, B,
-        Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), Val(R), Val(S),
-        _cuda_1d_bin_capacity(NB), geom, cull,
-    )
-end
-
-function _cuda_launch_1d_valed_capacity!(out, cnt, x, u, sf_type, ddig, N, NB, B,
-                                         ::Val{D}, ::Val{NMOM}, ::Val{FIXED_X},
-                                         ::Val{TILE}, ::Val{R}, ::Val{S}, ::Val{H}, geom,
-                                         cull) where {D, NMOM, FIXED_X, TILE, R, S, H}
-    NB <= H || throw(ArgumentError("$NB bins exceed shared histogram capacity $H"))
+"""Launch `_cuda_sf_1d_kernel!` with `plan` into `out`/`cnt` `(NMOM, NB, B)`; `x` is `(W,N,B)` varying or
+`(W,N)`/`(W,N,1)` fixed, `u` is `(F,N,B)`."""
+function _cuda_launch_1d!(::CUDA1DPlan{W, F, NMOM, TILE, R, S, H, CST}, out, cnt, x, u, wts, sf_type, ddig,
+                          N::Int, NB::Int, B::Int, fixed_x::Bool, geom,
+                          cull) where {W, F, NMOM, TILE, R, S, H, CST}
+    NB <= H || throw(ArgumentError("$NB bins exceed the plan's shared histogram capacity $H"))
+    xv = fixed_x ? reshape(x, W, N, 1) : reshape(x, W, N, B)
+    uv = reshape(u, F, N, B)
     sched = SFC.schedule_for(cull, N, TILE)
     ntb = SFC.n_pair_blocks(sched)
+    fx = fixed_x ? Val(true) : Val(false)
     @cuda threads=TILE blocks=ntb*B _cuda_sf_1d_kernel!(
-        out, cnt, x, u, sf_type, ddig, N, NB, sched, ntb,
-        Val(D), Val(NMOM), Val(FIXED_X), Val(TILE), Val(R), Val(S), Val(H), geom)
+        out, cnt, xv, uv, wts, sf_type, ddig, N, NB, sched, ntb,
+        Val(W), Val(F), Val(NMOM), fx, Val(TILE), Val(R), Val(S), Val(H), Val(CST), geom)
     return nothing
 end

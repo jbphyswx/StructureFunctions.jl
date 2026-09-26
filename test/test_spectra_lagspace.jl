@@ -304,9 +304,9 @@ Test.@testset "the spherical inversion of the package's own pair sums" begin
     l = 2
     C2 = 4π * meanΦ2 / 5
 
-    sfΦ = SFC.calculate_structure_function(SFT.ScalarSFType{2}(), x, Fields(scalars = (Φ,)), edges;
-        distance_metric = SFH.SphericalDistance(1.0), backend = CB.SerialBackend(),
-        output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false)
+    sfΦ = SFC.calculate_structure_function(SFT.ScalarSFType{2}(), x, Fields(scalars = (Φ,)), edges,
+        SFO.StructureFunctionSumsAndCounts; distance_metric = SFH.SphericalDistance(1.0), backend = CB.SerialBackend(),
+        verbose = false, show_progress = false)
     Test.@test all(>(0), sfΦ.counts)
     outΦ = SFC.isotropic_spectrum(sfΦ, g, 6)
     Test.@test abs(outΦ.C[2] - C2) < 0.03 * C2

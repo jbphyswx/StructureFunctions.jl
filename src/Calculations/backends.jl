@@ -23,26 +23,14 @@ function resolve_auto_backend(
     return CB.SerialBackend()
 end
 
-function _dispatch_execution_backend(
-    ::CB.AbstractMPIBackend, args...; kwargs...,
-)
-    throw(ArgumentError("MPI backend is unavailable. Load MPI (`using MPI`) to enable StructureFunctionsMPIExt, or use a different backend."))
-end
-
 """
     threaded_calculate_structure_function(sf, x, u, distance_bins[, value_bins], CT; kwargs...)
 
 The point-list structure function on the threaded CPU backend, returning the raw sums and counts.
 Takes the arguments of [`calculate_structure_function`](@ref) without `backend`; supplied by the
-OhMyThreads extension, so `using OhMyThreads` is required.
+OhMyThreads extension.
 """
-function threaded_calculate_structure_function(args...; kwargs...)
-    throw(
-        ArgumentError(
-            "Threaded backend is unavailable. Load the OhMyThreads extension or use backend=CB.SerialBackend().",
-        ),
-    )
-end
+function threaded_calculate_structure_function end
 
 """
     threaded_calculate_structure_function!(sums, counts, sf, x, u, distance_bins[, value_bins]; kwargs...)
@@ -50,19 +38,40 @@ end
 The in-place form of [`threaded_calculate_structure_function`](@ref), accumulating into `sums` and
 `counts`; supplied by the OhMyThreads extension.
 """
-function threaded_calculate_structure_function!(args...; kwargs...)
-    throw(
-        ArgumentError(
-            "Threaded backend is unavailable. Load the OhMyThreads extension or use backend=CB.SerialBackend().",
-        ),
-    )
+function threaded_calculate_structure_function! end
+
+"""Whether an extension is loaded; each is set by that extension's `__init__`."""
+const _OHMYTHREADS_LOADED = Ref(false)
+const _KERNELABSTRACTIONS_LOADED = Ref(false)
+const _DISTRIBUTED_LOADED = Ref(false)
+const _MPI_LOADED = Ref(false)
+const _ABSTRACTFFTS_LOADED = Ref(false)
+_ohmythreads_loaded() = _OHMYTHREADS_LOADED[]
+
+"""
+    _require_backend(backend)
+
+Throw an `ArgumentError` naming the package to load when an extension `backend` needs is not
+loaded: OhMyThreads for a threaded backend, KernelAbstractions for a GPU backend, Distributed or MPI
+for those wrappers and then whatever their local backend needs. Serial and `Auto` need none.
+"""
+_require_backend(::CB.AbstractExecutionBackend) = nothing
+_require_backend(b::CB.AbstractThreadedBackend) = _require_package(b, _OHMYTHREADS_LOADED, "OhMyThreads")
+_require_backend(b::CB.AbstractGPUBackend) = _require_package(b, _KERNELABSTRACTIONS_LOADED, "KernelAbstractions")
+function _require_backend(b::CB.AbstractDistributedBackend)
+    _require_package(b, _DISTRIBUTED_LOADED, "Distributed")
+    return _require_backend(CB.local_backend(b))
+end
+function _require_backend(b::CB.AbstractMPIBackend)
+    _require_package(b, _MPI_LOADED, "MPI")
+    return _require_backend(CB.local_backend(b))
 end
 
-# Set to `true` by the OhMyThreads extension's `__init__`. This is what `AutoBackend` tests: the
-# throwing stub above makes `hasmethod` true whether or not the extension is loaded. A `Ref` set at
-# load time, because overwriting a method during the extension's precompilation is illegal.
-const _OHMYTHREADS_LOADED = Ref(false)
-_ohmythreads_loaded() = _OHMYTHREADS_LOADED[]
+_require_package(backend, loaded::Base.RefValue{Bool}, package::String) = loaded[] ? nothing :
+    throw(ArgumentError(
+        "backend = $(nameof(typeof(backend))) needs `using $package`, which supplies it; or pass " *
+        "backend = SerialBackend(), or AutoBackend() to take whichever backend is available.",
+    ))
 
 """
     _auto_local_backend()
@@ -103,30 +112,6 @@ function _threaded_backend_available!(
     value_bins::AbstractVector,
 )
     return _ohmythreads_loaded()
-end
-
-function _dispatch_execution_backend(
-    ::CB.AbstractDistributedBackend, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, ::Type; kwargs...
-)
-    throw(ArgumentError("Distributed backend is unavailable. Load Distributed (`using Distributed`) or use backend=CB.SerialBackend()."))
-end
-
-function _dispatch_execution_backend(
-    ::CB.AbstractDistributedBackend, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector, ::Type; kwargs...
-)
-    throw(ArgumentError("Distributed backend is unavailable. Load Distributed (`using Distributed`) or use backend=CB.SerialBackend()."))
-end
-
-function _dispatch_execution_backend!(
-    ::CB.AbstractDistributedBackend, sums::AbstractArray, counts::AbstractArray, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
-)
-    throw(ArgumentError("Distributed backend is unavailable. Load Distributed (`using Distributed`) or use backend=CB.SerialBackend()."))
-end
-
-function _dispatch_execution_backend!(
-    ::CB.AbstractDistributedBackend, sums_2d::AbstractArray, counts_2d::AbstractArray, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
-)
-    throw(ArgumentError("Distributed backend is unavailable. Load Distributed (`using Distributed`) or use backend=CB.SerialBackend()."))
 end
 
 """

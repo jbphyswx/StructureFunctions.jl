@@ -54,8 +54,8 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
 
         gpu_out = SFC.calculate_structure_function(
-            SF_TYPE, x, u, lbe;
-            backend = GPU_BE, output_type = SF.StructureFunctionSumsAndCounts, verbose = false,
+            SF_TYPE, x, u, lbe, SF.StructureFunctionSumsAndCounts;
+            backend = GPU_BE, verbose = false,
         )
         @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
@@ -68,8 +68,8 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         cpu_c = zeros(UInt32, NB, Bb)
         auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
         gpu_out = SFC.calculate_structure_function(
-            SF_TYPE, x, u, lbe;
-            backend = GPU_BE, output_type = SF.StructureFunctionSumsAndCounts, verbose = false,
+            SF_TYPE, x, u, lbe, SF.StructureFunctionSumsAndCounts;
+            backend = GPU_BE, verbose = false,
         )
         @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
@@ -98,8 +98,8 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             cpu_c = zeros(UInt32, NB, B)
             auxiliary_shared_positions!(cpu_s, cpu_c, x, u, sft, lbe)
             gpu_out = SFC.calculate_structure_function(
-                sft, x, u, lbe;
-                backend = GPU_BE, output_type = SF.StructureFunctionSumsAndCounts, verbose = false,
+                sft, x, u, lbe, SF.StructureFunctionSumsAndCounts;
+                backend = GPU_BE, verbose = false,
             )
             @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
             @test any(!iszero, cpu_s)
@@ -135,7 +135,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 
         inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         gpu_sp = SFC.calculate_structure_functions_single_pass(
-            x, u, lbe; backend = GPU_BE, output_type = SF.StructureFunctionSumsAndCounts,
+            x, u, lbe, SF.StructureFunctionSumsAndCounts; backend = GPU_BE,
         )
         for (t, k) in enumerate(inv)
             @test batch_histograms_equal(

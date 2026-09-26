@@ -10,26 +10,36 @@ Test.@testset "Stability Verification" begin
     x = rand(FT, 2, N)
     u = rand(FT, 2, N)
     bins = SA.SVector(0.0, 1.4)
+    vbins = collect(range(-1.0, 1.0; length = 5))
     sft = SFT.LongitudinalSecondOrderStructureFunction
+    ser = CB.SerialBackend()
 
-    # 1. Default (averaged) output path must infer concretely. This exercises the full backend
-    #    compute (which produces the raw accumulator) plus `_finalize`, so any backend
-    #    type-instability would surface here. A non-default `output_type` incurs one
-    #    dynamic-dispatch barrier, so it is checked for correctness below rather than inferred.
-    println("Checking type stability for Array variant (default output-type)...")
-    @inferred SFC.calculate_structure_function(sft, x, u, bins, UInt32; backend = CB.SerialBackend())
+    # Every public entry infers concretely, with the defaults and with an explicit count and result type.
+    println("Checking type stability for Array variant...")
+    @inferred SFC.calculate_structure_function(sft, x, u, bins; backend = ser)
+    res = @inferred SFC.calculate_structure_function(sft, x, u, bins, UInt32; backend = ser)
+    Test.@test res isa SFO.StructureFunction
+    raw = @inferred SFC.calculate_structure_function(sft, x, u, bins, UInt64, SFO.StructureFunctionSumsAndCounts;
+                                                     backend = ser)
+    Test.@test raw isa SFO.StructureFunctionSumsAndCounts
+    Test.@test eltype(raw.counts) === UInt64
 
-    res_false = SFC.calculate_structure_function(sft, x, u, bins, UInt32; backend = CB.SerialBackend())
-    Test.@test res_false isa SFO.StructureFunction
+    println("Checking type stability for the joint histogram...")
+    @inferred SFC.calculate_structure_function(sft, x, u, bins, vbins; backend = ser)
+    joint = @inferred SFC.calculate_structure_function(sft, x, u, bins, vbins, Float64; backend = ser)
+    Test.@test eltype(joint.counts) === Float64
 
-    res_true = SFC.calculate_structure_function(sft, x, u, bins, UInt32; backend = CB.SerialBackend(), output_type = SFO.StructureFunctionSumsAndCounts)
-    Test.@test res_true isa SFO.StructureFunctionSumsAndCounts
-
-    # 1b. Single-pass default (averaged) path must infer concretely too — for point-field and
-    #     batched (auxiliary-axis) input. The keyed result is a single concrete NamedTuple per rank.
+    # The keyed single-pass result is a single concrete NamedTuple per rank, for point-field and
+    # batched (auxiliary-axis) input.
     println("Checking type stability for single-pass (point-field + batched)...")
-    @inferred SFC.calculate_structure_functions_single_pass(x, u, bins; backend = CB.SerialBackend())
+    @inferred SFC.calculate_structure_functions_single_pass(x, u, bins; backend = ser)
+    @inferred SFC.calculate_structure_functions_single_pass(x, u, bins, UInt64, SFO.StructureFunction; backend = ser)
     u_batched = rand(FT, 2, N, 2)
-    @inferred SFC.calculate_structure_functions_single_pass(x, u_batched, bins; backend = CB.SerialBackend())
+    @inferred SFC.calculate_structure_functions_single_pass(x, u_batched, bins; backend = ser)
+    @inferred SFC.calculate_structure_functions_single_pass_2d(x, u, bins, vbins; backend = ser)
+    @inferred SFC.calculate_structure_functions_single_pass_2d(x, u, bins, vbins, Float64; backend = ser)
 
+    println("Checking type stability for the moment tensor...")
+    @inferred SFC.calculate_structure_function_tensor(Val(2), x, u, bins; backend = ser)
+    @inferred SFC.calculate_structure_function_tensor(Val(2), x, u, bins, UInt64; backend = ser)
 end

@@ -57,6 +57,7 @@ function calculate_structure_function(
     weights = nothing,
     kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
+    _require_backend(backend)
     shape = _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), promote_type(float(eltype(x)), float(eltype(u))))
     _assert_count_type(CT, size(x, 2), w)
@@ -126,6 +127,7 @@ function calculate_structure_function(
     weights = nothing,
     kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
+    _require_backend(backend)
     shape = _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), promote_type(float(eltype(x)), float(eltype(u))))
     _assert_count_type(CT, size(x, 2), w)
@@ -155,16 +157,10 @@ function calculate_structure_function(
     args...;
     distance_metric::DI.PreMetric = DI.Euclidean(),
     bin_spacing::Type{<:AbstractBinEdges} = LogBinEdges,
-    verbose::Bool = true,
-    show_progress::Bool = true,
     kwargs...,
 ) where {FT1, FT2}
     shape = _validate_array_shape(x, u, distance_metric)
-
-    if verbose
-        @info("Calculating min and max distances and generating bins")
-    end
-    min_distance, max_distance = _minmax_for_autobins(shape, x, distance_metric, show_progress)
+    min_distance, max_distance = _minmax_for_autobins(shape, x, distance_metric)
     actual_bins = _auto_distance_bins(min_distance, max_distance, distance_bins, bin_spacing)
 
     # `bin_spacing` selected these edges and means nothing downstream, so it is consumed here.
@@ -175,8 +171,6 @@ function calculate_structure_function(
         actual_bins,
         args...;
         distance_metric,
-        verbose,
-        show_progress,
         kwargs...,
     )
 end
@@ -196,19 +190,19 @@ function _auto_distance_bins(min_distance, max_distance, distance_bins::Int, bin
     throw(ArgumentError("bin_spacing must be LinearBinEdges or LogBinEdges; got $bin_spacing"))
 end
 
-function _minmax_for_autobins(::PointField, x::AbstractMatrix, distance_metric, show_progress::Bool)
-    return _minmax_matrix_for_autobins(x, distance_metric, show_progress)
+function _minmax_for_autobins(::PointField, x::AbstractMatrix, distance_metric)
+    return _minmax_matrix_for_autobins(x, distance_metric)
 end
 
-function _minmax_for_autobins(::SharedPositionField, x::AbstractMatrix, distance_metric, show_progress::Bool)
-    return _minmax_matrix_for_autobins(x, distance_metric, show_progress)
+function _minmax_for_autobins(::SharedPositionField, x::AbstractMatrix, distance_metric)
+    return _minmax_matrix_for_autobins(x, distance_metric)
 end
 
-function _minmax_matrix_for_autobins(x::AbstractMatrix, distance_metric, show_progress::Bool)
+function _minmax_matrix_for_autobins(x::AbstractMatrix, distance_metric)
     # Accumulate in the input eltype; Float64 literals here would widen the bin edges.
     FT = float(eltype(x))
     min_distance, max_distance = FT(Inf), FT(0)
-    PM.@showprogress enabled = show_progress for i in axes(x, 2)
+    for i in axes(x, 2)
         _min_distance, _max_distance = minmax_i(i, x, distance_metric)
         min_distance = min(min_distance, _min_distance)
         max_distance = max(max_distance, _max_distance)
@@ -216,13 +210,13 @@ function _minmax_matrix_for_autobins(x::AbstractMatrix, distance_metric, show_pr
     return min_distance, max_distance
 end
 
-function _minmax_for_autobins(::VaryingPositionField, x::AbstractArray, distance_metric, show_progress::Bool)
+function _minmax_for_autobins(::VaryingPositionField, x::AbstractArray, distance_metric)
     D, N = size(x, 1), size(x, 2)
     B = prod(size(x)[3:end])
     x_flat = reshape(x, D, N, B)
     FT = float(eltype(x))
     min_distance, max_distance = FT(Inf), FT(0)
-    PM.@showprogress enabled = show_progress for b in 1:B
+    for b in 1:B
         x_slice = @view x_flat[:, :, b]
         for i in axes(x_slice, 2)
             _min_distance, _max_distance = minmax_i(i, x_slice, distance_metric)
@@ -323,6 +317,7 @@ function calculate_structure_function!(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing, kwargs...,
 )
+    _require_backend(backend)
     shape = _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), eltype(sums))
     _assert_counts_can_accumulate(counts, size(x, 2), w)
@@ -337,6 +332,7 @@ function calculate_structure_function!(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing, kwargs...,
 )
+    _require_backend(backend)
     shape = _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), eltype(sums_2d))
     _assert_counts_can_accumulate(counts_2d, size(x, 2), w)
@@ -362,7 +358,6 @@ function _dispatch_execution_backend!(
     ::CB.AbstractThreadedBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
     if has_auxiliary_axes(shape)
-        _require_threading("the in-place auxiliary-axis driver")
         auxiliary_structure_function_threaded!(sums, counts, structure_function_type, x, u, distance_bins; kwargs...)
         return nothing
     end
@@ -421,7 +416,6 @@ function _dispatch_execution_backend!(
     ::CB.AbstractThreadedBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     if has_auxiliary_axes(shape)
-        _require_threading("the in-place joint auxiliary-axis driver")
         auxiliary_joint2d_threaded!(sums_2d, counts_2d, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
         return nothing
     end
@@ -465,27 +459,9 @@ function _dispatch_execution_backend!(
 end
 
 function _dispatch_execution_backend!(
-    backend::CB.AbstractExecutionBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
-)
-    throw(ArgumentError(
-        "in-place calculate_structure_function! has no method for $(typeof(backend)); the backend's " *
-        "extension supplies one, so load the package that provides it or use a different backend.",
-    ))
-end
-
-function _dispatch_execution_backend!(
     backend::CB.AbstractDistributedBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
 )
     return _dispatch_execution_backend!(backend, sums_2d, counts_2d, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
-end
-
-function _dispatch_execution_backend!(
-    backend::CB.AbstractExecutionBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
-)
-    throw(ArgumentError(
-        "in-place joint calculate_structure_function! has no method for $(typeof(backend)); the " *
-        "backend's extension supplies one, so load the package that provides it or use a different backend.",
-    ))
 end
 
 # --- Non-Mutating Dispatch Layers ---

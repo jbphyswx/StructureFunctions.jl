@@ -85,14 +85,6 @@ KA.Adapt.adapt_structure(to, s::SFC.ScatteredModesSchedule) =
 # Geometry (NDIMS-generic, via StaticArrays — unrolls for D = 2, 3)
 # -----------------------------------------------------------------------------
 
-@inline function _sf_dot(a::SA.SVector{W, T}, b::SA.SVector{W, T}) where {W, T}
-    s = zero(T)
-    @inbounds for d in 1:W
-        s += a[d] * b[d]
-    end
-    return s
-end
-
 """Load local point `k` (`W` components) from a `@localmem` tile staged as
 `(d - 1) * SF_GPU_TILE + k`."""
 @inline _sf_load_pt(::Val{W}, buf, k::Int) where {W} =
@@ -123,24 +115,58 @@ kernel's shared histogram then follows `eltype` of the buffer it flushes into.
 @inline _sf_weights_to_device(backend, w::AbstractVector) = KA.adapt(backend, w)
 
 # -----------------------------------------------------------------------------
+# Shared-memory fit
+# -----------------------------------------------------------------------------
+
+"""
+    _sf_fitting_width(bytes, caps, preferred) -> Int
+
+The largest of `preferred, preferred ÷ 2, …, 1` at which a kernel declaring `bytes(k)` static shared
+bytes fits the device `caps` describes; 0 when none does. `preferred` is a power of two.
+"""
+@inline function _sf_fitting_width(bytes::F, caps::SFC.GPUDeviceCaps, preferred::Int) where {F}
+    ispow2(preferred) || throw(ArgumentError("a strip or replica width is a power of two; got $preferred"))
+    k = preferred
+    while k >= 1
+        SFC.gpu_static_smem_fits(caps, bytes(k)) && return k
+        k ÷= 2
+    end
+    return 0
+end
+
+"""
+    _smem_max_cells(bytes, budget, cell_bytes) -> Int
+
+The most histogram cells, of `cell_bytes` each, at which a kernel declaring `bytes(cells)` static
+shared bytes stays within `budget`; 0 when none fit.
+"""
+@inline function _smem_max_cells(bytes::F, budget::Int, cell_bytes::Int) where {F}
+    cells = max(0, budget - bytes(0)) ÷ cell_bytes
+    while cells > 0 && bytes(cells) > budget
+        cells -= 1
+    end
+    return cells
+end
+
+# -----------------------------------------------------------------------------
 # Moments
 # -----------------------------------------------------------------------------
 
-"""Six single-pass invariants from a velocity difference `dU` and unit vector
-`rhat`. Computes one dot product (`du_L`) and one norm (`du_norm2`); transverse
-follows as `du_norm2 - du_L²` (no second projection)."""
-@inline _sf_moments6(dU::SA.SVector{D,T}, rhat::SA.SVector{D,T}) where {D,T} =
-    SFC.single_pass_invariants(_sf_dot(dU, rhat), _sf_dot(dU, dU))
+"""
+    _sf_moments(Val(NMOM), sf_type, geom, frame, r, dU) -> NTuple{NMOM}
 
-"""Compute the moment tuple for a pair:
-- `Val{6}` → the six single-pass invariants (sf_type ignored).
-- `Val{1}` → the individual SF value, computed by the **authoritative** `sf_type(δu, r̂)`
-  callable from `StructureFunctionTypes` — the single source of truth for the per-type
-  math (basis- and dimension-dependent factors like `1/(D-1)` and the signed `mδu_t`/`n̂`
-  components are handled there, and it is the same code the CPU paths use). Returned as a
-  1-tuple so the accumulate path is uniform with the single-pass case."""
-@inline _sf_moments(::Val{6}, sf_type, dU, rhat) = _sf_moments6(dU, rhat)
-@inline _sf_moments(::Val{1}, sf_type, dU, rhat) = (sf_type(dU, rhat),)
+The moments one pair adds, from its `frame` and separation `r` and its increment `dU`: `Val(1)` the
+value of `sf_type` ([`SFT.pair_value`](@ref)), `Val(6)` the six single-pass invariants.
+"""
+@inline _sf_moments(::Val{6}, sf_type, geom, frame, r, dU) =
+    SFC.single_pass_invariants(SFH.increment_invariants(geom, frame, r, dU)...)
+@inline _sf_moments(::Val{1}, sf_type, geom, frame, r, dU) = (SFT.pair_value(sf_type, geom, frame, r, dU),)
+
+"""The same moments along a unit separation `rhat` formed once per pair, for kernels that sweep a strip
+of fields over one pair."""
+@inline _sf_moments_along(::Val{6}, sf_type, dU, rhat) =
+    SFC.single_pass_invariants(SFH.fma_dot(dU, rhat), SFH.fma_dot(dU, dU))
+@inline _sf_moments_along(::Val{1}, sf_type, dU, rhat) = (sf_type(dU, rhat),)
 
 """
 Moments needing a per-pair atomic. `T2 = S2 - L2` and `L1T2 = S3 - L3` hold for every pair, and a

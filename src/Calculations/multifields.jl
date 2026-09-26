@@ -35,7 +35,7 @@ One pair's operator value for a multi-field, with the pair read in its canonical
 """
 @inline function _field_value(sf, ::Val{F}, ::Val{V}, ::Val{K}, data, geom, frame, r, i, j) where {F, V, K}
     inc = field_increment(Val(F), Val(V), Val(K), data, geom, frame, i, j)
-    v = sf(inc, SFH.pair_direction(geom, frame, r))
+    v = SFT.pair_value(sf, geom, frame, r, inc)
     return SFT.is_odd_in_scalars(sf) ? SFH.pair_orientation(geom, frame) * v : v
 end
 
@@ -52,7 +52,7 @@ second conversion to drift from it.
 function _kernel_fields(f::MF.Fields{D, V, K}, geom, x::AbstractMatrix) where {D, V, K}
     data = MF.packed(f)
     N = size(data, 2)
-    F = SFC_val_int(SFH.field_width(geom))
+    F = _val_int(SFH.field_width(geom))
     if F == D
         return SFH.prepare_coordinates(geom, x), data, Val(D)
     end
@@ -96,21 +96,18 @@ function serial_calculate_structure_function!(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
-    verbose::Bool = true,
-    show_progress::Bool = true,
 ) where {OT, CT, D, V, K}
     N = size(MF.packed(f), 2)
     size(x, 2) == N || throw(DimensionMismatch(
         "x covers $(size(x, 2)) points and the field $N",
     ))
     if _on_a_line(_field_geometry(distance_metric, Val(D), Val(V), x), sf)
-        _cull_reject_unsupported(culling, "the sorted line route")
         return sorted_line_sweep!(sums, counts, sf, _line_coordinates(x), MF.packed(f), distance_bins,
                                   Val(D), Val(V), Val(K); weights)
     end
     geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, weights)
     _field_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan,
-                         n_histogram_bins(plan), Val(SFC_val_int(SFH.coordinate_width(geom))),
+                         n_histogram_bins(plan), SFH.coordinate_width(geom),
                          1:(N - 1), N, grid, wk)
     return nothing
 end
@@ -141,7 +138,7 @@ function field_setup(f::MF.Fields{D, V, K}, x::AbstractMatrix, distance_bins,
                        distance_metric, culling::CullingPolicy, weights = NoWeights()) where {D, V, K}
     geom = _field_geometry(distance_metric, Val(D), Val(V), x)
     xk, data, vF = _kernel_fields(f, geom, x)
-    W = SFC_val_int(SFH.coordinate_width(geom))
+    W = _val_int(SFH.coordinate_width(geom))
     plan = squared_digitize_plan(distance_bins)
     xc = ntuple(d -> collect(view(xk, d, :)), Val(W))
     grid = culling isa NoCulling ? nothing : cull_grid_for(xc, geom, distance_bins, culling)
@@ -186,21 +183,33 @@ the reason the single-field kernel is blocked, and it applies here for the same 
 function _field_pairs!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
+    xk::AbstractMatrix, data::AbstractMatrix, geom::SFH.FlatGeometry, vF::Val, vV::Val, vK::Val,
+    plan::AbstractSquaredDigitizePlan, nb::Int, vW::Val, blocks, weights,
+) where {OT, CT}
+    window = _pair_window(size(xk, 2))
+    L = _pair_scratch_length(window, size(xk, 2))
+    return _field_pairs!(sums, counts, sf, xk, data, geom, vF, vV, vK, plan, nb, vW, blocks, weights, window,
+                         Vector{eltype(xk)}(undef, L), Vector{OT}(undef, L), Vector{Int32}(undef, L))
+end
+
+function _field_pairs!(
+    sums::AbstractVector{OT}, counts::AbstractVector{CT},
+    sf::SFT.AbstractPairwiseStructureFunctionType,
     xk::AbstractMatrix, data::AbstractMatrix, geom::SFH.FlatGeometry, ::Val{F}, ::Val{V}, ::Val{K},
-    plan::AbstractSquaredDigitizePlan, nb::Int, ::Val{W}, blocks, weights,
+    plan::AbstractSquaredDigitizePlan, nb::Int, ::Val{W}, blocks, weights, window::PairWindow,
+    keybuf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32},
 ) where {OT, CT, F, V, K, W}
     FTx = eltype(xk)
     T = eltype(data)
-    N = size(xk, 2)
-    keybuf = Vector{FTx}(undef, N)
-    valbuf = Vector{OT}(undef, N)
-    idxbuf = Vector{Int32}(undef, N)
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
+        _check_run_fits(window, valbuf, jr)
+        off = _slot_offset(window, jr)
         for i in ir
             jlo = max(i + 1, j_first)
             jlo > j_last && continue
             Xi = SA.SVector{W, FTx}(ntuple(d -> xk[d, i], Val(W)))
+            wi = _point_weight(weights, i)
             @simd for j in jlo:j_last
                 Xj = SA.SVector{W, FTx}(ntuple(d -> xk[d, j], Val(W)))
                 dx = Xj - Xi
@@ -212,18 +221,17 @@ function _field_pairs!(
                 scalars = ntuple(c -> data[V * F + c, j] - data[V * F + c, i], Val(K))
                 inc = MF.FieldIncrement{F, V, K, T}(vectors, scalars)
                 sgn = SFT.is_odd_in_scalars(sf) ? SFH.pair_orientation(geom, dx) : 1
-                keybuf[j] = digitize_key(plan, r2)
-                valbuf[j] = OT(sgn * sf(inc, dx / sqrt(r2)))
+                keybuf[j - off] = digitize_key(plan, r2)
+                valbuf[j - off] = OT(sgn * SFT.flat_pair_value(sf, inc, dx, r2))
                 if has_vector_index(plan)
-                    idxbuf[j] = squared_approx_index(plan, r2)
+                    idxbuf[j - off] = squared_approx_index(plan, r2)
                 end
             end
-            wi = _point_weight(weights, i)
-            for j in jlo:j_last
-                b = squared_bin(plan, keybuf[j], idxbuf[j])
+            for k in (jlo - off):(j_last - off)
+                b = squared_bin(plan, keybuf[k], idxbuf[k])
                 if 1 <= b <= nb
-                    w = wi * _point_weight(weights, j)
-                    sums[b] += w * valbuf[j]
+                    w = wi * _point_weight(weights, k + off)
+                    sums[b] += w * valbuf[k]
                     counts[b] += CT(w)
                 end
             end
@@ -260,8 +268,6 @@ function _field_pairs!(
     end
     return nothing
 end
-
-@inline SFC_val_int(::Val{W}) where {W} = W
 
 """
     required_fields(operator) -> (n_vector, n_scalar)
@@ -326,7 +332,7 @@ function field_partial(
     counts = zeros(CT, nb)
     geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, weights)
     _field_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan,
-                         n_histogram_bins(plan), Val(SFC_val_int(SFH.coordinate_width(geom))),
+                         n_histogram_bins(plan), SFH.coordinate_width(geom),
                          outer, N, grid, wk)
     return sums, counts
 end
@@ -336,26 +342,14 @@ end
 
 Accumulate a multi-field sweep across worker processes. Supplied by the Distributed extension.
 """
-function distributed_calculate_structure_function!(sums, counts, sf, x, f::MF.Fields, bins;
-                                                   kwargs...)
-    throw(ArgumentError(
-        "the distributed multi-field sweep needs Distributed: run `using Distributed` and add " *
-        "workers.",
-    ))
-end
+function distributed_calculate_structure_function! end
 
 """
-    gpu_calculate_structure_function!(backend, sums, counts, sf, x, fields, bins; kwargs...)
+    gpu_calculate_structure_function_fields!(backend, sums, counts, sf, x, fields, bins; kwargs...)
 
 Accumulate a multi-field sweep on a device. Supplied by the KernelAbstractions extension.
 """
-function gpu_calculate_structure_function_fields!(backend, sums, counts, sf, x, f::MF.Fields,
-                                                    bins; kwargs...)
-    throw(ArgumentError(
-        "the GPU multi-field sweep needs KernelAbstractions: run `using KernelAbstractions` and " *
-        "a device backend such as CUDA.",
-    ))
-end
+function gpu_calculate_structure_function_fields! end
 
 # Backend selection for a multi-field, mirroring the array path's: the concrete backends dispatch,
 # and `Auto` takes the threaded one when there are threads to use and the extension supplying it is
@@ -371,9 +365,7 @@ end
 
 Accumulate a multi-field structure function across MPI ranks. Supplied by the MPI extension.
 """
-function mpi_calculate_structure_function!(sums, counts, sf, x, f::MF.Fields, bins; kwargs...)
-    throw(ArgumentError("the MPI multi-field sweep needs MPI: run `using MPI` under `mpiexec`."))
-end
+function mpi_calculate_structure_function! end
 
 @inline function _field_dispatch!(b::CB.AbstractMPIBackend, sums, counts, sf, x, f, bins; kwargs...)
     return mpi_calculate_structure_function!(sums, counts, sf, x, f, bins; backend = b, kwargs...)
@@ -404,6 +396,7 @@ function calculate_structure_function!(
     sums, counts, sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::MF.Fields,
     distance_bins; backend::CB.AbstractExecutionBackend = CB.AutoBackend(), weights = nothing, kwargs...,
 )
+    _require_backend(backend)
     w = _pair_weights(weights, size(MF.packed(f), 2), eltype(sums))
     _assert_counts_can_accumulate(counts, size(MF.packed(f), 2), w)
     validate_fields(sf, f)
@@ -428,6 +421,7 @@ function calculate_structure_function(
     weights = nothing,
     kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
+    _require_backend(backend)
     N = size(MF.packed(f), 2)
     ST = float(eltype(MF.packed(f)))
     w = _pair_weights(weights, N, ST)

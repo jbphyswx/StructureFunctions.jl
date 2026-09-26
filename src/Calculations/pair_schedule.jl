@@ -265,12 +265,88 @@ Base.iterate(b::BlocksForI) = _blocks_for_i_advance(b, iterate(b.blocks))
 Base.iterate(b::BlocksForI, st) = _blocks_for_i_advance(b, iterate(b.blocks, st))
 
 """
+    TileRuns(blocks, tile)
+
+`blocks` with each `j`-block cut into runs of at most `tile` points.
+"""
+struct TileRuns{B}
+    blocks::B
+    tile::Int
+end
+
+Base.IteratorSize(::Type{<:TileRuns}) = Base.SizeUnknown()
+Base.eltype(::Type{<:TileRuns}) = PairBlock
+
+@inline function Base.iterate(t::TileRuns)
+    r = iterate(t.blocks)
+    r === nothing && return nothing
+    return _next_tile_run(t, r[1], r[2], 0)
+end
+
+@inline function Base.iterate(t::TileRuns, (blk, inner, off))
+    if off == 0
+        r = iterate(t.blocks, inner)
+        r === nothing && return nothing
+        blk, inner = r
+    end
+    return _next_tile_run(t, blk, inner, off)
+end
+
+"""The run of block `(ir, jr)` starting `off` past `first(jr)`, and the state after it: the block, the
+inner state and the offset of the next run, `0` once the block is spent."""
+@inline function _next_tile_run(t::TileRuns, (ir, jr), inner, off::Int)
+    lo = first(jr) + off
+    hi = min(last(jr), lo + t.tile - 1)
+    return (ir, lo:hi), ((ir, jr), inner, hi == last(jr) ? 0 : off + t.tile)
+end
+
+"""
     pair_blocks(n_points, irange; grid = nothing, tile = SF_CPU_PAIR_TILE)
 
 Block pairs for the `i` values in `irange`: the culled schedule when a [`CellGrid`](@ref) is given,
-the full tiled upper triangle otherwise.
+the full tiled upper triangle otherwise. Every `j`-block holds at most `tile` points.
 """
-@inline function pair_blocks(n_points::Int, irange; grid = nothing, tile::Int = SF_CPU_PAIR_TILE)
-    sched = grid === nothing ? TiledUpperTriangle(n_points, tile) : CulledCellPairs(grid)
-    return BlocksForI(block_pairs(sched), irange)
+@inline pair_blocks(n_points::Int, irange; grid = nothing, tile::Int = SF_CPU_PAIR_TILE) =
+    BlocksForI(_schedule_blocks(grid, n_points, tile), irange)
+
+@inline _schedule_blocks(::Nothing, n_points::Int, tile::Int) = block_pairs(TiledUpperTriangle(n_points, tile))
+@inline _schedule_blocks(grid::CellGrid, n_points::Int, tile::Int) =
+    TileRuns(block_pairs(CulledCellPairs(grid)), tile)
+
+"""
+Points per `j` block in the CPU pair loop. Sized so one block's coordinates, fields and the three
+per-`j` buffers stay resident in a core's private cache while every `i` sweeps it.
+"""
+const SF_CPU_PAIR_TILE = 65536
+
+"""Points up to which a per-task pair buffer spans the whole sweep; above it a buffer spans one tile."""
+const SF_CPU_WHOLE_RUN_MAX = 4 * SF_CPU_PAIR_TILE
+
+"""How a per-task pair buffer is indexed: [`WholeRun`](@ref) or [`BlockRun`](@ref)."""
+abstract type PairWindow end
+
+"""A pair buffer spanning every point of the sweep; pair `(i, j)` fills slot `j`."""
+struct WholeRun <: PairWindow end
+
+"""A pair buffer spanning one tile; pair `(i, j)` of block `jr` fills slot `j - first(jr) + 1`."""
+struct BlockRun <: PairWindow end
+
+"""The window of an `n`-point sweep's pair buffers."""
+@inline _pair_window(n::Integer) = n <= SF_CPU_WHOLE_RUN_MAX ? WholeRun() : BlockRun()
+
+"""Length of a per-task pair buffer for `n` points under its window."""
+@inline _pair_scratch_length(n::Integer) = _pair_scratch_length(_pair_window(n), n)
+@inline _pair_scratch_length(::WholeRun, n::Integer) = max(1, Int(n))
+@inline _pair_scratch_length(::BlockRun, ::Integer) = SF_CPU_PAIR_TILE
+
+"""The buffer slot of `j` in block `jr` is `j - _slot_offset(window, jr)`."""
+@inline _slot_offset(::WholeRun, jr) = 0
+@inline _slot_offset(::BlockRun, jr) = first(jr) - 1
+
+"""Throw unless a per-`j` buffer holds the slots of block `jr` under `window`."""
+@inline function _check_run_fits(window::PairWindow, buf, jr)
+    last_slot = last(jr) - _slot_offset(window, jr)
+    return last_slot <= length(buf) || _run_exceeds_scratch(length(buf), last_slot)
 end
+@noinline _run_exceeds_scratch(L, n) =
+    throw(ArgumentError("a pair block reaching slot $n exceeds the $L-entry pair buffer"))

@@ -1,33 +1,49 @@
 # GPU Extension and Workspace Stubs
 
 # ---------------------------------------------------------------------------
-# CUDA fast-path dispatch hooks (overridden by StructureFunctionsCUDAExt)
+# Native kernels of a backend (supplied by StructureFunctionsCUDAExt)
 # ---------------------------------------------------------------------------
-# The GPU (KernelAbstractions) extension calls these at its unified launch
-# chokepoints. The default returns `false` ("not handled") so portable KA
-# kernels run on CPU/AMD/whenever CUDA is not loaded. When both
-# KernelAbstractions and CUDA are loaded, StructureFunctionsCUDAExt adds
-# methods specialized on `CUDA.CUDABackend` that launch the N-body broadcast +
-# (for 2D) dynamic-shared kernels and return `true`.
+# Every device launcher asks for the backend's native launch plan, launches the native kernel with it
+# when there is one, and the portable KernelAbstractions kernel when there is none.
 
-"""Try the CUDA fast 2D launch (N-body broadcast + privatized histogram, dynamic
-shared for large single-pass). Returns `true` if handled, `false` to fall back to
-the portable KA tiled kernel. `cull` is the active [`GPUCullMemo`](@ref) or `nothing`; the
-launcher takes its tile-pair schedule from it through [`schedule_for`](@ref) at its own tile
-size. Overridden by `StructureFunctionsCUDAExt`."""
-gpu_fast_launch_2d_batch!(backend, out, cnt, x, u, sf_type, dist_dig, val_plan,
-                          N, n_dist, n_val, B, D, nmom, fixed_x, geom, cull) = false
+"""
+    gpu_native_1d_plan(backend, XT, UT, OT, CT, weights, geom, NB, NMOM) -> plan or nothing
 
-"""Try the CUDA fast 1D launch (N-body broadcast + privatized shared histogram).
-Returns `true` if handled, `false` to fall back to the portable KA tiled kernel. `cull` as for
-[`gpu_fast_launch_2d_batch!`](@ref). Overridden by `StructureFunctionsCUDAExt`."""
-gpu_fast_launch_1d_batch!(backend, out, cnt, x, u, sf_type, dist_dig,
-                          N, NB, B, D, nmom, fixed_x, geom, cull) = false
+The launch plan of `backend`'s native 1-D pair kernel for coordinates of `XT`, fields of `UT`, sums of
+`OT`, counts of `CT`, the weights `weights`, the coordinate and field widths of `geom`, `NB` distance
+bins and `NMOM` moments; `nothing` when `backend` has no native kernel or that kernel does not fit the
+device. A function of those types and sizes and of the device's capabilities.
+`StructureFunctionsCUDAExt` supplies it for `CUDA.CUDABackend`.
+"""
+gpu_native_1d_plan(backend, XT, UT, OT, CT, weights, geom, NB, NMOM) = nothing
 
-"""Count type the native 1D route can accumulate directly, or `nothing` when the
-portable planner must choose its local/global representation. A provider method
-must return only types supported by its global atomic flush."""
-gpu_fast_1d_count_type(backend, weights, requested_type, n_pairs, D, NB, nmom) = nothing
+"""
+    gpu_native_launch_1d!(plan, out, cnt, x, u, wts, sf_type, dist_dig, N, NB, B, fixed_x, geom, cull)
+
+Launch the native 1-D kernel `plan` describes into `out`/`cnt` of shape `(NMOM, NB, B)`. `x` is
+`(W, N, B)`, or `(W, N)`/`(W, N, 1)` when `fixed_x`; `u` is `(F, N, B)`; `wts` is `NoWeights()` or one
+device weight per point; `cull` is the active [`GPUCullMemo`](@ref) or `nothing`, from which the launch
+takes its tile-pair schedule through [`schedule_for`](@ref).
+"""
+function gpu_native_launch_1d! end
+
+"""
+    gpu_native_2d_plan(backend, XT, UT, OT, CT, weights, geom, NMOM, n_dist, n_val) -> plan or nothing
+
+The launch plan of `backend`'s native distance × value kernel for an `n_dist × n_val` histogram per
+moment, as [`gpu_native_1d_plan`](@ref).
+"""
+gpu_native_2d_plan(backend, XT, UT, OT, CT, weights, geom, NMOM, n_dist, n_val) = nothing
+
+"""
+    gpu_native_launch_2d!(plan, out, cnt, x, u, wts, sf_type, dist_dig, val_plan, N, n_dist, n_val, B,
+                          fixed_x, geom, second_axis, cull)
+
+Launch the native distance × value kernel `plan` describes into `out`/`cnt` of shape
+`(NMOM, n_dist, n_val, B)`; `second_axis` is what the value axis bins; the rest as for
+[`gpu_native_launch_1d!`](@ref).
+"""
+function gpu_native_launch_2d! end
 
 """Build an exact culling grid from device-resident kernel coordinates.
 
@@ -39,69 +55,68 @@ gpu_device_cull_grid(backend, x, cutoff, policy) = nothing
 
 
 """
-    GPUDeviceCaps
+    GPUDeviceCaps(smem_optin, smem_per_sm, n_sms, warp)
 
-What a GPU backend offers, queried at run time, so the shared-memory strategy is chosen per device.
-Shared memory per block differs by an order of
-magnitude across parts a user may run on (V100 96 KiB, L40S 100 KiB, A100 163 KiB, later parts
-more), and the right accumulation strategy differs with it.
+What a GPU backend offers, queried at run time: `smem_optin`, the most shared memory one block may
+use when its kernel opts in to dynamic shared memory; `smem_per_sm`, the shared memory of one
+multiprocessor; `n_sms`, the multiprocessor count; `warp`, the threads that execute in lockstep.
 
-`smem_per_block` is the **opt-in** maximum, reachable only by *dynamic* shared memory that a kernel
-explicitly requests; `smem_per_sm` bounds how many blocks stay resident and is what makes "use every
-byte" the wrong default.
-
-Static shared memory is capped far lower and independently — see [`GPU_SMEM_STATIC_MAX`].
-KernelAbstractions' `@localmem` lowers to a *static* allocation (`CuStaticSharedArray` on CUDA) and
-its launch path passes no `shmem`, so a kernel written once for every backend is bound by the static
-cap. Reaching `smem_per_block` therefore takes a backend-specialized kernel that declares dynamic
-shared memory and opts in at launch — which is what the vendor fast paths do, with the portable
-kernel remaining as the correctness fallback for backends that have none.
+A kernel's *static* shared memory is bounded by [`GPU_SMEM_STATIC_MAX`](@ref) as well. Every
+`@localmem` array is static, so every portable kernel is bound by [`gpu_static_smem_budget`](@ref);
+only a backend-specialized kernel that declares dynamic shared memory reaches `smem_optin`.
 """
 struct GPUDeviceCaps
-    smem_per_block::Int
+    smem_optin::Int
     smem_per_sm::Int
     n_sms::Int
     warp::Int
 end
 
-"""
-Largest *static* shared allocation a block may declare: on CUDA-class hardware a static `@localmem`
-of 48 KiB compiles and 64 KiB fails `ptxas`, while dynamic shared reaches the full opt-in maximum.
-The limit is architectural, not per-device, so a device's own opt-in maximum is a separate check.
-"""
+"""Largest static shared allocation a block may declare, in bytes, on any device."""
 const GPU_SMEM_STATIC_MAX = 48 * 1024
 
-"""Shared memory every CUDA-class device provides without opting in."""
+"""Shared memory, in bytes, every device offers a block without opting in."""
 const GPU_SMEM_UNIVERSAL_FLOOR = 48 * 1024
+
+"""Alignment, in bytes, of every static shared array a kernel declares."""
+const GPU_SMEM_ALIGN = 32
+
+"""
+    gpu_localmem_bytes(T, n) -> Int
+
+Shared bytes an `n`-element static shared array of `T` occupies.
+"""
+@inline gpu_localmem_bytes(::Type{T}, n::Integer) where {T} =
+    cld(Int(n) * sizeof(T), GPU_SMEM_ALIGN) * GPU_SMEM_ALIGN
+
+"""
+    gpu_localmem_scalar_bytes(T, n) -> Int
+
+Shared bytes, at most, an `n`-element static shared array of `T` occupies when every access to it
+has a constant index: the compiler then declares each element as its own aligned scalar.
+"""
+@inline gpu_localmem_scalar_bytes(::Type{T}, n::Integer) where {T} = Int(n) * gpu_localmem_bytes(T, 1)
 
 """
     gpu_static_smem_budget(caps) -> Int
 
-Bytes a portable (static `@localmem`) kernel may use on this device: the static cap, further limited
-if the device offers less than it.
+Static shared bytes a kernel may declare on the device `caps` describes.
 """
-@inline gpu_static_smem_budget(caps::GPUDeviceCaps) =
-    min(GPU_SMEM_STATIC_MAX, caps.smem_per_block)
+@inline gpu_static_smem_budget(caps::GPUDeviceCaps) = min(GPU_SMEM_STATIC_MAX, caps.smem_optin)
 
 """
-    gpu_dynamic_smem_budget(caps; target_blocks_per_sm = 2) -> Int
+    gpu_static_smem_fits(caps, bytes) -> Bool
 
-Bytes a dynamic-shared kernel should use per block. Expressed in device-relative terms — the opt-in
-ceiling, and the per-SM pool divided by an occupancy target — so the same rule sizes correctly on any
-part, with no device's byte count written down. `target_blocks_per_sm` is the only free parameter
-and is dimensionless.
+Whether a kernel declaring `bytes` of static shared memory, as [`gpu_localmem_bytes`](@ref) counts
+them, compiles and launches on the device `caps` describes.
 """
-@inline function gpu_dynamic_smem_budget(caps::GPUDeviceCaps; target_blocks_per_sm::Int = 2)
-    per_sm_share = caps.smem_per_sm ÷ max(1, target_blocks_per_sm)
-    return max(GPU_SMEM_UNIVERSAL_FLOOR, min(caps.smem_per_block, per_sm_share))
-end
+@inline gpu_static_smem_fits(caps::GPUDeviceCaps, bytes::Integer) = bytes <= gpu_static_smem_budget(caps)
 
 """
     gpu_device_caps(backend) -> GPUDeviceCaps
 
-Capabilities of `backend`. The default is the universal floor, so a backend that overrides nothing
-stays correct and portable. `StructureFunctionsCUDAExt` overrides it with the real device
-attributes.
+Capabilities of `backend`: those every device offers unless an extension supplies the device's own.
+`StructureFunctionsCUDAExt` does for `CUDA.CUDABackend`.
 """
 gpu_device_caps(::Any) = GPUDeviceCaps(GPU_SMEM_UNIVERSAL_FLOOR, GPU_SMEM_UNIVERSAL_FLOOR, 1, 32)
 
@@ -124,13 +139,30 @@ function release! end
 """Invalidate prepared geometry and input caches held by a [`GPUSFWorkspace`](@ref)."""
 function refresh! end
 
-"""Compile-time joint 2D shared-histogram width `SF_GPU_MAX_2D_HIST` (4096). Implemented in GPU extension."""
+"""
+    joint2d_smem_max(backend, W, XT, OT, CT) -> Int
+
+The widest joint histogram, in cells, whose shared-memory kernel fits `backend` for `W`-wide
+coordinates of element type `XT`, sums of `OT` and shared counts of `CT` (`UInt32` when the call is
+unweighted and its pair count fits `UInt32`, the call's count type otherwise); supplied by the
+KernelAbstractions extension.
+"""
 function joint2d_smem_max end
 
-"""Exact joint histogram cell count `n_dist × n_val`. Implemented in GPU extension."""
+"""
+    joint2d_smem_exact(n_dist, n_val) -> Int
+
+The joint histogram's cell count `n_dist * n_val`, the compile width a `:joint2d` workspace takes by
+default; supplied by the KernelAbstractions extension.
+"""
 function joint2d_smem_exact end
 
-"""256-aligned joint compile width (capped at max). Implemented in GPU extension."""
+"""
+    joint2d_smem_align256(n_dist, n_val) -> Int
+
+`n_dist * n_val` rounded up to a multiple of 256, a compile width one kernel serves for every
+histogram of at most that many cells; supplied by the KernelAbstractions extension.
+"""
 function joint2d_smem_align256 end
 
 
@@ -138,122 +170,82 @@ function joint2d_smem_align256 end
     gpu_calculate_structure_function(sf, backend, x, u, distance_bins, CT; kwargs...)
 
 The 1-D pair histogram on the KernelAbstractions backend `backend`, with device-resident sums and
-counts of element type `CT`. Requires loading `KernelAbstractions.jl` to activate the `GPUExt`
-extension. Pass `workspace=GPUSFWorkspace(...)` to reuse device histogram buffers across repeated
-calls (see [`GPUSFWorkspace`](@ref)).
+counts of element type `CT`; supplied by the KernelAbstractions extension. Pass
+`workspace=GPUSFWorkspace(...)` to reuse device histogram buffers across repeated calls (see
+[`GPUSFWorkspace`](@ref)).
 """
 function gpu_calculate_structure_function end
 
 """
     gpu_calculate_structure_function_2d(sf_type, backend, x_mat, u_mat, distance_bins, value_bins, CT; kwargs...)
 
-GPU 2D joint structure function (distance × SF value histogram) for one `sf_type`, with
-device-resident counts of element type `CT`. Requires loading `KernelAbstractions.jl` to activate the
-`GPUExt` extension.
+The distance × value joint histogram of one `sf_type` on a KernelAbstractions backend, with
+device-resident counts of element type `CT`; supplied by the KernelAbstractions extension.
 """
 function gpu_calculate_structure_function_2d end
 
 """
     gpu_calculate_structure_functions_single_pass_2d(backend, x, u, distance_bins, value_bins, CT; kwargs...)
 
-Six invariant native distance × value joint histograms on a KernelAbstractions backend, with
-device-resident counts of element type `CT`. Requires loading `KernelAbstractions.jl` to activate the
-`GPUExt` extension.
+Six invariant distance × value joint histograms on a KernelAbstractions backend, with device-resident
+counts of element type `CT`; supplied by the KernelAbstractions extension.
 """
 function gpu_calculate_structure_functions_single_pass_2d end
 
 """
     gpu_calculate_structure_functions_single_pass_2d!(sums, counts, backend, x, u, distance_bins, value_bins; kwargs...)
 
-In-place GPU 2D single-pass accumulation. Requires the `GPUExt` extension.
+The in-place form of [`gpu_calculate_structure_functions_single_pass_2d`](@ref), accumulating into
+device buffers `sums` and `counts`; supplied by the KernelAbstractions extension.
 """
-function gpu_calculate_structure_functions_single_pass_2d!(args...; kwargs...)
-    throw(
-        ArgumentError(
-            "GPU in-place 2D single-pass is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
-        ),
-    )
-end
+function gpu_calculate_structure_functions_single_pass_2d! end
 
 """
-    gpu_calculate_structure_function!(output_sums, output_counts, ...)
+    gpu_calculate_structure_function!(sums, counts, sf, backend, x, u, distance_bins; kwargs...)
 
-In-place GPU structure function reduction. Requires the `GPUExt` extension.
-Accumulates into caller-owned `output_sums` and `output_counts` (same contract as
-`serial_calculate_structure_function!` / `threaded_calculate_structure_function!`).
-Reuses **host** buffers only; pass `workspace=GPUSFWorkspace(...)` to reuse **device**
-histogram buffers across calls.
+The in-place form of [`gpu_calculate_structure_function`](@ref), accumulating into device buffers
+`sums` and `counts`; supplied by the KernelAbstractions extension. Pass `workspace=GPUSFWorkspace(...)`
+to reuse device scratch across calls.
 """
-function gpu_calculate_structure_function!(args...; kwargs...)
-    throw(
-        ArgumentError(
-            "GPU in-place backend is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
-        ),
-    )
-end
+function gpu_calculate_structure_function! end
 
 """
     gpu_calculate_structure_function_batch!(sums, counts, sf_type, backend, x, u, distance_bins; workspace=nothing, ...)
 
-GPU slice batch over `(N_dims, N_points, T)`; host outputs `(NB, T)`. Requires `GPUExt`.
+The 1-D histogram of each auxiliary slice of `(N_dims, N_points, T)` input, accumulated into device
+buffers of shape `(NB, T)`; supplied by the KernelAbstractions extension.
 """
-function gpu_calculate_structure_function_batch!(args...; kwargs...)
-    throw(
-        ArgumentError(
-            "GPU slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
-        ),
-    )
-end
-
-function gpu_calculate_structure_function_batch(args...; kwargs...)
-    throw(
-        ArgumentError(
-            "GPU batch structure functions are unavailable. Load KernelAbstractions to activate the GPUExt extension.",
-        ),
-    )
-end
+function gpu_calculate_structure_function_batch! end
 
 """
-    gpu_calculate_structure_function_2d_batch(sf, backend, x, u, distance_bins, value_bins; kwargs...)
+    gpu_calculate_structure_function_batch(sf_type, backend, x, u, distance_bins, CT; kwargs...)
+
+The allocating form of [`gpu_calculate_structure_function_batch!`](@ref); supplied by the
+KernelAbstractions extension.
+"""
+function gpu_calculate_structure_function_batch end
+
+"""
+    gpu_calculate_structure_function_2d_batch(sf, backend, x, u, distance_bins, value_bins, CT; kwargs...)
 
 The value-binned joint histogram of a field with auxiliary axes on a device, one histogram per
 auxiliary slice; supplied by the KernelAbstractions extension.
 """
-function gpu_calculate_structure_function_2d_batch(args...; kwargs...)
-    throw(
-        ArgumentError(
-            "GPU auxiliary-axis 2D joint structure functions are unavailable. Load KernelAbstractions to activate the GPUExt extension.",
-        ),
-    )
-end
+function gpu_calculate_structure_function_2d_batch end
 
-"""GPU 2D joint slice batch; outputs `(n_dist, n_val, T)`. Requires `GPUExt`."""
-function gpu_calculate_structure_function_2d_batch!(args...; kwargs...)
-    throw(
-        ArgumentError(
-            "GPU 2D joint slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
-        ),
-    )
-end
+"""The in-place form of [`gpu_calculate_structure_function_2d_batch`](@ref), outputs `(n_dist, n_val, T)`."""
+function gpu_calculate_structure_function_2d_batch! end
 
-"""GPU single-pass slice batch; outputs `(6, NB, T)`. Requires `GPUExt`."""
-function gpu_calculate_structure_functions_single_pass_batch!(args...; kwargs...)
-    throw(
-        ArgumentError(
-            "GPU single-pass slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
-        ),
-    )
-end
+"""Six invariant 1-D histograms of each auxiliary slice on a device, outputs `(6, NB, T)`."""
+function gpu_calculate_structure_functions_single_pass_batch! end
 
-"""GPU single-pass 2D slice batch; outputs `(6, NB, n_val, T)`. Requires `GPUExt`."""
-function gpu_calculate_structure_functions_single_pass_2d_batch!(args...; kwargs...)
-    throw(
-        ArgumentError(
-            "GPU single-pass 2D slice batch is unavailable. Load KernelAbstractions to activate the GPUExt extension.",
-        ),
-    )
-end
+"""Six invariant joint histograms of each auxiliary slice on a device, outputs `(6, NB, n_val, T)`."""
+function gpu_calculate_structure_functions_single_pass_2d_batch! end
 
-function gpu_calculate_structure_function_2d!(args...; kwargs...)
-    throw(ArgumentError("GPU joint histograms require KernelAbstractions; load it before calculation"))
-end
+"""
+    gpu_calculate_structure_function_2d!(sums, counts, sf, backend, x, u, distance_bins, value_bins; kwargs...)
+
+The in-place form of [`gpu_calculate_structure_function_2d`](@ref); supplied by the
+KernelAbstractions extension.
+"""
+function gpu_calculate_structure_function_2d! end

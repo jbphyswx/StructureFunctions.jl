@@ -20,7 +20,7 @@ Test.@testset "GPU single-pass 2D, D = 3" begin
         db = LinearBinEdges(range(FT(0), FT(1.5); length = nd + 1))
         vb = LinearBinEdges(range(FT(-1), FT(2); length = nv + 1))
 
-        gs, gc = SFC.gpu_calculate_structure_functions_single_pass_2d(backend, x, u, db, vb)
+        gs, gc = SFC.gpu_calculate_structure_functions_single_pass_2d(backend, x, u, db, vb, UInt32)
         cs = zeros(FT, 6, nd, nv)
         cc = zeros(UInt32, 6, nd, nv)
         SFC._accumulate_single_pass_2d!(cs, cc, x, u, db, vb)
@@ -42,7 +42,7 @@ Test.@testset "GPU single-pass 2D, D = 3" begin
         db = LogBinEdges(FT(10^-1.5), FT(10^0.3), nd + 1)
         vb = LinearBinEdges(range(FT(-1), FT(2); length = nv + 1))
 
-        gs, gc = SFC.gpu_calculate_structure_functions_single_pass_2d(backend, x, u, db, vb)
+        gs, gc = SFC.gpu_calculate_structure_functions_single_pass_2d(backend, x, u, db, vb, UInt32)
         cs = zeros(FT, 6, nd, nv)
         cc = zeros(UInt32, 6, nd, nv)
         SFC._accumulate_single_pass_2d!(cs, cc, x, u, db, vb)
@@ -59,10 +59,10 @@ Test.@testset "GPU single-pass 2D, D = 3" begin
         db = LinearBinEdges(range(FT(0), FT(1.5); length = nd + 1))
         vb = LinearBinEdges(range(FT(-1), FT(2); length = nv + 1))
         ws = SFC.GPUSFWorkspace(backend, db, vb; kind = :single_pass_2d)
-        ref_s, ref_c = SFC.gpu_calculate_structure_functions_single_pass_2d(backend, x, u, db, vb)
+        ref_s, ref_c = SFC.gpu_calculate_structure_functions_single_pass_2d(backend, x, u, db, vb, UInt32)
         for _ in 1:3
             gs, gc = SFC.gpu_calculate_structure_functions_single_pass_2d(
-                backend, x, u, db, vb; workspace = ws)
+                backend, x, u, db, vb, UInt32; workspace = ws)
             @test Array(gc) == Array(ref_c)
             @test Array(gs) ≈ Array(ref_s)
         end

@@ -14,8 +14,7 @@ Random.seed!(20260817)
 const EARTH_R = 6.371e6
 
 _sp(x, u, bins, m; be = CB.SerialBackend()) = SFC.calculate_structure_functions_single_pass(
-    x, u, bins; backend = be, distance_metric = m,
-    output_type = SFO.StructureFunctionSumsAndCounts,
+    x, u, bins, SFO.StructureFunctionSumsAndCounts; backend = be, distance_metric = m,
 )
 
 Test.@testset "Pair geometry: selection and coordinate width" begin
@@ -92,8 +91,8 @@ Test.@testset "Solid-body rotation has no longitudinal increment" begin
     # Control: the identical field with a non-transported (flat lon/lat) frame puts a large
     # fraction of the energy into a quantity whose true value is zero.
     flat = SFC.calculate_structure_functions_single_pass(
-        x, u, collect(range(0.0, 80.0; length = 21)); backend = CB.SerialBackend(),
-        distance_metric = DI.Euclidean(), output_type = SFO.StructureFunctionSumsAndCounts,
+        x, u, collect(range(0.0, 80.0; length = 21)), SFO.StructureFunctionSumsAndCounts;
+        backend = CB.SerialBackend(), distance_metric = DI.Euclidean(),
     )
     occf = flat.L2.counts .> 0
     Test.@test sum(flat.L2.sums[occf]) / sum(flat.S2.sums[occf]) > 0.01
@@ -148,8 +147,8 @@ Test.@testset "Spherical geometry: backend agreement" begin
                        (SFT.TransverseSecondOrderStructureFunctionType(), :T2),
                        (SFT.SecondOrderStructureFunctionType(), :S2))
         one = SFC.calculate_structure_function(
-            sft, x, u, bins; backend = CB.SerialBackend(), distance_metric = m,
-            output_type = SFO.StructureFunctionSumsAndCounts, verbose = false, show_progress = false,
+            sft, x, u, bins, SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(), distance_metric = m,
+            verbose = false, show_progress = false,
         )
         Test.@test one.counts == ref[key].counts
         Test.@test one.sums ≈ ref[key].sums
