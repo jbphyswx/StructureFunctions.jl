@@ -276,16 +276,18 @@ function calculate_structure_function(
     workspace::Union{Nothing, TransformWorkspace} = nothing,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _assert_mass_counts(CT)
-    data, vD, vV, vK = _packed(u)
-    N = n_cells(s)
-    size(data, 2) == N || throw(DimensionMismatch("u covers $(size(data, 2)) points, the schedule $N"))
-    valid = field_validity(data)
-    nb = n_histogram_bins(distance_bins)
-    sums = _result_zeros(backend, float(eltype(data)), nb)
-    counts = _result_zeros(backend, CT, nb)
-    gridded_sweep!(sums, counts, sf, data, s, distance_bins, vD, vV, vK, spectral_backend; valid, weights, backend,
-                   _workspace_kw(workspace)...)
-    return _finalize(SFO.StructureFunctionSumsAndCounts(sf, ModeBinEdges(distance_bins, s), sums, counts), OT)
+    raw = _with_packed(u) do data, vD, vV, vK
+        N = n_cells(s)
+        size(data, 2) == N || throw(DimensionMismatch("u covers $(size(data, 2)) points, the schedule $N"))
+        valid = field_validity(data)
+        nb = n_histogram_bins(distance_bins)
+        sums = _result_zeros(backend, float(eltype(data)), nb)
+        counts = _result_zeros(backend, CT, nb)
+        gridded_sweep!(sums, counts, sf, data, s, distance_bins, vD, vV, vK, spectral_backend; valid, weights, backend,
+                       _workspace_kw(workspace)...)
+        SFO.StructureFunctionSumsAndCounts(sf, ModeBinEdges(distance_bins, s), sums, counts)
+    end
+    return _finalize(raw, OT)
 end
 
 """The sum element type of a field or multi-field, which a soft-binned entry's counts default to."""
@@ -328,13 +330,14 @@ function calculate_structure_function_batch!(
     ndims(u) >= 3 || throw(DimensionMismatch(
         "a slice batch is stored (component, points, slices) and so has at least three axes; got $(size(u))",
     ))
-    D = size(u, 1)
     nt = size(u)[end]
-    data = reshape(u, D, :, nt)
     N = n_cells(s)
-    size(data, 2) == N || throw(DimensionMismatch("each slice covers $(size(data, 2)) points, the schedule $N"))
     valid = batch_validity(u)
-    gridded_sweep_batch!(sums, counts, sf, data, s, distance_bins, Val(D), Val(1), Val(0), spectral_backend;
-                         valid, weights, backend, _workspace_kw(workspace)...)
+    _by_width(size(u, 1)) do vD
+        data = reshape(u, _val_int(vD), :, nt)
+        size(data, 2) == N || throw(DimensionMismatch("each slice covers $(size(data, 2)) points, the schedule $N"))
+        gridded_sweep_batch!(sums, counts, sf, data, s, distance_bins, vD, Val(1), Val(0), spectral_backend;
+                             valid, weights, backend, _workspace_kw(workspace)...)
+    end
     return nothing
 end

@@ -72,17 +72,15 @@ FlowGeometries extension.
 function cell_measure end
 
 """
-    _packed(u) -> (data, Val(D), Val(V), Val(K))
+    _with_packed(g, u)
 
-The one form every gridded kernel indexes: the `(V·D + K, cells)` matrix of a field with its field
-layout as type parameters. A bare `(D, cells...)` array is one vector field of width `D`.
+`g(data, Val(D), Val(V), Val(K))` with the one form every gridded kernel indexes: the `(V·D + K, cells)` matrix of a
+field, its field layout as type parameters. A bare `(D, cells...)` array is one vector field of width `D`
+([`_by_width`](@ref)).
 """
-@inline _packed(f::MF.Fields{D, V, K}) where {D, V, K} = (MF.packed(f), Val(D), Val(V), Val(K))
-
-function _packed(u::AbstractArray)
-    D = size(u, 1)
-    return (reshape(u, D, :), Val(D), Val(1), Val(0))
-end
+@inline _with_packed(g, f::MF.Fields{D, V, K}) where {D, V, K} = g(MF.packed(f), Val(D), Val(V), Val(K))
+@inline _with_packed(g, u::AbstractArray) =
+    _by_width(vD -> g(reshape(u, _val_int(vD), :), vD, Val(1), Val(0)), size(u, 1))
 
 """
     _check_grid_field(sf, data, schedule, ::Val{D}, ::Val{V}, ::Val{K})
@@ -196,7 +194,7 @@ _not_a_spectral_tag(x) = throw(ArgumentError(
     "FastFourierTransformSpectralBackend() or a non-uniform FFT tag; got $(typeof(x)). Omitting it sweeps the lags.",
 ))
 
-# The array and `Fields` forms of both sweeps route through `_packed`, so every kernel sees one layout.
+# The array and `Fields` forms of both sweeps pass the `(V·D + K, cells)` matrix on, so every kernel sees one layout.
 function gridded_sweep!(sums::AbstractArray, counts::AbstractArray, sf, u::AbstractArray, schedule,
                         distance_bins, ::Val{D}, spectral_backend; kwargs...) where {D}
     size(u, 1) == D || throw(DimensionMismatch("field has $(size(u, 1)) components, declared $D"))

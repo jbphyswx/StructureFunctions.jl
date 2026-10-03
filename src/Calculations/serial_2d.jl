@@ -24,7 +24,7 @@ function serial_calculate_structure_function!(
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
-    geometry = SFH.FlatGeometry{length(u_vecs)}(),
+    geometry = default_geometry(u_vecs),
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
@@ -33,10 +33,9 @@ function serial_calculate_structure_function!(
 
     # Fast path: Euclidean + D ∈ (2,3) via the SIMD compute/scatter split (distance + SF value
     # vectorize over j; the 2D (dist,value) scatter stays scalar).
-    D = length(u_vecs)
-    if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
-        _pf_2d_simd_run!(sums_2d, counts_2d, structure_function_type, x_vecs, u_vecs,
-                         distance_bins, val_be, D == 2 ? Val(2) : Val(3);
+    vD = _simd_width(geometry)
+    if vD !== nothing
+        _pf_2d_simd_run!(sums_2d, counts_2d, structure_function_type, x_vecs, u_vecs, distance_bins, val_be, vD;
                          second_axis, culling, weights)
         return nothing
     end
@@ -277,7 +276,7 @@ function _partial_2d_sums_counts(
     value_bins::AbstractVector,
     share::NTuple{2, Int},
     ::Type{CT};
-    geometry = SFH.FlatGeometry{length(u_vecs)}(),
+    geometry = default_geometry(u_vecs),
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
@@ -288,10 +287,8 @@ function _partial_2d_sums_counts(
     sums = zeros(OT, nd, nv)
     counts = zeros(CT, nd, nv)
     val_be = digitize_plan(value_bins)
-    D = length(u_vecs)
-
-    if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
-        vD = D == 2 ? Val(2) : Val(3)
+    vD = _simd_width(geometry)
+    if vD !== nothing
         _pf_2d_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, distance_bins, val_be,
                              vD, share, culling; weights = weights, second_axis = second_axis)
         return sums, counts
@@ -311,24 +308,12 @@ function serial_calculate_structure_function!(
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector,
     value_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     kwargs...,
 ) where {OT, FT1 <: Number, FT2 <: Number}
-    # `size(u_arr, 1)` is the velocity dimension here, before conversion, so this is where the
-    # geometry is fixed; everything downstream receives it.
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u_arr, 1)))
-    xk, uk = SFH.prepare_pair_inputs(geom, x_arr, u_arr)
-    return serial_calculate_structure_function!(
-        sums_2d,
-        counts_2d,
-        structure_function_type,
-        _component_vector_views(xk, SFH.coordinate_width(geom)),
-        _component_vector_views(uk, SFH.field_width(geom)),
-        distance_bins,
-        value_bins;
-        geometry = geom,
-        kwargs...,
-    )
+    x_tuple, u_tuple = _prepared_tuples(geometry, x_arr, u_arr)
+    return serial_calculate_structure_function!(sums_2d, counts_2d, structure_function_type, x_tuple, u_tuple,
+                                                distance_bins, value_bins; geometry, kwargs...)
 end
 
 function serial_calculate_structure_function(

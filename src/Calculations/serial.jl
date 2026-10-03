@@ -7,11 +7,10 @@ function serial_calculate_structure_function!(
     x_vecs::Tuple{T1, Vararg{T1}},
     u_vecs::Tuple{T2, Vararg{T2}},
     distance_bins::AbstractVector;
-    geometry = SFH.FlatGeometry{length(u_vecs)}(),
+    geometry = default_geometry(u_vecs),
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {OT, CT, T1, T2}
-    D = length(u_vecs)
     # A polynomial operator on a line: sorted once, every bin is an index range (sorted_line.jl), so
     # no pair outside the bins is formed under any culling policy.
     if _on_a_line(geometry, structure_function_type)
@@ -21,13 +20,9 @@ function serial_calculate_structure_function!(
     # Fast path: flat D ∈ (2,3) uses the SIMD compute/scatter-split kernel (vectorizes the per-pair
     # compute over j; only the histogram scatter is scalar). Curved geometries take the scalar
     # kernel, which forms the frame through `pair_frame`.
-    if geometry isa SFH.FlatGeometry && D == 2
-        return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs,
-            distance_bins, Val(2); culling, weights)
-    elseif geometry isa SFH.FlatGeometry && D == 3
-        return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs,
-            distance_bins, Val(3); culling, weights)
-    end
+    vD = _simd_width(geometry)
+    vD === nothing || return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs, distance_bins, vD;
+                                           culling, weights)
     _pf_scalar_run!(output, counts, geometry, structure_function_type, distance_bins, nothing,
                     _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling))
     return nothing
@@ -295,47 +290,12 @@ function serial_calculate_structure_function!(
     x_arr::AbstractArray{FT1},
     u_arr::AbstractArray{FT2},
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     kwargs...,
 ) where {OT, FT1 <: Number, FT2 <: Number}
-    # `size(u_arr, 1)` is the velocity dimension here, before any conversion, so this is the one
-    # place the geometry can be built. Everything downstream receives it.
-    #
-    # An array's axis length is a value, not a type parameter, so `Val` of it cannot be inferred and
-    # a geometry built straight from it would type the whole sweep as `Any`. Branching on the two
-    # common widths hands each branch a concretely typed geometry; the branch is chosen at runtime,
-    # everything inside it is not.
-    D = size(u_arr, 1)
-    if D == 2
-        return _serial_sf_with_geometry!(sums, counts, structure_function_type, x_arr, u_arr,
-                                         distance_bins,
-                                         SFH.pair_geometry_for(distance_metric, Val(2)); kwargs...)
-    elseif D == 3
-        return _serial_sf_with_geometry!(sums, counts, structure_function_type, x_arr, u_arr,
-                                         distance_bins,
-                                         SFH.pair_geometry_for(distance_metric, Val(3)); kwargs...)
-    end
-    return _serial_sf_with_geometry!(sums, counts, structure_function_type, x_arr, u_arr,
-                                     distance_bins,
-                                     SFH.pair_geometry_for(distance_metric, Val(D)); kwargs...)
-end
-
-function _serial_sf_with_geometry!(
-    sums, counts, structure_function_type, x_arr, u_arr, distance_bins, geom; kwargs...,
-)
-    xk, uk = SFH.prepare_pair_inputs(geom, x_arr, u_arr)
-    x_tuple = _component_vector_views(xk, SFH.coordinate_width(geom))
-    u_tuple = _component_vector_views(uk, SFH.field_width(geom))
-    return serial_calculate_structure_function!(
-        sums,
-        counts,
-        structure_function_type,
-        x_tuple,
-        u_tuple,
-        distance_bins;
-        geometry = geom,
-        kwargs...,
-    )
+    x_tuple, u_tuple = _prepared_tuples(geometry, x_arr, u_arr)
+    return serial_calculate_structure_function!(sums, counts, structure_function_type, x_tuple, u_tuple, distance_bins;
+                                                geometry, kwargs...)
 end
 
 """
@@ -398,7 +358,7 @@ function _partial_sums_counts(
     distance_bins::AbstractVector,
     share::NTuple{2, Int},
     ::Type{CT};
-    geometry = SFH.FlatGeometry{length(u_vecs)}(),
+    geometry = default_geometry(u_vecs),
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {CT}
@@ -406,13 +366,12 @@ function _partial_sums_counts(
     nb = n_histogram_bins(distance_bins)
     sums = zeros(OT, nb)
     counts = zeros(CT, nb)
-    D = length(u_vecs)
     # Flat D ∈ {2,3} takes the SIMD compute/scatter kernel, the same one the serial and threaded
     # drivers use; other geometries take the scalar kernel.
-    if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
-        vD = D == 2 ? Val(2) : Val(3)
+    vD = _simd_width(geometry)
+    if vD !== nothing
         _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, distance_bins, vD, share,
-                          culling; geometry = geometry, weights = weights)
+                          culling; geometry, weights)
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
     _pf_scalar_run!(sums, counts, geometry, structure_function_type, distance_bins, share,

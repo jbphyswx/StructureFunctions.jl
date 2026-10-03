@@ -1,20 +1,15 @@
-# CPU batch kernels over a batch-leading `(B, D, N)` working buffer, specialized on `Val(D)`.
-#
-# `D` reaches every kernel as a type parameter, so each `SVector{D}` has a compile-time type and the
-# body allocates nothing; the one dynamic dispatch on `Val(D)` is amortized over the whole `O(N²B)`
-# sweep. The batch axis is innermost, so `@simd for b` reads unit stride, and with shared positions
-# the bin is constant across `b`, making the accumulation contiguous.
+# CPU batch kernels over a batch-leading `(B, D, N)` working buffer. The widths come from the geometry's type, so each
+# `SVector` has a compile-time size. The batch axis is innermost, so `@simd for b` reads unit stride, and with shared
+# positions the bin is constant across `b`, making the accumulation contiguous.
 
 using Distances: Distances as DI
 
 @inline _bl_unwrap(u) = (u, false)              # (array, already_batch_leading)
 @inline _bl_unwrap(u::BatchLeading) = (u.data, true)
 
-# Prepare batch-leading (B,D,N) buffers. Handles the default plain `(D,N,B...)` (transposed
-# once) and `BatchLeading` `(B,D,N)` (zero-copy). `x` may be fixed (D,N) or varying. Called
-# once per top-level call (not in the hot loop), so the type-instability of the branch is a
-# harmless function barrier. Returns (xb, ub, B, D, W, N, fixed_x, geom): `D` and `W` are the
-# field and coordinate widths the kernels load, and `geom` carries the velocity dimension.
+# Prepare batch-leading (B,D,N) buffers for `geom`. Handles the default plain `(D,N,B...)` (transposed
+# once) and `BatchLeading` `(B,D,N)` (zero-copy). `x` may be fixed (D,N) or varying. Returns
+# (xb, ub, B, D, W, N, fixed_x): `D` and `W` are the field and coordinate widths of the staged arrays.
 """
 Component-first view of an input, so `prepare_pair_inputs` — which reads components from axis 1 —
 can convert it. Only a batch-leading `(B, W, N)` array needs permuting; the default `(W, N, B…)`
@@ -23,14 +18,10 @@ layout is already component-first. `permutedims` costs one `O(N·B)` pass per ca
 @inline _bl_component_first(a, is_batch_leading::Bool) =
     is_batch_leading ? permutedims(a, (2, 3, 1)) : a
 
-function _bl_prepare(x, u, distance_metric = DI.Euclidean(), workspace = nothing)
+function _bl_prepare(x, u, geom, workspace = nothing)
     u_raw, u_bl = _bl_unwrap(u)
     x_raw, x_bl = _bl_unwrap(x)
     fixed_x = ndims(x_raw) == 2
-    # The velocity dimension, read before any conversion — this is what fixes the geometry, and it
-    # is not recoverable from the converted arrays.
-    D_in = u_bl ? size(u_raw, 2) : size(u_raw, 1)
-    geom = SFH.pair_geometry_for(distance_metric, Val(D_in))
     if !(geom isa SFH.FlatGeometry)
         # Convert once per call, component-first, then let the layout code below run unchanged.
         x_raw, u_raw = SFH.prepare_pair_inputs(
@@ -54,7 +45,7 @@ function _bl_prepare(x, u, distance_metric = DI.Euclidean(), workspace = nothing
     end
     xb = fixed_x ? x_raw :
          (x_bl ? x_raw : _to_batch_leading(reshape(x_raw, W, N, B), _ws_xb(workspace)))
-    return xb, ub, B, D, W, N, fixed_x, geom
+    return xb, ub, B, D, W, N, fixed_x
 end
 
 # Statically-sized, unchecked loads for the two layouts the batch drivers hold: `(W, N)` shared
@@ -68,10 +59,10 @@ end
     SA.SVector{D}(ntuple(d -> @inbounds(ub[b, d, i]), Val(D)))
 
 """
-Throw unless the staged coordinate width matches what `geom` needs.
+Throw unless the staged coordinate width `W` and field width `D` are those `geom` loads.
 
-The batch entry points take raw `(D, N, B…)` arrays, so this is where a mismatched `x` is caught,
-before the kernels load it under `@inbounds`.
+The batch entry points take raw `(D, N, B…)` arrays, so this is where a mismatched `x` or `u` is caught,
+before the kernels load them under `@inbounds`.
 """
 @inline function _validate_bl_geometry(geom, W::Int, D::Int)
     want = _val_int(SFH.coordinate_width(geom))
@@ -81,6 +72,8 @@ before the kernels load it under `@inbounds`.
             "got $W (velocity dimension D=$D)",
         ),
     )
+    D == _val_int(SFH.field_width(geom)) || throw(DimensionMismatch(
+        "$(nameof(typeof(geom))) loads $(_val_int(SFH.field_width(geom))) field component(s), but u has $D"))
     return nothing
 end
 
@@ -692,14 +685,14 @@ Shared positions are sorted once for every slice: one grid, and the `(W, N)` pos
 """
 function _bl_cull(xb, ub, geom, distance_bins, culling::CullingPolicy, fixed_x::Bool, weights)
     _cull_enabled(culling) || return nothing, xb, ub, weights
-    W = _val_int(SFH.coordinate_width(geom))
+    vW = SFH.coordinate_width(geom)
     if fixed_x
-        grid = cull_grid_for(ntuple(d -> view(xb, d, :), W), geom, distance_bins, culling)
+        grid = cull_grid_for(ntuple(d -> view(xb, d, :), vW), geom, distance_bins, culling)
         grid === nothing && return nothing, xb, ub, weights
         p = grid.perm
         return grid, xb[:, p], ub[:, :, p], _permuted_point_weights(weights, p)
     end
-    grids = [cull_grid_for(ntuple(d -> view(xb, b, d, :), W), geom, distance_bins, culling) for b in axes(ub, 1)]
+    grids = [cull_grid_for(ntuple(d -> view(xb, b, d, :), vW), geom, distance_bins, culling) for b in axes(ub, 1)]
     all(isnothing, grids) && return nothing, xb, ub, weights
     perms = [g === nothing ? collect(axes(ub, 3)) : g.perm for g in grids]
     return grids, [xb[b:b, :, p] for (b, p) in pairs(perms)], [ub[b:b, :, p] for (b, p) in pairs(perms)],
@@ -725,13 +718,13 @@ function _bl_chunk_runner(kernel!::K, grid, xs, us, ws, N::Int) where {K}
     end
 end
 
-function _bl_run_1d!(sums, counts, sf_type, x, u, distance_bins, distance_metric, executor, workspace = nothing;
+function _bl_run_1d!(sums, counts, sf_type, x, u, distance_bins, geom, executor, workspace = nothing;
                      weights = NoWeights(), culling::CullingPolicy = AutoCulling())
     dist_be = digitize_plan(distance_bins)
     n_bins = n_histogram_bins(dist_be)
     OT = eltype(sums); CT = eltype(counts)
-    x0, u0, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
-    vD = Val(D)
+    x0, u0, B, D, W, N, fixed_x = _bl_prepare(x, u, geom, workspace)
+    vD = SFH.field_width(geom)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :sf1d, (n_bins,), OT, CT)
     grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)
@@ -751,14 +744,14 @@ function _bl_run_1d!(sums, counts, sf_type, x, u, distance_bins, distance_metric
     return nothing
 end
 
-function _bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins, distance_metric, executor,
+function _bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins, geom, executor,
                           workspace = nothing; weights = NoWeights(), culling::CullingPolicy = AutoCulling(),
                           second_axis::AbstractSecondAxisSource = InvariantValueAxis())
     dist_be = digitize_plan(distance_bins); val_be = digitize_plan(value_bins)
     n_dist = n_histogram_bins(dist_be); n_val = n_histogram_bins(val_be)
     OT = eltype(sums); CT = eltype(counts)
-    x0, u0, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
-    vD = Val(D)
+    x0, u0, B, D, W, N, fixed_x = _bl_prepare(x, u, geom, workspace)
+    vD = SFH.field_width(geom)
     _validate_bl_geometry(geom, W, D)
     _require_value_axis(second_axis, geom)
     _validate_ws_layout(workspace, :joint2d, (n_dist, n_val), OT, CT)
@@ -777,13 +770,13 @@ function _bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins
     return nothing
 end
 
-function _bl_run_sp1d!(sums, counts, x, u, distance_bins, distance_metric, executor, workspace = nothing;
+function _bl_run_sp1d!(sums, counts, x, u, distance_bins, geom, executor, workspace = nothing;
                        weights = NoWeights(), culling::CullingPolicy = AutoCulling())
     dist_be = digitize_plan(distance_bins)
     n_bins = n_histogram_bins(dist_be)
     OT = eltype(sums); CT = eltype(counts)
-    x0, u0, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
-    vD = Val(D)
+    x0, u0, B, D, W, N, fixed_x = _bl_prepare(x, u, geom, workspace)
+    vD = SFH.field_width(geom)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :single_pass, (SINGLE_PASS_N, n_bins), OT, CT)
     grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)
@@ -803,15 +796,15 @@ function _bl_run_sp1d!(sums, counts, x, u, distance_bins, distance_metric, execu
     return nothing
 end
 
-function _bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins, distance_metric, executor, workspace = nothing;
+function _bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins, geom, executor, workspace = nothing;
                        weights = NoWeights(), culling::CullingPolicy = AutoCulling())
     dist_be = digitize_plan(distance_bins); val_plan = digitize_plan(value_bins)
     n_bins = n_histogram_bins(dist_be)
     n_val = size(sums, 3)
     _validate_value_bins!(val_plan, n_val)
     OT = eltype(sums); CT = eltype(counts)
-    x0, u0, B, D, W, N, fixed_x, geom = _bl_prepare(x, u, distance_metric, workspace)
-    vD = Val(D)
+    x0, u0, B, D, W, N, fixed_x = _bl_prepare(x, u, geom, workspace)
+    vD = SFH.field_width(geom)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :single_pass_2d, (SINGLE_PASS_N, n_bins, n_val), OT, CT)
     grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)

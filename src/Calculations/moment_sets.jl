@@ -8,6 +8,10 @@
 @inline _sf_tuple_bin(plan::Tuple, x, m) =
     m == 1 ? SFH.digitize(x, first(plan)) : _sf_tuple_bin(Base.tail(plan), x, m - 1)
 
+"""Element `m` of the tuple `t` by a chain of comparisons, so a run-time `m` selects among registers."""
+@inline _sf_tuple_at(t::Tuple{Any}, m) = first(t)
+@inline _sf_tuple_at(t::Tuple, m) = m == 1 ? first(t) : _sf_tuple_at(Base.tail(t), m - 1)
+
 """The packed components of a pair's rank-`P` increment tensor over `D` components, in
 `SFT.symmetric_indices(Val(D), Val(P))` order."""
 struct TensorComponents{P, D} end

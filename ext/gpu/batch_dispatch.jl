@@ -48,7 +48,7 @@ function _gpu_1d_unified_device(
 ) where {OT, CT}
     kind = _sf_workspace_kind(moments, Val(1))
     _validate_batch_workspace!(workspace, backend, kind, distance_bins)
-    W, F = size(x, 1), size(u, 1)
+    W, F = SFC._val_int(SFH.coordinate_width(geom)), SFC._val_int(SFH.field_width(geom))
     N = size(x, 2)
     dig = _dist_digitizer(workspace, backend, distance_bins, Val(kind))
     CNT = _sf_count_type(_sf_weights_to_device(backend, weights), CT, _sf_worst_case_pairs(N))
@@ -108,19 +108,17 @@ function _gpu_calculate_structure_function_batch(
     u::AbstractArray{FT},
     distance_bins::AbstractVector{FT},
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     weights = SFC.NoWeights(), workspace = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(),
 ) where {FT, CT}
     fixed_x = ndims(x) == 2
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
     bdims = SFC.batch_dims(u)
-    # The velocity dimension is `size(u, 1)`, and only before the conversion.
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
     source = x
-    x, u = SFH.prepare_pair_inputs(geom, x, u)
+    x, u = SFH.prepare_pair_inputs(geometry, x, u)
     out_dev, cnt_dev, _ = _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins, NB, B, fixed_x, FT, CT,
-        geom; weights, workspace, culling, source)
+        geometry; weights, workspace, culling, source)
     return SF.StructureFunctionSumsAndCounts(
         sf_type, distance_bins, reshape(out_dev, NB, bdims...), reshape(_result_counts(cnt_dev, CT), NB, bdims...),
     )
@@ -134,20 +132,18 @@ function _gpu_calculate_structure_function_batch!(
     x::AbstractArray{FT},
     u::AbstractArray{FT},
     distance_bins::AbstractVector{FT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     weights = SFC.NoWeights(), workspace = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(),
 ) where {FT}
     _check_gpu_outputs(output_sums, output_counts, backend, (length(distance_bins)-1, SFC.batch_dims(u)...))
     fixed_x = ndims(x) == 2
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
-    # The velocity dimension is `size(u, 1)`, and only before the conversion.
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
     source = x
-    x, u = SFH.prepare_pair_inputs(geom, x, u)
+    x, u = SFH.prepare_pair_inputs(geometry, x, u)
     out_dev, cnt_dev, direct = _gpu_1d_individual_device(
         backend, sf_type, x, u, distance_bins, NB, B, fixed_x, eltype(output_sums), eltype(output_counts),
-        geom; weights, workspace, culling, source, sums = output_sums, counts = output_counts)
+        geometry; weights, workspace, culling, source, sums = output_sums, counts = output_counts)
     _add_accumulated!(output_sums, output_counts, out_dev, cnt_dev, direct)
     return nothing
 end
@@ -158,7 +154,7 @@ function _gpu_dispatch_single_pass_batch(
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3},
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     weights = SFC.NoWeights(), workspace = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(),
 ) where {FT1, FT2, FT3, CT}
     FT = promote_type(float(FT1), float(FT2))
@@ -166,13 +162,11 @@ function _gpu_dispatch_single_pass_batch(
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
     bdims = SFC.batch_dims(u)
-    # The velocity dimension is `size(u, 1)`, and only before the conversion.
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
     source = x
-    x, u = SFH.prepare_pair_inputs(geom, x, u)
+    x, u = SFH.prepare_pair_inputs(geometry, x, u)
     out_dev, cnt_dev, _ = _gpu_1d_unified_device(
         backend, x, u, SFT.SinglePassInvariants(), distance_bins, NB, B, fixed_x, FT, CT,
-        geom; weights, workspace, culling, source)
+        geometry; weights, workspace, culling, source)
     return (sums = reshape(out_dev, SFC.SINGLE_PASS_N, NB, bdims...),
             counts = reshape(_result_counts(cnt_dev, CT), SFC.SINGLE_PASS_N, NB, bdims...))
 end
@@ -184,20 +178,18 @@ function _gpu_dispatch_single_pass_batch!(
     x::AbstractArray{FT1},
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     weights = SFC.NoWeights(), workspace = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(),
 ) where {OT, CT, FT1, FT2, FT3}
     _check_gpu_outputs(sums, counts, backend, (SFC.SINGLE_PASS_N, length(distance_bins)-1, SFC.batch_dims(u)...))
     fixed_x = ndims(x) == 2
     NB = length(distance_bins) - 1
     B = SFC.batch_size(u)
-    # The velocity dimension is `size(u, 1)`, and only before the conversion.
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
     source = x
-    x, u = SFH.prepare_pair_inputs(geom, x, u)
+    x, u = SFH.prepare_pair_inputs(geometry, x, u)
     out_dev, cnt_dev, direct = _gpu_1d_unified_device(
         backend, x, u, SFT.SinglePassInvariants(), distance_bins, NB, B, fixed_x, OT, CT,
-        geom; weights, workspace, culling, source, sums, counts)
+        geometry; weights, workspace, culling, source, sums, counts)
     _add_accumulated!(sums, counts, out_dev, cnt_dev, direct)
     return sums, counts
 end
@@ -215,7 +207,7 @@ function _gpu_2d_unified_device(
 ) where {OT, CT}
     kind = _sf_workspace_kind(moments, Val(2))
     _validate_batch_workspace!(workspace, backend, kind, distance_bins; value_bins)
-    W, F = size(x, 1), size(u, 1)
+    W, F = SFC._val_int(SFH.coordinate_width(geom)), SFC._val_int(SFH.field_width(geom))
     N = size(x, 2)
     ddig = _dist_digitizer(workspace, backend, distance_bins, Val(kind))
     vplan = _value_digitizer(workspace, backend, value_bins)
@@ -247,7 +239,7 @@ function _gpu_dispatch_single_pass_2d_batch(
     distance_bins::AbstractVector{FT3},
     value_bins::SFC.SinglePass2DValueBins,
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     weights = SFC.NoWeights(), workspace = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(),
 ) where {FT1, FT2, FT3, CT}
     FT = promote_type(float(FT1), float(FT2))
@@ -257,13 +249,11 @@ function _gpu_dispatch_single_pass_2d_batch(
     SFC._validate_value_bins!(value_bins, n_val)
     B = SFC.batch_size(u)
     bdims = SFC.batch_dims(u)
-    # The velocity dimension is `size(u, 1)`, and only before the conversion.
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
     source = x
-    x, u = SFH.prepare_pair_inputs(geom, x, u)
+    x, u = SFH.prepare_pair_inputs(geometry, x, u)
     out_dev, cnt_dev, _ = _gpu_sp2d_unified_device(
         backend, x, u, distance_bins, value_bins, n_dist, n_val, B, fixed_x, FT, CT,
-        geom; weights, workspace, culling, source)
+        geometry; weights, workspace, culling, source)
     return (sums = reshape(out_dev, SFC.SINGLE_PASS_N, n_dist, n_val, bdims...),
             counts = reshape(_result_counts(cnt_dev, CT), SFC.SINGLE_PASS_N, n_dist, n_val, bdims...))
 end
@@ -276,7 +266,7 @@ function _gpu_dispatch_single_pass_2d_batch!(
     u::AbstractArray{FT2},
     distance_bins::AbstractVector{FT3},
     value_bins::SFC.SinglePass2DValueBins;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     weights = SFC.NoWeights(), workspace = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(),
 ) where {OT, CT, FT1, FT2, FT3}
     _check_gpu_outputs(sums, counts, backend,
@@ -285,13 +275,11 @@ function _gpu_dispatch_single_pass_2d_batch!(
     n_dist = length(distance_bins) - 1
     n_val = size(sums, 3)
     B = SFC.batch_size(u)
-    # The velocity dimension is `size(u, 1)`, and only before the conversion.
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
     source = x
-    x, u = SFH.prepare_pair_inputs(geom, x, u)
+    x, u = SFH.prepare_pair_inputs(geometry, x, u)
     out_dev, cnt_dev, direct = _gpu_sp2d_unified_device(
         backend, x, u, distance_bins, value_bins, n_dist, n_val, B, fixed_x, OT, CT,
-        geom; weights, workspace, culling, source, sums, counts)
+        geometry; weights, workspace, culling, source, sums, counts)
     _add_accumulated!(sums, counts, out_dev, cnt_dev, direct)
     return sums, counts
 end
@@ -307,21 +295,19 @@ function _gpu_calculate_structure_function_2d_batch(
     distance_bins::AbstractVector{FT},
     value_bins::AbstractVector{FT},
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     weights = SFC.NoWeights(), workspace = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(),
     second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
 ) where {FT, CT}
     fixed_x = ndims(x) == 2
     n_dist = length(distance_bins) - 1
     n_val = length(value_bins) - 1
-    # The velocity dimension is `size(u, 1)`, and only before the conversion.
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
-    SFC._require_value_axis(second_axis, geom)
+    SFC._require_value_axis(second_axis, geometry)
     source = x
-    x, u = SFH.prepare_pair_inputs(geom, x, u)
+    x, u = SFH.prepare_pair_inputs(geometry, x, u)
     bdims = SFC.batch_dims(u)
     out_dev, cnt_dev, _ = _gpu_2d_unified_device(backend, x, u, sf_type, distance_bins, value_bins,
-                                                 n_dist, n_val, SFC.batch_size(u), fixed_x, FT, CT, geom;
+                                                 n_dist, n_val, SFC.batch_size(u), fixed_x, FT, CT, geometry;
                                                  weights, workspace, culling, source, second_axis)
     return SF.StructureFunction2DSumsAndCounts(sf_type, distance_bins, value_bins,
         reshape(out_dev, n_dist, n_val, bdims...), reshape(_result_counts(cnt_dev, CT), n_dist, n_val, bdims...))
@@ -336,7 +322,7 @@ function _gpu_calculate_structure_function_2d_batch!(
     u::AbstractArray{FT},
     distance_bins::AbstractVector{FT},
     value_bins::AbstractVector{FT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     weights = SFC.NoWeights(), workspace = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(),
     second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
 ) where {FT}
@@ -344,13 +330,11 @@ function _gpu_calculate_structure_function_2d_batch!(
     n_val = length(value_bins) - 1
     _check_gpu_outputs(sums, counts, backend, (n_dist, n_val, SFC.batch_dims(u)...))
     fixed_x = ndims(x) == 2
-    # The velocity dimension is `size(u, 1)`, and only before the conversion.
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
-    SFC._require_value_axis(second_axis, geom)
+    SFC._require_value_axis(second_axis, geometry)
     source = x
-    x, u = SFH.prepare_pair_inputs(geom, x, u)
+    x, u = SFH.prepare_pair_inputs(geometry, x, u)
     out_dev, cnt_dev, direct = _gpu_2d_unified_device(backend, x, u, sf_type, distance_bins, value_bins,
-        n_dist, n_val, SFC.batch_size(u), fixed_x, eltype(sums), eltype(counts), geom;
+        n_dist, n_val, SFC.batch_size(u), fixed_x, eltype(sums), eltype(counts), geometry;
         weights, workspace, culling, source, second_axis, sums, counts)
     _add_accumulated!(sums, counts, out_dev, cnt_dev, direct)
     return nothing

@@ -57,13 +57,23 @@ function _cuda_plan(launch!::L, choice::CUDAChoice, out, cnt, x, ddig, NB::Int, 
     end
 end
 
-"""The candidate whose launch into zeroed scratch buffers like `out` and `cnt` takes the least time, each launched
-once before it is timed."""
+"""Timed rounds over the candidates of a class, and the ratio to the fastest past which a candidate leaves them."""
+const CU_TIMING_ROUNDS = 3
+const CU_TIMING_KEEP = 1.5
+
+"""The candidate whose launch into zeroed scratch buffers like `out` and `cnt` takes the least time: every candidate is
+compiled and launched once, then timed in [`CU_TIMING_ROUNDS`](@ref) interleaved rounds, each keeping its best time
+and dropping the candidates slower than [`CU_TIMING_KEEP`](@ref) times the fastest."""
 function _cuda_fastest(launch!, candidates, out, cnt)
     s, c = fill!(similar(out), 0), fill!(similar(cnt), 0)
-    times = map(candidates) do plan
-        launch!(plan, s, c)
-        CUDA.@elapsed launch!(plan, s, c)
+    foreach(plan -> launch!(plan, s, c), candidates)
+    best = fill(Inf32, length(candidates))
+    live = collect(eachindex(candidates))
+    for _ in 1:CU_TIMING_ROUNDS
+        for k in live
+            best[k] = min(best[k], CUDA.@elapsed launch!(candidates[k], s, c))
+        end
+        live = filter(k -> best[k] <= CU_TIMING_KEEP * minimum(best), live)
     end
-    return candidates[argmin(collect(times))]
+    return candidates[argmin(best)]
 end

@@ -501,23 +501,23 @@ function calculate_structure_function(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _assert_mass_counts(CT)
-    data, vD, vV, vK = _packed(u)
-    D = _val_int(vD)
-    V = _val_int(vV)
-    geometry = SFH.pair_geometry_for(distance_metric, Val(V == 0 ? 2 : D))
-    geometry isa SFH.SphericalGeometry || throw(ArgumentError(
-        "a harmonic structure function lives on a sphere; $(typeof(distance_metric)) describes none. " *
-        "Pass SphericalAngle(), SphericalDistance(R) or Haversine(R).",
-    ))
-    N = size(x, 2)
-    w = weights === nothing ? ones(Float64, N) : weights
-    v = valid === nothing ? field_validity(data) : valid
-    nb = length(nodes)
-    sums = _result_zeros(backend, float(eltype(data)), nb)
-    counts = _result_zeros(backend, CT, nb)
-    harmonic_sweep!(sums, counts, sf, geometry, x, w, data, nodes, vD, vV, vK, spectral_backend;
-                    valid = v, backend)
-    return _finalize(SFO.StructureFunctionSumsAndCounts(sf, nodes, sums, counts), OT)
+    raw = _with_packed(u) do data, vD, vV, vK
+        geometry = SFH.pair_geometry_for(distance_metric, Val(_val_int(vV) == 0 ? 2 : _val_int(vD)))
+        geometry isa SFH.SphericalGeometry || throw(ArgumentError(
+            "a harmonic structure function lives on a sphere; $(typeof(distance_metric)) describes none. " *
+            "Pass SphericalAngle(), SphericalDistance(R) or Haversine(R).",
+        ))
+        N = size(x, 2)
+        w = weights === nothing ? ones(Float64, N) : weights
+        v = valid === nothing ? field_validity(data) : valid
+        nb = length(nodes)
+        sums = _result_zeros(backend, float(eltype(data)), nb)
+        counts = _result_zeros(backend, CT, nb)
+        harmonic_sweep!(sums, counts, sf, geometry, x, w, data, nodes, vD, vV, vK, spectral_backend;
+                        valid = v, backend)
+        SFO.StructureFunctionSumsAndCounts(sf, nodes, sums, counts)
+    end
+    return _finalize(raw, OT)
 end
 
 calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix,

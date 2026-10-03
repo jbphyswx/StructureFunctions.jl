@@ -140,30 +140,29 @@ function _accumulate_single_pass_1d!(
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
-    D = size(u, 1)
     n_points = size(x, 2)
     n_bins = length(distance_bins) - 1
     size(sums) == (SINGLE_PASS_N, n_bins) ||
         throw(DimensionMismatch("sums must have shape ($SINGLE_PASS_N, n_bins); got $(size(sums))"))
     size(counts) == (SINGLE_PASS_N, n_bins) ||
         throw(DimensionMismatch("counts must have shape ($SINGLE_PASS_N, n_bins); got $(size(counts))"))
-    # Fast path: Euclidean + D ∈ (2,3) via the SIMD compute/scatter split (vectorizes the
-    # per-pair du_L / |du|² compute over j; the 6-way histogram scatter stays scalar).
-    geom = SFH.pair_geometry_for(distance_metric, Val(D))
-    if geom isa SFH.FlatGeometry && (D == 2 || D == 3)
-        _sp_simd_run!(sums, counts, x, u, distance_bins, D == 2 ? Val(2) : Val(3), culling, weights)
+    # Flat D ∈ (2,3) via the SIMD compute/scatter split (vectorizes the per-pair du_L / |du|² compute over j; the
+    # 6-way histogram scatter stays scalar).
+    vD = _simd_width(geometry)
+    if vD !== nothing
+        _sp_simd_run!(sums, counts, x, u, distance_bins, vD, culling, weights)
         return sums, counts
     end
 
-    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
+    xk, uk = SFH.prepare_pair_inputs(geometry, x, u)
     be = digitize_plan(distance_bins)
-    grid, xk, uk = cull_sorted_matrices(xk, uk, geom, distance_bins, culling)
+    grid, xk, uk = cull_sorted_matrices(xk, uk, geometry, distance_bins, culling)
     wc = grid === nothing ? weights : _permuted_point_weights(weights, grid.perm)
-    _sp1d_run_blocks!(sums, counts, xk, uk, be, geom, n_bins, 1:n_points, n_points, grid, wc)
+    _sp1d_run_blocks!(sums, counts, xk, uk, be, geometry, n_bins, 1:n_points, n_points, grid, wc)
     return sums, counts
 end
 
@@ -300,7 +299,7 @@ function _sp_simd_run!(
 end
 
 """
-    _partial_single_pass_1d(inner, x, u, distance_bins, share, CT; distance_metric, culling, weights)
+    _partial_single_pass_1d(inner, x, u, distance_bins, share, CT; geometry, culling, weights)
 
 Six-invariant partial sums/counts over share `share = (w, k)` of the outer indices ([`_share_indices`](@ref)), for
 one distributed worker or MPI rank, computed on its local backend `inner`; this method runs serially, and the
@@ -314,28 +313,27 @@ function _partial_single_pass_1d(
     distance_bins::AbstractVector,
     share::NTuple{2, Int},
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {FT1 <: Number, FT2 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
-    D = size(u, 1)
     nb = n_histogram_bins(distance_bins)
     sums = zeros(OT, SINGLE_PASS_N, nb)
     counts = zeros(CT, SINGLE_PASS_N, nb)
 
-    geom = SFH.pair_geometry_for(distance_metric, Val(D))
-    if geom isa SFH.FlatGeometry && (D == 2 || D == 3)
-        _sp_simd_partial!(sums, counts, x, u, distance_bins, D == 2 ? Val(2) : Val(3), share, culling, weights)
+    vD = _simd_width(geometry)
+    if vD !== nothing
+        _sp_simd_partial!(sums, counts, x, u, distance_bins, vD, share, culling, weights)
         return sums, counts
     end
 
-    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
+    xk, uk = SFH.prepare_pair_inputs(geometry, x, u)
     dist_be = digitize_plan(distance_bins)
-    grid, xk, uk = cull_sorted_matrices(xk, uk, geom, distance_bins, culling)
+    grid, xk, uk = cull_sorted_matrices(xk, uk, geometry, distance_bins, culling)
     wc = grid === nothing ? weights : _permuted_point_weights(weights, grid.perm)
     N = size(xk, 2)
-    _sp1d_run_blocks!(sums, counts, xk, uk, dist_be, geom, nb, _share_indices(grid, N - 1, share), N, grid, wc)
+    _sp1d_run_blocks!(sums, counts, xk, uk, dist_be, geometry, nb, _share_indices(grid, N - 1, share), N, grid, wc)
     return sums, counts
 end
 
@@ -435,7 +433,7 @@ end
 @inline _permuted_point_weights(w::AbstractVector, perm) = w[perm]
 
 """
-    _partial_single_pass_2d(inner, x, u, distance_bins, value_bins, share, CT; distance_metric, culling, weights)
+    _partial_single_pass_2d(inner, x, u, distance_bins, value_bins, share, CT; geometry, culling, weights)
 
 Six-invariant 2D joint partial sums/counts over share `share = (w, k)` of the outer indices, for one distributed
 worker or MPI rank, computed on its local backend `inner` as [`_partial_single_pass_1d`](@ref) is.
@@ -449,7 +447,7 @@ function _partial_single_pass_2d(
     value_bins::SinglePass2DValueBins,
     share::NTuple{2, Int},
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {FT1 <: Number, FT2 <: Number, CT}
@@ -460,7 +458,7 @@ function _partial_single_pass_2d(
     sums = zeros(OT, SINGLE_PASS_N, n_bins, n_val)
     counts = zeros(CT, SINGLE_PASS_N, n_bins, n_val)
     _sp2d_accumulate_range!(sums, counts, x, u, distance_bins, digitize_plan(value_bins),
-        distance_metric, n_bins, n_val, share, culling, weights)
+        geometry, n_bins, n_val, share, culling, weights)
     return sums, counts
 end
 
@@ -487,7 +485,9 @@ function calculate_structure_functions_single_pass!(
     _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), OT)
     _assert_counts_can_accumulate(counts, size(x, 2), w)
-    _dispatch_single_pass!(backend, sums, counts, x, u, distance_bins; distance_metric, weights = w, kwargs...)
+    _shaped(PointField, size(u, 1), distance_metric) do _, geometry
+        _dispatch_single_pass!(backend, sums, counts, x, u, distance_bins; geometry, weights = w, kwargs...)
+    end
     return sums, counts
 end
 
@@ -676,11 +676,13 @@ function calculate_structure_functions_single_pass(
     kwargs...
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, M, CT <: Real, OT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
-    shape = _validate_array_shape(x, u, distance_metric)
+    _validate_array_shape(x, u, distance_metric)
     OTv = promote_type(float(FT1), float(FT2))
     w = _pair_weights(weights, size(x, 2), OTv)
     _assert_count_type(CT, size(x, 2), w)
-    raw = _dispatch_single_pass(backend, shape, x, u, distance_bins, CT; distance_metric, weights = w, kwargs...)
+    raw = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
+        _dispatch_single_pass(backend, shape, x, u, distance_bins, CT; geometry, weights = w, kwargs...)
+    end
     # The sum element type is `OTv`, the count element type `CT`, and the stacked accumulator's rank
     # `ndims(u)`: point-field `(6, n_bins)` is rank 2 and batched `(6, n_bins, aux...)` rank `M`.
     sums = raw.sums::AbstractArray{OTv, M}
@@ -725,9 +727,10 @@ function calculate_structure_functions_single_pass_2d!(
     _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), OT)
     _assert_counts_can_accumulate(counts_3d, size(x, 2), w)
-    _dispatch_single_pass_2d!(
-        backend, sums_3d, counts_3d, x, u, distance_bins, value_bins; distance_metric, weights = w, kwargs...
-    )
+    _shaped(PointField, size(u, 1), distance_metric) do _, geometry
+        _dispatch_single_pass_2d!(backend, sums_3d, counts_3d, x, u, distance_bins, value_bins; geometry,
+                                  weights = w, kwargs...)
+    end
     return sums_3d, counts_3d
 end
 
@@ -739,7 +742,7 @@ function _accumulate_single_pass_2d!(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
     value_bins::SinglePass2DValueBins;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
@@ -752,7 +755,7 @@ function _accumulate_single_pass_2d!(
     _validate_value_bins!(value_bins, n_val)
 
     _sp2d_accumulate_range!(sums_3d, counts_3d, x, u, distance_bins, digitize_plan(value_bins),
-        distance_metric, n_bins, n_val, nothing, culling, weights)
+        geometry, n_bins, n_val, nothing, culling, weights)
     return sums_3d, counts_3d
 end
 
@@ -770,15 +773,14 @@ Base.:+(a::SumCount{OT, CT}, b::SumCount{OT, CT}) where {OT, CT} =
 sums/counts."""
 function _sp2d_accumulate_range!(
     sums_3d::AbstractArray{OT, 3}, counts_3d::AbstractArray{CT, 3},
-    x::AbstractMatrix, u::AbstractMatrix, distance_bins, value_bins, distance_metric,
+    x::AbstractMatrix, u::AbstractMatrix, distance_bins, value_bins, geometry,
     n_bins::Int, n_val::Int, share, culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {OT, CT}
     h = _sp2d_histogram(OT, CT, n_bins, n_val)
-    geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
-    grid, x, u = cull_sorted_inputs(x, u, geom, distance_bins, culling)
+    grid, x, u = cull_sorted_inputs(x, u, geometry, distance_bins, culling)
     wc = grid === nothing ? weights : _permuted_point_weights(weights, grid.perm)
-    _sp2d_fill!(h, x, u, distance_bins, value_bins, distance_metric, n_bins, n_val,
+    _sp2d_fill!(h, x, u, distance_bins, value_bins, geometry, n_bins, n_val,
                 _share_indices(grid, size(x, 2) - 1, share), grid, wc)
     return _sp2d_unpack!(sums_3d, counts_3d, h, n_bins, n_val)
 end
@@ -791,14 +793,12 @@ its type per point.
 """
 function _sp2d_fill!(
     h::AbstractArray{SumCount{OT, CT}, 3},
-    x::AbstractMatrix, u::AbstractMatrix, distance_bins, value_bins, distance_metric,
+    x::AbstractMatrix, u::AbstractMatrix, distance_bins, value_bins, geometry,
     n_bins::Int, n_val::Int, ilist, grid = nothing, weights = NoWeights(),
 ) where {OT, CT}
-    D = size(u, 1)
-    geom = SFH.pair_geometry_for(distance_metric, Val(D))
     N = size(x, 2)
-    if geom isa SFH.FlatGeometry && (D == 2 || D == 3)
-        vD = D == 2 ? Val(2) : Val(3)
+    vD = _simd_width(geometry)
+    if vD !== nothing
         xc = ntuple(d -> collect(view(x, d, :)), vD)
         uc = ntuple(d -> collect(view(u, d, :)), vD)
         L = _pair_scratch_length(N)
@@ -809,8 +809,8 @@ function _sp2d_fill!(
             weights)
         return nothing
     end
-    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
-    _sp2d_curved_run_blocks!(h, xk, uk, digitize_plan(distance_bins), value_bins, geom, n_bins, n_val,
+    xk, uk = SFH.prepare_pair_inputs(geometry, x, u)
+    _sp2d_curved_run_blocks!(h, xk, uk, digitize_plan(distance_bins), value_bins, geometry, n_bins, n_val,
         ilist, N, grid, weights)
     return nothing
 end
@@ -1284,11 +1284,13 @@ function calculate_structure_functions_single_pass_2d(
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT <: Real, OT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
-    shape = _validate_array_shape(x, u, distance_metric)
+    _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), promote_type(float(FT1), float(FT2)))
     _assert_count_type(CT, size(x, 2), w)
-    raw = _dispatch_single_pass_2d(backend, shape, x, u, distance_bins, value_bins, CT;
-        distance_metric, weights = w, kwargs...)
+    raw = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
+        _dispatch_single_pass_2d(backend, shape, x, u, distance_bins, value_bins, CT; geometry, weights = w,
+                                 kwargs...)
+    end
     return _single_pass_collection_2d(raw[1], raw[2], distance_bins, value_bins, OT)
 end
 

@@ -16,29 +16,28 @@ function SFC.gpu_calculate_structure_function_tensor!(
     sums::AbstractArray, counts::AbstractArray, order::Val{P},
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
+    geometry, axis = nothing,
     culling::SFC.CullingPolicy = SFC.AutoCulling(), weights = SFC.NoWeights(), workspace = nothing,
 ) where {P, D}
     ka = backend.backend
     _check_gpu_residency(sums, counts, ka)
-    geom = SFH.pair_geometry_for(distance_metric, Val(D))
-    axis === nothing || geom isa SFH.FlatGeometry || SFC._require_directional(SFC.FrameTransport())
+    axis === nothing || geometry isa SFH.FlatGeometry || SFC._require_directional(SFC.FrameTransport())
     fixed_x = ndims(x) == 2
     source = x
-    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
+    xk, uk = SFH.prepare_pair_inputs(geometry, x, u)
     N = size(uk, 2)
     B = prod(size(uk)[3:end])
     NB = SFC.n_histogram_bins(distance_bins)
     moments = TensorComponents{P, D}()
     OT, CT = eltype(sums), eltype(counts)
     if axis === nothing
-        packed, pcnt, _ = _gpu_1d_unified_device(ka, xk, uk, moments, distance_bins, NB, B, fixed_x, OT, CT, geom;
+        packed, pcnt, _ = _gpu_1d_unified_device(ka, xk, uk, moments, distance_bins, NB, B, fixed_x, OT, CT, geometry;
                                                  weights, workspace, culling, source)
         _tensor_add_packed!(sums, counts, packed, pcnt, Val(D), order)
     else
         axis_bins, n_axis, second_axis = axis
         packed, pcnt, _ = _gpu_2d_unified_device(ka, xk, uk, moments, distance_bins, axis_bins, NB, n_axis, 1,
-                                                 fixed_x, OT, CT, geom; weights, workspace, culling, source,
+                                                 fixed_x, OT, CT, geometry; weights, workspace, culling, source,
                                                  second_axis)
         _tensor_add_packed!(sums, counts, reshape(packed, size(packed, 1), NB * n_axis, 1),
                             reshape(pcnt, size(pcnt, 1), NB * n_axis, 1), Val(D), order)

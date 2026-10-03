@@ -227,13 +227,15 @@ function gridded_lag_sweep!(
     ww = w isa NoWeights ? w : w[keep]
     _assert_counts_can_accumulate(counts, size(x, 2), ww)
     if V == 1 && K == 0
-        shape = _validate_array_shape(x, uu, s.metric)
-        _dispatch_execution_backend!(backend, shape, sums, counts, sf, x, uu, dist_be;
-                                     distance_metric = s.metric, weights = ww)
+        _validate_array_shape(x, uu, s.metric)
+        _dispatch_execution_backend!(backend, PointField{D}(), sums, counts, sf, x, uu, dist_be;
+                                     geometry = SFH.pair_geometry_for(s.metric, Val(D)), weights = ww)
     else
         f = MF.Fields{D, V, K, typeof(uu)}(uu)
         validate_fields(sf, f)
-        _field_dispatch!(backend, sums, counts, sf, x, f, dist_be; distance_metric = s.metric, weights = ww)
+        _with_field_geometry(f, x, s.metric) do geometry
+            _field_dispatch!(backend, sums, counts, sf, x, f, dist_be; geometry, weights = ww)
+        end
     end
     return sums, counts
 end
@@ -258,7 +260,8 @@ function gridded_lag_sweep!(
     ww = w isa NoWeights ? w : w[keep]
     _assert_counts_can_accumulate(counts, size(x, 2), ww)
     _validate_array_shape(x, uu, s.metric)
-    _dispatch_single_pass!(backend, sums, counts, x, uu, dist_be; distance_metric = s.metric, weights = ww)
+    _dispatch_single_pass!(backend, sums, counts, x, uu, dist_be; geometry = SFH.pair_geometry_for(s.metric, Val(D)),
+                           weights = ww)
     return sums, counts
 end
 
@@ -279,10 +282,12 @@ function gridded_tensor_sweep!(
     x = valid isa AllValid ? s.points : s.points[:, keep]
     uu = valid isa AllValid ? data : data[:, keep]
     wk = (valid isa AllValid || w isa NoWeights) ? w : w[keep]
-    shape = _validate_array_shape(x, uu, s.metric)
+    _validate_array_shape(x, uu, s.metric)
+    shape = PointField{D}()
     _tensor_shape_check(order, shape, sums, counts, uu, dist_be, nothing)
     _assert_counts_can_accumulate(counts, size(uu, 2), wk)
-    _dispatch_tensor!(backend, shape, sums, counts, order, x, uu, dist_be; distance_metric = s.metric, weights = wk)
+    _dispatch_tensor!(backend, shape, sums, counts, order, x, uu, dist_be;
+                      geometry = SFH.pair_geometry_for(s.metric, Val(D)), weights = wk)
     return sums, counts
 end
 
@@ -307,9 +312,10 @@ function gridded_lag_sweep!(
     uu = valid isa AllValid ? data : data[:, keep]
     ww = w isa NoWeights ? w : w[keep]
     _assert_counts_can_accumulate(counts, size(x, 2), ww)
-    shape = _validate_array_shape(x, uu, s.metric)
-    _require_value_axis(second_axis, SFH.pair_geometry_for(s.metric, Val(D)))
-    _dispatch_execution_backend!(backend, shape, sums, counts, sf, x, uu, dist_be, axis_be;
-                                 distance_metric = s.metric, weights = ww, second_axis)
+    _validate_array_shape(x, uu, s.metric)
+    geometry = SFH.pair_geometry_for(s.metric, Val(D))
+    _require_value_axis(second_axis, geometry)
+    _dispatch_execution_backend!(backend, PointField{D}(), sums, counts, sf, x, uu, dist_be, axis_be; geometry,
+                                 weights = ww, second_axis)
     return sums, counts
 end

@@ -99,7 +99,7 @@ function serial_calculate_structure_function!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractMatrix, f::MF.Fields{D, V, K}, distance_bins;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {OT, CT, D, V, K}
@@ -107,11 +107,11 @@ function serial_calculate_structure_function!(
     size(x, 2) == N || throw(DimensionMismatch(
         "x covers $(size(x, 2)) points and the field $N",
     ))
-    if _on_a_line(_field_geometry(distance_metric, Val(D), Val(V), x), sf)
+    if _on_a_line(geometry, sf)
         return sorted_line_sweep!(sums, counts, sf, _line_coordinates(x), MF.packed(f), distance_bins,
                                   Val(D), Val(V), Val(K); weights)
     end
-    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, weights)
+    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, geometry, culling, weights)
     _field_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan,
                          n_histogram_bins(plan), SFH.coordinate_width(geom),
                          1:(N - 1), N, grid, wk)
@@ -130,10 +130,10 @@ function _line_coordinates(x::AbstractMatrix)
 end
 
 """
-    field_setup(fields, x, distance_bins, metric, culling, weights = NoWeights())
+    field_setup(fields, x, distance_bins, geometry, culling, weights = NoWeights())
         -> (geom, xk, data, vF, plan, grid, weights)
 
-Everything a multi-field sweep needs before its first pair: the geometry, the widened coordinates
+Everything a multi-field sweep on `geometry` needs before its first pair: the widened coordinates
 and fields, the digitize plan, and the cull grid with both arrays and the weights already permuted
 into it.
 
@@ -141,8 +141,7 @@ Shared by the serial and threaded drivers so the sort and the widening happen **
 task loop — doing them inside one would pay them per task.
 """
 function field_setup(f::MF.Fields{D, V, K}, x::AbstractMatrix, distance_bins,
-                       distance_metric, culling::CullingPolicy, weights = NoWeights()) where {D, V, K}
-    geom = _field_geometry(distance_metric, Val(D), Val(V), x)
+                       geom, culling::CullingPolicy, weights = NoWeights()) where {D, V, K}
     xk, data, vF = _kernel_fields(f, geom, x)
     W = _val_int(SFH.coordinate_width(geom))
     plan = squared_digitize_plan(distance_bins)
@@ -156,11 +155,12 @@ function field_setup(f::MF.Fields{D, V, K}, x::AbstractMatrix, distance_bins,
     return geom, xk, data, vF, plan, grid, weights
 end
 
-# The geometry's dimension is the velocity dimension where there is one; a field of scalars alone has
-# none, and its points are located by however many coordinates they carry.
-@inline _field_geometry(distance_metric, ::Val{D}, ::Val{V}, x::AbstractMatrix) where {D, V} =
-    V == 0 ? SFH.pair_geometry_for(distance_metric, Val(size(x, 1))) :
-             SFH.pair_geometry_for(distance_metric, Val(D))
+"""`g(geometry)` with the pair geometry of `distance_metric` for a multi-field over the positions `x`: at the vector
+fields' width, or for a field of scalars alone, which has none, at the coordinate count of `x` through
+[`_shaped`](@ref)."""
+@inline _with_field_geometry(g, ::MF.Fields{D, V}, x::AbstractMatrix, distance_metric) where {D, V} =
+    V == 0 ? _shaped((_, geometry) -> g(geometry), PointField, size(x, 1), distance_metric) :
+             g(SFH.pair_geometry_for(distance_metric, Val(D)))
 
 # Dispatch on the grid so the kernel receives one concretely typed schedule, as the single-field
 # path does.
@@ -331,7 +331,7 @@ function validate_fields(::SFT.SinglePassInvariants, ::Val{V}, ::Val{K}) where {
 end
 
 """
-    field_partial(inner, sf, x, fields, distance_bins, share, CT; distance_metric, culling, weights) -> (sums, counts)
+    field_partial(inner, sf, x, fields, distance_bins, share, CT; geometry, culling, weights) -> (sums, counts)
 
 A worker's share of a multi-field sweep: the pairs whose lower index is in share `share = (w, k)` of the outer
 indices, resolved against the cull grid the worker builds ([`_share_indices`](@ref)), in freshly allocated
@@ -352,9 +352,9 @@ end
 `sums`/`counts` on the backend `inner`: serially here, threaded by the OhMyThreads extension."""
 function _field_into!(
     ::CB.AbstractExecutionBackend, sums, counts, sf, x, f::MF.Fields{D, V, K}, distance_bins, share;
-    distance_metric::DI.PreMetric = DI.Euclidean(), culling::CullingPolicy = AutoCulling(), weights = NoWeights(),
+    geometry, culling::CullingPolicy = AutoCulling(), weights = NoWeights(),
 ) where {D, V, K}
-    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, weights)
+    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, geometry, culling, weights)
     N = size(MF.packed(f), 2)
     _field_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan, n_histogram_bins(plan),
                        SFH.coordinate_width(geom), _share_indices(grid, N - 1, share), N, grid, wk)
@@ -376,9 +376,6 @@ Accumulate a multi-field sweep on a device. Supplied by the KernelAbstractions e
 """
 function gpu_calculate_structure_function_fields! end
 
-# Backend selection for a multi-field, mirroring the array path's: the concrete backends dispatch,
-# and `Auto` takes the threaded one when there are threads to use and the extension supplying it is
-# loaded.
 @inline _field_dispatch!(::CB.AbstractSerialBackend, sums, counts, sf, x, f, bins; kwargs...) =
     serial_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
 
@@ -405,12 +402,8 @@ end
     return gpu_calculate_structure_function_fields!(be, sums, counts, sf, x, f, bins; kwargs...)
 end
 
-function _field_dispatch!(::CB.AbstractAutoBackend, sums, counts, sf, x, f, bins; kwargs...)
-    if Threads.nthreads() > 1 && _ohmythreads_loaded()
-        return threaded_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
-    end
-    return serial_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
-end
+_field_dispatch!(::CB.AbstractAutoBackend, sums, counts, sf, x, f, bins; kwargs...) =
+    _field_dispatch!(resolve_auto_backend(), sums, counts, sf, x, f, bins; kwargs...)
 
 """
     calculate_structure_function!(sums, counts, sf, x, fields, distance_bins; backend, kwargs...)
@@ -419,13 +412,16 @@ Accumulate a multi-field's pairs into `sums`/`counts` on `backend`.
 """
 function calculate_structure_function!(
     sums, counts, sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::MF.Fields,
-    distance_bins; backend::CB.AbstractExecutionBackend = CB.AutoBackend(), weights = nothing, kwargs...,
+    distance_bins; backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
+    distance_metric::DI.PreMetric = DI.Euclidean(), weights = nothing, kwargs...,
 )
     _require_backend(backend)
     w = _pair_weights(weights, size(MF.packed(f), 2), eltype(sums))
     _assert_counts_can_accumulate(counts, size(MF.packed(f), 2), w)
     validate_fields(sf, f)
-    _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; weights = w, kwargs...)
+    _with_field_geometry(f, x, distance_metric) do geometry
+        _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; geometry, weights = w, kwargs...)
+    end
     return nothing
 end
 
@@ -443,6 +439,7 @@ function calculate_structure_function(
     ::Type{CT},
     ::Type{OT};
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
+    distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing,
     kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
@@ -455,7 +452,9 @@ function calculate_structure_function(
     validate_fields(sf, f)
     sums = _result_zeros(backend, ST, nb)
     counts = _result_zeros(backend, CT, nb)
-    _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; weights = w, kwargs...)
+    _with_field_geometry(f, x, distance_metric) do geometry
+        _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; geometry, weights = w, kwargs...)
+    end
     raw = SFO.StructureFunctionSumsAndCounts(sf, distance_bins, sums, counts)
     return _finalize(raw, OT)
 end

@@ -53,20 +53,12 @@ function SFC._dispatch_execution_backend(
     u_arr::AbstractMatrix,
     distance_bins::AbstractVector,
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     kwargs...,
 ) where {CT}
-    geom, x_vecs, u_vecs = SFC._prepared_tuples(distance_metric, x_arr, u_arr)
-    return SFC._dispatch_execution_backend(
-        db,
-        structure_function_type,
-        x_vecs,
-        u_vecs,
-        distance_bins,
-        CT;
-        geometry = geom,
-        kwargs...,
-    )
+    x_vecs, u_vecs = SFC._prepared_tuples(geometry, x_arr, u_arr)
+    return SFC._dispatch_execution_backend(db, structure_function_type, x_vecs, u_vecs, distance_bins, CT; geometry,
+                                           kwargs...)
 end
 
 function _parallel_calculate_structure_function_core(
@@ -149,11 +141,11 @@ function _dist_accumulate_1d!(
     sums, counts, db::CB.AbstractDistributedBackend,
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector, B::Int;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 )
-    SFC._bl_run_1d!(sums, counts, structure_function_type, x, u, distance_bins, distance_metric,
+    SFC._bl_run_1d!(sums, counts, structure_function_type, x, u, distance_bins, geometry,
         _dist_bl_exec(SFC._bl_executor(CB.local_backend(db))); weights, culling)
     return nothing
 end
@@ -164,12 +156,12 @@ function _dist_accumulate_2d!(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector, value_bins::AbstractVector,
     B::Int;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
     weights = SFC.NoWeights(),
 )
-    SFC._bl_run_joint2d!(sums, counts, structure_function_type, x, u, distance_bins, value_bins, distance_metric,
+    SFC._bl_run_joint2d!(sums, counts, structure_function_type, x, u, distance_bins, value_bins, geometry,
         _dist_bl_exec(SFC._bl_executor(CB.local_backend(db))); weights, culling, second_axis)
     return nothing
 end
@@ -181,7 +173,7 @@ function SFC._dispatch_execution_backend(
     u::AbstractArray,
     distance_bins::AbstractVector,
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 ) where {CT}
@@ -193,7 +185,7 @@ function SFC._dispatch_execution_backend(
     counts = zeros(CT, nb, B)
     _dist_accumulate_1d!(
         sums, counts, db, structure_function_type, x, u, distance_bins, B;
-        distance_metric, culling, weights,
+        geometry, culling, weights,
     )
 
     return SFO.StructureFunctionSumsAndCounts(
@@ -245,21 +237,12 @@ function SFC._dispatch_execution_backend(
     distance_bins::AbstractVector,
     value_bins::AbstractVector,
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     kwargs...,
 ) where {CT}
-    geom, x_vecs, u_vecs = SFC._prepared_tuples(distance_metric, x_arr, u_arr)
-    return SFC._dispatch_execution_backend(
-        db,
-        structure_function_type,
-        x_vecs,
-        u_vecs,
-        distance_bins,
-        value_bins,
-        CT;
-        geometry = geom,
-        kwargs...,
-    )
+    x_vecs, u_vecs = SFC._prepared_tuples(geometry, x_arr, u_arr)
+    return SFC._dispatch_execution_backend(db, structure_function_type, x_vecs, u_vecs, distance_bins, value_bins, CT;
+                                           geometry, kwargs...)
 end
 
 # --- Single Pass Dispatch ---
@@ -269,7 +252,7 @@ function SFC._dispatch_single_pass(
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
@@ -279,7 +262,7 @@ function SFC._dispatch_single_pass(
     partials = Distributed.pmap(_worker_shares()) do share
         SFC._partial_single_pass_1d(
             inner, x, u, distance_bins, share, CT;
-            distance_metric, culling, weights,
+            geometry, culling, weights,
         )
     end
 
@@ -299,7 +282,7 @@ function SFC._dispatch_single_pass_2d(
     distance_bins::AbstractVector{FT3},
     value_bins::SFC.SinglePass2DValueBins,
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
@@ -310,7 +293,7 @@ function SFC._dispatch_single_pass_2d(
     partials = Distributed.pmap(_worker_shares()) do share
         SFC._partial_single_pass_2d(
             inner, x, u, distance_bins, value_bins, share, CT;
-            distance_metric, culling, weights,
+            geometry, culling, weights,
         )
     end
 
@@ -368,7 +351,7 @@ function SFC._dispatch_execution_backend(
     distance_bins::AbstractVector,
     value_bins::AbstractVector,
     ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
     weights = SFC.NoWeights(),
@@ -382,7 +365,7 @@ function SFC._dispatch_execution_backend(
     counts = zeros(CT, nd, nv, B)
     _dist_accumulate_2d!(
         sums, counts, db, structure_function_type, x, u, distance_bins, value_bins, B;
-        distance_metric, culling, second_axis, weights,
+        geometry, culling, second_axis, weights,
     )
     return SFO.StructureFunction2DSumsAndCounts(
         structure_function_type, distance_bins, value_bins,
@@ -397,7 +380,7 @@ function SFC._dispatch_execution_backend!(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 )
@@ -405,7 +388,7 @@ function SFC._dispatch_execution_backend!(
     nb = SFC.n_histogram_bins(distance_bins)
     _dist_accumulate_1d!(
         reshape(sums, nb, B), reshape(counts, nb, B), db, structure_function_type, x, u,
-        distance_bins, B; distance_metric, culling, weights,
+        distance_bins, B; geometry, culling, weights,
     )
     return nothing
 end
@@ -416,7 +399,7 @@ function SFC._dispatch_execution_backend!(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector, value_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
     weights = SFC.NoWeights(),
@@ -426,7 +409,7 @@ function SFC._dispatch_execution_backend!(
     nv = SFC.n_histogram_bins(value_bins)
     _dist_accumulate_2d!(
         reshape(sums, nd, nv, B), reshape(counts, nd, nv, B), db, structure_function_type, x, u,
-        distance_bins, value_bins, B; distance_metric, culling, second_axis, weights,
+        distance_bins, value_bins, B; geometry, culling, second_axis, weights,
     )
     return nothing
 end
@@ -436,7 +419,7 @@ function SFC._dispatch_batch!(
     db::CB.AbstractDistributedBackend, sums::AbstractArray, counts::AbstractArray,
     sf_type::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 )
@@ -444,14 +427,14 @@ function SFC._dispatch_batch!(
     nb = SFC.n_histogram_bins(distance_bins)
     _dist_accumulate_1d!(
         reshape(sums, nb, B), reshape(counts, nb, B), db, sf_type, x, u, distance_bins, B;
-        distance_metric, culling, weights,
+        geometry, culling, weights,
     )
     return nothing
 end
 
 function SFC._dispatch_2d_batch!(
     db::CB.AbstractDistributedBackend, sums, counts, sf_type, x, u, distance_bins, value_bins;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
     weights = SFC.NoWeights(),
@@ -461,18 +444,18 @@ function SFC._dispatch_2d_batch!(
     nv = SFC.n_histogram_bins(value_bins)
     _dist_accumulate_2d!(
         reshape(sums, nd, nv, B), reshape(counts, nd, nv, B), db, sf_type, x, u,
-        distance_bins, value_bins, B; distance_metric, culling, second_axis, weights,
+        distance_bins, value_bins, B; geometry, culling, second_axis, weights,
     )
     return nothing
 end
 
 function SFC._dispatch_single_pass_batch!(
     db::CB.AbstractDistributedBackend, sums, counts, x, u, distance_bins;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 )
-    SFC._bl_run_sp1d!(sums, counts, x, u, distance_bins, distance_metric,
+    SFC._bl_run_sp1d!(sums, counts, x, u, distance_bins, geometry,
         _dist_bl_exec(SFC._bl_executor(CB.local_backend(db))); weights, culling)
     return nothing
 end
@@ -480,12 +463,12 @@ end
 function SFC._dispatch_single_pass_2d_batch!(
     db::CB.AbstractDistributedBackend, sums, counts, x, u, distance_bins,
     value_bins::SFC.SinglePass2DValueBins;
-    distance_metric::DI.PreMetric = DI.Euclidean(),
+    geometry,
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 )
     SFC._bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins,
-        distance_metric, _dist_bl_exec(SFC._bl_executor(CB.local_backend(db))); weights, culling)
+        geometry, _dist_bl_exec(SFC._bl_executor(CB.local_backend(db))); weights, culling)
     return nothing
 end
 
@@ -518,7 +501,7 @@ function SFC._dispatch_single_pass(
     db::CB.AbstractDistributedBackend,
     ::Union{SFC.SharedPositionField, SFC.VaryingPositionField},
     x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector, ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(), culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    geometry, culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 ) where {CT}
     bdims = size(u)[3:end]
@@ -527,7 +510,7 @@ function SFC._dispatch_single_pass(
     OT = promote_type(float(eltype(x)), float(eltype(u)))
     sums = zeros(OT, SFC.SINGLE_PASS_N, nb, B)
     counts = zeros(CT, SFC.SINGLE_PASS_N, nb, B)
-    SFC._bl_run_sp1d!(sums, counts, x, u, distance_bins, distance_metric,
+    SFC._bl_run_sp1d!(sums, counts, x, u, distance_bins, geometry,
         _dist_bl_exec(SFC._bl_executor(CB.local_backend(db))); weights, culling)
     return (sums = reshape(sums, SFC.SINGLE_PASS_N, nb, bdims...),
             counts = reshape(counts, SFC.SINGLE_PASS_N, nb, bdims...))
@@ -538,7 +521,7 @@ function SFC._dispatch_single_pass_2d(
     ::Union{SFC.SharedPositionField, SFC.VaryingPositionField},
     x::AbstractArray, u::AbstractArray, distance_bins::AbstractVector,
     value_bins::SFC.SinglePass2DValueBins, ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(), culling::SFC.CullingPolicy = SFC.AutoCulling(),
+    geometry, culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 ) where {CT}
     bdims = size(u)[3:end]
@@ -549,7 +532,7 @@ function SFC._dispatch_single_pass_2d(
     sums = zeros(OT, SFC.SINGLE_PASS_N, nb, nv, B)
     counts = zeros(CT, SFC.SINGLE_PASS_N, nb, nv, B)
     SFC._bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins,
-        distance_metric, _dist_bl_exec(SFC._bl_executor(CB.local_backend(db))); weights, culling)
+        geometry, _dist_bl_exec(SFC._bl_executor(CB.local_backend(db))); weights, culling)
     return (sums = reshape(sums, SFC.SINGLE_PASS_N, nb, nv, bdims...),
             counts = reshape(counts, SFC.SINGLE_PASS_N, nb, nv, bdims...))
 end
@@ -599,12 +582,12 @@ function SFC.distributed_calculate_structure_function_tensor!(
     inner::CB.AbstractExecutionBackend, sums::AbstractArray, counts::AbstractArray, order::Val{P},
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
-    distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
+    geometry, axis = nothing,
     culling::SFC.CullingPolicy = SFC.AutoCulling(), weights = SFC.NoWeights(),
 ) where {P, D}
     CT = eltype(counts)
     partials = Distributed.pmap(_worker_shares()) do share
-        SFC.tensor_partial(inner, order, shape, x, u, distance_bins, share, CT; distance_metric, axis, culling, weights)
+        SFC.tensor_partial(inner, order, shape, x, u, distance_bins, share, CT; geometry, axis, culling, weights)
     end
     for (ps, pc) in partials
         sums .+= ps

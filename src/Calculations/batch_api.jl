@@ -25,7 +25,9 @@ function calculate_structure_function_batch!(
 )
     _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
-    _dispatch_batch!(backend, sums, counts, sf_type, x, u, distance_bins; distance_metric, weights = w, kwargs...)
+    _with_batch_geometry(u, distance_metric) do geometry
+        _dispatch_batch!(backend, sums, counts, sf_type, x, u, distance_bins; geometry, weights = w, kwargs...)
+    end
     return nothing
 end
 
@@ -37,12 +39,17 @@ The one validation of a batch entry: the shapes, a trailing axis on `u`, the wei
 """
 function _batch_boundary(counts, x, u, distance_metric, weights, ::Type{OT}) where {OT}
     xc, uc = _contract_layout(x), _contract_layout(u)
-    shape = _validate_array_shape(xc, uc, distance_metric)
-    has_auxiliary_axes(shape) || throw(ArgumentError("batch fields require at least one trailing axis"))
+    _validate_array_shape(xc, uc, distance_metric)
+    ndims(uc) >= 3 || throw(ArgumentError("batch fields require at least one trailing axis"))
     w = _pair_weights(weights, size(xc, 2), OT)
     _assert_counts_can_accumulate(counts, size(xc, 2), w)
     return w
 end
+
+"""`f(geometry)` with the pair geometry of `distance_metric` at the velocity width of the batch field `u`
+([`_shaped`](@ref))."""
+@inline _with_batch_geometry(f, u, distance_metric) =
+    _shaped((_, geometry) -> f(geometry), SharedPositionField, size(_contract_layout(u), 1), distance_metric)
 
 function _dispatch_batch!(
     ::CB.AbstractSerialBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...
@@ -86,8 +93,10 @@ function calculate_structure_function_2d_batch!(
 )
     _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
-    _dispatch_2d_batch!(backend, sums, counts, sf_type, x, u, distance_bins, value_bins;
-        distance_metric, weights = w, kwargs...)
+    _with_batch_geometry(u, distance_metric) do geometry
+        _dispatch_2d_batch!(backend, sums, counts, sf_type, x, u, distance_bins, value_bins; geometry, weights = w,
+                            kwargs...)
+    end
     return nothing
 end
 
@@ -202,7 +211,9 @@ function calculate_structure_functions_single_pass_batch!(
 )
     _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
-    _dispatch_single_pass_batch!(backend, sums, counts, x, u, distance_bins; distance_metric, weights = w, kwargs...)
+    _with_batch_geometry(u, distance_metric) do geometry
+        _dispatch_single_pass_batch!(backend, sums, counts, x, u, distance_bins; geometry, weights = w, kwargs...)
+    end
     return nothing
 end
 
@@ -250,9 +261,10 @@ function calculate_structure_functions_single_pass_2d_batch!(
 )
     _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
-    _dispatch_single_pass_2d_batch!(
-        backend, sums, counts, x, u, distance_bins, value_bins; distance_metric, weights = w, kwargs...
-    )
+    _with_batch_geometry(u, distance_metric) do geometry
+        _dispatch_single_pass_2d_batch!(backend, sums, counts, x, u, distance_bins, value_bins; geometry, weights = w,
+                                        kwargs...)
+    end
     return nothing
 end
 
@@ -296,7 +308,9 @@ function calculate_structure_functions_single_pass!(sums::AbstractArray, counts:
         distance_metric::DI.PreMetric = DI.Euclidean(), weights = nothing, kwargs...)
     _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
-    _dispatch_single_pass_batch!(backend, sums, counts, x, u, bins; distance_metric, weights = w, kwargs...)
+    _with_batch_geometry(u, distance_metric) do geometry
+        _dispatch_single_pass_batch!(backend, sums, counts, x, u, bins; geometry, weights = w, kwargs...)
+    end
     return sums, counts
 end
 
@@ -306,6 +320,9 @@ function calculate_structure_functions_single_pass_2d!(sums::AbstractArray, coun
         weights = nothing, kwargs...)
     _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
-    _dispatch_single_pass_2d_batch!(backend, sums, counts, x, u, bins, value_bins; distance_metric, weights = w, kwargs...)
+    _with_batch_geometry(u, distance_metric) do geometry
+        _dispatch_single_pass_2d_batch!(backend, sums, counts, x, u, bins, value_bins; geometry, weights = w,
+                                        kwargs...)
+    end
     return sums, counts
 end

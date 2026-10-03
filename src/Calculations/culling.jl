@@ -400,8 +400,7 @@ function cull_sorted_matrices(
     x::AbstractMatrix, u::AbstractMatrix, geometry, distance_bins, policy::CullingPolicy,
 )
     _cull_enabled(policy) || return nothing, x, u
-    W = _val_int(SFH.coordinate_width(geometry))
-    xc = ntuple(d -> view(x, d, :), W)
+    xc = ntuple(d -> view(x, d, :), SFH.coordinate_width(geometry))
     grid = cull_grid_for(xc, geometry, distance_bins, policy)
     grid === nothing && return nothing, x, u
     return grid, x[:, grid.perm], u[:, grid.perm]
@@ -421,8 +420,7 @@ function cull_sorted_inputs(
 )
     _cull_enabled(policy) || return nothing, x, u
     xk, _ = SFH.prepare_pair_inputs(geometry, x, u)
-    W = _val_int(SFH.coordinate_width(geometry))
-    grid = cull_grid_for(ntuple(d -> view(xk, d, :), W), geometry, distance_bins, policy)
+    grid = cull_grid_for(ntuple(d -> view(xk, d, :), SFH.coordinate_width(geometry)), geometry, distance_bins, policy)
     grid === nothing && return nothing, x, u
     return grid, x[:, grid.perm], u[:, grid.perm]
 end

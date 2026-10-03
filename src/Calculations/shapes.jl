@@ -42,52 +42,6 @@ const BatchInput = Union{AbstractArray, BatchLeading}
 _contract_layout(a::AbstractArray) = a
 _contract_layout(a::BatchLeading) = PermutedDimsArray(a.data, (2, 3, 1))
 
-"""
-    _pair_dims(metric, D) -> (Val{W}, Val{D})
-
-Coordinate and velocity widths as type parameters, for the kernels that take `x`/`u` as `Array`s
-(whose axis-1 lengths are values, not type parameters). `W` comes from the metric's geometry, which
-is what defines it. `D = 2` and `D = 3` are spelled out so the widths stay concrete on the two
-common cases; any other width resolves through the same expression.
-"""
-@inline function _pair_dims(distance_metric, D::Int)
-    _validate_spatial_dimension(D)
-    D == 2 && return (SFH.coordinate_width(SFH.pair_geometry_for(distance_metric, Val(2))), Val(2))
-    D == 3 && return (SFH.coordinate_width(SFH.pair_geometry_for(distance_metric, Val(3))), Val(3))
-    return (SFH.coordinate_width(SFH.pair_geometry_for(distance_metric, Val(D))), Val(D))
-end
-
-"""
-    _input_pair_dims(metric, D) -> (Val{W}, Val{D})
-
-As [`_pair_dims`](@ref), but `W` is the width a **caller** supplies, which is what
-[`_validate_array_shape`](@ref) checks. `SFH.prepare_pair_inputs` widens it to the kernel width.
-"""
-@inline function _input_pair_dims(distance_metric, D::Int)
-    _validate_spatial_dimension(D)
-    D == 2 && return (SFH.input_coordinate_width(SFH.pair_geometry_for(distance_metric, Val(2))), Val(2))
-    D == 3 && return (SFH.input_coordinate_width(SFH.pair_geometry_for(distance_metric, Val(3))), Val(3))
-    return (SFH.input_coordinate_width(SFH.pair_geometry_for(distance_metric, Val(D))), Val(D))
-end
-"""
-    _input_coordinate_width(metric, D) -> Int
-
-The number of coordinates a caller supplies per point, as an `Int`.
-
-Every branch returns an `Int`, so the shape validation stays inferrable. Returning the `Val` instead
-would leave the width's *type* dependent on a runtime `D`, which infers as `Any` and turns each
-comparison against it into a runtime dispatch.
-"""
-@inline function _input_coordinate_width(distance_metric, D::Int)
-    D == 2 && return _val_int(SFH.input_coordinate_width(
-        SFH.pair_geometry_for(distance_metric, Val(2))))
-    D == 3 && return _val_int(SFH.input_coordinate_width(
-        SFH.pair_geometry_for(distance_metric, Val(3))))
-    # `Val(D)` on a runtime `D` cannot be inferred, so the width is asserted to the `Int` it is.
-    return _val_int(SFH.input_coordinate_width(
-        SFH.pair_geometry_for(distance_metric, Val(D))))::Int
-end
-
 @inline has_auxiliary_axes(::PointField) = false
 @inline has_auxiliary_axes(::SharedPositionField) = true
 @inline has_auxiliary_axes(::VaryingPositionField) = true
@@ -116,20 +70,57 @@ function _validate_spatial_dimension(D::Integer)
     return nothing
 end
 
-# `D` is a value here, so the two common widths are spelled out to keep the shape type concrete for
-# the backend methods that dispatch on it.
-@inline _field_shape(::Type{S}, D::Int) where {S} =
-    D == 2 ? S{2}() : D == 3 ? S{3}() : S{D}()
-
 @inline _val_int(::Val{W}) where {W} = W
 
 """
-    _validate_array_shape(x, u, distance_metric) -> AbstractFieldShape
+    _shape_kind(x, u) -> Type
 
-Axis-1 of `u` is the velocity dimension `D`; axis-1 of `x` is however many coordinates the
-metric's geometry needs to locate a point, which is **not** always `D`. On a sphere a point takes
-two coordinates whether or not the velocity carries a third, radial, component — the shell radius
-belongs to the geometry, not to each point — so `x` is `(2, N)` while `u` may be `(3, N)`.
+Which shape family the inputs form, from their **ranks** alone: `ndims` is a property of the array type, so this
+constant-folds.
+"""
+@inline _shape_kind(x::AbstractArray, u::AbstractArray) =
+    ndims(x) == 2 && ndims(u) == 2 ? PointField :
+    ndims(x) == 2 ? SharedPositionField : VaryingPositionField
+
+"""
+    _by_width(g, D)
+
+`g(Val(D))` for a velocity width `D` of at least 1: widths 1 to 3 by explicit branches, any other through
+[`_at_width`](@ref).
+"""
+@inline function _by_width(g, D::Int)
+    _validate_spatial_dimension(D)
+    D == 1 && return g(Val(1))
+    D == 2 && return g(Val(2))
+    D == 3 && return g(Val(3))
+    return _at_width(g, Val(D))
+end
+
+"""`g(vD)` at a width read from array sizes past the explicit branches of [`_by_width`](@ref): the one dynamic
+dispatch on such a width."""
+_at_width(g, vD::Val) = g(vD)
+
+"""
+    _shaped(f, S, D, distance_metric)
+
+`f(shape, geometry)` with the field shape `S{D}()` of velocity width `D` and the pair geometry of `distance_metric` at
+that width, both concretely typed ([`_by_width`](@ref)).
+"""
+@inline _shaped(f, ::Type{S}, D::Int, distance_metric) where {S} =
+    _by_width(vD -> f(S{_val_int(vD)}(), SFH.pair_geometry_for(distance_metric, vD)), D)
+
+"""The width at which the CPU SIMD pair kernels run `geometry`: flat coordinates of width 2 or 3, else `nothing`."""
+@inline _simd_width(::SFH.FlatGeometry{2}) = Val(2)
+@inline _simd_width(::SFH.FlatGeometry{3}) = Val(3)
+@inline _simd_width(_) = nothing
+
+"""
+    _validate_array_shape(x, u, distance_metric)
+
+Throw unless `x` and `u` form one of the shapes of [`AbstractFieldShape`](@ref) under `distance_metric`. Axis 1 of `u`
+is the velocity dimension `D`; axis 1 of `x` is however many coordinates the metric's geometry needs to locate a point,
+which is not always `D`: on a sphere a point takes two coordinates whether or not the velocity carries a third, radial,
+component, so `x` is `(2, N)` while `u` may be `(3, N)`.
 """
 function _validate_array_shape(x::AbstractArray, u::AbstractArray, distance_metric)
     ndims(x) >= 2 ||
@@ -138,8 +129,7 @@ function _validate_array_shape(x::AbstractArray, u::AbstractArray, distance_metr
         throw(DimensionMismatch("u must have shape (D, N) or (D, N, auxiliary...); got ndims(u)=$(ndims(u))"))
 
     D = size(u, 1)
-    _validate_spatial_dimension(D)
-    W = _input_coordinate_width(distance_metric, D)
+    W = _shaped((_, geometry) -> _val_int(SFH.input_coordinate_width(geometry)), PointField, D, distance_metric)
     size(x, 1) == W || throw(
         DimensionMismatch(
             "this geometry locates a point with $W coordinate(s) on axis 1 of x, but got " *
@@ -149,18 +139,14 @@ function _validate_array_shape(x::AbstractArray, u::AbstractArray, distance_metr
     size(u, 2) == size(x, 2) ||
         throw(DimensionMismatch("x and u must share axis-2 point count N; got size(x,2)=$(size(x, 2)) and size(u,2)=$(size(u, 2))"))
 
-    # Classify by array rank; `_field_shape` makes `D` a type parameter, so the backend methods that
-    # dispatch on `PointField{D}` etc. specialize on it.
-    if ndims(x) == 2 && ndims(u) == 2
-        return _field_shape(PointField, D)
-    elseif ndims(x) == 2 && ndims(u) >= 3
-        return _field_shape(SharedPositionField, D)
-    elseif ndims(x) >= 3 && ndims(u) >= 3
+    if ndims(x) == 2
+        return nothing
+    elseif ndims(u) >= 3
         ndims(x) == ndims(u) ||
             throw(DimensionMismatch("varying-position inputs must have the same rank; got ndims(x)=$(ndims(x)) and ndims(u)=$(ndims(u))"))
         size(x)[3:end] == size(u)[3:end] ||
             throw(DimensionMismatch("varying-position inputs must share auxiliary axes; got $(size(x)[3:end]) and $(size(u)[3:end])"))
-        return _field_shape(VaryingPositionField, D)
+        return nothing
     else
         throw(
             DimensionMismatch(

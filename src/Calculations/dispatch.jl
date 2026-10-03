@@ -74,25 +74,13 @@ function calculate_structure_function(
     kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
-    shape = _validate_array_shape(x, u, distance_metric)
+    _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), promote_type(float(eltype(x)), float(eltype(u))))
     _assert_count_type(CT, size(x, 2), w)
-    # The shape carries the velocity dimension as a type parameter, but that dimension is an array
-    # axis length, so the constructed type is not inferrable and types every kernel below it `Any`.
-    # Re-entering through a concrete `Val` hands each branch a shape whose parameter is known: the
-    # branch is chosen at runtime, everything under it is not.
-    D = size(u, 1)
-    S = _shape_kind(x, u)
-    kw = (; distance_metric, weights = w, kwargs...)
-    b = (backend, structure_function_type, x, u, distance_bins)
-    raw = D == 1 ? _dw(S{1}(), b..., CT, kw) :
-          D == 2 ? _dw(S{2}(), b..., CT, kw) :
-          D == 3 ? _dw(S{3}(), b..., CT, kw) :
-          D == 4 ? _dw(S{4}(), b..., CT, kw) :
-          D == 5 ? _dw(S{5}(), b..., CT, kw) :
-          D == 6 ? _dw(S{6}(), b..., CT, kw) :
-          D == 7 ? _dw(S{7}(), b..., CT, kw) :
-          D == 8 ? _dw(S{8}(), b..., CT, kw) : _dw(shape, b..., CT, kw)
+    raw = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
+        _dispatch_execution_backend(backend, shape, structure_function_type, x, u, distance_bins, CT; geometry,
+                                    weights = w, kwargs...)
+    end
     return _finalize(raw, OT)
 end
 
@@ -105,28 +93,6 @@ calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::A
 calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
                              distance_bins::AbstractVector, ::Type{OT}; kwargs...) where {OT <: SFO.AbstractStructureFunction} =
     calculate_structure_function(sf, x, u, distance_bins, DEFAULT_COUNT_TYPE, OT; kwargs...)
-
-"""Dispatch a validated shape through a specialization boundary.
-
-Common small dimensions have explicit branches at the public entry point.
-Other dimensions specialize once on the concrete shape type at this boundary.
-"""
-@inline _dw(shape, backend, sf, x, u, distance_bins, ::Type{CT}, kw::NamedTuple) where {CT} =
-    _dispatch_execution_backend(backend, shape, sf, x, u, distance_bins, CT; kw...)
-
-
-"""
-    _shape_kind(x, u) -> Type
-
-Which shape family the inputs form, from their **ranks** alone.
-
-`ndims` is a property of the array type, so this constant-folds; the velocity width is an axis
-length and is supplied separately. Keeping the two apart is what lets the caller build a shape whose
-width parameter is a literal.
-"""
-@inline _shape_kind(x::AbstractArray, u::AbstractArray) =
-    ndims(x) == 2 && ndims(u) == 2 ? PointField :
-    ndims(x) == 2 ? SharedPositionField : VaryingPositionField
 
 # There is no averaged joint representation, so an `OT` other than the raw histogram raises in
 # `_finalize`.
@@ -144,11 +110,13 @@ function calculate_structure_function(
     kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
-    shape = _validate_array_shape(x, u, distance_metric)
+    _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), promote_type(float(eltype(x)), float(eltype(u))))
     _assert_count_type(CT, size(x, 2), w)
-    raw = _dispatch_execution_backend(backend, shape, structure_function_type, x, u, distance_bins,
-        value_bins, CT; distance_metric, weights = w, kwargs...)
+    raw = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
+        _dispatch_execution_backend(backend, shape, structure_function_type, x, u, distance_bins, value_bins, CT;
+                                    geometry, weights = w, kwargs...)
+    end
     return _finalize(raw, OT)
 end
 
@@ -175,8 +143,10 @@ function calculate_structure_function(
     bin_spacing::Type{<:AbstractBinEdges} = LogBinEdges,
     kwargs...,
 ) where {FT1, FT2}
-    shape = _validate_array_shape(x, u, distance_metric)
-    min_distance, max_distance = _minmax_for_autobins(shape, x, distance_metric)
+    _validate_array_shape(x, u, distance_metric)
+    min_distance, max_distance = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do _, geometry
+        _minmax_for_autobins(x, distance_metric, SFH.input_coordinate_width(geometry))
+    end
     actual_bins = _auto_distance_bins(min_distance, max_distance, distance_bins, bin_spacing)
 
     # `bin_spacing` selected these edges and means nothing downstream, so it is consumed here.
@@ -206,97 +176,34 @@ function _auto_distance_bins(min_distance, max_distance, distance_bins::Int, bin
     throw(ArgumentError("bin_spacing must be LinearBinEdges or LogBinEdges; got $bin_spacing"))
 end
 
-function _minmax_for_autobins(::PointField, x::AbstractMatrix, distance_metric)
-    return _minmax_matrix_for_autobins(x, distance_metric)
-end
-
-function _minmax_for_autobins(::SharedPositionField, x::AbstractMatrix, distance_metric)
-    return _minmax_matrix_for_autobins(x, distance_metric)
-end
-
-function _minmax_matrix_for_autobins(x::AbstractMatrix, distance_metric)
-    # Accumulate in the input eltype; Float64 literals here would widen the bin edges.
+"""Least and greatest distance under `distance_metric` between two points of `x`, positions of width `W` on axis 1,
+over every slice of a varying-position array."""
+function _minmax_for_autobins(x::AbstractArray, distance_metric, vW::Val{W}) where {W}
+    xf = reshape(x, W, size(x, 2), :)
     FT = float(eltype(x))
     min_distance, max_distance = FT(Inf), FT(0)
-    for i in axes(x, 2)
-        _min_distance, _max_distance = minmax_i(i, x, distance_metric)
-        min_distance = min(min_distance, _min_distance)
-        max_distance = max(max_distance, _max_distance)
+    for b in axes(xf, 3)
+        for i in axes(xf, 2)
+            lo, hi = minmax_i(i, view(xf, :, :, b), distance_metric, vW)
+            min_distance = min(min_distance, lo)
+            max_distance = max(max_distance, hi)
+        end
     end
     return min_distance, max_distance
 end
 
-function _minmax_for_autobins(::VaryingPositionField, x::AbstractArray, distance_metric)
-    D, N = size(x, 1), size(x, 2)
-    B = prod(size(x)[3:end])
-    x_flat = reshape(x, D, N, B)
-    FT = float(eltype(x))
+"""
+    minmax_i(i, x, distance_metric, ::Val{W})
+
+The least and greatest distance from point `i` of `x`, positions of width `W` on axis 1, to every later point.
+"""
+function minmax_i(i::Int, x::AbstractMatrix{FT}, distance_metric, ::Val{W}) where {FT <: Number, W}
+    X1 = SA.SVector{W, FT}(ntuple(k -> x[k, i], Val(W)))
     min_distance, max_distance = FT(Inf), FT(0)
-    for b in 1:B
-        x_slice = @view x_flat[:, :, b]
-        for i in axes(x_slice, 2)
-            _min_distance, _max_distance = minmax_i(i, x_slice, distance_metric)
-            min_distance = min(min_distance, _min_distance)
-            max_distance = max(max_distance, _max_distance)
-        end
-    end
-    return min_distance, max_distance
-end
-
-# --- Auto-binning MinMax Helpers ---
-
-"""
-    minmax_i(i, x_vecs, distance_metric)
-
-Calculate the min and max distances from point `i` to all other points `j != i`.
-"""
-function minmax_i(
-    i::Int,
-    x_vecs::Tuple,
-    distance_metric = DI.Euclidean(),
-)
-    D = length(x_vecs)
-    FT = eltype(x_vecs[1])
-    X1 = SA.SVector{D, FT}(ntuple(k -> x_vecs[k][i], Val(D)))
-
-    min_distance, max_distance = FT(Inf), FT(0.0)
-    iter_inds = eachindex(x_vecs[1])
-    # `j > i`: the metric is symmetric, so `j != i` measured every pair twice.
-    for j in iter_inds
-        if j > i
-            X2 = SA.SVector{D, FT}(ntuple(k -> x_vecs[k][j], Val(D)))
-            distance = distance_metric(X1, X2)
-            if distance < min_distance
-                min_distance = distance
-            end
-            if distance > max_distance
-                max_distance = distance
-            end
-        end
-    end
-    return min_distance, max_distance
-end
-
-function minmax_i(
-    i::Int,
-    x_arr::AbstractArray{FT},
-    distance_metric = DI.Euclidean(),
-) where {FT <: Number}
-    N_dims = size(x_arr, 1)
-    X1 = SA.SVector{N_dims, FT}(ntuple(k -> x_arr[k, i], Val(N_dims)))
-
-    min_distance, max_distance = FT(Inf), FT(0.0)
-    for j in axes(x_arr, 2)
-        if i != j
-            X2 = SA.SVector{N_dims, FT}(ntuple(k -> x_arr[k, j], Val(N_dims)))
-            distance = distance_metric(X1, X2)
-            if distance < min_distance
-                min_distance = distance
-            end
-            if distance > max_distance
-                max_distance = distance
-            end
-        end
+    for j in (i + 1):size(x, 2)
+        distance = distance_metric(X1, SA.SVector{W, FT}(ntuple(k -> x[k, j], Val(W))))
+        min_distance = min(min_distance, distance)
+        max_distance = max(max_distance, distance)
     end
     return min_distance, max_distance
 end
@@ -334,11 +241,13 @@ function calculate_structure_function!(
     weights = nothing, kwargs...,
 )
     _require_backend(backend)
-    shape = _validate_array_shape(x, u, distance_metric)
+    _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), eltype(sums))
     _assert_counts_can_accumulate(counts, size(x, 2), w)
-    _dispatch_execution_backend!(backend, shape, sums, counts, sf_type, x, u, distance_bins;
-        distance_metric, weights = w, kwargs...)
+    _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
+        _dispatch_execution_backend!(backend, shape, sums, counts, sf_type, x, u, distance_bins; geometry,
+                                     weights = w, kwargs...)
+    end
     return nothing
 end
 
@@ -349,11 +258,13 @@ function calculate_structure_function!(
     weights = nothing, kwargs...,
 )
     _require_backend(backend)
-    shape = _validate_array_shape(x, u, distance_metric)
+    _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), eltype(sums_2d))
     _assert_counts_can_accumulate(counts_2d, size(x, 2), w)
-    _dispatch_execution_backend!(backend, shape, sums_2d, counts_2d, sf_type, x, u, distance_bins, value_bins;
-        distance_metric, weights = w, kwargs...)
+    _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
+        _dispatch_execution_backend!(backend, shape, sums_2d, counts_2d, sf_type, x, u, distance_bins, value_bins;
+                                     geometry, weights = w, kwargs...)
+    end
     return nothing
 end
 
@@ -467,15 +378,6 @@ function _dispatch_execution_backend(
     ::CB.AbstractSerialBackend, shape::AbstractFieldShape, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, ::Type{CT}; kwargs...
 ) where {CT}
     return serial_calculate_structure_function(structure_function_type, x, u, distance_bins, CT; kwargs...)
-end
-
-function _dispatch_execution_backend(
-    ::CB.AbstractSerialBackend, shape::PointField{D}, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, ::Type{CT};
-    kwargs...
-) where {D, CT}
-    return _serial_calculate_structure_function_point(
-        structure_function_type, x, u, distance_bins, Val(D), CT; kwargs...,
-    )
 end
 
 function _dispatch_execution_backend(
