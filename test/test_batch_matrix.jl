@@ -36,18 +36,18 @@ end
 Test.@testset "batch matrix parity (KA.CPU)" begin
     N, B = 24, 3
 
-    @testset "pair_from_linear large N" begin
+    Test.@testset "pair_from_linear large N" begin
         Nbig = 20_000
         total = Nbig * (Nbig - 1) ÷ 2
         for k in (1, 2, total ÷ 2, total - 1, total)
             i, j = pair_from_linear(k, Nbig)
-            @test 1 <= i < j <= Nbig
+            Test.@test 1 <= i < j <= Nbig
         end
     end
 
-    @testset "row1 individual 1D fixed-x" begin
+    Test.@testset "row1 individual 1D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
-        @test ndims(x) == 2
+        Test.@test ndims(x) == 2
         NB = length(lbe) - 1
         cpu_s = zeros(Float32, NB, B)
         cpu_c = zeros(UInt32, NB, B)
@@ -57,10 +57,10 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             SF_TYPE, x, u, lbe, SF.StructureFunctionSumsAndCounts;
             backend = GPU_BE,
         )
-        @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
+        Test.@test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
 
-    @testset "row1b individual 1D fixed-x B>strip (regression)" begin
+    Test.@testset "row1b individual 1D fixed-x B>strip (regression)" begin
         Nb, Bb = 24, 17
         x, u, lbe = _rand_batch_fixed(Nb, Bb)
         NB = length(lbe) - 1
@@ -71,12 +71,12 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             SF_TYPE, x, u, lbe, SF.StructureFunctionSumsAndCounts;
             backend = GPU_BE,
         )
-        @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
+        Test.@test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
 
-    @testset "row2 individual 1D varying-x" begin
+    Test.@testset "row2 individual 1D varying-x" begin
         x, u, lbe = _rand_batch_varying(N, B)
-        @test ndims(x) == 3
+        Test.@test ndims(x) == 3
         NB = length(lbe) - 1
         cpu_s = zeros(Float32, NB, B)
         cpu_c = zeros(UInt32, NB, B)
@@ -87,10 +87,10 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         SFC.calculate_structure_function_batch!(
             gpu_s, gpu_c, SF_TYPE, x, u, lbe; backend = GPU_BE,
         )
-        @test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
+        Test.@test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
     end
 
-    @testset "row2b signed transverse operators on the batch kernels" begin
+    Test.@testset "row2b signed transverse operators on the batch kernels" begin
         for sft in (SFT.T3SFType(), SFT.L2T1SFType())
             x, u, lbe = _rand_batch_fixed(N, B)
             NB = length(lbe) - 1
@@ -101,8 +101,8 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
                 sft, x, u, lbe, SF.StructureFunctionSumsAndCounts;
                 backend = GPU_BE,
             )
-            @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
-            @test any(!iszero, cpu_s)
+            Test.@test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
+            Test.@test any(!iszero, cpu_s)
 
             xv, uv, lbev = _rand_batch_varying(N, B)
             NBv = length(lbev) - 1
@@ -112,12 +112,12 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             gpu_sv = zeros(Float32, NBv, B)
             gpu_cv = zeros(UInt32, NBv, B)
             SFC.calculate_structure_function_batch!(gpu_sv, gpu_cv, sft, xv, uv, lbev; backend = GPU_BE)
-            @test batch_histograms_equal(gpu_sv, gpu_cv, cpu_sv, cpu_cv; atol = 1f-4)
-            @test any(!iszero, cpu_sv)
+            Test.@test batch_histograms_equal(gpu_sv, gpu_cv, cpu_sv, cpu_cv; atol = 1f-4)
+            Test.@test any(!iszero, cpu_sv)
         end
     end
 
-    @testset "row3 SP1D fixed-x" begin
+    Test.@testset "row3 SP1D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
         n_bins = length(lbe) - 1
         ref_s = zeros(Float32, 6, n_bins, B)
@@ -131,20 +131,20 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         cpu_s = zeros(Float32, 6, n_bins, B)
         cpu_c = zeros(UInt32, 6, n_bins, B)
         serial_calculate_structure_functions_single_pass!(cpu_s, cpu_c, x, u, lbe)
-        @test batch_histograms_equal(cpu_s, cpu_c, ref_s, ref_c)
+        Test.@test batch_histograms_equal(cpu_s, cpu_c, ref_s, ref_c)
 
         inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         gpu_sp = SFC.calculate_structure_functions_single_pass(
             x, u, lbe, SF.StructureFunctionSumsAndCounts; backend = GPU_BE,
         )
         for (t, k) in enumerate(inv)
-            @test batch_histograms_equal(
+            Test.@test batch_histograms_equal(
                 gpu_sp[k].sums, gpu_sp[k].counts, cpu_s[t, :, :], cpu_c[t, :, :]; atol = 1f-4,
             )
         end
     end
 
-    @testset "row4 SP1D varying-x slices" begin
+    Test.@testset "row4 SP1D varying-x slices" begin
         x, u, lbe = _rand_batch_varying(N, B)
         n_bins = length(lbe) - 1
         cpu_s = zeros(Float32, 6, n_bins, B)
@@ -156,10 +156,10 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         SFC.calculate_structure_functions_single_pass_batch!(
             gpu_s, gpu_c, x, u, lbe; backend = GPU_BE,
         )
-        @test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
+        Test.@test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
     end
 
-    @testset "row5 SP2D fixed-x" begin
+    Test.@testset "row5 SP2D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
         val_edges = LinearBinEdges(-1.0f0, 1.0f0, 9)
         n_bins = length(lbe) - 1
@@ -173,13 +173,13 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             x, u, lbe, val_edges; backend = GPU_BE,
         )
         for (t, k) in enumerate(inv)
-            @test batch_histograms_equal(
+            Test.@test batch_histograms_equal(
                 gpu_sp[k].sums, gpu_sp[k].counts, cpu_s[t, :, :, :], cpu_c[t, :, :, :]; atol = 1f-4,
             )
         end
     end
 
-    @testset "row6 SP2D varying-x slices" begin
+    Test.@testset "row6 SP2D varying-x slices" begin
         x, u, lbe = _rand_batch_varying(N, B)
         val_edges = LinearBinEdges(-1.0f0, 1.0f0, 9)
         n_bins = length(lbe) - 1
@@ -193,10 +193,10 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         SFC.calculate_structure_functions_single_pass_2d_batch!(
             gpu_s, gpu_c, x, u, lbe, val_edges; backend = GPU_BE,
         )
-        @test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
+        Test.@test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
     end
 
-    @testset "row7 joint 2D fixed-x" begin
+    Test.@testset "row7 joint 2D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
         val_edges = LinearBinEdges(-0.5f0, 1.5f0, 9)
         n_bins = length(lbe) - 1
@@ -208,10 +208,10 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         gpu_out = SFC.calculate_structure_function(
             SF_TYPE, x, u, lbe, val_edges; backend = GPU_BE,
         )
-        @test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
+        Test.@test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
 
-    @testset "row8 SP2D fixed-x production 50x50 bin grid (smoke)" begin
+    Test.@testset "row8 SP2D fixed-x production 50x50 bin grid (smoke)" begin
         Np, Bp = 32, 2
         x, u, lbe = _rand_batch_fixed(Np, Bp)
         val_edges = LinearBinEdges(-1.0f0, 1.0f0, 51)
@@ -226,7 +226,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             x, u, lbe, val_edges; backend = GPU_BE,
         )
         for (t, k) in enumerate(inv)
-            @test batch_histograms_equal(
+            Test.@test batch_histograms_equal(
                 gpu_sp[k].sums, gpu_sp[k].counts, cpu_s[t, :, :, :], cpu_c[t, :, :, :]; atol = 1f-4,
             )
         end

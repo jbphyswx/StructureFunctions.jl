@@ -238,6 +238,30 @@ function gridded_lag_sweep!(
     return sums, counts
 end
 
+# A structureless grid's single-pass invariants are the point entry's over its held cells.
+function gridded_lag_sweep!(
+    sums::AbstractMatrix, counts::AbstractMatrix, sf::SFT.SinglePassInvariants,
+    data::AbstractMatrix, s::ScatteredPairs, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
+    valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
+) where {D, V, K}
+    _require_backend(backend)
+    validate_fields(sf, Val(V), Val(K))
+    n = n_scattered_cells(s)
+    size(data) == (D, n) || throw(DimensionMismatch(
+        "field holds $(size(data, 2)) cells of $(size(data, 1)) components, the grid $n cells of $D",
+    ))
+    _check_hist_shape(sums, counts, sf, n_histogram_bins(dist_be))
+    w = _pair_weights(weights, n, eltype(sums))
+    keep = valid isa AllValid ? Colon() : findall(valid)
+    x = valid isa AllValid ? s.points : s.points[:, keep]
+    uu = valid isa AllValid ? data : data[:, keep]
+    ww = w isa NoWeights ? w : w[keep]
+    _assert_counts_can_accumulate(counts, size(x, 2), ww)
+    _validate_array_shape(x, uu, s.metric)
+    _dispatch_single_pass!(backend, sums, counts, x, uu, dist_be; distance_metric = s.metric, weights = ww)
+    return sums, counts
+end
+
 # A structureless grid's tensor is the point tensor over its held cells, so the cells it drops drop
 # their weights with them.
 function gridded_tensor_sweep!(
@@ -262,15 +286,30 @@ function gridded_tensor_sweep!(
     return sums, counts
 end
 
+# A structureless grid's joint histogram is the point entry's over its held cells.
 function gridded_lag_sweep!(
     sums::AbstractMatrix, counts::AbstractMatrix, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::ScatteredPairs, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K};
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-    second_axis::SeparationAngleAxis,
+    second_axis::AbstractSecondAxisSource,
 ) where {D, V, K}
-    throw(ArgumentError(
-        "a joint histogram over the separation angle on a structureless grid is the unstructured " *
-        "joint entry's job: pass the points and the field to `calculate_structure_function` with " *
-        "distance and angle bins.",
+    _require_backend(backend)
+    (V == 1 && K == 0) || throw(ArgumentError(
+        "a joint histogram is of one vector field; got a multi-field of $V vector and $K scalar fields",
     ))
+    n = n_scattered_cells(s)
+    size(data) == (D, n) || throw(DimensionMismatch(
+        "field holds $(size(data, 2)) cells of $(size(data, 1)) components, the grid $n cells of $D",
+    ))
+    w = _pair_weights(weights, n, eltype(sums))
+    keep = valid isa AllValid ? Colon() : findall(valid)
+    x = valid isa AllValid ? s.points : s.points[:, keep]
+    uu = valid isa AllValid ? data : data[:, keep]
+    ww = w isa NoWeights ? w : w[keep]
+    _assert_counts_can_accumulate(counts, size(x, 2), ww)
+    shape = _validate_array_shape(x, uu, s.metric)
+    _require_value_axis(second_axis, SFH.pair_geometry_for(s.metric, Val(D)))
+    _dispatch_execution_backend!(backend, shape, sums, counts, sf, x, uu, dist_be, axis_be;
+                                 distance_metric = s.metric, weights = ww, second_axis)
+    return sums, counts
 end

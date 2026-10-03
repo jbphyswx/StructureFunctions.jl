@@ -17,6 +17,8 @@ Test.@testset "CPUSFWorkspace" begin
     backends = CB.ThreadedBackend[]
     Threads.nthreads() > 1 && push!(backends, CB.ThreadedBackend())
 
+    # Threaded sums add in the order the tasks take their chunks, so they agree to rounding; counts are exact.
+    same_sums(a, b, backend) = backend isa CB.SerialBackend ? a == b : isapprox(a, b; rtol = 1e-12)
     Test.@testset "results identical with and without a workspace" begin
         for backend in (CB.SerialBackend(), backends...)
             ws = CPUSFWorkspace{:single_pass_2d}(x, u, db, vb; backend)
@@ -24,7 +26,7 @@ Test.@testset "CPUSFWorkspace" begin
             s2 = zeros(Float64, 6, nd, nv, B); c2 = zeros(UInt32, 6, nd, nv, B)
             SFC.calculate_structure_functions_single_pass_2d_batch!(s1, c1, x, u, db, vb; backend)
             SFC.calculate_structure_functions_single_pass_2d_batch!(s2, c2, x, u, db, vb; backend, workspace = ws)
-            Test.@test s1 == s2
+            Test.@test same_sums(s1, s2, backend)
             Test.@test c1 == c2
 
             ws1 = CPUSFWorkspace{:single_pass}(x, u, db; backend)
@@ -32,7 +34,7 @@ Test.@testset "CPUSFWorkspace" begin
             p2 = zeros(Float64, 6, nd, B); q2 = zeros(UInt32, 6, nd, B)
             SFC.calculate_structure_functions_single_pass_batch!(p1, q1, x, u, db; backend)
             SFC.calculate_structure_functions_single_pass_batch!(p2, q2, x, u, db; backend, workspace = ws1)
-            Test.@test p1 == p2
+            Test.@test same_sums(p1, p2, backend)
             Test.@test q1 == q2
         end
     end

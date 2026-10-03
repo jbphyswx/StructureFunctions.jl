@@ -130,15 +130,68 @@ Test.@testset "the joint histogram and the wide histogram take the global-atomic
     _device_matches(SFT.L2SFType(), u, s, wide, 2)
 end
 
-Test.@testset "the device answers Auto with the transform and refuses what it cannot express" begin
+Test.@testset "the device answers Auto with the transform for a polynomial and the lag sweep otherwise" begin
     dims = (12, 10)
     s = SFC.UniformLagSchedule(dims, (1.0, 1.0), (true, true))
     u = randn(2, dims...)
     edges = collect(range(0.0, 5.0; length = 8))
     _device_matches(SFT.L2SFType(), u, s, edges, 2; tag = SB.AutoSpectralBackend())
     nb = length(edges) - 1
-    Test.@test_throws ArgumentError SFC.gridded_sweep!(zeros(nb), zeros(Int, nb), SFT.FullVectorStructureFunctionType{3}(),
-                                                      u, s, edges, Val(2), SB.AutoSpectralBackend(); backend = DEV)
+    op = SFT.FullVectorStructureFunctionType{3}()
+    rs, rc = zeros(nb), zeros(Int, nb)
+    SFC.gridded_lag_sweep!(rs, rc, op, u, s, edges, Val(2); backend = CB.SerialBackend())
+    gs, gc = zeros(nb), zeros(Int, nb)
+    SFC.gridded_sweep!(gs, gc, op, u, s, edges, Val(2), SB.AutoSpectralBackend(); backend = DEV)
+    Test.@test sum(rc) > 0
+    Test.@test gc == rc
+    Test.@test isapprox(gs, rs; rtol = 1e-11, atol = 1e-12)
+end
+
+Test.@testset "the joint histograms and the batches run the lag sweep on the device" begin
+    Random.seed!(9002)
+    dims = (10, 8)
+    vax = SFC.InvariantValueAxis()
+    aax = SFC.SeparationAngleAxis([1.0, 0.0])
+    vbins = collect(range(-2.0, 2.0; length = 9))
+    abins = collect(range(prevfloat(0.0), π; length = 5))
+    edges = collect(range(0.0, 3.0; length = 7)) .+ 0.0137
+    nb = length(edges) - 1
+    ys = collect(range(0.0, 1.4; length = 8))
+    lats = collect(range(-1.0, 1.0; length = 7))
+    for (sched, fdims) in ((SFC.UniformLagSchedule(dims, (0.3, 0.4), (true, false)), dims),
+                           (SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((10,), (0.3,), (false,)), (ys,), (1, 2)),
+                            (10, 8)),
+                           (SFC.ZonalLagSchedule(lats, 12, 2π / 12, 1.0, true), (12, 7)))
+        u = randn(2, fdims...)
+        axes = sched isa SFC.ZonalLagSchedule ? ((vax, vbins),) : ((vax, vbins), (aax, abins))
+        for sf in (SFT.L2SFType(), SFT.FullVectorStructureFunctionType{3}()), (ax, ab) in axes
+            na = length(ab) - 1
+            rs, rc = zeros(nb, na), zeros(nb, na)
+            SFC.gridded_lag_sweep!(rs, rc, sf, u, sched, edges, ab, Val(2); second_axis = ax, backend = CB.SerialBackend())
+            gs, gc = zeros(nb, na), zeros(nb, na)
+            SFC.gridded_lag_sweep!(gs, gc, sf, u, sched, edges, ab, Val(2); second_axis = ax, backend = DEV)
+            Test.@test sum(rc) > 0
+            Test.@test isapprox(gc, rc; rtol = 1e-12)
+            Test.@test isapprox(gs, rs; rtol = 1e-11, atol = 1e-12)
+        end
+        ub = randn(2, fdims..., 3)
+        rs, rc = zeros(nb, 3), zeros(Int, nb, 3)
+        SFC.gridded_lag_sweep_batch!(rs, rc, SFT.FullVectorStructureFunctionType{3}(), ub, sched, edges, Val(2);
+                                     backend = CB.SerialBackend())
+        gs, gc = zeros(nb, 3), zeros(Int, nb, 3)
+        SFC.gridded_lag_sweep_batch!(gs, gc, SFT.FullVectorStructureFunctionType{3}(), ub, sched, edges, Val(2);
+                                     backend = DEV)
+        Test.@test gc == rc
+        Test.@test isapprox(gs, rs; rtol = 1e-11, atol = 1e-12)
+        rs3, rc3 = zeros(nb, 8, 3), zeros(nb, 8, 3)
+        SFC.gridded_lag_sweep_batch!(rs3, rc3, SFT.L2SFType(), ub, sched, edges, vbins, Val(2); second_axis = vax,
+                                     backend = CB.SerialBackend())
+        gs3, gc3 = zeros(nb, 8, 3), zeros(nb, 8, 3)
+        SFC.gridded_lag_sweep_batch!(gs3, gc3, SFT.L2SFType(), ub, sched, edges, vbins, Val(2); second_axis = vax,
+                                     backend = DEV)
+        Test.@test isapprox(gc3, rc3; rtol = 1e-12)
+        Test.@test isapprox(gs3, rs3; rtol = 1e-11, atol = 1e-12)
+    end
 end
 
 Test.@testset "the direct lag sweep runs on the device, for the operators the transform refuses" begin

@@ -48,6 +48,8 @@ Test.@testset "StructureFunctions.jl" begin
     include("test_gridded_device.jl")
     println("--- Running Gridded Slice Batch Test ---")
     include("test_gridded_batch.jl")
+    println("--- Running Gridded Single-Pass Test ---")
+    include("test_gridded_single_pass.jl")
     println("--- Running Pair Weights Test ---")
     include("test_gridded_weights.jl")
     println("--- Running Pair Weights Across Routes Test ---")
@@ -101,6 +103,9 @@ Test.@testset "StructureFunctions.jl" begin
 
     println("--- Running GPU Culling Test ---")
     include("test_gpu_culling.jl")
+
+    println("--- Running GPU In-Range Fraction Test ---")
+    include("test_gpu_in_range.jl")
 
     println("--- Running Tensor and KHM Test ---")
     include("test_tensor_khm.jl")

@@ -176,8 +176,8 @@ end
     GPUSFWorkspace(backend, distance_bins; kind=:sf1d)
     GPUSFWorkspace(backend, distance_bins, value_bins; kind=:joint2d)
 
-Reusable device bin preparation: the digitizers of the edges, the staged inputs, the cull grid and
-its tile-pair schedules, and the single-pass 2D partitions. Load `KernelAbstractions`, then construct a
+Reusable device bin preparation: the digitizers of the edges, the staged inputs, and the cull grid and
+its tile-pair schedules. Load `KernelAbstractions`, then construct a
 workspace for the execution backend and edges. Pass it as `workspace=ws` to a compatible calculation.
 Each workspace serves one call at a time.
 
@@ -188,7 +188,7 @@ call `refresh!(ws)` after mutating them in place. Passing a different coordinate
 identity and prepares a new schedule. An allocating calculation returns buffers of its own; a mutating
 one adds into the caller's outputs.
 
-`release!(ws)` drops the input-staging, culling and partition buffers.
+`release!(ws)` drops the input-staging and culling buffers.
 """
 struct GPUSFWorkspace{kind, FT, BE, DB, VB, DD, VP, L}
     backend::BE
@@ -205,24 +205,20 @@ end
 """
     GPUCullMemo
 
-What one cull prologue produced for a set of kernel coordinates, kept on the workspace so a call on
-the same coordinates, cutoff and policy reuses it: the cell grid (which owns the permutation), the
-coordinates already permuted, and one device work list per tile size, built on first use by
-[`schedule_for`](@ref). `source` identifies the caller's prepared coordinate array; an in-place
-mutation therefore requires [`refresh!`](@ref). `x` is the workspace-owned coordinate snapshot and
-`to_device` uploads a host vector to the workspace's device.
+What one cull prologue produced for a set of kernel coordinates: the device cell grid (which owns the
+permutation), the coordinates already permuted, and one device work list per tile size, built on
+first use by [`schedule_for`](@ref). A workspace keeps it so a call on the same coordinates, cutoff
+and policy reuses it. `source` identifies the caller's prepared coordinate array; an in-place
+mutation therefore requires [`refresh!`](@ref).
 """
 abstract type AbstractGPUCullMemo end
 
-struct GPUCullMemo{X <: AbstractMatrix, FT, PO <: CullingPolicy, G <: CellGrid, XS, TD} <:
-       AbstractGPUCullMemo
+struct GPUCullMemo{FT, PO <: CullingPolicy, G <: CellGrid, XS} <: AbstractGPUCullMemo
     source::Any
-    x::X
     cutoff::FT
     policy::PO
     grid::G
     x_sorted::XS
-    to_device::TD
     schedules::Dict{Int, TilePairWorkList}
 end
 
@@ -243,30 +239,23 @@ end
     schedule_for(cull, n_points, tile) -> PairBlockSchedule
 
 The tile-pair schedule a kernel with `tile`-point tiles enumerates: the full upper triangle when
-`cull` is `nothing`, otherwise the memo's device work list for that tile size, built and uploaded on
-first use and kept for later calls. Each kernel family picks its own tile, so the list is derived
-from the grid at the size asked for, not fixed when the memo is built.
+`cull` is `nothing`, otherwise the memo's device work list for that tile size
+([`gpu_tile_worklist`](@ref)), built on first use and kept for later calls. Each kernel family picks
+its own tile, so the list is derived from the grid at the size asked for.
 """
 schedule_for(::Nothing, n_points::Int, tile::Int) = FullUpperTriangle(cld(n_points, tile))
 
 function schedule_for(memo::GPUCullMemo, n_points::Int, tile::Int)
     n_points == length(memo.grid.perm) || throw(ArgumentError(
         "cull memo holds $(length(memo.grid.perm)) points, asked to schedule $n_points"))
-    return get!(memo.schedules, tile) do
-        wl = tile_pair_worklist(memo.grid, n_points, tile)
-        TilePairWorkList(memo.to_device(wl.pairs), wl.n_tiles)
-    end
+    return get!(() -> gpu_tile_worklist(memo.grid, n_points, tile), memo.schedules, tile)
 end
 
-"""State a workspace carries between launches: the single-pass 2D partitions, the staged inputs, the
-cull memo, and `active`, the memo this call culls with (set by the prologue on every call)."""
+"""State a workspace carries between calls: the staged inputs and the cull memo."""
 mutable struct GPUSFLazyBuffers
-    partition_sums_dev
-    partition_counts_dev
     x_dev_cache
     u_dev_cache
-    active::Union{Nothing, GPUCullMemo}
     cull::Union{Nothing, AbstractGPUCullMemo}
 end
 
-GPUSFLazyBuffers() = GPUSFLazyBuffers(nothing, nothing, nothing, nothing, nothing, nothing)
+GPUSFLazyBuffers() = GPUSFLazyBuffers(nothing, nothing, nothing)

@@ -32,8 +32,9 @@ You can load the serialized `.jls` binary files into any active Julia session fo
 
 In a Julia REPL:
 ```julia
-using Serialization, Profile
-using ProfileView # or `using ProfileCanvas`
+using Serialization: Serialization
+using Profile: Profile
+using ProfileView: ProfileView # or `using ProfileCanvas: ProfileCanvas`
 
 # Load Serial CPU profile
 data = deserialize("benchmark/profile/cpu_serial.jls")
@@ -47,7 +48,7 @@ ProfileView.view()
 
 To view allocations or CPU traces in your web browser:
 ```julia
-using Serialization, PProf
+using Serialization: Serialization, PProf: PProf
 
 # Load Serial Allocations profile
 allocs = deserialize("benchmark/profile/allocs_serial.jls")

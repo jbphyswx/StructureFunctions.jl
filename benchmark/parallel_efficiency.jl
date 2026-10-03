@@ -13,21 +13,23 @@
 # Run: julia -t 8 --project=test benchmark/parallel_efficiency.jl
 #      SF_EFF_WORKERS=4 to choose the worker count (default 4).
 
-using Distributed
+using Distributed: Distributed
+using Printf: Printf
+using Random: Random
 
 const NWORKERS = parse(Int, get(ENV, "SF_EFF_WORKERS", "4"))
 const TEST_PROJ = joinpath(@__DIR__, "..", "test")
 
 # A worker inherits `JULIA_EXCLUSIVE`, under which each single-threaded worker pins its one thread
 # to the first CPU of the mask — the same CPU for all of them, so the pool time-shares one core.
-if nworkers() < NWORKERS
-    addprocs(NWORKERS - (nprocs() == 1 ? 0 : nworkers());
-             exeflags = ["--project=$(abspath(TEST_PROJ))", "-t", "1"],
-             env = ["JULIA_EXCLUSIVE" => "0"])
+if Distributed.nworkers() < NWORKERS
+    Distributed.addprocs(NWORKERS - (Distributed.nprocs() == 1 ? 0 : Distributed.nworkers());
+                         exeflags = ["--project=$(abspath(TEST_PROJ))", "-t", "1"],
+                         env = ["JULIA_EXCLUSIVE" => "0"])
 end
 
-@everywhere begin
-    using StructureFunctions
+Distributed.@everywhere begin
+    using StructureFunctions: StructureFunctions
     using StructureFunctions.Calculations: Calculations as SFC
     using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
     using StructureFunctions.StructureFunctionObjects: StructureFunctionObjects as SFO
@@ -35,7 +37,6 @@ end
     using OhMyThreads: OhMyThreads
 end
 
-using Printf, Random
 
 """Minimum over `reps` runs: on a shared node a single sample carries noise the size of the effect."""
 function fastest(f, reps::Int = 3)
@@ -94,23 +95,23 @@ function check_route(name, call, x, u; failures)
     ok = ok_thread && ok_thread_slow && ok_dist_slow
 
     ok || push!(failures, name)
-    @printf("%-34s serial %8.4f  threaded %8.4f (%5.2f×)  distributed %8.4f (%5.2f×)  %s\n",
+    Printf.@printf("%-34s serial %8.4f  threaded %8.4f (%5.2f×)  distributed %8.4f (%5.2f×)  %s\n",
         name, t_serial, t_thread, speedup_thread, t_dist, speedup_dist, ok ? "ok" : "FAILED")
-    ok_thread || @printf("    threaded speed-up %.2f× is under the %.2f× floor\n",
+    ok_thread || Printf.@printf("    threaded speed-up %.2f× is under the %.2f× floor\n",
         speedup_thread, floor_t)
-    ok_dist_slow || @printf("    distributed is %.2f× SLOWER than serial\n", t_dist / t_serial)
+    ok_dist_slow || Printf.@printf("    distributed is %.2f× SLOWER than serial\n", t_dist / t_serial)
     return ok
 end
 
 function main()
     Random.seed!(20260918)
-    println("threads=", Threads.nthreads(), "  workers=", nworkers(),
+    println("threads=", Threads.nthreads(), "  workers=", Distributed.nworkers(),
             "  threaded floor=", round(threaded_floor(Threads.nthreads()); digits = 2), "×")
     failures = String[]
 
     n = 5000
-    x = rand(2, n)
-    u = rand(2, n)
+    x = Random.rand(2, n)
+    u = Random.rand(2, n)
     check_route("point 1D", sf1d, x, u; failures)
     check_route("point joint 2D", joint2d, x, u; failures)
     check_route("point single-pass 1D", single_pass, x, u; failures)
@@ -119,15 +120,15 @@ function main()
     # through the pair loop instead is not merely slower, it is asymptotically slower, and the
     # not-slower-than-serial floor is what says so: this row read 37.8x before the distributed
     # and MPI point paths were given the route.
-    x1 = reshape(sort(rand(n) .* 100), 1, n)
-    u1 = randn(1, n)
+    x1 = reshape(sort(Random.rand(n) .* 100), 1, n)
+    u1 = Random.randn(1, n)
     check_route("point sorted line 1D", sf1d, x1, u1; failures)
 
     # The auxiliary-axis routes are the ones a slice-wise split silently ruins: the batch-leading
     # kernels amortise a pair's geometry over the slices, so any decomposition that splits slices
     # instead of the outer index pays it B times over.
     for nslices in (4, 8)
-        ub = rand(2, n, nslices)
+        ub = Random.rand(2, n, nslices)
         check_route("auxiliary-axis 1D (B=$nslices)", sf1d, x, ub; failures)
         check_route("auxiliary-axis joint 2D (B=$nslices)", joint2d, x, ub; failures)
     end

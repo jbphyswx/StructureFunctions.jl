@@ -7,20 +7,22 @@
 # when there is one, and the portable KernelAbstractions kernel when there is none.
 
 """
-    gpu_native_1d_plan(backend, XT, UT, OT, CT, weights, geom, NB, NMOM) -> plan or nothing
+    gpu_native_1d_plan(backend, XT, UT, OT, CT, weights, geom, NB, moments) -> plan or nothing
 
 The launch plan of `backend`'s native 1-D pair kernel for coordinates of `XT`, fields of `UT`, sums of
 `OT`, counts of `CT`, the weights `weights`, the coordinate and field widths of `geom`, `NB` distance
-bins and `NMOM` moments; `nothing` when `backend` has no native kernel or that kernel does not fit the
+bins and the moment set `moments` (what one pair adds: an operator's value, the single-pass invariants,
+a tensor's components); `nothing` when `backend` has no native kernel or that kernel does not fit the
 device. A function of those types and sizes and of the device's capabilities.
 `StructureFunctionsCUDAExt` supplies it for `CUDA.CUDABackend`.
 """
-gpu_native_1d_plan(backend, XT, UT, OT, CT, weights, geom, NB, NMOM) = nothing
+gpu_native_1d_plan(backend, XT, UT, OT, CT, weights, geom, NB, moments) = nothing
 
 """
-    gpu_native_launch_1d!(plan, out, cnt, x, u, wts, sf_type, dist_dig, N, NB, B, fixed_x, geom, cull)
+    gpu_native_launch_1d!(plan, out, cnt, x, u, wts, moments, dist_dig, N, NB, B, fixed_x, geom, cull)
 
-Launch the native 1-D kernel `plan` describes into `out`/`cnt` of shape `(NMOM, NB, B)`. `x` is
+Launch the native 1-D kernel `plan` describes into `out`/`cnt` of shape `(NMOM, NB, B)`, `NMOM` the
+number of moments of `moments`. `x` is
 `(W, N, B)`, or `(W, N)`/`(W, N, 1)` when `fixed_x`; `u` is `(F, N, B)`; `wts` is `NoWeights()` or one
 device weight per point; `cull` is the active [`GPUCullMemo`](@ref) or `nothing`, from which the launch
 takes its tile-pair schedule through [`schedule_for`](@ref).
@@ -28,15 +30,15 @@ takes its tile-pair schedule through [`schedule_for`](@ref).
 function gpu_native_launch_1d! end
 
 """
-    gpu_native_2d_plan(backend, XT, UT, OT, CT, weights, geom, NMOM, n_dist, n_val) -> plan or nothing
+    gpu_native_2d_plan(backend, XT, UT, OT, CT, weights, geom, moments, n_dist, n_val, val_plan) -> plan or nothing
 
 The launch plan of `backend`'s native distance × value kernel for an `n_dist × n_val` histogram per
-moment, as [`gpu_native_1d_plan`](@ref).
+moment of `moments` whose value axis the device digitizer `val_plan` bins, as [`gpu_native_1d_plan`](@ref).
 """
-gpu_native_2d_plan(backend, XT, UT, OT, CT, weights, geom, NMOM, n_dist, n_val) = nothing
+gpu_native_2d_plan(backend, XT, UT, OT, CT, weights, geom, moments, n_dist, n_val, val_plan) = nothing
 
 """
-    gpu_native_launch_2d!(plan, out, cnt, x, u, wts, sf_type, dist_dig, val_plan, N, n_dist, n_val, B,
+    gpu_native_launch_2d!(plan, out, cnt, x, u, wts, moments, dist_dig, val_plan, N, n_dist, n_val, B,
                           fixed_x, geom, second_axis, cull)
 
 Launch the native distance × value kernel `plan` describes into `out`/`cnt` of shape
@@ -45,13 +47,50 @@ Launch the native distance × value kernel `plan` describes into `out`/`cnt` of 
 """
 function gpu_native_launch_2d! end
 
-"""Build an exact culling grid from device-resident kernel coordinates.
+"""Work groups of [`gpu_in_range_tally!`](@ref), one column of its tally each."""
+const GPU_IN_RANGE_GROUPS = 256
 
-Backends with device sort and compaction support return a [`CellGrid`](@ref) whose permutation
-stays on that backend. `nothing` means the backend has no device implementation; callers retain
-the uncullled route for `AutoCulling` and reject an explicit `AlwaysCulling` request.
+"""Draws of one work group of [`gpu_in_range_tally!`](@ref)."""
+const GPU_IN_RANGE_GROUP = 256
+
 """
-gpu_device_cull_grid(backend, x, cutoff, policy) = nothing
+    gpu_in_range_tally!(tally, backend, x, dig, NB, geom, cull, tile) -> tally
+
+Launch on `backend` the draw of `GPU_IN_RANGE_GROUPS × GPU_IN_RANGE_GROUP` pairs, uniform over the pairs that a sweep
+of the kernel coordinates `x`, `(W, N)` or `(W, N, B)`, visits over the tile pairs of `tile`-point tiles the cull memo
+`cull` schedules (`nothing`: every pair) and over the slices; column `g` of the `(2, GPU_IN_RANGE_GROUPS)` `Int32`
+array `tally` receives work group `g`'s draws that are pairs and its pairs in one of the `NB` bins of the device
+digitizer `dig`. A function of its inputs. `StructureFunctionsKernelAbstractionsExt` supplies it.
+"""
+function gpu_in_range_tally! end
+
+"""The share in range of the pairs drawn, from a host-readable tally of [`gpu_in_range_tally!`](@ref); over `n` pairs
+drawn its standard error is at most `1 / (2√n)`."""
+function in_range_share(tally::AbstractMatrix)
+    drawn = sum(view(tally, 1, :))
+    return drawn == 0 ? 0.0 : sum(view(tally, 2, :)) / drawn
+end
+
+"""
+    gpu_in_range_fraction(backend, x, dig, NB, geom, cull, tile) -> Float64
+
+[`in_range_share`](@ref) of the tally [`gpu_in_range_tally!`](@ref) draws on `backend`, read back once.
+`StructureFunctionsKernelAbstractionsExt` supplies it for every backend and `StructureFunctionsCUDAExt` for
+`CUDA.CUDABackend`.
+"""
+function gpu_in_range_fraction end
+
+"""
+    gpu_tile_worklist(grid, n_points, tile) -> TilePairWorkList
+
+Tile pairs `(ti, tj)`, `ti ≤ tj`, of `tile`-point tiles over `grid`'s permuted order that can hold a
+pair inside `grid.cutoff`, sorted, unique and built on the device holding `grid`'s vectors. A pair
+inside the cutoff has its `j` cell in a stencil row of its `i` cell, and each row reaches a tile as
+one shifted range of cell ids, so the list is exact; pairs beyond the cutoff that share a listed tile
+pair are rejected by the bin test. The element type is `Int32` while `n_tiles^2` fits it.
+`StructureFunctionsKernelAbstractionsExt` supplies it.
+"""
+function gpu_tile_worklist end
 
 
 """

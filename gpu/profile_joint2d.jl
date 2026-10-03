@@ -28,7 +28,7 @@ Environment:
 
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
-using Printf: @printf
+using Printf: Printf
 using Random: Random
 using StructureFunctions: StructureFunctions as SF
 using StructureFunctions.Calculations: Calculations as SFC
@@ -99,7 +99,7 @@ function _profile_one!(
     )
     t = _bench(run!, warmup, repeat_)
 
-    @printf(
+    Printf.@printf(
         "%-12s  route=%-10s  plan=%-26s  %8.3f ms  [NB2=%d compile_cells=%d]\n",
         label,
         reported,
@@ -140,7 +140,7 @@ function main()
     println("=" ^ 72)
     println("joint 2D profile workload")
     println("Device: ", CUDA.name(CUDA.device()))
-    @printf(
+    Printf.@printf(
         "N=%d  n_dist=%d  n_val_inner=%d  dist_route=%s  warmup=%d  repeat=%d\n",
         N, n_dist, n_val_inner, dist_route, warmup, repeat_,
     )
@@ -163,7 +163,7 @@ function main()
     if length(routes) == 2
         t_fast = min(times[:inflinear], times[:general])
         t_slow = max(times[:inflinear], times[:general])
-        @printf(
+        Printf.@printf(
             "\ninflinear vs general: %.2f×  (%.3f ms vs %.3f ms)\n",
             t_slow / t_fast, 1_000times[:inflinear], 1_000times[:general],
         )

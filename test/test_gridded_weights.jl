@@ -106,6 +106,10 @@ end
 
 _close(a, b) = isapprox(a, b; rtol = 1e-9, atol = 1e-10 * max(1.0, maximum(abs, b)))
 
+# Serially the order of summation is fixed and sums agree bit for bit; the threaded tasks' order varies by run.
+_same_sums(got, ref, ::CB.SerialBackend) = Test.@test got == ref
+_same_sums(got, ref, ::CB.ThreadedBackend) = Test.@test got ≈ ref rtol = 1e-12
+
 # Bin averages agree where both are defined; an empty bin is NaN on both sides.
 _same_average(a, b) = all(((x, y),) -> (isnan(x) && isnan(y)) || isapprox(x, y; rtol = 1e-9), zip(a, b))
 
@@ -134,7 +138,7 @@ Test.@testset "weights of one reproduce the unweighted results" begin
         for backend in (SERIAL, THREADED)
             ref = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend)
             got = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend, weights = ones_w)
-            Test.@test got.sums == ref.sums
+            _same_sums(got.sums, ref.sums, backend)
             Test.@test got.counts == ref.counts
         end
     end
@@ -145,7 +149,7 @@ Test.@testset "weights of one reproduce the unweighted results" begin
 
         ref = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend)
         got = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend, weights = ones_w)
-        Test.@test got.sums == ref.sums
+        _same_sums(got.sums, ref.sums, backend)
         Test.@test got.counts == ref.counts
     end
 end

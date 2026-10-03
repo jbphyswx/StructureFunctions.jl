@@ -1,5 +1,5 @@
-using Documenter
-using StructureFunctions
+using Documenter: Documenter
+using StructureFunctions: StructureFunctions
 
 DocMeta.setdocmeta!(
     StructureFunctions,
@@ -18,7 +18,7 @@ const MODULES = [
     StructureFunctions.KHM,
 ]
 
-makedocs(;
+Documenter.makedocs(;
     modules = MODULES,
     authors = "Jordan Benjamin",
     sitename = "StructureFunctions.jl",
@@ -46,7 +46,7 @@ makedocs(;
 )
 
 if get(ENV, "DOCUMENTER_DEPLOY", "false") == "true"
-    deploydocs(;
+    Documenter.deploydocs(;
         repo = "github.com/jbphyswx/StructureFunctions.jl",
         devbranch = "main",
         push_preview = true,

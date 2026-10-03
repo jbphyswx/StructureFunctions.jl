@@ -17,7 +17,9 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT, LinearBinEdges, LogBinEdges, InfPaddedBinEdges
 using OhMyThreads: OhMyThreads              # threaded extension
 using KernelAbstractions: KernelAbstractions as KA   # GPU(KA.CPU) parity backend
-using Printf, Random, Dates
+using Printf: Printf
+using Random: Random
+using Dates: Dates
 
 const SCALE = get(ENV, "SF_BENCH_SCALE", "fast")
 const ONLY = get(ENV, "SF_BENCH_ONLY", "")
@@ -140,32 +142,32 @@ function main()
     csv = joinpath(OUTDIR, "regimes-$stamp.csv")
 
     gbs = measured_triad_gbs()
-    @printf("%s\nStage 0 regimes | julia %s | nthreads=%d | scale=%s reps=%d\n",
+    Printf.@printf("%s\nStage 0 regimes | julia %s | nthreads=%d | scale=%s reps=%d\n",
             "="^118, VERSION, Threads.nthreads(), SCALE, REPS)
-    @printf("roofline (measured): triad %.1f GB/s single-core stream bandwidth\n%s\n", gbs, "="^118)
+    Printf.@printf("roofline (measured): triad %.1f GB/s single-core stream bandwidth\n%s\n", gbs, "="^118)
     flush(stdout)
 
     open(csv, "w") do io
         println(io, "sweep,entry,D,eltype,bins,N,B,backend,pairs,seconds,ns_per_pair,bytes,status")
         for (name, cases) in sweeps()
             (!isempty(ONLY) && String(name) != ONLY) && continue
-            @printf("\n--- sweep: %s ---\n", name)
-            @printf("%-8s %-8s %-2s %-8s %-7s %7s %4s %-10s %12s %10s %9s\n",
+            Printf.@printf("\n--- sweep: %s ---\n", name)
+            Printf.@printf("%-8s %-8s %-2s %-8s %-7s %7s %4s %-10s %12s %10s %9s\n",
                     "entry", "", "D", "eltype", "bins", "N", "B", "backend", "pairs", "ns/pair", "MiB")
             flush(stdout)
             for c in cases
                 be = BACKENDS[c.backend]
-                label = @sprintf("%-8s %-8s %-2d %-8s %-7s %7d %4d %-10s",
+                label = Printf.@sprintf("%-8s %-8s %-2d %-8s %-7s %7d %4d %-10s",
                                  c.entry, "", c.D, c.T, c.bin, c.N, c.B, c.backend)
                 try
                     f, np = build_case(c.entry, c.D, c.T, c.bin, c.N, c.B, be)
                     m = measure(f, np)
-                    @printf("%s %12d %10.2f %9.2f\n", label, m.pairs, m.ns_per_pair, m.bytes / 2^20)
+                    Printf.@printf("%s %12d %10.2f %9.2f\n", label, m.pairs, m.ns_per_pair, m.bytes / 2^20)
                     println(io, join((name, c.entry, c.D, c.T, c.bin, c.N, c.B, c.backend,
                                       m.pairs, m.seconds, m.ns_per_pair, m.bytes, "ok"), ","))
                 catch e
                     msg = first(split(sprint(showerror, e), '\n'))
-                    @printf("%s %12s %10s %9s  SKIP: %s\n", label, "-", "-", "-", first(msg, 60))
+                    Printf.@printf("%s %12s %10s %9s  SKIP: %s\n", label, "-", "-", "-", first(msg, 60))
                     println(io, join((name, c.entry, c.D, c.T, c.bin, c.N, c.B, c.backend,
                                       0, 0, 0, 0, "skip: " * replace(msg, "," => ";")), ","))
                 end
@@ -173,7 +175,7 @@ function main()
             end
         end
     end
-    @printf("\n%s\nwrote %s\nDONE\n", "="^118, csv)
+    Printf.@printf("\n%s\nwrote %s\nDONE\n", "="^118, csv)
 end
 
 main()

@@ -203,7 +203,8 @@ Test.@testset "the tensor from the transform equals the point tensor on a grid's
         for P in orders
             ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, Dg, N), bins, RAW_T;
                                                           backend = CB.SerialBackend())
-            for tag in (FFT_TAG, SB.AutoSpectralBackend()), backend in (CB.SerialBackend(), CB.ThreadedBackend())
+            for tag in (FFT_TAG, SB.AutoSpectralBackend()),
+                backend in (CB.SerialBackend(), CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
                 got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, tag, RAW_T; backend)
                 Test.@test got.counts == ref.counts
                 Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
@@ -215,14 +216,16 @@ Test.@testset "the tensor from the transform equals the point tensor on a grid's
             umf[1, .!held] .= NaN
             refm = SFC.calculate_structure_function_tensor(Val(P), x[:, held], umf[:, held], bins, RAW_T;
                                                            backend = CB.SerialBackend())
-            gotm = SFC.calculate_structure_function_tensor(Val(P), grid, um, bins, FFT_TAG, RAW_T)
-            Test.@test gotm.counts == refm.counts
-            Test.@test isapprox(gotm.sums, refm.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, refm.sums))
             # weights of one change nothing but the count type
-            gotw = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, Float64, RAW_T;
-                                                           weights = ones(N))
-            Test.@test gotw.counts ≈ ref.counts
-            Test.@test isapprox(gotw.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
+            for backend in (CB.SerialBackend(), CB.GPUBackend(KA.CPU()))
+                gotm = SFC.calculate_structure_function_tensor(Val(P), grid, um, bins, FFT_TAG, RAW_T; backend)
+                Test.@test gotm.counts == refm.counts
+                Test.@test isapprox(gotm.sums, refm.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, refm.sums))
+                gotw = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, Float64, RAW_T;
+                                                               weights = ones(N), backend)
+                Test.@test gotw.counts ≈ ref.counts
+                Test.@test isapprox(gotw.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
+            end
         end
         # the averaged tensor is the default representation
         mean = SFC.calculate_structure_function_tensor(Val(2), grid, u, bins, FFT_TAG)
@@ -250,14 +253,16 @@ Test.@testset "the tensor on a lat-lon grid is the point tensor in the geodesic 
     for P in (2, 3)
         ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, 2, :), bins, RAW_T; backend = CB.SerialBackend(),
                                                       distance_metric = SFH.SphericalDistance(1.0))
-        got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, RAW_T)
-        Test.@test got.counts == ref.counts
-        Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
+        for backend in (CB.SerialBackend(), CB.GPUBackend(KA.CPU()))
+            got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, RAW_T; backend)
+            Test.@test got.counts == ref.counts
+            Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
+        end
         Test.@test sum(ref.counts) > 0
     end
 end
 
-Test.@testset "higher orders on points match brute force on every CPU backend" begin
+Test.@testset "higher orders on points match brute force on every backend" begin
     Random.seed!(4120)
     N = 40
     x = rand(2, N)
@@ -265,15 +270,46 @@ Test.@testset "higher orders on points match brute force on every CPU backend" b
     bins = collect(range(0.0, 1.2; length = 6))
     for P in (1, 4, 5)
         ref_s, ref_c = _brute_tensor(P, x, u, bins)
-        for backend in (CB.SerialBackend(), CB.ThreadedBackend())
+        for backend in (CB.SerialBackend(), CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
             got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, RAW_T; backend)
-            Test.@test got.counts == ref_c
-            Test.@test isapprox(got.sums, ref_s; rtol = 1e-11, atol = 1e-12)
+            Test.@test (P, backend, got.counts == ref_c) == (P, backend, true)
+            Test.@test (P, backend, isapprox(got.sums, ref_s; rtol = 1e-11, atol = 1e-12)) == (P, backend, true)
         end
     end
-    Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(Val(4), x, u, bins;
-                                                                            backend = CB.GPUBackend(KA.CPU()))
     Test.@test_throws ArgumentError SFT.MomentTensorOperator{2}()(SA.SVector(1.0, 0.0), SA.SVector(1.0, 0.0))
+end
+
+Test.@testset "the device tensor over batches, culled with or without a workspace, adds" begin
+    Random.seed!(4125)
+    N, B = 600, 3
+    bins = collect(range(0.0, 0.2; length = 6))
+    dev = CB.GPUBackend(KA.CPU())
+    w = 0.5 .+ rand(N)
+    for (layout, x) in (("shared", rand(2, N)), ("varying", rand(2, N, B))), P in (2, 3), weighted in (false, true)
+        u = randn(2, N, B)
+        CT = weighted ? Float64 : Int
+        kw = weighted ? (; weights = w) : (;)
+        ref = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, CT, RAW_T; backend = CB.SerialBackend(), kw...)
+        case = (layout, P, weighted)
+        for pol in (SFC.NoCulling(), SFC.AlwaysCulling())
+            ws = SFC.GPUSFWorkspace(KA.CPU(), bins)
+            got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, CT, RAW_T; backend = dev, workspace = ws,
+                                                          culling = pol, kw...)
+            Test.@test (case, pol, isapprox(got.counts, ref.counts; rtol = 1e-12)) == (case, pol, true)
+            Test.@test (case, pol, isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, pol, true)
+            Test.@test (case, pol, ws.lazy.cull isa SFC.GPUCullMemo) == (case, pol, pol isa SFC.AlwaysCulling)
+        end
+        got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, CT, RAW_T; backend = dev,
+                                                      culling = SFC.AlwaysCulling(), kw...)
+        Test.@test (case, isapprox(got.counts, ref.counts; rtol = 1e-12),
+                    isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true, true)
+        s, c = zeros(size(ref.sums)), zeros(CT, size(ref.counts))
+        for _ in 1:2
+            SFC.calculate_structure_function_tensor!(s, c, Val(P), x, u, bins; backend = dev, kw...)
+        end
+        Test.@test (case, isapprox(c, 2 .* ref.counts; rtol = 1e-12)) == (case, true)
+        Test.@test (case, isapprox(s, 2 .* ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true)
+    end
 end
 
 Test.@testset "the joint tensor over angle marginalises to the tensor and to the joint histogram" begin
@@ -323,9 +359,12 @@ Test.@testset "the joint tensor over angle marginalises to the tensor and to the
     for P in (2, 3)
         refj = SFC.calculate_structure_function_tensor(Val(P), xg, reshape(ug, 2, :), gbins, gθbins; second_axis = axis,
                                                        backend = CB.SerialBackend())
-        gotj = SFC.calculate_structure_function_tensor(Val(P), grid, ug, gbins, gθbins, FFT_TAG; second_axis = axis)
-        Test.@test gotj isa RAW_T2
-        Test.@test gotj.counts ≈ refj.counts
-        Test.@test isapprox(gotj.sums, refj.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, refj.sums))
+        for backend in (CB.SerialBackend(), CB.GPUBackend(KA.CPU()))
+            gotj = SFC.calculate_structure_function_tensor(Val(P), grid, ug, gbins, gθbins, FFT_TAG; second_axis = axis,
+                                                           backend)
+            Test.@test gotj isa RAW_T2
+            Test.@test gotj.counts ≈ refj.counts
+            Test.@test isapprox(gotj.sums, refj.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, refj.sums))
+        end
     end
 end

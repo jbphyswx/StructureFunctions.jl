@@ -8,9 +8,9 @@ using StaticArrays: StaticArrays as SA
 using Distributed: Distributed
 using SharedArrays: SharedArrays
 
-# Workers added here are removed at the end of this file
 const _WORKERS_ADDED_HERE =
     Distributed.nprocs() == 1 ? Distributed.addprocs(2) : Int[]
+try
 
 Distributed.@everywhere using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
@@ -55,20 +55,16 @@ Test.@testset "Parallel Equivalence Verification" begin
         Test.@test counts_serial == counts_thread
     end
 
-    # The workers this file adds are `LocalManager` workers on this node, so they reach no core the
-    # threaded backend does not already have. `Auto` therefore keeps the local backend and an
-    # explicit `DistributedBackend()` — exercised below — is the only way to reach them.
+    # The workers this file adds are `LocalManager` workers on this node: they reach cores this process does not
+    # use only when it runs one thread.
     Test.@testset "AutoBackend selection" begin
         Test.@test Distributed.nworkers() > 1
-        Test.@test SFC.distributed_adds_hardware(Val(:distributed)) == false
-        for shape in (SFC.PointField{2}(), SFC.SharedPositionField{2}())
-            Test.@test SFC.resolve_auto_backend(shape, () -> true; nthreads = 4) isa
-                       CB.AbstractThreadedBackend
-            Test.@test SFC.resolve_auto_backend(shape, () -> true; nthreads = 1) isa
-                       CB.AbstractSerialBackend
-            Test.@test SFC.resolve_auto_backend(shape, () -> false; nthreads = 4) isa
-                       CB.AbstractSerialBackend
-        end
+        one_thread = Threads.nthreads() == 1
+        Test.@test SFC.distributed_adds_hardware(Val(:distributed)) == one_thread
+        Test.@test SFC.resolve_auto_backend(; nthreads = 4) isa
+                   (one_thread ? CB.AbstractDistributedBackend : CB.AbstractThreadedBackend)
+        Test.@test SFC.resolve_auto_backend(; nthreads = 1) isa
+                   (one_thread ? CB.AbstractDistributedBackend : CB.AbstractSerialBackend)
     end
 
     # 3. Distributed
@@ -322,6 +318,16 @@ Test.@testset "Distributed covers every entry family" begin
                 backend = be, culling = SFC.AlwaysCulling())
             (s, c)
         end),
+        ("rank-2 tensor point", be -> begin
+            s, c = zeros(2, 2, NB), zeros(UInt32, NB)
+            SFC.calculate_structure_function_tensor!(s, c, Val(2), xp, up, bins; backend = be)
+            (s, c)
+        end),
+        ("multi-field point", be -> begin
+            s, c = zeros(NB), zeros(UInt32, NB)
+            SFC.calculate_structure_function!(s, c, op, xp, SF.MultiFields.Fields(vectors = (up,)), bins; backend = be)
+            (s, c)
+        end),
         # The joint kernels take a geometry, not a metric; a sphere must not be read as flat.
         ("joint point on a sphere", be -> begin
             r = SFC.calculate_structure_function(op, xs, us, sbins, vbins; backend = be,
@@ -338,9 +344,11 @@ Test.@testset "Distributed covers every entry family" begin
     for (name, run) in entries
         Test.@testset "$name" begin
             ser_s, ser_c = run(CB.SerialBackend())
-            dis_s, dis_c = run(CB.DistributedBackend())
-            Test.@test counts_agree(dis_c, ser_c)
-            Test.@test maximum(abs, dis_s .- ser_s) <= 1e-10 * max(maximum(abs, ser_s), 1e-10)
+            for be in (CB.DistributedBackend(), CB.DistributedBackend(CB.ThreadedBackend()))
+                dis_s, dis_c = run(be)
+                Test.@test counts_agree(dis_c, ser_c)
+                Test.@test maximum(abs, dis_s .- ser_s) <= 1e-10 * max(maximum(abs, ser_s), 1e-10)
+            end
         end
     end
 
@@ -369,4 +377,36 @@ Test.@testset "Distributed covers every entry family" begin
     end
 end
 
-isempty(_WORKERS_ADDED_HERE) || Distributed.rmprocs(_WORKERS_ADDED_HERE; waitfor = 30)
+Test.@testset "the shares of every partial family add to the whole sweep, culled or not" begin
+    N, k = 1500, 3
+    x, u = rand(2, N), randn(2, N)
+    f = SF.MultiFields.Fields(vectors = (u,))
+    xv, uv = (x[1, :], x[2, :]), (u[1, :], u[2, :])
+    vb = collect(range(-3.0, 3.0; length = 6))
+    op = SFT.L2SFType()
+    family = (
+        ("1d", (be, db, sh, kw) -> (r = SFC._partial_sums_counts(be, op, xv, uv, db, sh, UInt32; kw...);
+                                    (r.sums, r.counts))),
+        ("joint", (be, db, sh, kw) -> SFC._partial_2d_sums_counts(be, op, xv, uv, db, vb, sh, UInt32; kw...)),
+        ("sp1d", (be, db, sh, kw) -> SFC._partial_single_pass_1d(be, x, u, db, sh, UInt32; kw...)),
+        ("sp2d", (be, db, sh, kw) -> SFC._partial_single_pass_2d(be, x, u, db, vb, sh, UInt32; kw...)),
+        ("tensor", (be, db, sh, kw) -> SFC.tensor_partial(be, Val(2), SFC.PointField{2}(), x, u, db, sh, UInt32;
+                                                          kw...)),
+        ("multi-field", (be, db, sh, kw) -> SFC.field_partial(be, op, x, f, db, sh, UInt32; kw...)),
+    )
+    for (db, culls) in ((collect(range(0.0, 1.5; length = 7)), false), (collect(range(0.0, 0.1; length = 7)), true))
+        Test.@test (SFC.cull_grid_for((x[1, :], x[2, :]), SF.HelperFunctions.FlatGeometry{2}(), db,
+                                      SFC.AutoCulling()) !== nothing) == culls
+        for (name, part) in family, be in (CB.SerialBackend(), CB.ThreadedBackend())
+            whole = part(CB.SerialBackend(), db, (1, 1), (; culling = SFC.NoCulling()))
+            shares = [part(be, db, (w, k), (; culling = SFC.AutoCulling())) for w in 1:k]
+            Test.@test (name, culls, sum(s[2] for s in shares) == whole[2]) == (name, culls, true)
+            Test.@test (name, culls, isapprox(sum(s[1] for s in shares), whole[1]; rtol = 1e-12)) ==
+                       (name, culls, true)
+        end
+    end
+end
+
+finally
+    isempty(_WORKERS_ADDED_HERE) || Distributed.rmprocs(_WORKERS_ADDED_HERE; waitfor = 30)
+end

@@ -1,6 +1,8 @@
 # Pair weights on the device, on real CUDA: every weighted kernel must compile (which `KA.CPU()`
 # cannot establish) and agree with the serial weighted answer.
-using CUDA, Random, Printf
+using CUDA: CUDA
+using Random: Random
+using Printf: Printf
 using StructureFunctions
 using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
@@ -22,7 +24,7 @@ function compare(name, got_s, got_c, ref_s, ref_c; rtol = 1e-9)
     dc = maximum(abs.(gc .- rc)) / (maximum(abs, rc) + eps())
     ok = ds < rtol && dc < rtol
     ok || push!(failures, name)
-    @printf("%-46s Δsum=%.3e Δcount=%.3e  %s\n", name, ds, dc, ok ? "ok" : "FAILED")
+    Printf.@printf("%-46s Δsum=%.3e Δcount=%.3e  %s\n", name, ds, dc, ok ? "ok" : "FAILED")
     return ok
 end
 
@@ -101,19 +103,23 @@ for D in (2, 3, 5, 6, 7)
     compare("single-pass 2D batch weighted (varying x) D=$D", gqs, gqc, rqs, rqc)
 end
 
-# Float32 input: the native kernels accumulate the pair mass in the count type's shared plane.
+# Float32 input against the serial Float64 answer on the same values, within Float32 accumulation over a bin's
+# pairs: a random walk of `√n` roundings of `eps(Float32)`, with a factor of ten.
 let D = 2, x = rand(Float32, 2, np), u = rand(Float32, 2, np), w32 = 0.3f0 .+ rand(Float32, np)
     b32, v32 = Float32.(bins), Float32.(vb)
-    r = SFC.calculate_structure_function(OP, x, u, b32, Float64, SFO.StructureFunctionSumsAndCounts;
-        backend = SER, weights = w32)
+    x64, u64, w64 = Float64.(x), Float64.(u), Float64.(w32)
+    r = SFC.calculate_structure_function(OP, x64, u64, bins, Float64, SFO.StructureFunctionSumsAndCounts;
+        backend = SER, weights = w64)
     g = SFC.calculate_structure_function(OP, x, u, b32, Float64, SFO.StructureFunctionSumsAndCounts;
         backend = DEV, weights = w32)
-    compare("1D point weighted Float32 D=$D", g.sums, g.counts, r.sums, r.counts; rtol = 1e-4)
-    rj = SFC.calculate_structure_function(OP, x, u, b32, v32, Float64, SFO.StructureFunction2DSumsAndCounts;
-        backend = SER, weights = w32)
+    bound = 10 * sqrt(maximum(r.counts)) * eps(Float32)
+    compare("1D point weighted Float32 D=$D", g.sums, g.counts, r.sums, r.counts; rtol = bound)
+    rj = SFC.calculate_structure_function(OP, x64, u64, bins, vb, Float64, SFO.StructureFunction2DSumsAndCounts;
+        backend = SER, weights = w64)
     gj = SFC.calculate_structure_function(OP, x, u, b32, v32, Float64, SFO.StructureFunction2DSumsAndCounts;
         backend = DEV, weights = w32)
-    compare("joint 2D point weighted Float32 D=$D", gj.sums, gj.counts, rj.sums, rj.counts; rtol = 1e-4)
+    compare("joint 2D point weighted Float32 D=$D", gj.sums, gj.counts, rj.sums, rj.counts;
+            rtol = 10 * sqrt(maximum(rj.counts)) * eps(Float32))
 end
 
 # multi-field
@@ -124,22 +130,29 @@ let D = 2
     nb = length(bins) - 1
     rs = zeros(Float64, nb); rc = zeros(Float64, nb)
     SFC.serial_calculate_structure_function!(rs, rc, mixed, x, fields, bins; weights = w)
-    gs = zeros(Float64, nb); gc = zeros(Float64, nb)
-    SFC.gpu_calculate_structure_function_fields!(DEV, gs, gc, mixed, x, fields, bins;
-        weights = w)
+    gs = CUDA.zeros(Float64, nb); gc = CUDA.zeros(Float64, nb)
+    SFC.calculate_structure_function!(gs, gc, mixed, x, fields, bins; backend = DEV, weights = w)
     compare("multi-field weighted", gs, gc, rs, rc)
 end
 
-# The moment tensor: the device kernel gained the weight argument its siblings carry, so this is
-# the first CUDA compile of that signature.
-for (D, P) in ((2, 2), (3, 2), (2, 3))
+# The moment tensor through the tiled families, at every order and with varying positions.
+for (D, P) in ((2, 2), (3, 2), (2, 3), (3, 4), (2, 5))
     x = rand(D, np); u = rand(D, np)
     nb = length(bins) - 1
     rs = zeros(Float64, ntuple(_ -> D, P)..., nb); rc = zeros(Float64, nb)
     SFC.calculate_structure_function_tensor!(rs, rc, Val(P), x, u, bins; backend = SER, weights = w)
-    gs = zeros(Float64, ntuple(_ -> D, P)..., nb); gc = zeros(Float64, nb)
+    gs = CUDA.zeros(Float64, ntuple(_ -> D, P)..., nb); gc = CUDA.zeros(Float64, nb)
     SFC.calculate_structure_function_tensor!(gs, gc, Val(P), x, u, bins; backend = DEV, weights = w)
     compare("moment tensor weighted D=$D P=$P", gs, gc, rs, rc)
+end
+let D = 2, P = 2
+    x = rand(D, np, 3); u = rand(D, np, 3)
+    nb = length(bins) - 1
+    rs = zeros(Float64, D, D, nb, 3); rc = zeros(Float64, nb, 3)
+    SFC.calculate_structure_function_tensor!(rs, rc, Val(P), x, u, bins; backend = SER, weights = w)
+    gs = CUDA.zeros(Float64, D, D, nb, 3); gc = CUDA.zeros(Float64, nb, 3)
+    SFC.calculate_structure_function_tensor!(gs, gc, Val(P), x, u, bins; backend = DEV, weights = w)
+    compare("moment tensor weighted varying positions", gs, gc, rs, rc)
 end
 
 # A constant weight k scales every sum and count by exactly k², whatever the operator or binning,
@@ -147,9 +160,9 @@ end
 let D = 2, P = 2, k = 3.0
     x = rand(D, np); u = rand(D, np)
     nb = length(bins) - 1
-    us = zeros(Float64, D, D, nb); uc = zeros(Float64, nb)
+    us = CUDA.zeros(Float64, D, D, nb); uc = CUDA.zeros(Float64, nb)
     SFC.calculate_structure_function_tensor!(us, uc, Val(P), x, u, bins; backend = DEV)
-    ks = zeros(Float64, D, D, nb); kc = zeros(Float64, nb)
+    ks = CUDA.zeros(Float64, D, D, nb); kc = CUDA.zeros(Float64, nb)
     SFC.calculate_structure_function_tensor!(ks, kc, Val(P), x, u, bins; backend = DEV,
         weights = fill(k, np))
     compare("moment tensor k^2 scaling on device", ks, kc, k^2 .* us, k^2 .* uc)

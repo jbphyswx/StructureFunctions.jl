@@ -61,7 +61,7 @@ end
 function _dispatch_batch!(
     ::CB.AbstractAutoBackend, sums, counts, sf_type, x, u, distance_bins; kwargs...
 )
-    return _dispatch_batch!(_auto_local_backend(), sums, counts, sf_type, x, u, distance_bins; kwargs...)
+    return _dispatch_batch!(resolve_auto_backend(), sums, counts, sf_type, x, u, distance_bins; kwargs...)
 end
 
 function _dispatch_batch!(
@@ -108,7 +108,7 @@ end
 function _dispatch_2d_batch!(
     ::CB.AbstractAutoBackend, sums, counts, sf_type, x, u, distance_bins, value_bins; kwargs...
 )
-    return _dispatch_2d_batch!(_auto_local_backend(), sums, counts, sf_type, x, u, distance_bins,
+    return _dispatch_2d_batch!(resolve_auto_backend(), sums, counts, sf_type, x, u, distance_bins,
                                value_bins; kwargs...)
 end
 
@@ -223,7 +223,7 @@ end
 function _dispatch_single_pass_batch!(
     ::CB.AbstractAutoBackend, sums, counts, x, u, distance_bins; kwargs...
 )
-    return _dispatch_single_pass_batch!(_auto_local_backend(), sums, counts, x, u, distance_bins; kwargs...)
+    return _dispatch_single_pass_batch!(resolve_auto_backend(), sums, counts, x, u, distance_bins; kwargs...)
 end
 
 function _dispatch_single_pass_batch!(
@@ -273,7 +273,7 @@ end
 function _dispatch_single_pass_2d_batch!(
     ::CB.AbstractAutoBackend, sums, counts, x, u, distance_bins, value_bins::SinglePass2DValueBins; kwargs...
 )
-    return _dispatch_single_pass_2d_batch!(_auto_local_backend(), sums, counts, x, u, distance_bins,
+    return _dispatch_single_pass_2d_batch!(resolve_auto_backend(), sums, counts, x, u, distance_bins,
                                            value_bins; kwargs...)
 end
 

@@ -51,12 +51,14 @@ bin.
 
 A pair kernel receives [`digitize_plan`](@ref StructureFunctions.digitize_plan)`(bins)`, built once per
 call. `LinearBinEdges` are their own plan. The edges of a `BinEdges` or a `LogBinEdges` become a
-[`BucketedBinEdges`](@ref StructureFunctions.BucketedBinEdges): the finite span is cut into 16 equal
-cells per bin, and each cell records the first edge at or above it, how many edges lie in it, and that
-edge's value. The cell of `x` comes from one FMA and a clamp, which never decrease as `x` increases, so
-every edge in a lower cell is below `x` and every edge in a higher cell above it. A cell of at most one
-edge is decided by one comparison with the recorded value; a cell of more bisects its own edges. The
-result is exactly the lookup of the edges, whatever their spacing.
+[`BucketedBinEdges`](@ref StructureFunctions.BucketedBinEdges): the edges are cut into cells, and each
+cell records the first edge at or above it, how many edges lie in it, and that edge's value. For a
+`BinEdges` the finite span is cut into 16 equal cells per bin, the cell of `x` coming from one FMA and a
+clamp; for a `LogBinEdges` the cells are equal in `log₂ x`, the cell of `x` coming from its exponent and
+leading mantissa bits, with enough bits that every cell holds at most one edge. Either cell never
+decreases as `x` increases, so every edge in a lower cell is below `x` and every edge in a higher cell
+above it. A cell of at most one edge is decided by one comparison with the recorded value; a cell of
+more bisects its own edges. The result is exactly the lookup of the edges, whatever their spacing.
 
 ## Squared separations
 

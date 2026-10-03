@@ -219,7 +219,42 @@ Test.@testset "the device engine runs the non-uniform route ($(_provider_name(ta
         Test.@test _close(dev_c, ref_c)
         Test.@test _close(dev_s, ref_s)
         Test.@test all(isfinite, ref_s)
+        # the allocating entry allocates its result on the device
+        a = SFC.calculate_structure_function(sf, s, uf, bins, tag, RAW; weights = w, backend = SERIAL)
+        b = SFC.calculate_structure_function(sf, s, uf, bins, tag, RAW; weights = w, backend = DEVICE)
+        Test.@test _close(b.counts, a.counts) && _close(b.sums, a.sums)
     end
+end
+
+Test.@testset "a workspace keeps the plan set to the schedule's points ($(_provider_name(tag)))" for tag in PROVIDERS
+    Random.seed!(9770)
+    N, nt = 80, 3
+    s = SFC.ScatteredModesSchedule(rand(2, N), 0.4, (16, 12); taper = SF.GaussianTaper(0.02))
+    bins = collect(range(0.0, 0.4; length = 5))
+    nb = length(bins) - 1
+    u = randn(2, N, nt)
+    ref_s, ref_c = zeros(nb, nt), zeros(nb, nt)
+    SFC.calculate_structure_function_batch!(ref_s, ref_c, SFT.L2SFType(), s, u, bins, tag; backend = SERIAL)
+    ws = SFC.TransformWorkspace()
+    kind = tag isa SFC.NonuniformFFTsSpectralBackend ? :nonuniformffts : :finufft
+    plans() = [last(e) for e in ws.pool if first(first(e)) === kind]
+    run!() = begin
+        gs, gc = zeros(nb, nt), zeros(nb, nt)
+        SFC.calculate_structure_function_batch!(gs, gc, SFT.L2SFType(), s, u, bins, tag; backend = SERIAL,
+                                                workspace = ws)
+        Test.@test _close(gc, ref_c) && _close(gs, ref_s)
+    end
+    run!()
+    kept = only(plans())                        # one plan served every slice
+    run!()
+    Test.@test only(plans()) === kept           # and the next call
+    a = SFC.calculate_structure_function(SFT.L2SFType(), s, u[:, :, 1], bins, tag, RAW; backend = SERIAL,
+                                         workspace = ws)
+    Test.@test only(plans()) === kept
+    b = SFC.calculate_structure_function(SFT.L2SFType(), s, u[:, :, 1], bins, tag, RAW; backend = SERIAL)
+    Test.@test _close(a.counts, b.counts) && _close(a.sums, b.sums)
+    SFC._release_plans!(ws)
+    Test.@test isempty(ws.pool) && isempty(ws.kept)
 end
 
 Test.@testset "the box is padded so that no pair within r_max wraps ($(_provider_name(tag)))" for tag in PROVIDERS

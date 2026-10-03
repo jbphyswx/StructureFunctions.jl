@@ -16,7 +16,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
-using Printf: @printf
+using Printf: Printf
 using Random: Random
 using StructureFunctions: StructureFunctions as SF
 using StructureFunctions.Calculations: Calculations as SFC
@@ -56,7 +56,7 @@ function main()
     println("=" ^ 72)
     println("Six-type single_pass_2d vs GPU reference kernels (T=1 hour each)")
     println("Device: ", CUDA.name(CUDA.device()))
-    @printf("N=%d  dtype=%s  warmup=%d  repeat=%d\n", N, FT, warmup, repeat_)
+    @Printf.@printf("N=%d  dtype=%s  warmup=%d  repeat=%d\n", N, FT, warmup, repeat_)
     println("=" ^ 72)
 
     Random.seed!(42)
@@ -79,7 +79,7 @@ function main()
         backend = gpu_backend, workspace = ws_sp2d,
     )
     t_sp2d = _bench(sp2d_run, warmup, repeat_)
-    @printf("\n[prod]  single_pass_2d_slices!     %8.3f s   (%8.1f ms/hour)\n", t_sp2d, t_sp2d * 1000)
+    @Printf.@printf("\n[prod]  single_pass_2d_slices!     %8.3f s   (%8.1f ms/hour)\n", t_sp2d, t_sp2d * 1000)
 
     # --- 1D L2SF tiled reference ---
     bins_1d = collect(range(FT(0), FT(1.5); length = 21))
@@ -89,7 +89,7 @@ function main()
         sft, ka_backend, x2, u1, bins_1d, UInt32; workspace = ws_l2,
     )
     t_l2 = _bench(l2_run, warmup, repeat_)
-    @printf("[ref]   1D L2SF tiled kernel        %8.4f s   (%8.2f ms)\n", t_l2, t_l2 * 1000)
+    @Printf.@printf("[ref]   1D L2SF tiled kernel        %8.4f s   (%8.2f ms)\n", t_l2, t_l2 * 1000)
 
     # --- Six-type single-pass 1D: kernel-only (in-place) ---
     ws_sp1 = SFC.GPUSFWorkspace(ka_backend, dist_vec; kind = :single_pass)
@@ -100,16 +100,16 @@ function main()
         backend = gpu_backend, workspace = ws_sp1,
     )
     t_sp1_kernel = _bench(sp1_kernel_run, warmup, repeat_)
-    @printf("[ref]   6-type sp1d kernel (!)      %8.3f s   (%8.1f ms)\n", t_sp1_kernel, t_sp1_kernel * 1000)
+    @Printf.@printf("[ref]   6-type sp1d kernel (!)      %8.3f s   (%8.1f ms)\n", t_sp1_kernel, t_sp1_kernel * 1000)
 
     # --- Six-type single-pass 1D: full allocating API (+ Helmholtz append) ---
     sp1_full_run = () -> SFC.calculate_structure_functions_single_pass(
         x2, u1, dist_vec; backend = gpu_backend, workspace = ws_sp1,
     )
     t_sp1_full = _bench(sp1_full_run, warmup, repeat_)
-    @printf("[ref]   6-type sp1d full API        %8.3f s   (%8.1f ms)\n", t_sp1_full, t_sp1_full * 1000)
+    @Printf.@printf("[ref]   6-type sp1d full API        %8.3f s   (%8.1f ms)\n", t_sp1_full, t_sp1_full * 1000)
 
-    @printf(
+    @Printf.@printf(
         "\nRatios at N=%d:\n  sp2d / L2SF tiled:        %.0f×\n  sp2d / sp1d kernel:       %.1f×\n  sp1d full / sp1d kernel:  %.1f×\n",
         N, t_sp2d / t_l2, t_sp2d / t_sp1_kernel, t_sp1_full / t_sp1_kernel,
     )

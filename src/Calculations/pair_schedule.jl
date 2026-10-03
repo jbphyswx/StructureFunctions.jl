@@ -91,46 +91,6 @@ n_pair_blocks(s::FullUpperTriangle) = Int(s.n_tiles) * (Int(s.n_tiles) + 1) ÷ 2
 n_pair_blocks(s::TilePairWorkList) = length(s.pairs)
 
 """
-    tile_pair_worklist(grid, n_points, tile) -> TilePairWorkList
-
-Tile pairs `(ti, tj)`, `ti ≤ tj`, of `tile`-point tiles over `grid`'s permuted order that can hold a
-pair inside `grid.cutoff`, sorted and unique. Points are sorted by cell id, so a tile covers one
-contiguous range of ids and each stencil row reaches it as one shifted range; the run of points in
-that range gives the tiles to emit. A pair inside the cutoff has its `j` cell in some stencil row of
-its `i` cell, hence inside that row's reach from `i`'s tile, so the list is exact; pairs beyond the
-cutoff that share a tile pair are rejected by the bin test. Every row is walked from every tile and
-the pair canonicalised, because a tile's reach is a superset of its cells' stencils and so is not
-symmetric between two tiles. The element type is `Int32` while `n_tiles^2` fits it.
-"""
-function tile_pair_worklist(grid::CellGrid{D}, n_points::Int, tile::Int) where {D}
-    n_tiles = cld(n_points, tile)
-    I = n_tiles * n_tiles <= typemax(Int32) ? Int32 : Int64
-    dims = grid.dims
-    n_cells = prod(dims)
-    rows = [(cull_row_id_shift(dims, off), e1) for (off, e1) in grid.offsets]
-    packed = I[]
-    for ti in 1:n_tiles
-        p_lo = (ti - 1) * tile + 1
-        p_hi = min(ti * tile, n_points)
-        k_lo = searchsortedlast(grid.run_starts, p_lo)
-        k_hi = searchsortedlast(grid.run_starts, p_hi)
-        c_lo = @inbounds grid.cell_ids[k_lo]
-        c_hi = @inbounds grid.cell_ids[k_hi]
-        for (shift, e1) in rows
-            jr = cell_id_span_run(grid, max(1, c_lo + shift - e1), min(n_cells, c_hi + shift + e1))
-            isempty(jr) && continue
-            for tj in cld(first(jr), tile):cld(last(jr), tile)
-                a, b = minmax(ti, tj)
-                push!(packed, pack_tile_pair(I(a), I(b), I(n_tiles)))
-            end
-        end
-    end
-    sort!(packed)
-    unique!(packed)
-    return TilePairWorkList(packed, Int32(n_tiles))
-end
-
-"""
     TiledBlockPairs(n_points, tile)
 
 Lazy `(i-block, j-block)` iterator for the full upper triangle. The blocks are pure arithmetic, so
@@ -170,17 +130,19 @@ function block_pairs(s::TiledUpperTriangle)
 end
 
 """
-    CulledBlockPairs(grid)
+    CulledBlockPairs(grid, cells = 1:n_occupied_cells(grid))
 
-Lazy `(i-block, j-block)` iterator over a [`CellGrid`](@ref)'s stencil rows. Each block is a pure
-function of `(cell, row)`, so the culled sweep enumerates without allocating, exactly like the full
-one; `collect` it when a materialized work list is wanted.
+Lazy `(i-block, j-block)` iterator over the stencil rows of the occupied cells `cells` of a
+[`CellGrid`](@ref). Each block is a pure function of `(cell, row)`, so the culled sweep enumerates without
+allocating, exactly like the full one; `collect` it when a materialized work list is wanted.
 """
 struct CulledBlockPairs{D, G}
     grid::G
+    cells::UnitRange{Int}
 end
 
-CulledBlockPairs(grid::CellGrid{D}) where {D} = CulledBlockPairs{D, typeof(grid)}(grid)
+CulledBlockPairs(grid::CellGrid{D}, cells::UnitRange{Int} = 1:n_occupied_cells(grid)) where {D} =
+    CulledBlockPairs{D, typeof(grid)}(grid, cells)
 
 Base.IteratorSize(::Type{<:CulledBlockPairs}) = Base.SizeUnknown()
 Base.eltype(::Type{<:CulledBlockPairs}) = PairBlock
@@ -188,15 +150,15 @@ Base.eltype(::Type{<:CulledBlockPairs}) = PairBlock
 # Cells adjacent along dimension 1 are contiguous in the sorted order, so a whole stencil row is one
 # run and the inner loop is `2*span+1` cells long.
 # The outer walk is over OCCUPIED cells, so it never scales with the cell-id space.
-@inline function Base.iterate(
-    b::CulledBlockPairs{D}, st::Tuple{Int, Int} = (1, 1),
-) where {D}
+@inline Base.iterate(b::CulledBlockPairs) = iterate(b, (first(b.cells), 1))
+
+@inline function Base.iterate(b::CulledBlockPairs{D}, st::Tuple{Int, Int}) where {D}
     grid = b.grid
     dims = grid.dims
-    n_occ = n_occupied_cells(grid)
+    kc_last = last(b.cells)
     nrow = length(grid.offsets)
     kc, k = st
-    while kc <= n_occ
+    while kc <= kc_last
         if k > nrow
             kc += 1
             k = 1
@@ -307,11 +269,19 @@ Block pairs for the `i` values in `irange`: the culled schedule when a [`CellGri
 the full tiled upper triangle otherwise. Every `j`-block holds at most `tile` points.
 """
 @inline pair_blocks(n_points::Int, irange; grid = nothing, tile::Int = SF_CPU_PAIR_TILE) =
-    BlocksForI(_schedule_blocks(grid, n_points, tile), irange)
+    BlocksForI(_schedule_blocks(grid, n_points, tile, irange), irange)
 
-@inline _schedule_blocks(::Nothing, n_points::Int, tile::Int) = block_pairs(TiledUpperTriangle(n_points, tile))
-@inline _schedule_blocks(grid::CellGrid, n_points::Int, tile::Int) =
-    TileRuns(block_pairs(CulledCellPairs(grid)), tile)
+@inline _schedule_blocks(::Nothing, n_points::Int, tile::Int, irange) = block_pairs(TiledUpperTriangle(n_points, tile))
+@inline _schedule_blocks(grid::CellGrid, n_points::Int, tile::Int, irange) =
+    TileRuns(CulledBlockPairs(grid, _cells_holding(grid, irange)), tile)
+
+"""The occupied cells of `grid` from the one holding the lowest point index of `irange` to the one holding its
+highest."""
+@inline function _cells_holding(grid::CellGrid, irange)
+    isempty(irange) && return 1:0
+    lo, hi = extrema(irange)
+    return searchsortedlast(grid.run_starts, lo):searchsortedlast(grid.run_starts, hi)
+end
 
 """
 Points per `j` block in the CPU pair loop. Sized so one block's coordinates, fields and the three
@@ -350,3 +320,45 @@ struct BlockRun <: PairWindow end
 end
 @noinline _run_exceeds_scratch(L, n) =
     throw(ArgumentError("a pair block reaching slot $n exceeds the $L-entry pair buffer"))
+
+"""
+    _compact_in_range!(sel, plan, keybuf, ks) -> Int
+
+Gather into `sel`, in increasing order, the slots `k ∈ ks` whose key the squared `plan` puts in a bin, and
+return how many there are.
+"""
+@inline function _compact_in_range!(sel, plan, keybuf, ks)
+    n = 0
+    @inbounds for k in ks
+        sel[n + 1] = k % Int32
+        n += squared_in_range(plan, keybuf[k])
+    end
+    return n
+end
+
+"""Whether a pair kernel on schedule `blocks` chooses run by run between the range branch and the list
+[`_compact_in_range!`](@ref) builds: on the tiled schedule; a culled schedule, whose points are sorted into
+cells, always takes the branch."""
+@inline _chooses_compaction(::BlocksForI{TiledBlockPairs}) = true
+@inline _chooses_compaction(_) = false
+
+"""
+    _sample_in_range(plan, keybuf, ks) -> (n_in, n)
+
+How many of every 16th slot of the run `ks`, `n` of them, have a key in range of the squared `plan`.
+"""
+@inline function _sample_in_range(plan, keybuf, ks)
+    n_in, n = 0, 0
+    @inbounds for k in first(ks):16:last(ks)
+        n_in += squared_in_range(plan, keybuf[k])
+        n += 1
+    end
+    return n_in, n
+end
+
+"""Whether a run is scattered through the list [`_compact_in_range!`](@ref) builds: its sample has `n_in` of `n`
+slots in range, at most 7/8 of them."""
+@inline _compacts(n_in::Int, n::Int) = 8 * n_in <= 7 * n
+
+"""Whether a sample with `n_in` of `n` slots in range has at most 1/8 of them in range."""
+@inline _sparse(n_in::Int, n::Int) = 8 * n_in <= n

@@ -20,20 +20,23 @@ const B = parse(Int, get(ENV, "SF_T_B", "8"))
 const D = 2
 const sf2 = SFT.L2SFType()
 const GEOM = SF.HelperFunctions.FlatGeometry{D}()
+moments(NMOM) = NMOM == 1 ? sf2 : SFT.SinglePassInvariants()
 
 function ref_1d(x, u, dig, N, NB, B, NMOM, fixed_x)
     out = zeros(FT, NMOM, NB, B); cnt = zeros(UInt32, NMOM, NB, B)
-    GE._sf_launch_1d_batch!(KA.CPU(), out, cnt, x, u, sf2, dig, N, NB, B, Val(NMOM), fixed_x, GEOM)
+    GE._sf_launch_1d_batch!(KA.CPU(), out, cnt, x, u, moments(NMOM), dig, N, NB, B, fixed_x, GEOM)
     KA.synchronize(KA.CPU())
     return out, cnt
 end
-native_plan(NB, NMOM) = SFC.gpu_native_1d_plan(CUDA.CUDABackend(), FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NB, NMOM)
+native_plan(NB, NMOM) = SFC.gpu_native_1d_plan(CUDA.CUDABackend(), FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NB,
+                                               moments(NMOM))
 
 function cuda_1d(xd, ud, dig, N, NB, B, NMOM, fixed_x)
     out = CUDA.zeros(FT, NMOM, NB, B); cnt = CUDA.zeros(UInt32, NMOM, NB, B)
     plan = native_plan(NB, NMOM)
     h = plan !== nothing
-    h && SFC.gpu_native_launch_1d!(plan, out, cnt, xd, ud, SFC.NoWeights(), sf2, dig, N, NB, B, fixed_x, GEOM, nothing)
+    h && SFC.gpu_native_launch_1d!(plan, out, cnt, xd, ud, SFC.NoWeights(), moments(NMOM), dig, N, NB, B, fixed_x,
+                                   GEOM, nothing)
     CUDA.synchronize()
     return Array(out), Array(cnt), h
 end
@@ -69,8 +72,8 @@ let Nt = 20000, Bt = 64, NB = 50
         out = CUDA.zeros(FT, NMOM, NB, Bt); cnt = CUDA.zeros(UInt32, NMOM, NB, Bt)
         plan = native_plan(NB, NMOM)
         f() = (CUDA.fill!(out, 0f0); CUDA.fill!(cnt, UInt32(0));
-               SFC.gpu_native_launch_1d!(plan, out, cnt, xd, ud, SFC.NoWeights(), sf2, dig, Nt, NB, Bt, true, GEOM,
-                                         nothing);
+               SFC.gpu_native_launch_1d!(plan, out, cnt, xd, ud, SFC.NoWeights(), moments(NMOM), dig, Nt, NB, Bt,
+                                         true, GEOM, nothing);
                CUDA.synchronize())
         f(); f(); ts = Float64[]; for _ in 1:5; t = time_ns(); f(); push!(ts, (time_ns()-t)/1e9); end
         t = median(ts); bapps = (Nt*(Nt-1)/2)*Bt/t/1e9
@@ -90,12 +93,12 @@ let Nj = 3000, Bj = 6, nd = 20, nv = 20
         ddig_g = GE._gpu_digitizer(CUDA.CUDABackend(), db, Val(:joint2d))
         vpg = GE._gpu_digitizer(CUDA.CUDABackend(), vb, Val(:value))
         oc = zeros(FT, 1, nd, nv, Bj); cc = zeros(UInt32, 1, nd, nv, Bj)
-        GE._sf_launch_2d_batch!(KA.CPU(), oc, cc, x_h, u_h, sf2, ddig_c, vpc, Nj, nd, nv, Bj, Val(1), false, GEOM,
+        GE._sf_launch_2d_batch!(KA.CPU(), oc, cc, x_h, u_h, sf2, ddig_c, vpc, Nj, nd, nv, Bj, false, GEOM,
                                 SFC.InvariantValueAxis())
         KA.synchronize(KA.CPU())
         og = CUDA.zeros(FT, 1, nd, nv, Bj); cg = CUDA.zeros(UInt32, 1, nd, nv, Bj)
         GE._sf_launch_2d_batch!(CUDA.CUDABackend(), og, cg, CuArray(x_h), CuArray(u_h), sf2, ddig_g, vpg, Nj, nd, nv, Bj,
-                                Val(1), false, GEOM, SFC.InvariantValueAxis())
+                                false, GEOM, SFC.InvariantValueAxis())
         CUDA.synchronize()
         dcnt = maximum(abs.(Int.(Array(cg)) .- Int.(cc)))
         tot = sum(cc)

@@ -1,4 +1,4 @@
-# GPUSFWorkspace — digitizers, staged inputs, cull grids and partitions for GPU SF paths.
+# GPUSFWorkspace — digitizers, staged inputs and cull grids for GPU SF paths.
 
 """The workspace's device digitizer for the distance bins, or one built for this call's pass `kind`."""
 _dist_digitizer(::Nothing, backend, bins, kind::Val) = _gpu_digitizer(backend, bins, kind)
@@ -55,10 +55,10 @@ function SFC.GPUSFWorkspace(
     kwargs...,
 )
     if kind == :joint2d && value_bins isa Tuple
-        length(value_bins) == SF_GPU_SINGLE_PASS_N ||
+        length(value_bins) == SINGLE_PASS_N ||
             throw(ArgumentError(
                 "tuple value_bins are reserved for single-pass 2D and must have " *
-                "$SF_GPU_SINGLE_PASS_N entries; got $(length(value_bins))",
+                "$SINGLE_PASS_N entries; got $(length(value_bins))",
             ))
         kind = :single_pass_2d
     end
@@ -125,50 +125,11 @@ function _gpusf_workspace_sp2d!(
     )
 end
 
-"""
-Zeroed block-private SP2D partitions for `n_tile_blocks` tile blocks with sums of `OT` and counts of
-`CST`, kept on the workspace and reallocated when a call needs more blocks or other element types.
-"""
-function _ensure_sp2d_partition_bufs!(
-    ws::GPUSFWorkspace{:single_pass_2d},
-    n_tile_blocks::Int,
-    ::Type{OT},
-    ::Type{CST},
-) where {OT, CST}
-    lazy = ws.lazy
-    sums, cnts = lazy.partition_sums_dev, lazy.partition_counts_dev
-    if cnts === nothing || size(cnts, 4) < n_tile_blocks || eltype(cnts) !== CST || eltype(sums) !== OT
-        lazy.partition_sums_dev, lazy.partition_counts_dev =
-            _alloc_sp2d_partition_bufs(ws.backend, OT, CST, ws.NB, ws.n_val, n_tile_blocks)
-    else
-        fill!(view(sums, :, :, :, 1:n_tile_blocks), zero(OT))
-        fill!(view(cnts, :, :, :, 1:n_tile_blocks), zero(CST))
-    end
-    return lazy.partition_sums_dev, lazy.partition_counts_dev
-end
-
-"""Zeroed block-private SP2D partitions: sums of `FT`, counts of `CST`."""
-function _alloc_sp2d_partition_bufs(
-    backend::KA.Backend,
-    ::Type{FT},
-    ::Type{CST},
-    n_dist::Int,
-    n_val::Int,
-    n_tile_blocks::Int,
-) where {FT, CST}
-    partition_sums = KA.zeros(backend, FT, SF_GPU_SINGLE_PASS_N, n_dist, n_val, n_tile_blocks)
-    partition_counts = KA.zeros(backend, CST, SF_GPU_SINGLE_PASS_N, n_dist, n_val, n_tile_blocks)
-    return partition_sums, partition_counts
-end
-
-"""Drop the lazily allocated device buffers: partitions, staged inputs and cull grids."""
+"""Drop the lazily allocated device buffers: staged inputs and cull grids."""
 function SFC.release!(ws::GPUSFWorkspace)
     lazy = ws.lazy
-    lazy.partition_sums_dev = nothing
-    lazy.partition_counts_dev = nothing
     lazy.x_dev_cache = nothing
     lazy.u_dev_cache = nothing
-    lazy.active = nothing
     lazy.cull = nothing
     return nothing
 end
@@ -178,7 +139,6 @@ function SFC.refresh!(ws::GPUSFWorkspace)
     lazy = ws.lazy
     lazy.x_dev_cache = nothing
     lazy.u_dev_cache = nothing
-    lazy.active = nothing
     lazy.cull = nothing
     return ws
 end

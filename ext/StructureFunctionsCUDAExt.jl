@@ -13,9 +13,8 @@ These kernels use CUDA-only intrinsics not exposed by KernelAbstractions:
 `GPUBackend{B}` wrapper is parametric precisely so the CUDA backend can take this
 specialized path while the CPU backend stays on the KA kernels.
 
-The pure, device-callable building blocks (`_sf_moments`, `_sf_value_bin`) live in
-`StructureFunctionsKernelAbstractionsExt`; this extension reuses them via `GE`, and bins with the
-host's `SFH.digitize`, so there is a single source of truth for the per-pair math and binning.
+The kernels form each pair's moments with the core moment sets (`SFC._sf_pair_moments`) and bin with the
+host's `SFH.digitize`, as the portable kernels do.
 """
 module StructureFunctionsCUDAExt
 
@@ -24,47 +23,74 @@ using CUDA: CUDA, CuStaticSharedArray, CuDynamicSharedArray, @cuda,
 using KernelAbstractions: KernelAbstractions as KA
 using StaticArrays: StaticArrays as SA
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
-    HelperFunctions as SFH
+    HelperFunctions as SFH, StructureFunctionTypes as SFT
 
-# The GPU (KernelAbstractions) extension owns the shared device-callable building
-# blocks. It is triggered by
-# KernelAbstractions alone, so it is loaded whenever this extension's triggers
-# (KernelAbstractions + CUDA) are satisfied.
-const GE = let m = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-    isnothing(m) &&
-        error("StructureFunctionsCUDAExt: StructureFunctionsKernelAbstractionsExt must be loaded first " *
-              "(load KernelAbstractions before / with CUDA).")
-    m
-end
+"""The shared-memory share of an SM's unified L1 the native kernels ask for, in percent: all of it, so as many
+blocks as their shared memory admits reside on each SM."""
+const CU_CARVEOUT_MAX_SHARED = 100
 
+include(joinpath(@__DIR__, "cuda", "plans.jl"))
 include(joinpath(@__DIR__, "cuda", "kernels_2d.jl"))
 include(joinpath(@__DIR__, "cuda", "kernels_1d.jl"))
-include(joinpath(@__DIR__, "cuda", "culling.jl"))
 
-# ---------------------------------------------------------------------------
-# Dispatch hooks (override the package stubs in src/Calculations/gpu_stubs.jl).
-# Specialized on CUDA.CUDABackend; the default methods return `false`.
-# ---------------------------------------------------------------------------
+# The native-kernel hooks of `SFC` for `CUDA.CUDABackend`.
+
+"""Native plan choices, built once per device and the types and sizes that decide them."""
+const CU_CHOICES = Dict{Tuple, Any}()
+const CU_CHOICES_LOCK = ReentrantLock()
+
+"""The choice `build(caps)` makes for the current device and `key`, built on the first call."""
+function _cuda_choice(build, key::Tuple)
+    dev = CUDA.device()
+    return lock(CU_CHOICES_LOCK) do
+        get!(() -> build(SFC.gpu_device_caps(CUDA.CUDABackend())), CU_CHOICES, (dev, key...))
+    end
+end
 
 SFC.gpu_native_1d_plan(::CUDA.CUDABackend, ::Type{XT}, ::Type{UT}, ::Type{OT}, ::Type{CT}, wts, geom,
-                       NB::Integer, NMOM::Integer) where {XT, UT, OT, CT} =
-    _cuda_1d_plan(SFC.gpu_device_caps(CUDA.CUDABackend()), XT, UT, OT, CT, wts, geom, Int(NB), Int(NMOM))
+                       NB::Integer, moments) where {XT, UT, OT, CT} =
+    _cuda_choice((:sf1d, XT, UT, OT, CT, wts isa SFC.NoWeights, typeof(geom), typeof(moments), Int(NB))) do caps
+        _cuda_1d_plan(caps, XT, UT, OT, CT, wts, geom, Int(NB), moments)
+    end
 
-SFC.gpu_native_launch_1d!(plan::CUDA1DPlan, out, cnt, x, u, wts, sf_type, dist_dig, N, NB, B, fixed_x,
-                          geom, cull) =
+SFC.gpu_native_launch_1d!(plan::Union{CUDA1DPlan, CUDA1DStripPlan, CUDAChoice}, out, cnt, x, u, wts, sf_type, dist_dig,
+                          N, NB, B, fixed_x, geom, cull) =
     _cuda_launch_1d!(plan, out, cnt, x, u, wts, sf_type, dist_dig, Int(N), Int(NB), Int(B), fixed_x, geom, cull)
 
 SFC.gpu_native_2d_plan(::CUDA.CUDABackend, ::Type{XT}, ::Type{UT}, ::Type{OT}, ::Type{CT}, wts, geom,
-                       NMOM::Integer, n_dist::Integer, n_val::Integer) where {XT, UT, OT, CT} =
-    _cuda_2d_plan(SFC.gpu_device_caps(CUDA.CUDABackend()), XT, UT, OT, CT, wts, geom, Int(NMOM),
-                  Int(n_dist), Int(n_val))
+                       moments, n_dist::Integer, n_val::Integer, val_plan) where {XT, UT, OT, CT} =
+    _cuda_choice((:sf2d, XT, UT, OT, CT, wts isa SFC.NoWeights, typeof(geom), typeof(moments), Int(n_dist),
+                  Int(n_val), typeof(val_plan))) do caps
+        _cuda_2d_plan(caps, XT, UT, OT, CT, wts, geom, moments, Int(n_dist), Int(n_val))
+    end
 
-SFC.gpu_native_launch_2d!(plan::CUDA2DPlan, out, cnt, x, u, wts, sf_type, dist_dig, val_plan, N, n_dist,
-                          n_val, B, fixed_x, geom, second_axis, cull) =
+SFC.gpu_native_launch_2d!(plan::Union{CUDA2DPlan, CUDA2DGlobalPlan, CUDAChoice}, out, cnt, x, u, wts, sf_type,
+                          dist_dig, val_plan, N, n_dist, n_val, B, fixed_x, geom, second_axis, cull) =
     _cuda_launch_2d!(plan, out, cnt, x, u, wts, sf_type, dist_dig, val_plan, Int(N), Int(n_dist), Int(n_val),
                      Int(B), fixed_x, geom, second_axis, cull)
 
 SFC.gpu_free_memory(::CUDA.CUDABackend) = Int(CUDA.free_memory())
+
+"""A tally of `SFC.gpu_in_range_tally!` in mapped host memory: the kernel writes it across the bus, so reading it
+takes a stream synchronization and no copy."""
+const CUTally = CUDA.CuArray{Int32, 2, CUDA.HostMemory}
+
+"""Free tallies per context, each borrowed by one estimate at a time."""
+const CU_FREE_TALLIES = Dict{CUDA.CuContext, Vector{CUTally}}()
+const CU_TALLY_LOCK = ReentrantLock()
+
+function SFC.gpu_in_range_fraction(backend::CUDA.CUDABackend, x, dig, NB::Int, geom, cull, tile::Int)
+    ctx = CUDA.context()
+    tally = lock(CU_TALLY_LOCK) do
+        free = get!(Vector{CUTally}, CU_FREE_TALLIES, ctx)
+        isempty(free) ? CUTally(undef, 2, SFC.GPU_IN_RANGE_GROUPS) : pop!(free)
+    end
+    SFC.gpu_in_range_tally!(tally, backend, x, dig, NB, geom, cull, tile)
+    CUDA.synchronize()
+    share = SFC.in_range_share(unsafe_wrap(Array, tally))
+    lock(() -> push!(CU_FREE_TALLIES[ctx], tally), CU_TALLY_LOCK)
+    return share
+end
 
 # The real device numbers. Reached only through the CUDABackend hook, so a device exists by
 # construction and a query failure is a driver fault.

@@ -102,27 +102,19 @@ for D in WIDTHS
     compare("slice batch sp2d D=$D", gqs, gqc, qs, qc)
 end
 
-# Above the 2D tiled kernels' staging budget there is no sibling to widen into, so the refusal is
-# derived from the budget and must name it.
+# Above every tiled kernel's staging budget the 1-D and 2-D batches take the wide kernels, which stage nothing.
 let D = 64
     xb, ub = rand(D, 32, 2), randn(D, 32, 2)
     s = CUDA.zeros(Float64, NB, 2); c = CUDA.zeros(Int, NB, 2)
-    threw = false
-    try
-        SFC.calculate_structure_function_2d_batch!(CUDA.zeros(Float64, NB, NV, 2), CUDA.zeros(Int, NB, NV, 2), OP,
-            xb, ub, BINS, VBINS; backend = DEV)
-    catch e
-        budget = SFC.gpu_static_smem_budget(SFC.gpu_device_caps(CUDA.CUDABackend()))
-        threw = e isa ArgumentError && occursin("$budget", sprint(showerror, e))
-    end
-    threw || push!(failures, "2D batch budget refusal at D=$D")
-    println(threw ? "2D batch refuses D=$D by its staging budget           ok" :
-                    "2D batch refuses D=$D by its staging budget           FAILED")
-    # the 1D tier stages nothing above its budget, so the same width runs there
     SFC.calculate_structure_function_batch!(s, c, OP, xb, ub, BINS; backend = DEV)
     rs = zeros(NB, 2); rc = zeros(Int, NB, 2)
     SFC.calculate_structure_function_batch!(rs, rc, OP, xb, ub, BINS; backend = SER)
     compare("slice batch 1D D=$D (wide kernel)", s, c, rs, rc)
+    js = CUDA.zeros(Float64, NB, NV, 2); jc = CUDA.zeros(Int, NB, NV, 2)
+    SFC.calculate_structure_function_2d_batch!(js, jc, OP, xb, ub, BINS, VBINS; backend = DEV)
+    rjs = zeros(NB, NV, 2); rjc = zeros(Int, NB, NV, 2)
+    SFC.calculate_structure_function_2d_batch!(rjs, rjc, OP, xb, ub, BINS, VBINS; backend = SER)
+    compare("slice batch joint D=$D (wide kernel)", js, jc, rjs, rjc)
 end
 
 println()

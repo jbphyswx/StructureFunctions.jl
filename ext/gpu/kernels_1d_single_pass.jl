@@ -47,11 +47,11 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_u32!(
     shared_ui = @localmem FT (F * SF_GPU_TILE,)
     shared_xj = @localmem FT (W * SF_GPU_TILE,)
     shared_uj = @localmem FT (F * SF_GPU_TILE,)
-    shared_sums = @localmem FT (SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS,)
+    shared_sums = @localmem FT (SINGLE_PASS_N * SF_GPU_MAX_BINS,)
     shared_cnts = @localmem CST (SF_GPU_MAX_BINS,)
     lid = @index(Local, Linear)
     k_init = lid
-    while k_init <= SF_GPU_SINGLE_PASS_N * NB
+    while k_init <= SINGLE_PASS_N * NB
         @inbounds shared_sums[k_init] = zero(FT)
         k_init += workgroup_size
     end
@@ -142,10 +142,10 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_u32!(
     bid = @index(Group, Linear)
     if bid <= n_tile_blocks
         k = lid
-        while k <= SF_GPU_SINGLE_PASS_N * NB
+        while k <= SINGLE_PASS_N * NB
             t = (k - 1) ÷ NB + 1
             b = (k - 1) % NB + 1
-            s = _sf_flush_moment(Val(SF_GPU_SINGLE_PASS_N), shared_sums, NB, t, b)
+            s = _sf_flush_moment(SFT.SinglePassInvariants(), shared_sums, NB, t, b)
             if s != zero(FT)
                 @atomic output_sums[t, b] += s
             end
@@ -155,7 +155,7 @@ KA.@kernel unsafe_indices=true function _sf6_single_pass_kernel_tiled128_u32!(
         while b <= NB
             c = shared_cnts[b]
             if c != zero(CST)
-                for t in 1:SF_GPU_SINGLE_PASS_N
+                for t in 1:SINGLE_PASS_N
                     @atomic output_counts[t, b] += c
                 end
             end
@@ -168,7 +168,7 @@ end
 fields staged and summed as `FT`, and counts of `CST`."""
 @inline _sp1d_tiled_smem_bytes(::Type{FT}, ::Type{CST}, W::Int, F::Int) where {FT, CST} =
     2 * SFC.gpu_localmem_bytes(FT, W * SF_GPU_TILE) + 2 * SFC.gpu_localmem_bytes(FT, F * SF_GPU_TILE) +
-    SFC.gpu_localmem_bytes(FT, SF_GPU_SINGLE_PASS_N * SF_GPU_MAX_BINS) +
+    SFC.gpu_localmem_bytes(FT, SINGLE_PASS_N * SF_GPU_MAX_BINS) +
     SFC.gpu_localmem_bytes(CST, SF_GPU_MAX_BINS)
 
 """Whether `_sf6_single_pass_kernel_tiled128_u32!` takes `NB` distance bins, `W`-wide coordinates and

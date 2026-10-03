@@ -12,7 +12,8 @@ function _run_blocks(sf, xc, uc, bins, ::Val{D}, blocks, N, ::Type{FT}) where {D
     nb = SFC.n_histogram_bins(plan)
     s = zeros(FT, nb); c = zeros(UInt32, nb)
     SFC._pf_simd_pairs!(s, c, sf, xc, uc, plan, Val(D),
-        Vector{FT}(undef, N), Vector{FT}(undef, N), Vector{Int32}(undef, N), SFC.WholeRun(), blocks, SFC.NoWeights())
+        Vector{FT}(undef, N), Vector{FT}(undef, N), Vector{Int32}(undef, N), Vector{Int32}(undef, N), SFC.WholeRun(),
+        blocks, SFC.NoWeights())
     return s, c
 end
 
@@ -164,10 +165,10 @@ Test.@testset "_pf_simd_partial! culls without changing the result" begin
         Test.@test SFC.cull_grid_for(xc, g, bins, SFC.AutoCulling()) !== nothing
 
         s_ref = zeros(FT, nb); c_ref = zeros(UInt32, nb)
-        SFC._pf_simd_partial!(s_ref, c_ref, SFT.L2SFType(), xv, uv, bins, Val(D), 1:(N - 1),
+        SFC._pf_simd_partial!(s_ref, c_ref, SFT.L2SFType(), xv, uv, bins, Val(D), nothing,
             SFC.NoCulling(); geometry = g)
         s_cull = zeros(FT, nb); c_cull = zeros(UInt32, nb)
-        SFC._pf_simd_partial!(s_cull, c_cull, SFT.L2SFType(), xv, uv, bins, Val(D), 1:(N - 1),
+        SFC._pf_simd_partial!(s_cull, c_cull, SFT.L2SFType(), xv, uv, bins, Val(D), nothing,
             SFC.AutoCulling(); geometry = g)
 
         Test.@test c_cull == c_ref
@@ -189,7 +190,7 @@ Test.@testset "single-pass kernel is invariant to the block schedule" begin
 
         run(pol) = begin
             s = zeros(FT, SFC.SINGLE_PASS_N, nb); c = zeros(UInt32, SFC.SINGLE_PASS_N, nb)
-            SFC._sp_simd_partial!(s, c, x, u, bins, Val(D), 1:(N - 1), pol)
+            SFC._sp_simd_partial!(s, c, x, u, bins, Val(D), nothing, pol)
             (s, c)
         end
         s_ref, c_ref = run(SFC.NoCulling())
@@ -206,7 +207,7 @@ Test.@testset "single-pass kernel is invariant to the block schedule" begin
             s = zeros(FT, SFC.SINGLE_PASS_N, nb); c = zeros(UInt32, SFC.SINGLE_PASS_N, nb)
             SFC._pf_sp_simd_pairs!(s, c, xc, uc, plan, Val(D),
                 Vector{FT}(undef, L), Vector{FT}(undef, L), Vector{FT}(undef, L),
-                Vector{Int32}(undef, L), window, SFC.pair_blocks(N, 1:(N - 1); tile = tile))
+                Vector{Int32}(undef, L), Vector{Int32}(undef, L), window, SFC.pair_blocks(N, 1:(N - 1); tile = tile))
             (s, c)
         end
         s0, c0 = tile_run(N, SFC.WholeRun(), N)
@@ -236,7 +237,7 @@ Test.@testset "2D kernels are invariant to the block schedule" begin
         joint(pol) = begin
             s = zeros(FT, n_dist, n_val); c = zeros(UInt32, n_dist, n_val)
             SFC._pf_2d_simd_partial!(s, c, SFT.L2SFType(), _comp(x, D), _comp(u, D),
-                dist, val, Val(D), 1:(N - 1), pol)
+                dist, val, Val(D), nothing, pol)
             (s, c)
         end
         sj_ref, cj_ref = joint(SFC.NoCulling())
@@ -250,7 +251,7 @@ Test.@testset "2D kernels are invariant to the block schedule" begin
         sp2d(pol) = begin
             s = zeros(FT, SFC.SINGLE_PASS_N, n_dist, n_val); c = zeros(UInt32, SFC.SINGLE_PASS_N, n_dist, n_val)
             SFC._sp2d_accumulate_range!(s, c, x, u, dist, SFC.digitize_plan(vb), DI.Euclidean(), n_dist, n_val,
-                                        1:(N - 1), pol)
+                                        nothing, pol)
             (s, c)
         end
         s_ref, c_ref = sp2d(SFC.NoCulling())
@@ -477,34 +478,18 @@ Test.@testset "culled block schedule covers every in-range pair in one dimension
     Test.@test count(covered) < N * (N - 1) ÷ 2
 end
 
-Test.@testset "tile_pair_worklist covers every in-range pair" begin
-    # Exactness of the GPU work list: brute-force every pair inside the cutoff, in the permuted
-    # order the tiles are cut from, and require its canonical tile pair to be listed.
+Test.@testset "a culled schedule narrowed to parts of the outer indices sweeps the same pairs" begin
     FT = Float64
-    for (D, N, frac, tile) in ((2, 1500, 0.06, 128), (3, 1200, 0.15, 64), (2, 700, 0.3, 32),
-                               (1, 900, 0.02, 64))
-        Random.seed!(2600 + N)
-        x = rand(FT, D, N)
-        xc = _comp(x, D)
-        cut = SFC.cull_cutoff(SFH.FlatGeometry{D}(), FT(frac))
-        grid = SFC.build_cell_grid(xc, cut, 2)
-        xp = SFC.apply_perm(xc, grid.perm)
-        wl = SFC.tile_pair_worklist(grid, N, tile)
-        n_tiles = cld(N, tile)
-        Test.@test wl.n_tiles == n_tiles
-        Test.@test issorted(wl.pairs) && allunique(wl.pairs)
-        Test.@test all(k -> (1 <= SFC.tile_for(wl, k)[1] <= SFC.tile_for(wl, k)[2] <= n_tiles),
-                       1:SFC.n_pair_blocks(wl))
-        listed = Set(wl.pairs)
-        missed = 0
-        for i in 1:(N - 1), j in (i + 1):N
-            r2 = sum(d -> (xp[d][i] - xp[d][j])^2, 1:D)
-            r2 <= cut^2 || continue
-            ti, tj = minmax(cld(i, tile), cld(j, tile))
-            SFC.pack_tile_pair(eltype(wl.pairs)(ti), eltype(wl.pairs)(tj),
-                               eltype(wl.pairs)(n_tiles)) in listed || (missed += 1)
-        end
-        Test.@test missed == 0
-        Test.@test SFC.n_pair_blocks(wl) < n_tiles * (n_tiles + 1) ÷ 2   # it really culled
+    N = 1500
+    Random.seed!(2602)
+    xc = (rand(FT, N), rand(FT, N))
+    grid = SFC.build_cell_grid(xc, FT(0.05), 1)
+    pairs_of(irange) = sort!([(i, j) for (ir, jr) in SFC.pair_blocks(N, irange; grid) for i in ir for j in jr if j > i])
+    whole = pairs_of(1:(N - 1))
+    Test.@test length(whole) < N * (N - 1) ÷ 2
+    for parts in ([1:(N - 1)], [k:min(k + 6, N - 1) for k in 1:7:(N - 1)], [k:min(k + 99, N - 1) for k in 1:100:(N - 1)],
+                  [k:13:(N - 1) for k in 1:13], [collect(k:5:(N - 1)) for k in 1:5], [1:0, 1:(N - 1)])
+        Test.@test sort!(reduce(vcat, map(pairs_of, parts))) == whole
     end
 end
+

@@ -10,7 +10,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT
 using OhMyThreads: OhMyThreads          # load threaded extension
-using Printf: @printf
+using Printf: Printf
 using Random: Random
 
 _envi(k, d) = parse(Int, get(ENV, k, string(d)))
@@ -43,15 +43,15 @@ function report(name, pairs, fS, fT)
     spS = pairs / tS / 1e6
     print("\r  running $name (threaded)…   "); flush(stdout)
     rT = fT(); tT = timeit(fT); par = _par(rS, rT); spT = pairs / tT / 1e6
-    @printf("\r%-26s serial %8.2f ms  thr %8.2f ms  %5.2fx  | %7.1f→%7.1f Mpair/s  parity=%s\n",
+    Printf.@printf("\r%-26s serial %8.2f ms  thr %8.2f ms  %5.2fx  | %7.1f→%7.1f Mpair/s  parity=%s\n",
             name, tS*1e3, tT*1e3, tS/tT, spS, spT, par); flush(stdout)
 end
 
-@printf("%s\nCPU regimes | nthreads=%d  N=%d B=%d NB=%d NV=%d NPF=%d\n%s\n",
+Printf.@printf("%s\nCPU regimes | nthreads=%d  N=%d B=%d NB=%d NV=%d NPF=%d\n%s\n",
         "="^104, Threads.nthreads(), N, B, NB, NV, NPF, "="^104); flush(stdout)
 
 for T in (Float64, Float32)
-    @printf("--- %s ---\n", T); flush(stdout)
+    Printf.@printf("--- %s ---\n", T); flush(stdout)
     Random.seed!(42)
 
     let x = rand(T, 3, NPF), u = rand(T, 3, NPF), bins = _bins(T)
@@ -81,4 +81,4 @@ for T in (Float64, Float32)
         report("batch 2D joint", pairs, fS, fT)
     end
 end
-@printf("%s\nDONE\n", "="^104); flush(stdout)
+Printf.@printf("%s\nDONE\n", "="^104); flush(stdout)

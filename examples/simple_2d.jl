@@ -1,13 +1,13 @@
 # Second-order vector increments on a small point cloud.
-using Random
+using Random: Random
 using StructureFunctions: Calculations as C, StructureFunctionTypes as T, midpoints
 using ComputationalBackends: SerialBackend
 include("resources.jl")
 
 function simple_example(; n=ExampleResources.points())
-    rng = MersenneTwister(11)
-    x = rand(rng, 2, n)       # (coordinate, point), in metres
-    u = randn(rng, 2, n)      # (component, point), in metres per second
+    rng = Random.MersenneTwister(11)
+    x = Random.rand(rng, 2, n)       # (coordinate, point), in metres
+    u = Random.randn(rng, 2, n)      # (component, point), in metres per second
     bins = range(0.0, 1.5; length=7)
     result = C.calculate_structure_function(T.S2SFType(), x, u, bins;
         backend=SerialBackend())

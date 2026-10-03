@@ -4,22 +4,16 @@
 using ComputationalBackends: ComputationalBackends as CB
 
 """
-    resolve_auto_backend(shape, threaded_available; nthreads=Threads.nthreads())
+    resolve_auto_backend(; nthreads = Threads.nthreads())
 
-What `AutoBackend` resolves to. `threaded_available` is a zero-argument predicate, since the
-OhMyThreads extension is optional; [`distributed_adds_hardware`](@ref) is the whole test for the
-Distributed backend, which the extension covers for every entry family.
-
-Every candidate is tested before it is named, so `AutoBackend` only ever resolves to a backend that
-can run the request.
-
-`nthreads` defaults to `Threads.nthreads()`, which is fixed at process start.
+What `AutoBackend` resolves to for every entry: `DistributedBackend()` when Distributed workers reach
+cores this process does not use ([`distributed_adds_hardware`](@ref)), else `ThreadedBackend()` when
+there is more than one thread and the OhMyThreads extension is loaded, else `SerialBackend()`. Every
+entry family has a method for each of the three.
 """
-function resolve_auto_backend(
-    shape, threaded_available::F; nthreads::Int = Threads.nthreads(),
-) where {F}
+function resolve_auto_backend(; nthreads::Int = Threads.nthreads())
     distributed_adds_hardware(Val(:distributed)) && return CB.DistributedBackend()
-    (nthreads > 1 && threaded_available()) && return CB.ThreadedBackend()
+    (nthreads > 1 && _ohmythreads_loaded()) && return CB.ThreadedBackend()
     return CB.SerialBackend()
 end
 
@@ -74,57 +68,10 @@ _require_package(backend, loaded::Base.RefValue{Bool}, package::String) = loaded
     ))
 
 """
-    _auto_local_backend()
-
-The CPU backend `AutoBackend` resolves to: `ThreadedBackend()` when the process has more than one
-thread and the OhMyThreads extension supplies the threaded driver, `SerialBackend()` otherwise.
-"""
-_auto_local_backend() =
-    (Threads.nthreads() > 1 && _ohmythreads_loaded()) ? CB.ThreadedBackend() : CB.SerialBackend()
-
-function _threaded_backend_available(
-    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
-    x,
-    u,
-    distance_bins,
-)
-    return _ohmythreads_loaded()
-end
-
-function _threaded_backend_available!(
-    sums,
-    counts,
-    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
-    x,
-    u,
-    distance_bins,
-)
-    return _ohmythreads_loaded()
-end
-
-function _threaded_backend_available!(
-    sums,
-    counts,
-    structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
-    x,
-    u,
-    distance_bins,
-    value_bins::AbstractVector,
-)
-    return _ohmythreads_loaded()
-end
-
-"""
     distributed_adds_hardware(::Val{:distributed}) -> Bool
 
-Whether the worker pool reaches cores this process cannot reach on its own — the question
-`AutoBackend` asks before it names [`DistributedBackend`](@ref).
-
-Workers on the driver's own node redistribute the cores the threaded backend already uses and pay
-serialisation on top, so `Auto` prefers the local backend for them; workers placed by a cluster
-manager bring hardware threads cannot. Supplied by the Distributed extension, which reads the
-worker's `ClusterManager`; `false` without it.
-
-An explicit `DistributedBackend()` is unaffected — this decides only what `Auto` chooses.
+Whether Distributed workers reach cores this process does not use: any worker a cluster manager
+placed elsewhere, or workers on this node while this process runs one thread. Supplied by the
+Distributed extension; `false` without it. It decides only what `AutoBackend` resolves to.
 """
 distributed_adds_hardware(::Val) = false

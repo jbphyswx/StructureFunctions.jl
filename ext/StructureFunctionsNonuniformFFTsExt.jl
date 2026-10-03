@@ -6,10 +6,11 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC
 # NonuniformFFTs' type-1 transform carries the minus sign and, for real data, the real-to-complex half
 # spectrum `(M₁ ÷ 2 + 1, M₂, …)`; on uniform points it equals FFTW's `rfft`, so the engine reads these
 # arrays exactly as it reads a slab's transforms. One plan serves every monomial of the point set, on
-# the host or on the device the points live on.
+# the host or on the device the points live on, and is borrowed from the workspace for every field on
+# the same schedule.
 function SFC.nufft_monomial_transforms(
     tag::SFC.NonuniformFFTsSpectralBackend, s::SFC.ScatteredModesSchedule{Dg, T},
-    data::AbstractMatrix, valid, weights, keys, ::Val{Pm}; to = identity,
+    data::AbstractMatrix, valid, weights, keys, ::Val{Pm}; to = identity, workspace = nothing,
 ) where {Dg, T, Pm}
     m = SFC.nufft_half_support(tag)
     all(M -> M >= m, s.modes) || throw(ArgumentError(
@@ -17,17 +18,27 @@ function SFC.nufft_monomial_transforms(
         "NonuniformFFTs' spreading kernel to fit its oversampled grid; got $(s.modes). Raise the modes or the tolerance.",
     ))
     FT = float(eltype(data))
+    sizes = (:nonuniformffts, tag, s, FT, typeof(to(FT[])))
+    set = SFC._borrow!(workspace, sizes, () -> _points_plan(tag, s, FT, to))
+    try
+        return map(keys) do key
+            v = SFC._held_monomial_vector(data, valid, weights, key, FT)
+            û = similar(v, Complex{FT}, size(set.plan))
+            NU.exec_type1!(û, set.plan, v)
+            set.taper === nothing || (û .*= set.taper)
+            û
+        end
+    finally
+        SFC._give_back!(workspace, sizes, set)
+    end
+end
+
+"""The schedule's plan in precision `FT` with its points set, and its taper, in the array family `to` returns."""
+function _points_plan(tag, s::SFC.ScatteredModesSchedule{Dg}, ::Type{FT}, to) where {Dg, FT}
     θ = ntuple(d -> to(FT.(SFC.mode_coordinates(s, d))), Val(Dg))
     plan = SFC.nufft_plan(tag, FT, s.modes, θ[1])
     NU.set_points!(plan, θ)
-    taper = SFC.mode_taper_weights(s, FT, size(plan), to)
-    return map(keys) do key
-        v = SFC._held_monomial_vector(data, valid, weights, key, FT)
-        û = similar(θ[1], Complex{FT}, size(plan))
-        NU.exec_type1!(û, plan, v)
-        taper === nothing || (û .*= taper)
-        û
-    end
+    return (; plan, taper = SFC.mode_taper_weights(s, FT, size(plan), to))
 end
 
 SFC.nufft_plan(tag::SFC.NonuniformFFTsSpectralBackend, ::Type{FT}, modes, ::Array) where {FT} =

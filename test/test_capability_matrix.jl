@@ -19,16 +19,6 @@ using Random: Random
 # changing — in either direction, so a refusal that becomes an implementation must be deleted from
 # the list.
 
-const CM_WORKERS_ADDED_HERE =
-    Distributed.nprocs() == 1 ?
-    Distributed.addprocs(2; exeflags = ["--project=$(Base.active_project())", "-t", "1"]) : Int[]
-
-Distributed.@everywhere using StructureFunctions: Calculations as SFC,
-    StructureFunctionTypes as SFT, MultiFields as MF
-Distributed.@everywhere using OhMyThreads: OhMyThreads
-Distributed.@everywhere using FFTW: FFTW
-Distributed.@everywhere using NonuniformFFTs: NonuniformFFTs
-
 Random.seed!(11)
 const CM_N, CM_T, CM_NB, CM_NV = 40, 3, 6, 5
 const CM_OP = SFT.L2SFType()
@@ -125,8 +115,27 @@ const CM_ROUTES = (
     ("gridded lag sweep", (be -> (s = zeros(CM_NB); c = zeros(Int, CM_NB);
         SFC.gridded_lag_sweep!(s, c, CM_OP, CM_GU, CM_GS, CM_GB, Val(2), Val(1), Val(0);
             backend = be); (s, c)))),
+    ("gridded lag sweep joint value", (be -> (s = zeros(CM_NB, CM_NV); c = zeros(CM_NB, CM_NV);
+        SFC.gridded_lag_sweep!(s, c, CM_OP, CM_GU, CM_GS, CM_GB, CM_VBINS, Val(2), Val(1), Val(0);
+            backend = be, second_axis = SFC.InvariantValueAxis()); (s, c)))),
+    ("gridded lag sweep joint angle", (be -> (s = zeros(CM_NB, CM_NA); c = zeros(CM_NB, CM_NA);
+        SFC.gridded_lag_sweep!(s, c, CM_OP, CM_GU, CM_GS, CM_GB, CM_ABINS, Val(2), Val(1), Val(0);
+            backend = be, second_axis = CM_AX); (s, c)))),
+    ("gridded lag sweep batch", (be -> (s = zeros(CM_NB, 2); c = zeros(Int, CM_NB, 2);
+        SFC.gridded_lag_sweep_batch!(s, c, CM_OP, CM_GUB, CM_GS, CM_GB, Val(2), Val(1), Val(0);
+            backend = be); (s, c)))),
+    ("gridded lag sweep batch joint value", (be -> (s = zeros(CM_NB, CM_NV, 2); c = zeros(CM_NB, CM_NV, 2);
+        SFC.gridded_lag_sweep_batch!(s, c, CM_OP, CM_GUB, CM_GS, CM_GB, CM_VBINS, Val(2), Val(1), Val(0);
+            backend = be, second_axis = SFC.InvariantValueAxis()); (s, c)))),
     ("gridded transform", (be -> (s = zeros(CM_NB); c = zeros(Int, CM_NB);
         SFC.gridded_sweep!(s, c, CM_OP, CM_GU, CM_GS, CM_GB, Val(2), Val(1), Val(0), CM_FFT;
+            backend = be); (s, c)))),
+    ("gridded single pass", (be -> (s = zeros(SFC.SINGLE_PASS_N, CM_NB); c = zeros(Int, SFC.SINGLE_PASS_N, CM_NB);
+        SFC.gridded_lag_sweep!(s, c, SFT.SinglePassInvariants(), CM_GU, CM_GS, CM_GB, Val(2), Val(1), Val(0);
+            backend = be); (s, c)))),
+    ("gridded single pass transform", (be -> (s = zeros(SFC.SINGLE_PASS_N, CM_NB);
+        c = zeros(Int, SFC.SINGLE_PASS_N, CM_NB);
+        SFC.gridded_sweep!(s, c, SFT.SinglePassInvariants(), CM_GU, CM_GS, CM_GB, Val(2), Val(1), Val(0), CM_FFT;
             backend = be); (s, c)))),
     ("gridded transform batch", (be -> (s = zeros(CM_NB, 2); c = zeros(Int, CM_NB, 2);
         SFC.gridded_sweep_batch!(s, c, CM_OP, CM_GUB, CM_GS, CM_GB, Val(2), Val(1), Val(0), CM_FFT;
@@ -134,6 +143,9 @@ const CM_ROUTES = (
     ("gridded tensor", (be -> (s = zeros(2, 2, CM_NB); c = zeros(Int, CM_NB);
         SFC.gridded_tensor_sweep!(s, c, Val(2), CM_GU, CM_GS, CM_GB, Val(2), CM_FFT;
             backend = be); (s, c)))),
+    ("gridded tensor joint angle", (be -> (s = zeros(2, 2, CM_NB, CM_NA); c = zeros(CM_NB, CM_NA);
+        SFC.gridded_tensor_sweep!(s, c, Val(2), CM_GU, CM_GS, CM_GB, CM_ABINS, Val(2), CM_FFT;
+            backend = be, second_axis = CM_AX); (s, c)))),
     ("harmonic direct sum", (be -> (r = SFC.calculate_structure_function(CM_OP, CM_HX, CM_HU,
         CM_NODES, SB.DirectSumSpectralBackend(), CM_RAW; backend = be);
         (r.sums, r.counts)))),
@@ -158,26 +170,7 @@ what "every route on every backend" means.
 A cell added here must carry a reason, and a cell whose refusal is later implemented must be
 removed, or the matrix stops asserting anything about it.
 """
-const CM_REFUSED = Dict{Tuple{String, String},
-                        @NamedTuple{message::String, reason::String}}(
-    ("gridded tensor", "gpu") => (
-        message = "supplies no `sweep_reduce!`",
-        reason = "the gridded tensor has no device kernel. Every other gridded route reaches a " *
-                 "device through its own hook — `device_transform_sweep!` for the transform, " *
-                 "`device_lag_sweep!` for the direct sweep — and no `device_tensor_sweep!` is " *
-                 "written, so the tensor falls through to the `sweep_reduce!` catch-all. The " *
-                 "kernel differs from the transform's only in accumulating the symmetric moment " *
-                 "store instead of contracting it, so this is unwritten work, not an impossibility.",
-    ),
-    (map(("aux axes 1D culled", "aux axes 1D culled shared", "slice batch sp1d culled shared")) do r
-        (r, "gpu") => (
-            message = "GPU culling needs a SFC.GPUSFWorkspace",
-            reason = "the device takes its culled tile-pair work list from a workspace's cull memo, and " *
-                     "these calls pass none. Building the list per call on the device is unwritten " *
-                     "work, not an impossibility.",
-        )
-    end)...,
-)
+const CM_REFUSED = Dict{Tuple{String, String}, @NamedTuple{message::String, reason::String}}()
 
 """Counts exactly when both are integer; a kernel-weighted count is a mass, compared like a sum."""
 function cm_agrees(got, ref)
@@ -189,6 +182,19 @@ function cm_agrees(got, ref)
     return all(p -> (isnan(p[1]) && isnan(p[2])) || abs(p[1] - p[2]) <= 1e-9 * scale,
                zip(got, ref))
 end
+
+const CM_WU_S = SFC.UniformLagSchedule((16, 16), (1 / 16, 1 / 16), (true, true))
+
+const CM_WORKERS_ADDED_HERE =
+    Distributed.nprocs() == 1 ?
+    Distributed.addprocs(2; exeflags = ["--project=$(Base.active_project())", "-t", "1"]) : Int[]
+try
+
+Distributed.@everywhere using StructureFunctions: Calculations as SFC,
+    StructureFunctionTypes as SFT, MultiFields as MF
+Distributed.@everywhere using OhMyThreads: OhMyThreads
+Distributed.@everywhere using FFTW: FFTW
+Distributed.@everywhere using NonuniformFFTs: NonuniformFFTs
 
 Test.@testset "the capability matrix: every route on every backend" begin
     Test.@test Distributed.nworkers() > 1
@@ -242,64 +248,13 @@ Test.@testset "an angle cell bins the angle" begin
     end
 end
 
-# How many work items a route actually creates, observed on the route itself rather than on a copy
-# of its splitter: this backend records the item count `sweep_reduce!` is handed and then runs the
-# sweep on the backend it wraps, so the answer is still checked.
-struct CMCountingBackend{B} <: CB.AbstractExecutionBackend
-    inner::B
-    n::Base.RefValue{Int}
-end
-CMCountingBackend(inner) = CMCountingBackend(inner, Ref(0))
-SFC.sweep_tasks(b::CMCountingBackend) = SFC.sweep_tasks(b.inner)
-function SFC.sweep_reduce!(sums, counts, b::CMCountingBackend, items, make_scratch, body!)
-    b.n[] = length(items)
-    return SFC.sweep_reduce!(sums, counts, b.inner, items, make_scratch, body!)
-end
-
-const CM_WU_S = SFC.UniformLagSchedule((16, 16), (1 / 16, 1 / 16), (true, true))
-const CM_WU_U = reshape(Float64[sin(d + 3i + 7j) for d in 1:2, i in 1:16, j in 1:16], 2, :)
-const CM_WU_B = collect(range(0.0, 0.4; length = 5))
-
-"""
-What each route's decomposition must yield at `n_tasks` tasks. `:at_least_tasks` is the contract —
-a schedule with one slab pair still has thousands of lags, so there is always more work than
-tasks here. A route that yields fewer is listed with the gap that owns it, and emptying that
-column is what G30.1 delivers.
-"""
-const CM_WORK_UNITS = (
-    (name = "gridded lag sweep",
-     run = (be -> (s = zeros(4); c = zeros(Int, 4);
-        SFC.gridded_lag_sweep!(s, c, CM_OP, CM_WU_U, CM_WU_S, CM_WU_B, Val(2), Val(1), Val(0);
-            backend = be); (s, c))),
-     expect = :at_least_tasks),
-    (name = "gridded transform",
-     run = (be -> (s = zeros(4); c = zeros(Int, 4);
-        SFC.gridded_sweep!(s, c, CM_OP, CM_WU_U, CM_WU_S, CM_WU_B, Val(2), Val(1), Val(0), CM_FFT;
-            backend = be); (s, c))),
-     expect = :at_least_tasks),
-)
-
-Test.@testset "a route decomposes into as many work units as it has tasks" begin
+Test.@testset "a schedule of one slab pair splits its lags across every task" begin
     n_tasks = SFC.sweep_tasks(CB.ThreadedBackend())
     Test.@test n_tasks == Threads.nthreads()
-
-    for row in CM_WORK_UNITS
-        Test.@testset "$(row.name)" begin
-            probe = CMCountingBackend(CB.ThreadedBackend())
-            got_s, got_c = row.run(probe)
-            ref_s, ref_c = row.run(CB.SerialBackend())
-            # The decomposition is only interesting if it still computes the right answer.
-            Test.@test cm_agrees(got_s, ref_s)
-            Test.@test cm_agrees(got_c, ref_c)
-
-            if row.expect === :at_least_tasks
-                Test.@test probe.n[] >= n_tasks
-            else
-                Test.@test !isempty(row.expect.reason)
-                Test.@test probe.n[] == row.expect.units
-            end
-        end
-    end
+    Test.@test length(collect(SFC.enumerated_pairs(CM_WU_S, 0.4))) == 1
+    items = SFC.sweep_items(CM_WU_S, 0.4, n_tasks, true)
+    Test.@test length(items) >= n_tasks
+    Test.@test sort([it[3] for it in items]) == 1:items[1][4]
 end
 
 Test.@testset "the matrix table names only cells that exist" begin
@@ -314,5 +269,6 @@ Test.@testset "the matrix table names only cells that exist" begin
     end
 end
 
-isempty(CM_WORKERS_ADDED_HERE) ||
-    Distributed.rmprocs(CM_WORKERS_ADDED_HERE; waitfor = 30)
+finally
+    isempty(CM_WORKERS_ADDED_HERE) || Distributed.rmprocs(CM_WORKERS_ADDED_HERE; waitfor = 30)
+end

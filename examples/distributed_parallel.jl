@@ -1,7 +1,7 @@
 # Partition pair work across local Julia workers and reduce their histograms.
 include("resources.jl")
-using Distributed
-using Random
+using Distributed: Distributed
+using Random: Random
 using StructureFunctions: Calculations as C, StructureFunctionTypes as T, StructureFunctionSumsAndCounts
 using ComputationalBackends: DistributedBackend, SerialBackend
 
@@ -25,8 +25,8 @@ function distributed_example(; n=ExampleResources.points(), workers=2)
                 :(using StructureFunctions, ComputationalBackends, LinearAlgebra))
             remotecall_wait(Core.eval, worker, Main, :(LinearAlgebra.BLAS.set_num_threads(1)))
         end
-        rng = MersenneTwister(14)
-        x, u = rand(rng, 2, n), randn(rng, 2, n)
+        rng = Random.MersenneTwister(14)
+        x, u = Random.rand(rng, 2, n), Random.randn(rng, 2, n)
         bins = range(0.0, 1.5; length=7)
         calculate(backend) = C.calculate_structure_function(T.S2SFType(), x, u, bins,
             StructureFunctionSumsAndCounts; backend)

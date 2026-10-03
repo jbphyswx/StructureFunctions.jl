@@ -1,6 +1,6 @@
-using Serialization
-using Printf
-using Profile
+using Serialization: Serialization
+using Printf: Printf
+using Profile: Profile
 
 function generate_cpu_summary(input_file, output_file)
     if !isfile(input_file)
@@ -8,7 +8,7 @@ function generate_cpu_summary(input_file, output_file)
         return
     end
     
-    data, lkup = open(deserialize, input_file)
+    data, lkup = open(Serialization.deserialize, input_file)
     
     # Reconstruct backtraces
     counts = Dict{String, Int}()
@@ -71,12 +71,12 @@ function generate_cpu_summary(input_file, output_file)
         println(io, "File: ", basename(input_file))
         println(io, "Total snapshots: ", total_samples)
         println(io)
-        @printf(io, "%-8s  %s\n", "Cost %", "Function / Location")
+        Printf.@printf(io, "%-8s  %s\n", "Cost %", "Function / Location")
         println(io, "-"^80)
         for (loc, count) in sorted_counts
             pct = (count / total_samples) * 100
             if pct >= 0.2 # Filter out noise below 0.2%
-                @printf(io, "%6.2f%%   %s\n", pct, loc)
+                Printf.@printf(io, "%6.2f%%   %s\n", pct, loc)
             end
         end
     end

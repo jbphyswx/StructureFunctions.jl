@@ -1,19 +1,19 @@
 # Reuse GPU histogram scratch for repeated point-field calculations.
 include("resources.jl")
 ExampleResources.require_allocation(; gpu=true, cpus=Threads.nthreads())
-using CUDA
-using KernelAbstractions
-using Random
+using CUDA: CUDA
+using KernelAbstractions: KernelAbstractions
+using Random: Random
 using ComputationalBackends: GPUBackend
 using StructureFunctions: Calculations as C, StructureFunctionTypes as T, StructureFunctionSumsAndCounts
 CUDA.functional() || error("This example requires a functioning allocated CUDA device")
 CUDA.allowscalar(false)
 
 function gpu_example(; n=ExampleResources.points())
-    rng = MersenneTwister(15)
-    x, u = CuArray(rand(rng, Float32, 3, n)), CuArray(randn(rng, Float32, 3, n))
+    rng = Random.MersenneTwister(15)
+    x, u = CUDA.CuArray(Random.rand(rng, Float32, 3, n)), CUDA.CuArray(Random.randn(rng, Float32, 3, n))
     bins = range(0.0f0, 2.0f0; length=9)
-    device = CUDABackend()
+    device = CUDA.CUDABackend()
     workspace = C.GPUSFWorkspace(device, bins)
     try
         calculate(; kwargs...) = C.calculate_structure_function(T.L2SFType(), x, u, bins,

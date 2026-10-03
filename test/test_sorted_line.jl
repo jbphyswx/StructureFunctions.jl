@@ -5,6 +5,7 @@ using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using StaticArrays: StaticArrays as SA
 using OhMyThreads: OhMyThreads
+using KernelAbstractions: KernelAbstractions as KA
 using Random: Random
 
 const RAW = SF.StructureFunctionSumsAndCounts
@@ -52,6 +53,18 @@ function _line_pair_loop(sf, x::AbstractVector, data::AbstractMatrix, bins, w, v
 end
 
 _close(a, b; rtol = 1e-12) = isapprox(a, b; rtol, atol = rtol * max(maximum(abs, b), 1e-300))
+
+# Σ |sf(δu, r̂)| over the pairs of each bin, the scale a sum of values of either sign is compared at.
+function _line_pair_abs(sf, x::AbstractVector, data::AbstractMatrix, bins)
+    s = zeros(length(bins) - 1)
+    r̂ = SA.SVector(1.0)
+    for i in 1:(length(x) - 1), j in (i + 1):length(x)
+        lo, hi = x[i] <= x[j] ? (i, j) : (j, i)
+        b = searchsortedfirst(bins, x[hi] - x[lo]) - 1
+        1 <= b <= length(s) && (s[b] += abs(sf(_line_increment(data, lo, hi, Val(1), Val(1), Val(0)), r̂)))
+    end
+    return s
+end
 
 Test.@testset "every polynomial operator on a line equals the pair loop" begin
     Random.seed!(4210)
@@ -167,6 +180,78 @@ Test.@testset "the order of the points and coincident points change nothing" beg
     end
 end
 
+Test.@testset "a field on a large offset keeps its moments on a line, in either precision" begin
+    Random.seed!(4270)
+    N = 3000
+    bins = collect(range(0.0, 1.0; length = 9))
+    ones_w = ones(N)
+    for (T, rtol) in ((Float32, 1e-3), (Float64, 1e-9))
+        x = T.(rand(N) .* 10.0)
+        u = T.(1000 .+ 0.01 .* randn(1, N))
+        for sf in (SFT.L2SFType(), SFT.L3SFType(), SFT.ProjectedStructureFunctionType{4, 0}())
+            xf, uf = Float64.(x), Float64.(u)
+            ref_s, ref_c = _line_pair_loop(sf, xf, uf, bins, ones_w, Val(1), Val(1), Val(0))
+            scale = _line_pair_abs(sf, xf, uf, bins)
+            for backend in (SERIAL, THREADED)
+                got = SFC.calculate_structure_function(sf, reshape(x, 1, :), u, bins, RAW; backend)
+                Test.@test (T, sf, got.counts == UInt32.(ref_c)) == (T, sf, true)
+                Test.@test (T, sf, all(abs.(got.sums .- ref_s) .<= rtol .* scale)) == (T, sf, true)
+            end
+        end
+    end
+end
+
+Test.@testset "the device sorted line gives the host's answer" begin
+    Random.seed!(4280)
+    N = 400
+    x1 = reshape(rand(N) .* 10.0, 1, :)
+    u = randn(1, N)
+    θ = randn(N)
+    w = 0.5 .+ rand(N)
+    bins = [0.0; sort(rand(7)) .* 4.0]
+    nb = length(bins) - 1
+    dev = CB.GPUBackend(KA.CPU())
+    for sf in LINE_OPS
+        ref = SFC.calculate_structure_function(sf, x1, u, bins, RAW; backend = SERIAL)
+        got = SFC.calculate_structure_function(sf, x1, u, bins, RAW; backend = dev)
+        Test.@test (sf, got.counts == ref.counts, _close(got.sums, ref.sums)) == (sf, true, true)
+        refw = SFC.calculate_structure_function(sf, x1, u, bins, Float64, RAW; backend = SERIAL, weights = w)
+        gotw = SFC.calculate_structure_function(sf, x1, u, bins, Float64, RAW; backend = dev, weights = w)
+        Test.@test (sf, _close(gotw.counts, refw.counts), _close(gotw.sums, refw.sums)) == (sf, true, true)
+    end
+    f = Fields(vectors = (u,), scalars = (θ,))
+    for sf in (SFT.MixedSFType{1, 0, 2}(), SFT.ScalarSFType{3}(), SFT.MixedSFType{1, 0, 1}())
+        ref = SFC.calculate_structure_function(sf, x1, f, bins, RAW; backend = SERIAL)
+        got = SFC.calculate_structure_function(sf, x1, f, bins, RAW; backend = dev)
+        Test.@test (sf, got.counts == ref.counts, _close(got.sums, ref.sums)) == (sf, true, true)
+    end
+    # the mutating form adds, and a field on a large offset keeps its moments on the device too
+    s, c = zeros(Float32, nb), zeros(UInt32, nb)
+    x32, u32 = Float32.(x1), Float32.(1000 .+ 0.01 .* u)
+    for _ in 1:2
+        SFC.calculate_structure_function!(s, c, SFT.L3SFType(), x32, u32, Float32.(bins); backend = dev)
+    end
+    ref_s, ref_c = _line_pair_loop(SFT.L3SFType(), Float64.(vec(x32)), Float64.(u32), Float64.(Float32.(bins)),
+                                   ones(N), Val(1), Val(1), Val(0))
+    scale = _line_pair_abs(SFT.L3SFType(), Float64.(vec(x32)), Float64.(u32), Float64.(Float32.(bins)))
+    Test.@test c == 2 .* UInt32.(ref_c)
+    Test.@test all(abs.(s .- 2 .* ref_s) .<= 1e-3 .* 2 .* scale)
+end
+
+# The device sort behind the sorted line gives the stable order `sortperm` gives, NaNs last, at every key width and
+# around the sort's tile of points.
+Test.@testset "the device sort orders as sortperm does" begin
+    GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+    Random.seed!(4290)
+    pool = [0.0, -0.0, NaN, -NaN, Inf, -Inf, 1.0, 1.0, -2.5, randn(8)...]
+    for n in (0, 1, 2, 7, 2047, 2048, 2049, 5000)
+        for v in (rand(pool, n), Float32.(rand(pool, n)), rand(Int32(-3):Int32(40), n),
+                  rand(typemin(Int64):typemax(Int64), n))
+            Test.@test (eltype(v), n, GE._gpu_sortperm(v) == sortperm(v)) == (eltype(v), n, true)
+        end
+    end
+end
+
 Test.@testset "what the sorted route does not take stays on the pair loop, and it refuses by name" begin
     Random.seed!(4250)
     N = 150
@@ -195,7 +280,7 @@ Test.@testset "what the sorted route does not take stays on the pair loop, and i
         none = SFC.calculate_structure_function(SFT.L2SFType(), x1, u, bins, RAW; backend,
             culling = SFC.NoCulling())
         Test.@test always.counts == none.counts
-        Test.@test always.sums == none.sums
+        Test.@test backend === SERIAL ? always.sums == none.sums : isapprox(always.sums, none.sums; rtol = 1e-12)
     end
     # the serial entry on a one-dimensional list returns a result
     direct = SFC.serial_calculate_structure_function(SFT.L2SFType(), x1, u, bins, UInt32)

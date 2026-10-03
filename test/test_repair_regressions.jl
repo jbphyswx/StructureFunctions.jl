@@ -17,7 +17,7 @@ Test.@testset "Repair regressions" begin
     end
     Test.@testset "Batch count capacity" begin
         for N in (4, 24), varying in (false, true)
-            rng = MersenneTwister(932)
+            rng = Random.MersenneTwister(932)
             u = randn(rng, 2, N, 2)
             x = varying ? rand(rng, 2, N, 2) : rand(rng, 2, N)
             bins = SF.BinEdges([0.0, 2.0])
@@ -49,9 +49,10 @@ Test.@testset "Repair regressions" begin
         ext = Base.get_extension(SF, :StructureFunctionsAbstractFFTsExt)
         old_budget = ext.FORWARD_BATCH_BYTES[]
         try
-            for (nlon, nlat) in ((36, 27), (60, 45)), chunk in (7, nlat)
-                ext.FORWARD_BATCH_BYTES[] = chunk * (nlon * sizeof(Float32) + (nlon ÷ 2 + 1) * sizeof(ComplexF32))
-                u = randn(MersenneTwister(14), Float32, 2, nlon, nlat)
+            nkeys = length(SFC._monomial_keys(Val(2), Val(2)))
+            for (nlon, nlat) in ((36, 27), (60, 45)), slabs in (7, nlat)
+                ext.FORWARD_BATCH_BYTES[] = slabs * nkeys * (nlon * sizeof(Float32) + (nlon ÷ 2 + 1) * sizeof(ComplexF32))
+                u = randn(Random.MersenneTwister(14), Float32, 2, nlon, nlat)
                 lats = collect(range(-0.6f0, 0.5f0; length=nlat))
                 schedule = SFC.ZonalLagSchedule(lats, nlon, Float32(2π/nlon), 1.0f0, true)
                 bins = Float32[0, 0.15, 0.35]

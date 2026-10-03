@@ -89,9 +89,9 @@ Test.@testset "JET Stability Audit" begin
         op = SFT.L2SFType()
 
         JET.@test_opt target_modules = (SF,) SFC._partial_sums_counts(
-            CB.SerialBackend(), op, xv, uv, dbins, 1:Np, UInt32)
+            CB.SerialBackend(), op, xv, uv, dbins, (1, 2), UInt32)
         JET.@test_opt target_modules = (SF,) SFC._partial_2d_sums_counts(
-            CB.SerialBackend(), op, xv, uv, dbins, vbins, 1:Np, UInt32)
+            CB.SerialBackend(), op, xv, uv, dbins, vbins, (1, 2), UInt32)
     end
 
     Test.@testset "HelperFunctions" begin

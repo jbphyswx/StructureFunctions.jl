@@ -18,12 +18,12 @@ Import these types from `ComputationalBackends`. Load `CUDA` and use `GPUBackend
 ## Explicit CPU calculation
 
 ```@example backends
-using Random
+using Random: Random
 using ComputationalBackends: SerialBackend
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
-rng = MersenneTwister(7)
-x = rand(rng, 2, 32)
-u = randn(rng, 2, 32)
+rng = Random.MersenneTwister(7)
+x = Random.rand(rng, 2, 32)
+u = Random.randn(rng, 2, 32)
 bins = range(0.0, 1.5; length=9)
 s = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
     backend=SerialBackend())
@@ -44,7 +44,7 @@ and harmonic residency coverage remains incomplete.
 
 ## Repeated calculations
 
-`CPUSFWorkspace` and `GPUSFWorkspace` retain buffers for compatible calculations. Construct a workspace for the calculation's layout, bins, precision, and backend; pass it with `workspace=...`. A workspace serves one call at a time.
+`CPUSFWorkspace` and `GPUSFWorkspace` retain buffers for compatible calculations. Construct a workspace for the calculation's layout, bins, precision, and backend; pass it with `workspace=...`. A workspace serves one call at a time. On a grid, a `TransformWorkspace()` keeps the transform's spectra, plans and scratch from one call to the next, as a time series on one grid makes; it takes no arguments and rebuilds what it keeps when a call's sizes change.
 
 Mutating entries add to output buffers; zero them when starting an independent result. A workspace carries no result from one call to the next: allocating entries return fresh buffers. Integer counts must represent both existing counts and the new contributions. Weighted normalization uses floating-point pair mass.
 

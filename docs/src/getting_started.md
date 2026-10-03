@@ -3,14 +3,14 @@
 For a point list, store positions and vector values as `(components, points)` matrices. The following example computes a second-order longitudinal structure function using 32 points and a serial CPU backend.
 
 ```@example getting_started
-using Random
+using Random: Random
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT,
     StructureFunctionSumsAndCounts, midpoints
 using ComputationalBackends: SerialBackend
 
-rng = MersenneTwister(42)
-x = rand(rng, 2, 32)
-u = randn(rng, 2, 32)
+rng = Random.MersenneTwister(42)
+x = Random.rand(rng, 2, 32)
+u = Random.randn(rng, 2, 32)
 bins = range(0.0, 1.5; length=9)
 result = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
     backend=SerialBackend())

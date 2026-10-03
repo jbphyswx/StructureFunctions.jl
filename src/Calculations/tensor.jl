@@ -19,6 +19,7 @@ function calculate_structure_function_tensor(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
     weights = nothing,
+    workspace = nothing,
 ) where {P, FT1, FT2, CT <: Real, OTT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
     shape = _validate_array_shape(x, u, distance_metric)
@@ -28,9 +29,10 @@ function calculate_structure_function_tensor(
     D = spatial_dimension(shape)
     n_bins = n_histogram_bins(distance_bins)
     auxiliary_dims = has_auxiliary_axes(shape) ? size(u)[3:end] : ()
-    sums = zeros(OT, ntuple(_ -> D, P)..., n_bins, auxiliary_dims...)
-    counts = zeros(CT, n_bins, auxiliary_dims...)
-    _dispatch_tensor!(backend, shape, sums, counts, order, x, u, distance_bins; distance_metric, culling, weights = w)
+    sums = _result_zeros(backend, OT, ntuple(_ -> D, P)..., n_bins, auxiliary_dims...)
+    counts = _result_zeros(backend, CT, n_bins, auxiliary_dims...)
+    _dispatch_tensor!(backend, shape, sums, counts, order, x, u, distance_bins; distance_metric, culling, weights = w,
+                      _workspace_kw(workspace)...)
     raw = SFO.StructureFunctionTensorSumsAndCounts(order, distance_bins, sums, counts)
     return _finalize(raw, OTT)
 end
@@ -66,6 +68,7 @@ function calculate_structure_function_tensor(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
     weights = nothing,
+    workspace = nothing,
 ) where {P, FT1, FT2, CT <: Real, OTT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
     shape = _validate_array_shape(x, u, distance_metric)
@@ -74,11 +77,11 @@ function calculate_structure_function_tensor(
     _assert_count_type(CT, size(u, 2), w)
     axis = _tensor_axis(axis_bins, second_axis)
     D = spatial_dimension(shape)
-    sums = zeros(OT, ntuple(_ -> D, P)..., n_histogram_bins(distance_bins), axis[2])
-    counts = zeros(CT, n_histogram_bins(distance_bins), axis[2])
+    sums = _result_zeros(backend, OT, ntuple(_ -> D, P)..., n_histogram_bins(distance_bins), axis[2])
+    counts = _result_zeros(backend, CT, n_histogram_bins(distance_bins), axis[2])
     _tensor_shape_check(order, shape, sums, counts, u, distance_bins, axis)
     _dispatch_tensor!(backend, shape, sums, counts, order, x, u, distance_bins; distance_metric, culling, weights = w,
-                      axis)
+                      axis, _workspace_kw(workspace)...)
     raw = SFO.StructureFunctionTensor2DSumsAndCounts(order, distance_bins, axis_bins, sums, counts)
     return _finalize(raw, OTT)
 end
@@ -96,11 +99,9 @@ calculate_structure_function_tensor(order::Val, x::AbstractArray, u::AbstractArr
                                     ::Type{OTT}; kwargs...) where {OTT <: SFO.AbstractStructureFunction} =
     calculate_structure_function_tensor(order, x, u, distance_bins, axis_bins, DEFAULT_COUNT_TYPE, OTT; kwargs...)
 
-"""The joint tensor's second axis: its digitize plan, its bin count and the angle source."""
-@inline function _tensor_axis(axis_bins, second_axis::SeparationAngleAxis)
-    axis_edges = digitize_plan(axis_bins)
-    return (axis_edges, n_histogram_bins(axis_edges), second_axis)
-end
+"""The joint tensor's second axis: its bins, its bin count and the angle source."""
+@inline _tensor_axis(axis_bins, second_axis::SeparationAngleAxis) =
+    (axis_bins, n_histogram_bins(axis_bins), second_axis)
 
 """
     calculate_structure_function_tensor!(sums, counts, order, x, u, distance_bins[, axis_bins]; second_axis, backend, distance_metric)
@@ -121,6 +122,7 @@ function calculate_structure_function_tensor!(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
     weights = nothing,
+    workspace = nothing,
 ) where {P}
     _require_backend(backend)
     shape = _validate_array_shape(x, u, distance_metric)
@@ -129,7 +131,7 @@ function calculate_structure_function_tensor!(
     _assert_counts_can_accumulate(counts, size(u, 2), w)
     return _dispatch_tensor!(
         backend, shape, sums, counts, order, x, u, distance_bins;
-        distance_metric = distance_metric, culling, weights = w,
+        distance_metric = distance_metric, culling, weights = w, _workspace_kw(workspace)...,
     )
 end
 
@@ -146,6 +148,7 @@ function calculate_structure_function_tensor!(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
     weights = nothing,
+    workspace = nothing,
 ) where {P}
     _require_backend(backend)
     shape = _validate_array_shape(x, u, distance_metric)
@@ -155,7 +158,7 @@ function calculate_structure_function_tensor!(
     _assert_counts_can_accumulate(counts, size(u, 2), w)
     return _dispatch_tensor!(
         backend, shape, sums, counts, order, x, u, distance_bins;
-        distance_metric = distance_metric, culling, weights = w, axis = axis,
+        distance_metric = distance_metric, culling, weights = w, axis = axis, _workspace_kw(workspace)...,
     )
 end
 
@@ -187,7 +190,7 @@ function _dispatch_tensor!(
     kwargs...,
 )
     return _dispatch_tensor!(
-        _auto_local_backend(), shape, sums, counts, order, x, u, distance_bins; kwargs...
+        resolve_auto_backend(), shape, sums, counts, order, x, u, distance_bins; kwargs...
     )
 end
 
@@ -208,7 +211,7 @@ function _dispatch_tensor!(
 end
 
 function _dispatch_tensor!(
-    ::CB.AbstractDistributedBackend,
+    db::CB.AbstractDistributedBackend,
     shape::AbstractFieldShape,
     sums::AbstractArray,
     counts::AbstractArray,
@@ -219,7 +222,7 @@ function _dispatch_tensor!(
     kwargs...,
 )
     return distributed_calculate_structure_function_tensor!(
-        sums, counts, order, shape, x, u, distance_bins; kwargs...
+        CB.local_backend(db), sums, counts, order, shape, x, u, distance_bins; kwargs...
     )
 end
 
@@ -247,10 +250,10 @@ Accumulate a tensor structure function across threads. Supplied by the OhMyThrea
 function threaded_calculate_structure_function_tensor! end
 
 """
-    distributed_calculate_structure_function_tensor!(sums, counts, order, shape, x, u, bins; kwargs...)
+    distributed_calculate_structure_function_tensor!(inner, sums, counts, order, shape, x, u, bins; kwargs...)
 
-Accumulate a tensor structure function across worker processes. Supplied by the Distributed
-extension.
+Accumulate a tensor structure function across worker processes, each on the local backend `inner`.
+Supplied by the Distributed extension.
 """
 function distributed_calculate_structure_function_tensor! end
 
@@ -306,8 +309,9 @@ end
 
 Everything a tensor sweep needs before its first pair: the geometry, the widened coordinates and
 field, the bin edges, the flattened accumulator shapes, and the cull grid with the points, the fields
-and the weights permuted into it ([`_tensor_cull`](@ref)). With `axis = (axis_edges, n_axis,
-second_axis)` the sweep is joint in separation and angle, over one field on a flat metric.
+and the weights permuted into it ([`_tensor_cull`](@ref)). With `axis = (axis_bins, n_axis,
+second_axis)` the sweep is joint in separation and angle, over one field on a flat metric; the setup's
+`axis` holds the digitize plan of `axis_bins` in their place.
 
 Shared by every backend so the preparation happens **once**, above any task or worker loop.
 """
@@ -331,8 +335,9 @@ function _tensor_setup(
     F = _val_int(vF)
 
     grid, xk, uk, weights = _tensor_cull(xk, uk, weights, geom, distance_bins, culling, fixed_x, W, F, N, B)
+    axis_plan = axis === nothing ? nothing : (digitize_plan(axis[1]), axis[2], axis[3])
     return (; n_bins, auxiliary_dims, dist_be, N, B, fixed_x, geom, xk, uk, vW, vF, W, F,
-            D = D, P = P, axis, weights, grid)
+            D = D, P = P, axis = axis_plan, weights, grid)
 end
 
 """
@@ -516,17 +521,17 @@ function _tensor_pairs_joint_inner!(sums, counts, order::Val{P}, s, blocks,
 end
 
 """
-    tensor_partial(order, shape, x, u, distance_bins, outer, CT; distance_metric, axis, weights) -> (sums, counts)
+    tensor_partial(inner, order, shape, x, u, distance_bins, share, CT; distance_metric, axis, culling, weights)
+        -> (sums, counts)
 
-A worker's share of a tensor sweep: the pairs whose lower index is in `outer`, in freshly allocated
-accumulators.
-
-The outer lists partition `1:N`, so the partials add to the whole sweep exactly.
+A worker's share of a tensor sweep: the pairs whose lower index is in share `share = (w, k)` of the outer indices,
+resolved against the cull grids the worker builds ([`_share_indices`](@ref)), in freshly allocated accumulators,
+computed on the worker's local backend `inner`. The shares of `w = 1:k` partition the sweep, so the partials add to
+it exactly.
 """
 function tensor_partial(
-    order::Val{P}, shape::AbstractFieldShape{D}, x, u, distance_bins, outer, ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing, culling::CullingPolicy = AutoCulling(),
-    weights = NoWeights(),
+    inner::CB.AbstractExecutionBackend, order::Val{P}, shape::AbstractFieldShape{D}, x, u, distance_bins,
+    share::NTuple{2, Int}, ::Type{CT}; axis = nothing, kwargs...,
 ) where {P, D, CT}
     n_bins = n_histogram_bins(distance_bins)
     OT = promote_type(float(eltype(x)), float(eltype(u)))
@@ -538,10 +543,21 @@ function tensor_partial(
         sums = zeros(OT, ntuple(_ -> D, P)..., n_bins, axis[2])
         counts = zeros(CT, n_bins, axis[2])
     end
+    _tensor_into!(inner, sums, counts, order, shape, x, u, distance_bins, share; axis, kwargs...)
+    return sums, counts
+end
+
+"""The pairs of a tensor sweep whose lower index is in share `share` of the outer indices added into `sums`/`counts`
+on the backend `inner`: serially here, threaded by the OhMyThreads extension."""
+function _tensor_into!(
+    ::CB.AbstractExecutionBackend, sums, counts, order::Val, shape, x, u, distance_bins, share;
+    distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing, culling::CullingPolicy = AutoCulling(),
+    weights = NoWeights(),
+)
     s = _tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric, axis, weights, culling)
     sf, cf = _tensor_flat(sums, counts, s)
-    _tensor_pairs!(sf, cf, order, s, outer)
-    return sums, counts
+    _tensor_pairs!(sf, cf, order, s, _share_indices(s.grid, s.N - 1, share))
+    return nothing
 end
 
 # One pair's `δu^{⊗P}` added at `[…, bin, b]`, the loops over the P component indices unrolled to
@@ -605,12 +621,16 @@ _no_tensor_sum() = throw(ArgumentError(
     "point entry over the grid's points.",
 ))
 
-"""Add the symmetric store `sym` `(n_entries, bins…)` into the dense tensor `dense` `(D, …, D, bins…)`."""
+"""The packed component of each dense component of a rank-`P` tensor over `D` components, first index
+fastest: entry `q` is the `SFT.symmetric_rank` of dense component `q`'s multi-index."""
+_tensor_dense_index(::Val{D}, ::Val{P}) where {D, P} =
+    [SFT.symmetric_rank(Val(D), Val(P), Tuple(I)) for I in CartesianIndices(ntuple(_ -> D, Val(P)))]
+
+"""Add the symmetric store `sym` `(n_entries, bins…)` into the dense tensor `dense` `(D, …, D, bins…)`, by one
+gather in the arrays' own memory."""
 function _expand_symmetric!(dense::AbstractArray, sym::AbstractArray, ::Val{D}, ::Val{P}) where {D, P}
-    comps = CartesianIndices(ntuple(_ -> D, Val(P)))
-    rest = CartesianIndices(size(sym)[2:end])
-    @inbounds for r in rest, I in comps
-        dense[I, r] += sym[SFT.symmetric_rank(Val(D), Val(P), Tuple(I)), r]
-    end
+    idx = copyto!(similar(sym, Int, D^P), _tensor_dense_index(Val(D), Val(P)))
+    R = length(sym) ÷ size(sym, 1)
+    reshape(dense, D^P, R) .+= reshape(sym, size(sym, 1), R)[idx, :]
     return dense
 end

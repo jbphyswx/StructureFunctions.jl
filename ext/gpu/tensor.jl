@@ -1,63 +1,14 @@
-# Tensor structure functions on a device.
-#
-# One thread owns an `i` and walks every `j > i`, so the pair set is the same upper triangle the CPU
-# kernel enumerates. The accumulation is a global atomic per tensor component: a rank-`P` tensor has
-# `D^P` of them per pair, and no shared-memory histogram is small enough to stage that, so this is
-# its own kernel and not a mode of the scalar ones.
+# Tensor structure functions on a device: the tiled pair families with the tensor's packed symmetric
+# components as the moment set, expanded to the dense tensor on the device.
 
-# The last accumulator axis is the auxiliary slice when there is no second axis, and the angle bin
-# when there is one; the joint form takes a single field, so the two never both need it. Both
-# helpers dispatch on the source's type, so the plain sweep compiles to the indexing it had.
-@inline _gpu_tensor_axis_bin(::Nothing, X1, X2, dist, axis_be, n_axis) = -1
-@inline function _gpu_tensor_axis_bin(s::SFC.SeparationAngleAxis, X1, X2, dist, axis_be, n_axis)
-    abin = SFH.digitize(SFC.axis_quantity(s, X2 - X1, dist * dist), axis_be)
-    return (1 <= abin <= n_axis) ? abin : 0
-end
-
-@inline _gpu_tensor_slot(::Nothing, b::Int, abin::Int) = b
-@inline _gpu_tensor_slot(::SFC.SeparationAngleAxis, b::Int, abin::Int) = abin
-
-KA.@kernel unsafe_indices = true function _tensor_kernel!(
-    sums, counts, @Const(x_mat), @Const(u_mat),
-    wts,                    # NoWeights(), or one weight per point
-    geom, dist_be,
-    second_axis,            # nothing, or the separation-angle source
-    axis_be, n_axis::Int,
-    N_points::Int, N_bins::Int, B::Int, ::Val{W}, ::Val{F}, ::Val{D}, ::Val{P},
-) where {W, F, D, P}
-    i = @index(Global)
-    if i <= N_points - 1
-        XT = eltype(x_mat)
-        UT = eltype(u_mat)
-        X1 = SA.SVector{W, XT}(ntuple(d -> @inbounds(x_mat[d, i]), Val(W)))
-        for j in (i + 1):N_points
-            X2 = SA.SVector{W, XT}(ntuple(d -> @inbounds(x_mat[d, j]), Val(W)))
-            ok, dist, frame = SFH.pair_frame(geom, X1, X2)
-            bin = SFH.digitize(dist, dist_be)
-            abin = _gpu_tensor_axis_bin(second_axis, X1, X2, dist, axis_be, n_axis)
-            if ok && 1 <= bin <= N_bins && abin != 0
-                sgn = SFC._tensor_reading(Val(P), geom, frame)
-                pw = SFC._point_weight(wts, i) * SFC._point_weight(wts, j)
-                for b in 1:B
-                    slot = _gpu_tensor_slot(second_axis, b, abin)
-                    U1 = SA.SVector{F, UT}(ntuple(d -> @inbounds(u_mat[d, i, b]), Val(F)))
-                    U2 = SA.SVector{F, UT}(ntuple(d -> @inbounds(u_mat[d, j, b]), Val(F)))
-                    du = sgn * SFH.pair_delta(geom, frame, X1, X2, U1, U2)
-                    if P == 2
-                        for a in 1:D, c in 1:D
-                            @atomic sums[(a - 1) * D + c, bin, slot] += pw * du[a] * du[c]
-                        end
-                    else
-                        for a in 1:D, c in 1:D, e in 1:D
-                            @atomic sums[(a - 1) * D * D + (c - 1) * D + e, bin, slot] +=
-                                pw * du[a] * du[c] * du[e]
-                        end
-                    end
-                    @atomic counts[bin, slot] += convert(eltype(counts), pw)
-                end
-            end
-        end
-    end
+"""Add the packed histogram `packed` `(n_sym, NB, S)` into the dense `sums` `(D, …, D, NB, S…)` and the
+counts row of `pcnt` `(n_sym, NB, S)` into `counts` `(NB, S…)`."""
+function _tensor_add_packed!(sums, counts, packed, pcnt, ::Val{D}, ::Val{P}) where {D, P}
+    NB, S = size(packed, 2), size(packed, 3)
+    SFC._expand_symmetric!(sums, packed, Val(D), Val(P))
+    c = selectdim(pcnt, 1, 1)
+    eltype(c) === eltype(counts) ? (reshape(counts, NB, S) .+= c) : (reshape(counts, NB, S) .+= eltype(counts).(c))
+    return nothing
 end
 
 function SFC.gpu_calculate_structure_function_tensor!(
@@ -66,56 +17,31 @@ function SFC.gpu_calculate_structure_function_tensor!(
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
-    culling::SFC.CullingPolicy = SFC.AutoCulling(), weights = SFC.NoWeights(),
+    culling::SFC.CullingPolicy = SFC.AutoCulling(), weights = SFC.NoWeights(), workspace = nothing,
 ) where {P, D}
-    2 <= P <= 3 || throw(ArgumentError(
-        "the GPU tensor kernel accumulates orders 2 and 3; order $P runs on the CPU backends",
-    ))
-    SFC._cull_reject_unsupported(culling, "the device tensor kernel")
-    s = SFC._tensor_setup(order, shape, sums, counts, x, u, distance_bins, distance_metric,
-                          axis, weights)
-    s.fixed_x || throw(ArgumentError(
-        "the GPU tensor kernel takes one shared position set; `x` varying per auxiliary slice is a " *
-        "different staging problem and is handled by the CPU backends.",
-    ))
-
     ka = backend.backend
-    W, F, N, B, n_bins = s.W, s.F, s.N, s.B, s.n_bins
-    OT = eltype(sums)
-    CT = eltype(counts)
-    # The last accumulator axis carries the auxiliary slices, or the angle bins when joint.
-    second_axis = axis === nothing ? nothing : axis[3]
-    n_axis = axis === nothing ? 0 : axis[2]
-    n_last = axis === nothing ? B : n_axis
-
-    x_dev = KA.adapt(ka, reshape(collect(s.xk), W, N))
-    u_dev = KA.adapt(ka, reshape(collect(s.uk), F, N, B))
-    sums_dev = KA.adapt(ka, zeros(OT, D^P, n_bins, n_last))
-    counts_dev = KA.adapt(ka, zeros(CT, n_bins, n_last))
-    dist_dev = KA.adapt(ka, s.dist_be)
-    axis_dev = axis === nothing ? nothing : KA.adapt(ka, axis[1])
-
-    kernel = _tensor_kernel!(ka, 256)
-    kernel(sums_dev, counts_dev, x_dev, u_dev, _sf_weights_to_device(ka, s.weights),
-           s.geom, dist_dev, second_axis, axis_dev, n_axis, N, n_bins, B,
-           Val(W), Val(F), Val(D), order; ndrange = N)
-    KA.synchronize(ka)
-
-    host_sums = Array(sums_dev)
-    host_counts = Array(counts_dev)
-    sums_flat, counts_flat = SFC._tensor_flat(sums, counts, s)
-    @inbounds for b in 1:n_last, bin in 1:n_bins
-        for q in 1:(D^P)
-            sums_flat[_tensor_component(q, Val(D), order)..., bin, b] += host_sums[q, bin, b]
-        end
-        counts_flat[bin, b] += host_counts[bin, b]
+    _check_gpu_residency(sums, counts, ka)
+    geom = SFH.pair_geometry_for(distance_metric, Val(D))
+    axis === nothing || geom isa SFH.FlatGeometry || SFC._require_directional(SFC.FrameTransport())
+    fixed_x = ndims(x) == 2
+    source = x
+    xk, uk = SFH.prepare_pair_inputs(geom, x, u)
+    N = size(uk, 2)
+    B = prod(size(uk)[3:end])
+    NB = SFC.n_histogram_bins(distance_bins)
+    moments = TensorComponents{P, D}()
+    OT, CT = eltype(sums), eltype(counts)
+    if axis === nothing
+        packed, pcnt, _ = _gpu_1d_unified_device(ka, xk, uk, moments, distance_bins, NB, B, fixed_x, OT, CT, geom;
+                                                 weights, workspace, culling, source)
+        _tensor_add_packed!(sums, counts, packed, pcnt, Val(D), order)
+    else
+        axis_bins, n_axis, second_axis = axis
+        packed, pcnt, _ = _gpu_2d_unified_device(ka, xk, uk, moments, distance_bins, axis_bins, NB, n_axis, 1,
+                                                 fixed_x, OT, CT, geom; weights, workspace, culling, source,
+                                                 second_axis)
+        _tensor_add_packed!(sums, counts, reshape(packed, size(packed, 1), NB * n_axis, 1),
+                            reshape(pcnt, size(pcnt, 1), NB * n_axis, 1), Val(D), order)
     end
     return sums, counts
-end
-
-"""Unflatten a linear tensor-component index back to its `P` subscripts."""
-@inline function _tensor_component(q::Int, ::Val{D}, ::Val{P}) where {D, P}
-    return ntuple(Val(P)) do k
-        ((q - 1) ÷ D^(P - k)) % D + 1
-    end
 end

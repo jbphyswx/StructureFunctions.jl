@@ -28,20 +28,21 @@ function serial_calculate_structure_function!(
         return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs,
             distance_bins, Val(3); culling, weights)
     end
-    N = length(x_vecs[1])
-    _pf_scalar_run!(output, counts, geometry, structure_function_type, distance_bins, 1:(N - 1),
+    _pf_scalar_run!(output, counts, geometry, structure_function_type, distance_bins, nothing,
                     _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling))
     return nothing
 end
 
 """
-    _pf_scalar_run!(output, counts, geometry, sf, distance_bins, ilist, (grid, x_vecs, u_vecs, weights))
+    _pf_scalar_run!(output, counts, geometry, sf, distance_bins, share, (grid, x_vecs, u_vecs, weights))
 
-Run [`_pf_scalar_pairs!`](@ref) over the outer indices `ilist` of a [`_cull_sorted`](@ref) result.
+Run [`_pf_scalar_pairs!`](@ref) over the outer indices `share` selects ([`_share_indices`](@ref)) of a
+[`_cull_sorted`](@ref) result.
 """
-function _pf_scalar_run!(output, counts, geometry, sf, distance_bins, ilist, (grid, xc, uc, wc))
+function _pf_scalar_run!(output, counts, geometry, sf, distance_bins, share, (grid, xc, uc, wc))
+    N = length(xc[1])
     _pf_scalar_pairs!(output, counts, geometry, sf, xc, uc, digitize_plan(distance_bins),
-                      pair_blocks(length(xc[1]), ilist; grid), wc)
+                      pair_blocks(N, _share_indices(grid, N - 1, share); grid), wc)
     return nothing
 end
 
@@ -73,8 +74,7 @@ function _pf_simd_run!(
     x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D};
     culling::CullingPolicy = AutoCulling(), weights = NoWeights(),
 ) where {OT, CT, D}
-    N = length(x_vecs[1])
-    return _pf_simd_partial!(output, counts, sf, x_vecs, u_vecs, dist_be, Val(D), 1:(N - 1), culling; weights)
+    return _pf_simd_partial!(output, counts, sf, x_vecs, u_vecs, dist_be, Val(D), nothing, culling; weights)
 end
 
 """The weight a point carries into its pairs; `true` for an unweighted sweep, which the compiler folds away."""
@@ -85,22 +85,23 @@ end
 @inline _component_point(c::NTuple{D}, j, ::Val{D}) where {D} = SA.SVector{D}(ntuple(d -> @inbounds(c[d][j]), Val(D)))
 
 """
-    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, window, blocks, weights)
+    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, sel, window, blocks, weights)
 
 Accumulate the pairs `(i, j>i)` covered by `blocks` into `output`/`counts`, each pair carrying
 `weights[i] * weights[j]` in both.
 
 `blocks` yields `(i-block, j-block)` index ranges (see [`block_pairs`](@ref)); each is worked to
-completion, so the `j` block stays cache-resident across its whole `i` sweep. Under multi-core load
-that is what keeps the loop off the memory bus: with one block spanning the array, per-core
-throughput falls 83% once the arrays exceed L2.
+completion, so the `j` block stays cache-resident across its whole `i` sweep, which keeps the loop off
+the memory bus under multi-core load.
 
 Uniqueness is `j > i`, so a block pair never needs to know whether it lies on the diagonal, and a
 culled schedule enumerating only nearby cells is exact for the same reason.
 
-The `@simd` half writes `r²`, the SF value, and the approximate bin index to buffers; the scalar
-half corrects the index and scatters straight into `output`/`counts`, skipping out-of-range bins.
-The buffers are indexed by `window` ([`PairWindow`](@ref)).
+The `@simd` half writes the digitize key, the SF value, and the approximate bin index to buffers; the
+scalar half scatters the in-range pairs straight into `output`/`counts`, under a range branch or, on a
+schedule that [`_chooses_compaction`](@ref) and a run whose sampled keys [`_compacts`](@ref), through the
+in-range list [`_compact_in_range!`](@ref) builds in `sel`. The buffers are indexed by `window`
+([`PairWindow`](@ref)).
 
 The `i`-loop and the inner `@simd` must stay in this function body; factoring the inner loop into a
 per-`i` helper stops it vectorizing.
@@ -109,10 +110,11 @@ function _pf_simd_pairs!(
     output::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, ::Val{D},
-    r2buf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32},
+    r2buf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32}, sel::AbstractVector{Int32},
     window::PairWindow, blocks, weights,
 ) where {OT, CT, D}
     nb = n_histogram_bins(plan)
+    chooses = _chooses_compaction(blocks)
     FTx = eltype(xc[1])
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
@@ -135,16 +137,32 @@ function _pf_simd_pairs!(
                 end
             end
             wi = _point_weight(weights, i)
-            for k in (jlo - o):(j_last - o)
-                b = squared_bin(plan, r2buf[k], idxbuf[k])
-                if 1 <= b <= nb
-                    w = wi * _point_weight(weights, k + o)
-                    output[b] += w * valbuf[k]
-                    counts[b] += CT(w)
+            ks = (jlo - o):(j_last - o)
+            if chooses && _compacts(_sample_in_range(plan, r2buf, ks)...)
+                for m in 1:_compact_in_range!(sel, plan, r2buf, ks)
+                    k = Int(sel[m])
+                    _pf_accumulate!(output, counts, valbuf, weights, wi, o, k,
+                                    squared_bin_select(plan, r2buf[k], idxbuf[k]))
+                end
+            else
+                for k in ks
+                    b = chooses ? squared_bin_select(plan, r2buf[k], idxbuf[k]) : squared_bin(plan, r2buf[k], idxbuf[k])
+                    if 1 <= b <= nb
+                        _pf_accumulate!(output, counts, valbuf, weights, wi, o, k, b)
+                    end
                 end
             end
         end
     end
+    return nothing
+end
+
+"""Add slot `k`'s buffered value into bin `b` of `output`/`counts`, weighted by the outer point's weight `wi`
+times that of point `k + o`."""
+@inline function _pf_accumulate!(output, counts::AbstractVector{CT}, valbuf, weights, wi, o, k, b) where {CT}
+    w = wi * _point_weight(weights, k + o)
+    @inbounds output[b] += w * valbuf[k]
+    @inbounds counts[b] += CT(w)
     return nothing
 end
 
@@ -209,6 +227,14 @@ sweep's worst case must fit it.
     return nothing
 end
 
+"""The least of the first and the greatest of the second members of two pairs."""
+@inline _min_max(a, b) = (min(a[1], b[1]), max(a[2], b[2]))
+
+"""The least and the greatest of `counts`, in one pass; an unsigned count's least is zero."""
+_count_extrema(counts::AbstractArray{CT}) where {CT <: Unsigned} = (zero(CT), maximum(counts))
+_count_extrema(counts::AbstractArray{CT}) where {CT} =
+    mapreduce(v -> (v, v), _min_max, counts; init = (typemax(CT), typemin(CT)))
+
 """
     _assert_counts_can_accumulate(counts, n_points, weights)
 
@@ -218,10 +244,10 @@ pair on top of what it holds.
 function _assert_counts_can_accumulate(counts::AbstractArray{CT}, n_points::Int, weights) where {CT}
     _assert_count_type(CT, n_points, weights)
     (weights isa NoWeights && !isempty(counts)) || return nothing
-    current = maximum(counts)
+    least, current = _count_extrema(counts)
     limit = CT <: Integer ? typemax(CT) : maxintfloat(CT)
     n_pairs = _pair_count_bound(n_points)
-    (CT <: Unsigned || minimum(counts) >= 0) && current <= limit && n_pairs <= limit - current ||
+    least >= 0 && current <= limit && n_pairs <= limit - current ||
         throw(ArgumentError(
             "count accumulator cannot represent existing counts plus $n_pairs possible pairs; use a wider " *
             "count type or reset the accumulator"))
@@ -357,13 +383,12 @@ function _pf_scalar_pairs!(
 end
 
 """
-    _partial_sums_counts(inner, sf_type, x_vecs, u_vecs, distance_bins, ilist, CT; kwargs...)
+    _partial_sums_counts(inner, sf_type, x_vecs, u_vecs, distance_bins, share, CT; kwargs...)
 
-Partial 1D sums/counts over an explicit outer-index list `ilist` (each `i` contributes pairs
-`(i, j>i)`). Used by the distributed driver to give each worker a balanced share; `inner`
-selects how the worker computes its share locally. This generic method runs SERIALLY for any
-backend; the OhMyThreads extension adds a `::CB.AbstractThreadedBackend` method that threads over `ilist`
-(enabling hybrid distributed+threaded). Returns a `StructureFunctionSumsAndCounts`.
+Partial 1D sums/counts of a distributed worker or MPI rank: the pairs `(i, j > i)` whose outer index `i` is in share
+`share = (w, k)`, resolved against the cull grid the call builds ([`_share_indices`](@ref)), so the shares of
+`w = 1:k` partition the sweep. `inner` selects how the share is computed locally: serially here, threaded by the
+OhMyThreads extension. Returns a `StructureFunctionSumsAndCounts`.
 """
 function _partial_sums_counts(
     ::CB.AbstractExecutionBackend,
@@ -371,7 +396,7 @@ function _partial_sums_counts(
     x_vecs::Tuple,
     u_vecs::Tuple,
     distance_bins::AbstractVector,
-    ilist,
+    share::NTuple{2, Int},
     ::Type{CT};
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     culling::CullingPolicy = AutoCulling(),
@@ -383,15 +408,14 @@ function _partial_sums_counts(
     counts = zeros(CT, nb)
     D = length(u_vecs)
     # Flat D ∈ {2,3} takes the SIMD compute/scatter kernel, the same one the serial and threaded
-    # drivers use; `_pf_simd_pairs!` accepts an arbitrary `irange`. Other geometries take the
-    # scalar kernel; `ilist` indexes the cull-sorted order either way.
+    # drivers use; other geometries take the scalar kernel.
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         vD = D == 2 ? Val(2) : Val(3)
-        _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, distance_bins, vD, ilist,
+        _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, distance_bins, vD, share,
                           culling; geometry = geometry, weights = weights)
         return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
     end
-    _pf_scalar_run!(sums, counts, geometry, structure_function_type, distance_bins, ilist,
+    _pf_scalar_run!(sums, counts, geometry, structure_function_type, distance_bins, share,
                     _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling))
     return SFO.StructureFunctionSumsAndCounts(structure_function_type, distance_bins, sums, counts)
 end
@@ -405,30 +429,28 @@ as a `Union`; dispatching on it resolves that into one concretely typed schedule
 what keeps the kernel statically specialized.
 """
 @inline _pf_run_blocks!(
-    sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, ilist, N, ::Nothing, weights,
-) where {D} = _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf,
+    sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, sel, ilist, N, ::Nothing, weights,
+) where {D} = _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, sel,
     _pair_window(N), pair_blocks(N, ilist), weights)
 
 @inline _pf_run_blocks!(
-    sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, ilist, N, grid::CellGrid, weights,
-) where {D} = _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf,
+    sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, sel, ilist, N, grid::CellGrid, weights,
+) where {D} = _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, sel,
     _pair_window(N), pair_blocks(N, ilist; grid = grid), weights)
 
 """
-    _pf_simd_partial!(sums, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}, ilist; kwargs...)
+    _pf_simd_partial!(sums, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}, share; kwargs...)
 
-Run [`_pf_simd_pairs!`](@ref) over an explicit outer-index list, materializing the contiguous
-component vectors and scratch buffers this worker needs. Shared by the distributed, MPI and
-hybrid drivers, whose inputs arrive as strided views.
+Run [`_pf_simd_pairs!`](@ref) over the outer indices `share` selects ([`_share_indices`](@ref)), materializing the
+contiguous component vectors and scratch buffers this call needs; the inputs may arrive as strided views.
 
-When `culling` yields a cull grid the points are sorted into it first; `ilist` then selects
-positions in the sorted order, which leaves the union over workers unchanged. `weights`, one per
-point, are sorted with them.
+When `culling` yields a cull grid the points are sorted into it first, and the share is taken of the sorted order.
+`weights`, one per point, are sorted with them.
 """
 function _pf_simd_partial!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
-    x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D}, ilist, culling::CullingPolicy = AutoCulling();
+    x_vecs::Tuple, u_vecs::Tuple, dist_be, ::Val{D}, share, culling::CullingPolicy = AutoCulling();
     geometry = SFH.FlatGeometry{D}(), weights = NoWeights(),
 ) where {OT, CT, D}
     xc = ntuple(d -> collect(x_vecs[d]), Val(D))   # contiguous component vectors
@@ -440,6 +462,7 @@ function _pf_simd_partial!(
     r2buf = Vector{eltype(xc[1])}(undef, L)
     valbuf = Vector{OT}(undef, L)
     idxbuf = Vector{Int32}(undef, L)
+    sel = Vector{Int32}(undef, L)
     grid = (culling isa NoCulling) ? nothing : cull_grid_for(xc, geometry, dist_be, culling) # this is type unstable
     if !isnothing(grid)
         xc = apply_perm(xc, grid.perm)
@@ -447,19 +470,27 @@ function _pf_simd_partial!(
         wc = wc isa NoWeights ? wc : wc[grid.perm]
     end
     _pf_run_blocks!(sums, counts, sf, xc, uc, plan, Val(D),
-        r2buf, valbuf, idxbuf, ilist, N, grid, wc)
+        r2buf, valbuf, idxbuf, sel, _share_indices(grid, N - 1, share), N, grid, wc)
     return nothing
 end
 
 """
-    _balanced_index_chunks(N, k) -> Vector of k index-lists
+    _outer_share(grid, indices, w, k)
 
-Split `1:N` into `k` balanced outer-index lists for the triangular pair loop (work ∝ N-i).
-Round-robin assignment (`i ≡ w (mod k)`) gives each chunk a mix of cheap/expensive indices.
+Share `w` of `k` of the outer indices of a sweep over `grid`'s schedule, a range: every `k`-th index from the
+`w`-th without a cull grid, which balances the triangle's work of `N - i` per index; the `w`-th of `k`
+consecutive runs with a grid or per-slice grids, so a share sweeps only its own cells.
 """
-function _balanced_index_chunks(N::Integer, k::Integer)
-    k = max(1, k)
-    # Ranges, not materialized vectors: `_partial_sums_counts` only iterates them, and the
-    # distributed driver serializes one per worker.
-    return [w:k:N for w in 1:k]
+@inline _outer_share(::Nothing, indices::AbstractRange, w::Integer, k::Integer) = indices[w:k:end]
+@inline function _outer_share(::Union{CellGrid, AbstractVector}, indices::AbstractRange, w::Integer, k::Integer)
+    n = length(indices)
+    return indices[(((w - 1) * n) ÷ k + 1):((w * n) ÷ k)]
 end
+
+"""The `max(1, k)` shares [`_outer_share`](@ref) cuts `indices` into."""
+_outer_shares(grid, indices::AbstractRange, k::Integer) = [_outer_share(grid, indices, w, max(1, k)) for w in 1:max(1, k)]
+
+"""The outer indices `1:n` a call sweeps over `grid`'s schedule: all of them, or with `share = (w, k)` share `w` of
+`k` ([`_outer_share`](@ref)), resolved against the grid the call itself built."""
+@inline _share_indices(grid, n::Int, ::Nothing) = 1:n
+@inline _share_indices(grid, n::Int, (w, k)::NTuple{2, Int}) = _outer_share(grid, 1:n, w, k)

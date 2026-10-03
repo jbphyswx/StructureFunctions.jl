@@ -5,7 +5,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 using StructureFunctions.StructureFunctionTypes: MixedSFType, ScalarSFType, VectorDotSFType, ScalarDotSFType,
     MixedStructureFunctionType
 using StaticArrays: StaticArrays as SA
-using LinearAlgebra: dot
+using LinearAlgebra: LinearAlgebra as LA
 using OhMyThreads: OhMyThreads
 using Distances: Distances as DI
 using KernelAbstractions: KernelAbstractions as KA
@@ -20,7 +20,7 @@ function _brute(op, x, vectors, scalars, bins)
     counts = zeros(Int, nb)
     for i in 1:(N - 1), j in (i + 1):N
         dx = SA.SVector{size(x, 1)}(x[:, j] - x[:, i])
-        r = sqrt(dot(dx, dx))
+        r = sqrt(LA.dot(dx, dx))
         b = searchsortedfirst(bins, r) - 1
         1 <= b <= nb || continue
         rh = dx / r
@@ -32,20 +32,25 @@ function _brute(op, x, vectors, scalars, bins)
     return sums, counts
 end
 
-_run(op, x, f, bins) = SFC.calculate_structure_function(
-    op, x, f, bins, UInt32, SF.StructureFunctionSumsAndCounts)
+_run(op, x, f, bins; kw...) = SFC.calculate_structure_function(
+    op, x, f, bins, UInt32, SF.StructureFunctionSumsAndCounts; kw...)
 
 Test.@testset "a field of one vector field is the array path" begin
-    # The adapter must be a no-op for what callers already pass: same kernel, same answer, bit for bit.
+    # Serially the adapter gives the array path's answer bit for bit; threaded, the tasks' summation order varies.
     Random.seed!(1200)
     x = rand(2, 80)
     u = randn(2, 80)
     bins = collect(range(0.0, 1.5; length = 7))   # spans the unit square diagonal
-    for op in (SFT.L2SFType(), SFT.T2SFType(), SFT.S2SFType(), SFT.L3SFType())
-        bare = SFC.calculate_structure_function(op, x, u, bins, UInt32, SF.StructureFunctionSumsAndCounts)
-        multi = _run(op, x, MF.Fields(vectors = (u,)), bins)
+    for op in (SFT.L2SFType(), SFT.T2SFType(), SFT.S2SFType(), SFT.L3SFType()),
+        backend in (CB.SerialBackend(), CB.ThreadedBackend())
+        bare = SFC.calculate_structure_function(op, x, u, bins, UInt32, SF.StructureFunctionSumsAndCounts; backend)
+        multi = _run(op, x, MF.Fields(vectors = (u,)), bins; backend)
         Test.@test multi.counts == bare.counts
-        Test.@test multi.sums == bare.sums          # identical, not merely close
+        if backend isa CB.SerialBackend
+            Test.@test multi.sums == bare.sums
+        else
+            Test.@test multi.sums ≈ bare.sums rtol = 1e-12
+        end
     end
     # and the packing itself copies nothing it need not
     Test.@test MF.packed(MF.Fields(vectors = (u,))) == u
@@ -108,14 +113,14 @@ Test.@testset "Yaglom's mixed moment matches brute force" begin
     bins = collect(range(0.0, 1.5; length = 7))   # spans the unit square diagonal
     f = MF.Fields(vectors = (u,), scalars = (th,))
     got = _run(SFT.MixedSFType{1, 0, 2}(), x, f, bins)
-    ref_s, ref_c = _brute((dv, ds, rh) -> dot(dv[1], rh) * ds[1]^2, x, (u,), (th,), bins)
+    ref_s, ref_c = _brute((dv, ds, rh) -> LA.dot(dv[1], rh) * ds[1]^2, x, (u,), (th,), bins)
     Test.@test got.counts == ref_c
     Test.@test isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)
 
     # and the first-order flux of the tracer itself
     got1 = _run(SFT.MixedSFType{1, 0, 1}(), x, f, bins)
     orient(rh) = rh[1] != 0 ? sign(rh[1]) : sign(rh[2])     # odd in θ: read along the first separating axis
-    ref1_s, _ = _brute((dv, ds, rh) -> orient(rh) * dot(dv[1], rh) * ds[1], x, (u,), (th,), bins)
+    ref1_s, _ = _brute((dv, ds, rh) -> orient(rh) * LA.dot(dv[1], rh) * ds[1], x, (u,), (th,), bins)
     Test.@test isapprox(got1.sums, ref1_s; rtol = 1e-10, atol = 1e-12)
 end
 
@@ -173,7 +178,7 @@ Test.@testset "odd scalar moments do not depend on how the points are ordered" b
             if metric isa DI.Euclidean
                 # the reading is the lexicographic one on the displacement, checked pair by pair
                 ref_s, ref_c = _brute((dv, ds, rh) -> (rh[1] != 0 ? sign(rh[1]) : sign(rh[2])) *
-                    (sf isa SFT.ScalarSFType ? ds[1]^3 : dot(dv[1], rh) * ds[1]), x, (u,), (th,), bins)
+                    (sf isa SFT.ScalarSFType ? ds[1]^3 : LA.dot(dv[1], rh) * ds[1]), x, (u,), (th,), bins)
                 Test.@test a.counts == ref_c
                 Test.@test isapprox(a.sums, ref_s; rtol = 1e-10, atol = 1e-12)
             end
@@ -194,7 +199,7 @@ Test.@testset "cross-field moments are what an advective structure function is" 
 
     fv = MF.Fields(vectors = (u, adv))
     got = _run(SFT.VectorDotSFType(1, 2), x, fv, bins)
-    ref_s, ref_c = _brute((dv, ds, rh) -> dot(dv[1], dv[2]), x, (u, adv), (), bins)
+    ref_s, ref_c = _brute((dv, ds, rh) -> LA.dot(dv[1], dv[2]), x, (u, adv), (), bins)
     Test.@test got.counts == ref_c
     Test.@test isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)
 
@@ -301,6 +306,56 @@ Test.@testset "the threaded backend gives the serial answer" begin
         Test.@test thr_c == ser_c
         Test.@test isapprox(thr_s, ser_s; rtol = 1e-10, atol = 1e-12)
         Test.@test sum(thr_c) == N * (N - 1) ÷ 2
+    end
+end
+
+Test.@testset "the device gives the serial answer, culled with or without a workspace, and adds" begin
+    Random.seed!(1950)
+    N = 700
+    x = rand(2, N)
+    f = MF.Fields(vectors = (randn(2, N), randn(2, N)), scalars = (randn(N), randn(N)))
+    w = 0.5 .+ rand(N)
+    bins = collect(range(0.0, 0.2; length = 7))
+    nb = length(bins) - 1
+    dev = CB.GPUBackend(KA.CPU())
+    RAW = SF.StructureFunctionSumsAndCounts
+    for op in (SFT.MixedSFType{1, 0, 2}(), SFT.MixedSFType{1, 2, 1}(), SFT.VectorDotSFType(1, 2),
+               SFT.ScalarDotSFType(1, 2), SFT.ScalarSFType{3}(2)), weighted in (false, true)
+        CT = weighted ? Float64 : Int
+        kw = weighted ? (; weights = w) : (;)
+        ref = SFC.calculate_structure_function(op, x, f, bins, CT, RAW; backend = CB.SerialBackend(), kw...)
+        case = (nameof(typeof(op)), weighted)
+        Test.@test sum(ref.counts) > 0
+        for pol in (SFC.NoCulling(), SFC.AlwaysCulling())
+            ws = SFC.GPUSFWorkspace(KA.CPU(), bins)
+            got = SFC.calculate_structure_function(op, x, f, bins, CT, RAW; backend = dev, workspace = ws,
+                                                   culling = pol, kw...)
+            Test.@test (case, pol, isapprox(got.counts, ref.counts; rtol = 1e-12)) == (case, pol, true)
+            Test.@test (case, pol, isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, pol, true)
+            Test.@test (case, pol, ws.lazy.cull isa SFC.GPUCullMemo) == (case, pol, pol isa SFC.AlwaysCulling)
+        end
+        got = SFC.calculate_structure_function(op, x, f, bins, CT, RAW; backend = dev, culling = SFC.AlwaysCulling(),
+                                               kw...)
+        Test.@test (case, isapprox(got.counts, ref.counts; rtol = 1e-12),
+                    isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true, true)
+        s, c = zeros(nb), zeros(CT, nb)
+        for _ in 1:2
+            SFC.calculate_structure_function!(s, c, op, x, f, bins; backend = dev, kw...)
+        end
+        Test.@test (case, isapprox(c, 2 .* ref.counts; rtol = 1e-12)) == (case, true)
+        Test.@test (case, isapprox(s, 2 .* ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true)
+    end
+    # on a sphere the vector fields are transported and the scalars are not
+    xs = vcat(reshape(2π .* rand(N), 1, N), reshape((rand(N) .- 0.5) .* 1.4, 1, N))
+    sbins = collect(range(0.0, 0.6; length = 6))
+    for op in (SFT.MixedSFType{1, 0, 2}(), SFT.VectorDotSFType(1, 2))
+        ref = SFC.calculate_structure_function(op, xs, f, sbins, Int, RAW; backend = CB.SerialBackend(),
+                                               distance_metric = DI.SphericalAngle())
+        got = SFC.calculate_structure_function(op, xs, f, sbins, Int, RAW; backend = dev,
+                                               distance_metric = DI.SphericalAngle())
+        Test.@test sum(ref.counts) > 0
+        Test.@test got.counts == ref.counts
+        Test.@test isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)
     end
 end
 

@@ -196,6 +196,105 @@ Test.@testset "lag sweep rejects mismatched shapes" begin
         s, c, SFT.L2SFType(), randn(T, 1, dims...), sched, bins, Val(1))
 end
 
+# The joint histogram by value, by brute force: each pair's value per equal-length image, a 1/M share of
+# the pair in the value bin of each image.
+function _brute_force_value_histogram(sf, u, dims::NTuple{Dg, Int}, spacing::NTuple{Dg, T},
+                                      periodic::NTuple{Dg, Bool}, bins, vbins) where {Dg, T}
+    plan = SFC.squared_digitize_plan(bins)
+    nb, nv = SFC.n_histogram_bins(plan), length(vbins) - 1
+    D = size(u, 1)
+    N = prod(dims)
+    uf = reshape(u, D, N)
+    ci = collect(CartesianIndices(dims))
+    sums, counts = zeros(nb, nv), zeros(nb, nv)
+    for k1 in 1:(N - 1), k2 in (k1 + 1):N
+        I1, I2 = ci[k1], ci[k2]
+        δ = ntuple(Val(Dg)) do d
+            m = I2[d] - I1[d]
+            if periodic[d]
+                m = mod(m, dims[d])
+                m > dims[d] ÷ 2 && (m -= dims[d])
+            end
+            T(m) * spacing[d]
+        end
+        dx = SA.SVector{D, T}(ntuple(d -> d <= Dg ? δ[d] : zero(T), Val(D)))
+        r2 = sum(abs2, dx)
+        b = SFC.squared_digitize(plan, r2)
+        1 <= b <= nb || continue
+        du = SA.SVector{D, T}(ntuple(c -> uf[c, k2] - uf[c, k1], Val(D)))
+        amb = [d for d in 1:Dg if periodic[d] && iseven(dims[d]) && abs(I2[d] - I1[d]) % dims[d] == dims[d] ÷ 2]
+        M = 1 << length(amb)
+        for m in 0:(M - 1)
+            dxm = SA.SVector{D, T}(ntuple(Val(D)) do d
+                j = findfirst(==(d), amb)
+                (j !== nothing && (m >> (j - 1)) & 1 == 1) ? -dx[d] : dx[d]
+            end)
+            val = sf(du, dxm / sqrt(r2))
+            vb = searchsortedfirst(vbins, val) - 1
+            1 <= vb <= nv || continue
+            sums[b, vb] += val / M
+            counts[b, vb] += 1 / M
+        end
+    end
+    return sums, counts
+end
+
+Test.@testset "the joint histogram by value equals the pair loop and the minimum-image brute force" begin
+    T = Float64
+    vax = SFC.InvariantValueAxis()
+    vbins = collect(range(-1.5, 1.5; length = 9))
+    dims, spacing = (9, 6), (0.1, 0.2)
+    N = prod(dims)
+    x = _grid_points(dims, spacing, (0.0, 0.0))
+    bins = _separated_bins(dims, spacing, 6)
+    nb = length(bins) - 1
+    sched = SFC.UniformLagSchedule(dims, spacing, (false, false))
+    Random.seed!(4700)
+    for sf in (SFT.L2SFType(), SFT.T2SFType(), SFT.S3SFType(), SFT.L3SFType()), variant in (:plain, :masked, :weighted)
+        u = randn(T, 2, dims...)
+        variant === :masked && (u[1, 3, 2] = NaN; u[2, 7, 5] = NaN)
+        w = variant === :weighted ? 0.5 .+ rand(N) : nothing
+        valid = SFC.field_validity(u)
+        keep = valid isa SFC.AllValid ? Colon() : findall(valid)
+        got_s, got_c = zeros(nb, 8), zeros(nb, 8)
+        SFC.gridded_lag_sweep!(got_s, got_c, sf, u, sched, bins, vbins, Val(2); valid, weights = w, second_axis = vax)
+        ref_s, ref_c = zeros(nb, 8), zeros(nb, 8)
+        SFC.calculate_structure_function!(ref_s, ref_c, sf, x[:, keep], reshape(u, 2, N)[:, keep], bins, vbins;
+                                         weights = w === nothing ? nothing : w[keep])
+        Test.@test sum(ref_c) > 0
+        Test.@test (nameof(typeof(sf)), variant, isapprox(got_c, ref_c; rtol = 1e-12)) == (nameof(typeof(sf)), variant, true)
+        Test.@test isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12)
+    end
+    # periodic directions of even length: the half-turn lags split each pair between their images
+    for (pdims, periodic) in (((6, 4), (true, true)), ((6, 5), (true, false)))
+        pspacing = (0.1, 0.12)
+        psched = SFC.UniformLagSchedule(pdims, pspacing, periodic)
+        pbins = collect(range(0.0, 0.45; length = 6)) .+ 0.0137
+        for sf in (SFT.L2SFType(), SFT.L3SFType())
+            u = randn(T, 2, pdims...)
+            got_s, got_c = zeros(5, 8), zeros(5, 8)
+            SFC.gridded_lag_sweep!(got_s, got_c, sf, u, psched, pbins, vbins, Val(2); second_axis = vax)
+            ref_s, ref_c = _brute_force_value_histogram(sf, u, pdims, pspacing, periodic, pbins, vbins)
+            Test.@test sum(ref_c) > 0
+            Test.@test isapprox(got_c, ref_c; rtol = 1e-12)
+            Test.@test isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12)
+        end
+        Test.@test_throws ArgumentError SFC.gridded_lag_sweep!(zeros(5, 8), zeros(Int, 5, 8), SFT.L2SFType(),
+                                                               randn(T, 2, pdims...), psched, pbins, vbins, Val(2);
+                                                               second_axis = vax)
+    end
+    # a batch is its slices
+    ub = randn(T, 2, dims..., 3)
+    bs, bc = zeros(nb, 8, 3), zeros(nb, 8, 3)
+    SFC.gridded_lag_sweep_batch!(bs, bc, SFT.S3SFType(), ub, sched, bins, vbins, Val(2); second_axis = vax)
+    for t in 1:3
+        ss, sc = zeros(nb, 8), zeros(nb, 8)
+        SFC.gridded_lag_sweep!(ss, sc, SFT.S3SFType(), ub[:, :, :, t], sched, bins, vbins, Val(2); second_axis = vax)
+        Test.@test bc[:, :, t] == sc
+        Test.@test isapprox(bs[:, :, t], ss; rtol = 1e-12, atol = 1e-14)
+    end
+end
+
 Test.@testset "a shell exactly on a bin edge falls in the bin below it" begin
     # Bins are half-open (e_i, e_{i+1}], and a uniform grid puts whole shells of pairs at exactly one
     # separation, so an edge placed on one decides a whole shell at once. Pinned because the sweep

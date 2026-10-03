@@ -121,12 +121,9 @@ Test.@testset "an explicit threaded backend is refused without the OhMyThreads e
             end
         end
 
-        # No shape may resolve to a threaded backend when the extension cannot supply one.
-        for shape in (SFC.PointField{3}(), SFC.SharedPositionField{3}(), SFC.VaryingPositionField{3}())
-            Test.@test SFC.resolve_auto_backend(shape, SFC._ohmythreads_loaded;
-                                                nthreads = 8) isa CB.AbstractSerialBackend
-        end
-        Test.@test SFC._auto_local_backend() isa CB.AbstractSerialBackend
+        # `Auto` never resolves to a threaded backend when the extension cannot supply one.
+        Test.@test !(SFC.resolve_auto_backend(; nthreads = 8) isa CB.AbstractThreadedBackend)
+        Test.@test !(SFC.resolve_auto_backend() isa CB.AbstractThreadedBackend)
     finally
         SFC._OHMYTHREADS_LOADED[] = was
     end

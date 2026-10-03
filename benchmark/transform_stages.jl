@@ -12,7 +12,8 @@
 #
 # Run: julia -t 8 --project=test benchmark/transform_stages.jl
 
-using Printf, Random
+using Printf: Printf
+using Random: Random
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT
 using SpectralBackends: SpectralBackends as SB
@@ -57,7 +58,7 @@ function profile_schedule(name, s, data, bins; failures)
 
     share = t_fwd / t_tr
 
-    @printf("%-28s forward %7.4f (%4.1f%%)  transform %7.4f  sweep %7.4f (%5.2f× the transform)  %s\n",
+    Printf.@printf("%-28s forward %7.4f (%4.1f%%)  transform %7.4f  sweep %7.4f (%5.2f× the transform)  %s\n",
         name, t_fwd, 100share, t_tr, t_sw, t_sw / t_tr, agree ? "agree" : "DISAGREE")
     return nothing
 end
@@ -69,15 +70,15 @@ function main()
 
     for n in (128, 256)
         s = SFC.UniformLagSchedule((n, n), (2π / n, 2π / n), (true, true))
-        u = reshape(randn(2, n, n), 2, :)
+        u = reshape(Random.randn(2, n, n), 2, :)
         bins = collect(range(0.0, 2.0; length = 33))
         profile_schedule("uniform $(n)² periodic", s, u, bins; failures)
     end
 
-    # a bounded grid pads, so `_embed` takes its other branch here
+    # a bounded grid pads, so the forward stage writes padding here
     let n = 128
         s = SFC.UniformLagSchedule((n, n), (1 / n, 1 / n), (false, false))
-        u = reshape(randn(2, n, n), 2, :)
+        u = reshape(Random.randn(2, n, n), 2, :)
         bins = collect(range(0.0, 0.5; length = 25))
         profile_schedule("uniform $(n)² bounded", s, u, bins; failures)
     end
@@ -86,7 +87,7 @@ function main()
     let (nlon, nlat) = (180, 90)
         lats = collect(range(-π / 2 + π / (2nlat), π / 2 - π / (2nlat); length = nlat))
         s = SFC.ZonalLagSchedule(lats, nlon, 2π / nlon, 1.0, true)
-        u = reshape(randn(2, nlon, nlat), 2, :)
+        u = reshape(Random.randn(2, nlon, nlat), 2, :)
         bins = collect(range(0.0, π; length = 25))
         profile_schedule("zonal $(nlon)×$(nlat)", s, u, bins; failures)
     end

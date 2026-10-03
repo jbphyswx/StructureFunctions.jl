@@ -154,6 +154,19 @@ struct MomentTensorOperator{P} <: AbstractPairwiseStructureFunctionType end
     "the moment tensor operator has no value on one pair; it names the whole increment moment tensor for the transform engine",
 ))
 
+"""
+    SinglePassInvariants()
+
+The request for the six single-pass invariants `(S2, L2, T2, S3, L3, L1T2)` of one vector field together,
+in that order: second- and third-order polynomials in the increment, none odd in a scalar. It has no
+single value on a pair.
+"""
+struct SinglePassInvariants <: AbstractPairwiseStructureFunctionType end
+
+(::SinglePassInvariants)(δu, r̂) = throw(ArgumentError(
+    "the single-pass request has no single value on one pair; it names the six invariants for the sweeps",
+))
+
 """Alias of [`FullVectorStructureFunctionType`](@ref)."""
 const FullVectorStructureFunction = FullVectorStructureFunctionType
 
@@ -662,6 +675,7 @@ order(::HelmholtzDecomposition2DType) = 2
 order(::ScalarStructureFunctionType{P}) where {P} = P
 order(::MixedStructureFunctionType{NL, NT, P}) where {NL, NT, P} = NL + NT + P
 order(::MomentTensorOperator{P}) where {P} = P
+order(::SinglePassInvariants) = 3
 order(::ScalarDotStructureFunctionType) = 2
 order(::VectorDotStructureFunctionType) = 2
 
@@ -710,6 +724,7 @@ tensor.
 @inline is_polynomial_operator(::ScalarDotStructureFunctionType) = true
 @inline is_polynomial_operator(::VectorDotStructureFunctionType) = true
 @inline is_polynomial_operator(::MomentTensorOperator) = true
+@inline is_polynomial_operator(::SinglePassInvariants) = true
 
 """
     SymmetricMoments{W, P}(data::SVector)
@@ -746,7 +761,7 @@ end
 # Storage position of a multi-index in any order: sort it, then rank the sorted tuple.
 @generated function symmetric_rank(::Val{W}, ::Val{P}, idx::NTuple{P, Int}) where {W, P}
     vars = [Symbol(:j, k) for k in 1:P]
-    ex = Expr[]
+    ex = Expr[Expr(:meta, :inline)]
     for k in 1:P
         push!(ex, :($(vars[k]) = idx[$k]))
     end
@@ -824,6 +839,7 @@ end
         body = :(for $(idx[k]) in 1:$W; $body; end)
     end
     return quote
+        $(Expr(:meta, :inline))
         acc = zero($T)
         @inbounds $body
         return acc
@@ -898,6 +914,7 @@ end
         end
     end
     return quote
+        $(Expr(:meta, :inline))
         _check_packed_width(M, Val($D), Val($V), Val($K))
         _require_vector_field(1, Val($V))
         $frame
@@ -925,6 +942,7 @@ end
     )))
     T = promote_type(TM, TR)
     return quote
+        $(Expr(:meta, :inline))
         _check_packed_width(M, Val($D), Val($V), Val($K))
         _require_vector_field(1, Val($V))
         return _norm2_pairs(M, (), Val($(NF ÷ 2)), 1, Val($D), Val($W), $T)
@@ -974,6 +992,7 @@ end
     T = promote_type(TM, TR)
     slots = vcat(fill(:rp, NL), fill(:es, P))
     return quote
+        $(Expr(:meta, :inline))
         _check_packed_width(M, Val($D), Val($V), Val($K))
         _require_vector_field(sf.vector_field, Val($V))
         _require_scalar_field(sf.scalar_field, Val($K))

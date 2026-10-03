@@ -32,14 +32,14 @@ function compare(name, sf, u, s, edges, D; valid = SFC.AllValid(), weights = not
     nb = length(edges) - 1
     CT = weights === nothing ? Int : Float64
     a, ca = zeros(nb), zeros(CT, nb)
-    b, cb = zeros(nb), zeros(CT, nb)
+    b, cb = CUDA.zeros(Float64, nb), CUDA.zeros(CT, nb)
     SFC.gridded_sweep!(a, ca, sf, u, s, edges, Val(D), FFT; valid, weights, backend = CPU)
     SFC.gridded_sweep!(b, cb, sf, u, s, edges, Val(D), FFT; valid, weights, backend = GPU)
     fill!(a, 0); fill!(ca, 0); fill!(b, 0); fill!(cb, 0)
     tc = @elapsed SFC.gridded_sweep!(a, ca, sf, u, s, edges, Val(D), FFT; valid, weights, backend = CPU)
     tg = @elapsed (SFC.gridded_sweep!(b, cb, sf, u, s, edges, Val(D), FFT; valid, weights, backend = GPU); CUDA.synchronize())
-    dc = maximum(abs.(ca .- cb)) / (CT <: Integer ? 1 : max(maximum(abs, ca), 1e-12))
-    ds = maximum(abs.(a .- b)) / max(maximum(abs, a), 1e-12)
+    dc = maximum(abs.(ca .- Array(cb))) / (CT <: Integer ? 1 : max(maximum(abs, ca), 1e-12))
+    ds = maximum(abs.(a .- Array(b))) / max(maximum(abs, a), 1e-12)
     Printf.@printf("| %s | %s | %.1e | %.1e | %.3f | %.3f |\n", name, nameof(typeof(sf)), dc, ds, tc, tg)
     (dc <= (CT <: Integer ? 0 : 1e-12) && ds <= 1e-10) || (failures[] += 1)
     return nothing
@@ -91,11 +91,11 @@ let n_lon = 720, n_lat = 360
     f = Fields(vectors = (u,), scalars = (randn(n_lon, n_lat),))
     nb = length(edges) - 1
     a, ca = zeros(nb), zeros(Int, nb)
-    b, cb = zeros(nb), zeros(Int, nb)
+    b, cb = CUDA.zeros(Float64, nb), CUDA.zeros(Int, nb)
     SFC.gridded_sweep!(a, ca, SFT.MixedSFType{1, 0, 2}(), f, s, edges, FFT; backend = CPU)
     SFC.gridded_sweep!(b, cb, SFT.MixedSFType{1, 0, 2}(), f, s, edges, FFT; backend = GPU)
-    dc = maximum(abs.(ca .- cb))
-    ds = maximum(abs.(a .- b)) / maximum(abs, a)
+    dc = maximum(abs.(ca .- Array(cb)))
+    ds = maximum(abs.(a .- Array(b))) / maximum(abs, a)
     Printf.@printf("| %s | %s | %d | %.1e | - | - |\n", "zonal 720×360 multi-field", "Mixed{1,0,2}", dc, ds)
     (dc == 0 && ds <= 1e-10) || (failures[] += 1)
 end
@@ -106,7 +106,7 @@ function compare_batch(name, sf, u, s, edges, D; valid = SFC.AllValid(), weights
     nt = size(u)[end]
     nb = length(edges) - 1
     CT = weights === nothing ? Int : Float64
-    ref, cref = zeros(nb, nt), zeros(CT, nb, nt)
+    ref, cref = CUDA.zeros(Float64, nb, nt), CUDA.zeros(CT, nb, nt)
     for t in 1:nt
         us = selectdim(u, ndims(u), t)
         vs = valid isa SFC.AllValid ? valid : view(valid, :, t)
@@ -114,7 +114,7 @@ function compare_batch(name, sf, u, s, edges, D; valid = SFC.AllValid(), weights
                            valid = vs, weights, backend = GPU)
     end
     a, ca = zeros(nb, nt), zeros(CT, nb, nt)
-    b, cb = zeros(nb, nt), zeros(CT, nb, nt)
+    b, cb = CUDA.zeros(Float64, nb, nt), CUDA.zeros(CT, nb, nt)
     SFC.gridded_sweep_batch!(a, ca, sf, u, s, edges, Val(D), FFT; valid, weights, backend = CPU)
     SFC.gridded_sweep_batch!(b, cb, sf, u, s, edges, Val(D), FFT; valid, weights, backend = GPU)
     # both entries accumulate, so every buffer is cleared before the timed pass
@@ -124,7 +124,7 @@ function compare_batch(name, sf, u, s, edges, D; valid = SFC.AllValid(), weights
                    CUDA.synchronize())
     # what the batch is worth on the device: the same slices through the single-slice entry, into
     # buffers of its own so the reference above stays one accumulation
-    l, cl = zeros(nb, nt), zeros(CT, nb, nt)
+    l, cl = CUDA.zeros(Float64, nb, nt), CUDA.zeros(CT, nb, nt)
     tl = @elapsed begin
         for t in 1:nt
             vs = valid isa SFC.AllValid ? valid : view(valid, :, t)
@@ -133,6 +133,7 @@ function compare_batch(name, sf, u, s, edges, D; valid = SFC.AllValid(), weights
         end
         CUDA.synchronize()
     end
+    ref, cref, b, cb = Array(ref), Array(cref), Array(b), Array(cb)
     scale = max(maximum(abs, ref), 1e-12)
     cscale = CT <: Integer ? 1 : max(maximum(abs, cref), 1e-12)
     dc = max(maximum(abs, cb .- cref), maximum(abs, ca .- cref)) / cscale
@@ -181,14 +182,14 @@ let N = 20_000
     for sf in (SFT.L2SFType(), SFT.S3SFType())
         host = map(providers) do tag
             a, ca = zeros(nb), zeros(nb)
-            b, cb = zeros(nb), zeros(nb)
+            b, cb = CUDA.zeros(Float64, nb), CUDA.zeros(Float64, nb)
             SFC.gridded_sweep!(a, ca, sf, u, s, edges, Val(2), tag; backend = CPU)
             SFC.gridded_sweep!(b, cb, sf, u, s, edges, Val(2), tag; backend = GPU)
             fill!(a, 0); fill!(ca, 0); fill!(b, 0); fill!(cb, 0)
             tc = @elapsed SFC.gridded_sweep!(a, ca, sf, u, s, edges, Val(2), tag; backend = CPU)
             tg = @elapsed (SFC.gridded_sweep!(b, cb, sf, u, s, edges, Val(2), tag; backend = GPU); CUDA.synchronize())
-            dc = maximum(abs.(ca .- cb)) / maximum(abs, ca)
-            ds = maximum(abs.(a .- b)) / maximum(abs, a)
+            dc = maximum(abs.(ca .- Array(cb))) / maximum(abs, ca)
+            ds = maximum(abs.(a .- Array(b))) / maximum(abs, a)
             Printf.@printf("| %s (%s) | %s | %.1e | %.1e | %.3f | %.3f |\n", "scattered 20k → 256×192 modes",
                            nameof(typeof(tag)), nameof(typeof(sf)), dc, ds, tc, tg)
             (dc <= 1e-10 && ds <= 1e-9) || (failures[] += 1)
@@ -210,9 +211,8 @@ let N = 3000
     function tensor_compare(name, P, x, u, edges; distance_metric = Distances.Euclidean())
         ref = SFC.calculate_structure_function_tensor(Val(P), x, u, edges, RAW; backend = CB.SerialBackend(),
                                                       distance_metric)
-        got = SFC.calculate_structure_function_tensor(Val(P), x, u, edges, RAW; backend = GPU,
-                                                      distance_metric)
-        CUDA.synchronize()
+        got = SF.to_host(SFC.calculate_structure_function_tensor(Val(P), x, u, edges, RAW; backend = GPU,
+                                                                 distance_metric))
         dc = maximum(abs.(Int.(ref.counts) .- Int.(got.counts)))
         ds = maximum(abs.(ref.sums .- got.sums)) / maximum(abs, ref.sums)
         Printf.@printf("| %s | tensor P=%d | %d | %.1e | - | - |\n", name, P, dc, ds)
@@ -239,11 +239,42 @@ let N = 3000
         tsums = zeros(ntuple(_ -> 2, P)..., length(gedges) - 1)
         tcounts = zeros(Int, length(gedges) - 1)
         SFC.gridded_tensor_sweep!(tsums, tcounts, Val(P), reshape(ug, 2, :), sched, gedges, Val(2), FFT; backend = CPU)
-        got = SFC.calculate_structure_function_tensor(Val(P), xg, reshape(ug, 2, :), gedges, RAW; backend = GPU)
-        CUDA.synchronize()
+        got = SF.to_host(SFC.calculate_structure_function_tensor(Val(P), xg, reshape(ug, 2, :), gedges, RAW;
+                                                                 backend = GPU))
         dc = maximum(abs.(tcounts .- Int.(got.counts)))
         ds = maximum(abs.(tsums .- got.sums)) / maximum(abs, tsums)
         Printf.@printf("| %s | transform vs gpu tensor P=%d | %d | %.1e | - | - |\n", "grid 64×48", P, dc, ds)
+        (dc == 0 && ds <= 1e-9) || (failures[] += 1)
+    end
+end
+
+# The grid tensor and the six single-pass invariants on the device, into device buffers, against the CPU engine:
+# the transform, and for the invariants the lag sweep too.
+Random.seed!(3)
+let dims = (128, 96)
+    s = SFC.UniformLagSchedule(dims, (1.0, 1.0), (true, false))
+    u = randn(2, dims...)
+    edges = collect(range(0.0, 40.0; length = 21)) .+ 1e-3
+    nb = length(edges) - 1
+    for P in (2, 3)
+        a, ca = zeros(ntuple(_ -> 2, P)..., nb), zeros(Int, nb)
+        SFC.gridded_tensor_sweep!(a, ca, Val(P), reshape(u, 2, :), s, edges, Val(2), FFT; backend = CPU)
+        b, cb = CUDA.zeros(Float64, ntuple(_ -> 2, P)..., nb), CUDA.zeros(Int, nb)
+        SFC.gridded_tensor_sweep!(b, cb, Val(P), reshape(u, 2, :), s, edges, Val(2), FFT; backend = GPU)
+        dc = maximum(abs.(ca .- Array(cb)))
+        ds = maximum(abs.(a .- Array(b))) / maximum(abs, a)
+        Printf.@printf("| %s | grid tensor P=%d | %d | %.1e | - | - |\n", "uniform 128×96", P, dc, ds)
+        (dc == 0 && ds <= 1e-9) || (failures[] += 1)
+    end
+    SP = SFT.SinglePassInvariants()
+    for (tname, tag) in (("transform", FFT), ("lag sweep", SB.DirectSumSpectralBackend()))
+        a, ca = zeros(6, nb), zeros(Int, 6, nb)
+        SFC.gridded_sweep!(a, ca, SP, u, s, edges, Val(2), tag; backend = CPU)
+        b, cb = CUDA.zeros(Float64, 6, nb), CUDA.zeros(Int, 6, nb)
+        SFC.gridded_sweep!(b, cb, SP, u, s, edges, Val(2), tag; backend = GPU)
+        dc = maximum(abs.(ca .- Array(cb)))
+        ds = maximum(abs.(a .- Array(b))) / maximum(abs, a)
+        Printf.@printf("| %s | single pass (%s) | %d | %.1e | - | - |\n", "uniform 128×96", tname, dc, ds)
         (dc == 0 && ds <= 1e-9) || (failures[] += 1)
     end
 end

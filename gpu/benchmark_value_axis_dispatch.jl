@@ -20,7 +20,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
-using Printf: @printf
+using Printf: Printf
 using Random: Random
 using StructureFunctions: StructureFunctions as SF
 using StructureFunctions.Calculations: Calculations as SFC
@@ -85,7 +85,7 @@ function main()
     println("=" ^ 72)
     println("Single-pass 2D value-axis dispatch benchmark (CUDA)")
     println("Device: ", CUDA.name(CUDA.device()))
-    @printf("N=%d  n_inner=%d  dtype=%s  warmup=%d  repeat=%d\n", N, n_inner, FT, warmup, repeat_)
+    @Printf.@printf("N=%d  n_inner=%d  dtype=%s  warmup=%d  repeat=%d\n", N, n_inner, FT, warmup, repeat_)
     println("=" ^ 72)
 
     Random.seed!(42)
@@ -111,7 +111,7 @@ function main()
         )
         t = _bench(run!, warmup, repeat_)
         pairs = N * (N - 1) ÷ 2
-        @printf(
+        @Printf.@printf(
             "%-18s  plan=%-24s  %.3f ms  (%.2e pairs/s)\n",
             name,
             typeof(plan),

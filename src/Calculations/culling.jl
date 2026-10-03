@@ -315,11 +315,12 @@ function cull_grid_for(
     cutoff === nothing && return nothing
     span = SF_CULL_CELLS_PER_CUTOFF
     inv_h = inv(FT(cutoff) / span)
-    xg = _cull_grid_coordinates(xc)
-    dims = _cull_dims(xg, inv_h)
+    lo, hi = map(minimum, xc), map(maximum, xc)
+    axes = _cull_grid_axes(map(-, hi, lo))
+    dims = _cull_dims(map(a -> lo[a], axes), map(a -> hi[a], axes), inv_h)
     dims === nothing && return _cull_grid_too_fine(policy)
     _cull_is_worthwhile(policy, dims, span) || return nothing
-    return build_cell_grid(xg, cutoff, span)
+    return build_cell_grid(map(a -> xc[a], axes), cutoff, span)
 end
 
 """
@@ -329,19 +330,20 @@ its coordinates, so a grid over some of them culls exactly, and over three its s
 """
 const SF_CULL_GRID_DIMS = 3
 
-"""The coordinates of `xc` a cull grid is built over: all of them, or the `SF_CULL_GRID_DIMS` widest."""
-@inline _cull_grid_coordinates(xc::NTuple{D}) where {D} =
-    D <= SF_CULL_GRID_DIMS ? xc : _widest_coordinates(xc, Val(SF_CULL_GRID_DIMS))
+"""Indices of the coordinates a cull grid is built over, from each coordinate's extent `ext`: all of
+them, or the `SF_CULL_GRID_DIMS` widest."""
+@inline _cull_grid_axes(ext::NTuple{D}) where {D} =
+    D <= SF_CULL_GRID_DIMS ? ntuple(identity, Val(D)) : _widest_axes(ext, Val(SF_CULL_GRID_DIMS))
 
-function _widest_coordinates(xc::NTuple{D}, ::Val{K}) where {D, K}
-    order = sortperm([maximum(xc[d]) - minimum(xc[d]) for d in 1:D]; rev = true)
-    return ntuple(k -> xc[order[k]], Val(K))
+function _widest_axes(ext::NTuple{D}, ::Val{K}) where {D, K}
+    order = sortperm(collect(ext); rev = true)
+    return ntuple(k -> order[k], Val(K))
 end
 
-"""Cells per coordinate over the bounding box of `xc` at `inv_h` cells per unit, or `nothing` when
+"""Cells per coordinate over the box from `lo` to `hi` at `inv_h` cells per unit, or `nothing` when
 their product does not fit an `Int`."""
-function _cull_dims(xc::NTuple{D, <:AbstractVector}, inv_h) where {D}
-    ext = ntuple(d -> (maximum(xc[d]) - minimum(xc[d])) * inv_h, Val(D))
+function _cull_dims(lo::NTuple{D}, hi::NTuple{D}, inv_h) where {D}
+    ext = ntuple(d -> (hi[d] - lo[d]) * inv_h, Val(D))
     all(e -> e < typemax(Int) ÷ 2, ext) || return nothing
     dims = ntuple(d -> max(1, floor(Int, ext[d]) + 1), Val(D))
     n = 1
@@ -362,7 +364,6 @@ _cull_grid_too_fine(::AlwaysCulling) = throw(ArgumentError(
     cull_multi_index(dims, c)
 
 1-based cell multi-index of linear cell id `c`, the inverse of [`cull_linear_index`](@ref).
-Host-side: called once per cell when the work list is built, never per pair.
 """
 @inline function cull_multi_index(dims::NTuple{D, Int}, c::Integer) where {D}
     r = c - 1

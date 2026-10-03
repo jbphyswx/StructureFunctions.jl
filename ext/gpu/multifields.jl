@@ -1,34 +1,5 @@
-# Multi-field (`Fields`) sweeps on a device.
-#
-# The multi-field is already one packed `(V*F + K, N)` array, which is exactly what the scalar kernels
-# stage, so the only new thing here is building the per-pair `FieldIncrement` the operator reads.
-# One thread owns an `i` and walks every `j > i`, accumulating into a global histogram.
-
-KA.@kernel unsafe_indices = true function _field_kernel!(
-    sums, counts, @Const(x_mat), @Const(data), wts, sf, geom, plan,
-    N_points::Int, N_bins::Int, ::Val{W}, ::Val{F}, ::Val{V}, ::Val{K},
-) where {W, F, V, K}
-    i = @index(Global)
-    if i <= N_points - 1
-        XT = eltype(x_mat)
-        CT = eltype(counts)
-        X1 = SA.SVector{W, XT}(ntuple(d -> @inbounds(x_mat[d, i]), Val(W)))
-        wi = SFC._point_weight(wts, i)
-        for j in (i + 1):N_points
-            X2 = SA.SVector{W, XT}(ntuple(d -> @inbounds(x_mat[d, j]), Val(W)))
-            ok, r, frame = SFH.pair_frame(geom, X1, X2)
-            if ok
-                bin = SFC.squared_digitize(plan, r * r)
-                if 1 <= bin <= N_bins
-                    val = SFC._field_value(sf, Val(F), Val(V), Val(K), data, geom, frame, r, i, j)
-                    w = wi * SFC._point_weight(wts, j)
-                    @atomic sums[bin] += w * val
-                    @atomic counts[bin] += CT(w)
-                end
-            end
-        end
-    end
-end
+# Multi-field (`Fields`) sweeps on a device: the tiled pair families with the operator's value over the
+# packed column as the moment set, the packed field staged as the point's field column.
 
 function SFC.gpu_calculate_structure_function_fields!(
     backend::CB.AbstractGPUBackend,
@@ -36,37 +7,26 @@ function SFC.gpu_calculate_structure_function_fields!(
     sf::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractMatrix, f::SFC.MF.Fields{D, V, K}, distance_bins;
     distance_metric::DI.PreMetric = DI.Euclidean(),
-    culling = SFC.AutoCulling(),
+    culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
+    workspace = nothing,
 ) where {D, V, K}
-    # Culling reorders the points on the host; the device sweep enumerates the full triangle, and
-    # a permutation does not change a histogram, so the request is honoured by declining to permute.
-    geom, xk, data, vF, plan, _, wk = SFC.field_setup(f, x, distance_bins, distance_metric,
-                                                      SFC.NoCulling(), weights)
-    culling isa SFC.AlwaysCulling && throw(ArgumentError(
-        "GPU multi-field sweeps do not build a cell grid on device; use AutoCulling (which " *
-        "declines here) or a CPU backend to cull.",
-    ))
-
     ka = backend.backend
-    N = size(data, 2)
-    W = SFC._val_int(SFH.coordinate_width(geom))
-    F = SFC._val_int(vF)
-    nb = SFC.n_histogram_bins(plan)
-
-    x_dev = KA.adapt(ka, Array(xk))
-    d_dev = KA.adapt(ka, Array(data))
-    s_dev = KA.adapt(ka, zeros(eltype(sums), nb))
-    c_dev = KA.adapt(ka, zeros(eltype(counts), nb))
-
-    # The digitize plan carries its squared edges in a vector, so it reaches the kernel through
-    # `adapt` like every other array argument; passed as built it is a host pointer on the device.
-    kernel = _field_kernel!(ka, 256)
-    kernel(s_dev, c_dev, x_dev, d_dev, _sf_weights_to_device(ka, wk), sf, geom,
-           KA.adapt(ka, plan), N, nb, Val(W), Val(F), Val(V), Val(K); ndrange = N)
-    KA.synchronize(ka)
-
-    sums .+= Array(s_dev)
-    counts .+= Array(c_dev)
+    NB = SFC.n_histogram_bins(distance_bins)
+    _check_gpu_outputs(sums, counts, ka, (NB,))
+    geom = SFC._field_geometry(distance_metric, Val(D), Val(V), x)
+    if SFC._on_a_line(geom, sf)
+        sums_dev, counts_dev, direct = _accumulation_buffers(ka, eltype(sums), eltype(counts), (NB,), sums, counts)
+        _gpu_sorted_line!(sums_dev, counts_dev, ka, sf, SFC._line_coordinates(x), SFC.MF.packed(f), distance_bins,
+                          Val(D), Val(V), Val(K), weights)
+        _add_accumulated!(sums, counts, sums_dev, counts_dev, direct)
+        return nothing
+    end
+    xk, data, vF = SFC._kernel_fields(f, geom, x)
+    moments = FieldValue(sf, vF, Val(V), Val(K))
+    sums_dev, counts_dev, direct = _gpu_1d_unified_device(
+        ka, xk, reshape(data, size(data, 1), size(data, 2), 1), moments, distance_bins, NB, 1, true,
+        eltype(sums), eltype(counts), geom; weights, workspace, culling, source = x, sums, counts)
+    _add_accumulated!(sums, counts, sums_dev, counts_dev, direct)
     return nothing
 end

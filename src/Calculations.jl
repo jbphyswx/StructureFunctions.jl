@@ -15,7 +15,8 @@ using ..StructureFunctions: AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEd
     AbstractTaper, NoTaper, Bartlett, GaussianTaper, taper_weight, harmonic_taper, mode_taper, HarmonicNodes,
     gauss_legendre,
     AbstractSquaredDigitizePlan, squared_digitize_plan, squared_digitize, digitize_plan,
-    squared_approx_index, squared_bin, has_vector_index, digitize_key
+    squared_approx_index, squared_bin, squared_bin_select, squared_in_range, has_vector_index, digitize_key,
+    vector_digitize, has_vector_digitize
 
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
@@ -40,7 +41,7 @@ export calculate_structure_function,
     marginalize_sp2d_then_append_helmholtz_rows,
     calculate_structure_function_tensor, calculate_structure_function_tensor!,
     calculate_structure_function!,
-    GPUSFWorkspace, CPUSFWorkspace, reset_histogram!, refresh!, release!,
+    GPUSFWorkspace, CPUSFWorkspace, TransformWorkspace, reset_histogram!, refresh!, release!,
     joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256,
     isotropic_spectrum, shell_spectrum, gridded_spectrum, shell_average, cell_measure,
     ScatteredModesSchedule, NonuniformFFTsSpectralBackend, FINUFFTSpectralBackend, nufft_half_support,
@@ -77,6 +78,7 @@ include("Calculations/transforms.jl")
 include("Calculations/fits.jl")
 include("Calculations/batch_api.jl")
 include("Calculations/gpu_stubs.jl")
+include("Calculations/moment_sets.jl")
 include("Calculations/batch_leading.jl")
 include("Calculations/workspace.jl")
 include("Calculations/batch.jl")

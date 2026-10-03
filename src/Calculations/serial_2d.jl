@@ -42,50 +42,57 @@ function serial_calculate_structure_function!(
     end
 
     _require_value_axis(second_axis, geometry)
-    N = length(x_vecs[1])
     _pf_2d_scalar_run!(sums_2d, counts_2d, geometry, structure_function_type, distance_bins, val_be, second_axis,
-                       1:(N - 1), _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling))
+                       nothing, _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling))
     return nothing
 end
 
 """
-    _pf_2d_scalar_run!(sums, counts, geometry, sf, distance_bins, val_be, second_axis, ilist,
+    _pf_2d_scalar_run!(sums, counts, geometry, sf, distance_bins, val_be, second_axis, share,
                        (grid, x_vecs, u_vecs, weights))
 
-Run [`_pf_2d_scalar_pairs!`](@ref) over the outer indices `ilist` of a [`_cull_sorted`](@ref) result.
+Run [`_pf_2d_scalar_pairs!`](@ref) over the outer indices `share` selects ([`_share_indices`](@ref)) of a
+[`_cull_sorted`](@ref) result.
 """
-function _pf_2d_scalar_run!(sums, counts, geometry, sf, distance_bins, val_be, second_axis, ilist,
+function _pf_2d_scalar_run!(sums, counts, geometry, sf, distance_bins, val_be, second_axis, share,
                             (grid, xc, uc, wc))
+    N = length(xc[1])
     _pf_2d_scalar_pairs!(sums, counts, geometry, sf, xc, uc, digitize_plan(distance_bins), val_be,
-                         pair_blocks(length(xc[1]), ilist; grid), wc, second_axis)
+                         pair_blocks(N, _share_indices(grid, N - 1, share); grid), wc, second_axis)
     return nothing
 end
 
 """
-    _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf,
-                       idxbuf, window, blocks)
+    _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf, colbuf,
+                       sel, window, blocks, second_axis, axbuf, weights)
 
-2D-joint point-field SIMD compute/scatter kernel over the pairs `blocks` covers: `@simd` over each
-`j` block computes distance + SF value into buffers indexed by `window` (no scatter ⇒ vectorizes),
-then a scalar loop digitizes both axes and scatters into the (dist, second-axis) cell. What the
-second axis bins is `second_axis`; binning the operator's own value reads the buffer the kernel
-already filled, so it costs no extra store. Takes `(i-block, j-block)` pairs (see
-[`block_pairs`](@ref)), so it gets cache blocking and culling; the loop lives in this one kernel so
-the `@simd` vectorizes. Shared by serial + threaded.
+2D-joint point-field SIMD compute/scatter kernel over the pairs `blocks` covers, into `sums2d`/`counts2d` of
+shape `(n_dist, n_val + 2)`: value column `c + 1` holds value bin `c`, and the first and last columns the
+values below and above the value edges. `@simd` over each `j` block computes the distance key and the SF
+value into buffers indexed by `window`, and the value column into `colbuf` where [`has_vector_digitize`](@ref)
+holds for the value edges and the schedule is culled or the run before had more than 1/8 of its sampled pairs
+in range ([`_sparse`](@ref)); a scalar loop then scatters the in-range pairs as [`_pf_simd_pairs!`](@ref) does,
+forming the value column itself when the vectorized half did not. What the second axis bins is `second_axis`; binning the operator's own value reads
+the buffer the kernel already filled. Takes `(i-block, j-block)` pairs (see [`block_pairs`](@ref)), so it gets
+cache blocking and culling; the loop lives in this one kernel so the `@simd` vectorizes. Shared by serial +
+threaded.
 """
 function _pf_2d_simd_pairs!(
     sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, val_be, ::Val{D},
     keybuf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32},
-    window::PairWindow, blocks,
+    colbuf::AbstractVector{Int32}, sel::AbstractVector{Int32}, window::PairWindow, blocks,
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
     axbuf::AbstractVector = valbuf,
     weights = NoWeights(),
 ) where {OT, CT, D}
     n_dist = n_histogram_bins(plan)
     n_val = n_histogram_bins(val_be)
+    vector_columns = has_vector_digitize(val_be, OT)
+    chooses = _chooses_compaction(blocks)
     FTx = eltype(xc[1])
+    s_in, s_n = 0, 0
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
         _check_run_fits(window, valbuf, jr)
@@ -96,32 +103,88 @@ function _pf_2d_simd_pairs!(
             wi = _point_weight(weights, i)
             Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
             Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
-            @simd for j in jlo:j_last
-                dx = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D))) - Xi
-                r2 = SFH.norm2(dx)
-                Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
-                keybuf[j - o] = digitize_key(plan, r2)
-                valbuf[j - o] = SFT.flat_pair_value(sf, Uj - Ui, dx, r2)
-                if has_vector_index(plan)
-                    idxbuf[j - o] = squared_approx_index(plan, r2)
+            columns = vector_columns && (!chooses || !_sparse(s_in, s_n))
+            if columns
+                @simd for j in jlo:j_last
+                    dx = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D))) - Xi
+                    r2 = SFH.norm2(dx)
+                    Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
+                    keybuf[j - o] = digitize_key(plan, r2)
+                    v = OT(SFT.flat_pair_value(sf, Uj - Ui, dx, r2))
+                    valbuf[j - o] = v
+                    if has_vector_index(plan)
+                        idxbuf[j - o] = squared_approx_index(plan, r2)
+                    end
+                    q = needs_axis_buffer(second_axis) ? OT(axis_quantity(second_axis, dx, r2)) : v
+                    if needs_axis_buffer(second_axis)
+                        axbuf[j - o] = q
+                    end
+                    colbuf[j - o] = _vector_value_column(val_be, q, n_val)
                 end
-                if needs_axis_buffer(second_axis)   # constant-folded on the operator-value axis
-                    axbuf[j - o] = axis_quantity(second_axis, dx, r2)
+            else
+                @simd for j in jlo:j_last
+                    dx = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D))) - Xi
+                    r2 = SFH.norm2(dx)
+                    Uj = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D)))
+                    keybuf[j - o] = digitize_key(plan, r2)
+                    valbuf[j - o] = SFT.flat_pair_value(sf, Uj - Ui, dx, r2)
+                    if has_vector_index(plan)
+                        idxbuf[j - o] = squared_approx_index(plan, r2)
+                    end
+                    if needs_axis_buffer(second_axis)   # constant-folded on the operator-value axis
+                        axbuf[j - o] = axis_quantity(second_axis, dx, r2)
+                    end
                 end
             end
-            for k in (jlo - o):(j_last - o)
-                dbin = squared_bin(plan, keybuf[k], idxbuf[k])
-                if 1 <= dbin <= n_dist
-                    vbin = SFH.digitize(axis_key(second_axis, valbuf, axbuf, k), val_be)
-                    if 1 <= vbin <= n_val
-                        w = wi * _point_weight(weights, k + o)
-                        sums2d[dbin, vbin] += w * valbuf[k]
-                        counts2d[dbin, vbin] += CT(w)
+            ks = (jlo - o):(j_last - o)
+            s_in, s_n = _sample_in_range(plan, keybuf, ks)
+            compact = chooses && _compacts(s_in, s_n)
+            if columns && compact
+                for m in 1:_compact_in_range!(sel, plan, keybuf, ks)
+                    k = Int(sel[m])
+                    _joint_accumulate!(sums2d, counts2d, valbuf, weights, wi, o, k,
+                                       squared_bin_select(plan, keybuf[k], idxbuf[k]), Int(colbuf[k]))
+                end
+            elseif columns
+                for k in ks
+                    db = chooses ? squared_bin_select(plan, keybuf[k], idxbuf[k]) : squared_bin(plan, keybuf[k], idxbuf[k])
+                    if 1 <= db <= n_dist
+                        _joint_accumulate!(sums2d, counts2d, valbuf, weights, wi, o, k, db, Int(colbuf[k]))
+                    end
+                end
+            elseif compact
+                for m in 1:_compact_in_range!(sel, plan, keybuf, ks)
+                    k = Int(sel[m])
+                    _joint_accumulate!(sums2d, counts2d, valbuf, weights, wi, o, k,
+                                       squared_bin_select(plan, keybuf[k], idxbuf[k]),
+                                       _value_column(val_be, axis_key(second_axis, valbuf, axbuf, k), n_val))
+                end
+            else
+                for k in ks
+                    db = chooses ? squared_bin_select(plan, keybuf[k], idxbuf[k]) : squared_bin(plan, keybuf[k], idxbuf[k])
+                    if 1 <= db <= n_dist
+                        _joint_accumulate!(sums2d, counts2d, valbuf, weights, wi, o, k, db,
+                                           _value_column(val_be, axis_key(second_axis, valbuf, axbuf, k), n_val))
                     end
                 end
             end
         end
     end
+    return nothing
+end
+
+"""The padded value column of `q`: its bin `digitize(q, val_be)` plus one, the first and last columns taking
+the values below and above the edges."""
+@inline _value_column(val_be, q, n_val) = clamp(SFH.digitize(q, val_be), 0, n_val + 1) + 1
+@inline _vector_value_column(val_be, q, n_val) =
+    clamp(vector_digitize(val_be, q), Int32(0), Int32(n_val + 1)) + Int32(1)
+
+"""Add slot `k`'s buffered value into cell `(db, c)` of `sums2d`/`counts2d`, weighted by the outer point's weight
+`wi` times that of point `k + o`."""
+@inline function _joint_accumulate!(sums2d, counts2d::AbstractMatrix{CT}, valbuf, weights, wi, o, k, db, c) where {CT}
+    w = wi * _point_weight(weights, k + o)
+    @inbounds sums2d[db, c] += w * valbuf[k]
+    @inbounds counts2d[db, c] += CT(w)
     return nothing
 end
 
@@ -132,18 +195,19 @@ end
 concretely typed schedule.
 """
 @inline _pf_2d_run_blocks!(
-    sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf,
+    sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf, colbuf, sel,
     ilist, N, ::Nothing, second_axis = InvariantValueAxis(), axbuf = valbuf,
     weights = NoWeights(),
 ) where {D} = _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D),
-    keybuf, valbuf, idxbuf, _pair_window(N), pair_blocks(N, ilist), second_axis, axbuf, weights)
+    keybuf, valbuf, idxbuf, colbuf, sel, _pair_window(N), pair_blocks(N, ilist), second_axis, axbuf, weights)
 
 @inline _pf_2d_run_blocks!(
-    sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf,
+    sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf, colbuf, sel,
     ilist, N, grid::CellGrid, second_axis = InvariantValueAxis(), axbuf = valbuf,
     weights = NoWeights(),
 ) where {D} = _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D),
-    keybuf, valbuf, idxbuf, _pair_window(N), pair_blocks(N, ilist; grid = grid), second_axis, axbuf, weights)
+    keybuf, valbuf, idxbuf, colbuf, sel, _pair_window(N), pair_blocks(N, ilist; grid = grid), second_axis, axbuf,
+    weights)
 
 function _pf_2d_simd_run!(
     sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
@@ -153,22 +217,21 @@ function _pf_2d_simd_run!(
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {OT, CT, D}
-    N = length(x_vecs[1])
     return _pf_2d_simd_partial!(sums2d, counts2d, sf, x_vecs, u_vecs, dist_be, val_be, Val(D),
-                                1:(N - 1), culling; second_axis, weights)
+                                nothing, culling; second_axis, weights)
 end
 
 """
-    _pf_2d_simd_partial!(sums2d, counts2d, sf, x_vecs, u_vecs, dist_be, val_be, ::Val{D}, ilist)
+    _pf_2d_simd_partial!(sums2d, counts2d, sf, x_vecs, u_vecs, dist_be, val_be, ::Val{D}, share)
 
-Run [`_pf_2d_simd_pairs!`](@ref) over an explicit outer-index list, materializing the contiguous
-component vectors and scratch buffers this worker needs. Shared by the serial, distributed and MPI
-drivers, whose inputs arrive as strided views.
+Run [`_pf_2d_simd_pairs!`](@ref) over the outer indices `share` selects ([`_share_indices`](@ref)), materializing
+the contiguous component vectors, scratch buffers and padded accumulator this call needs, and add the accumulator's
+value bins into `sums2d`/`counts2d`; the inputs may arrive as strided views.
 """
 function _pf_2d_simd_partial!(
     sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
-    x_vecs::Tuple, u_vecs::Tuple, dist_be, val_be, ::Val{D}, ilist,
+    x_vecs::Tuple, u_vecs::Tuple, dist_be, val_be, ::Val{D}, share,
     culling::CullingPolicy = AutoCulling();
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
     weights = NoWeights(),
@@ -180,24 +243,30 @@ function _pf_2d_simd_partial!(
     keybuf = Vector{eltype(x_raw[1])}(undef, L)
     valbuf = Vector{OT}(undef, L)
     idxbuf = Vector{Int32}(undef, L)
+    colbuf = Vector{Int32}(undef, L)
+    sel = Vector{Int32}(undef, L)
     axbuf = needs_axis_buffer(second_axis) ? Vector{OT}(undef, L) : valbuf
+    nd, nv = size(sums2d)
+    sp, cp = zeros(OT, nd, nv + 2), zeros(CT, nd, nv + 2)
     plan = squared_digitize_plan(dist_be)
     grid = culling isa NoCulling ? nothing :
            cull_grid_for(x_raw, SFH.FlatGeometry{D}(), dist_be, culling)
     xc, uc = isnothing(grid) ? (x_raw, u_raw) :
              (apply_perm(x_raw, grid.perm), apply_perm(u_raw, grid.perm))
     wc = (weights isa NoWeights || isnothing(grid)) ? weights : weights[grid.perm]
-    _pf_2d_run_blocks!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D),
-        keybuf, valbuf, idxbuf, ilist, N, grid, second_axis, axbuf, wc)
+    _pf_2d_run_blocks!(sp, cp, sf, xc, uc, plan, val_be, Val(D),
+        keybuf, valbuf, idxbuf, colbuf, sel, _share_indices(grid, N - 1, share), N, grid, second_axis, axbuf, wc)
+    sums2d .+= view(sp, :, 2:(nv + 1))
+    counts2d .+= view(cp, :, 2:(nv + 1))
     return nothing
 end
 
 """
-    _partial_2d_sums_counts(inner, sf_type, x_vecs, u_vecs, distance_bins, value_bins, ilist, CT; kwargs...)
+    _partial_2d_sums_counts(inner, sf_type, x_vecs, u_vecs, distance_bins, value_bins, share, CT; kwargs...)
 
-Partial 2D-joint sums/counts over an explicit outer-index list `ilist`, the 2D analogue of
-[`_partial_sums_counts`](@ref). Euclidean `D ∈ {2,3}` takes the SIMD compute/scatter kernel; other
-metrics fall back to the scalar per-`i` kernel. Returns `(sums, counts)`.
+Partial 2D-joint sums/counts over share `share = (w, k)` of the outer indices, the 2D analogue of
+[`_partial_sums_counts`](@ref): serially here, threaded by the OhMyThreads extension. Euclidean `D ∈ {2,3}` takes
+the SIMD compute/scatter kernel; other metrics the scalar kernel. Returns `(sums, counts)`.
 """
 function _partial_2d_sums_counts(
     ::CB.AbstractExecutionBackend,
@@ -206,7 +275,7 @@ function _partial_2d_sums_counts(
     u_vecs::Tuple,
     distance_bins::AbstractVector,
     value_bins::AbstractVector,
-    ilist,
+    share::NTuple{2, Int},
     ::Type{CT};
     geometry = SFH.FlatGeometry{length(u_vecs)}(),
     culling::CullingPolicy = AutoCulling(),
@@ -224,12 +293,12 @@ function _partial_2d_sums_counts(
     if geometry isa SFH.FlatGeometry && (D == 2 || D == 3)
         vD = D == 2 ? Val(2) : Val(3)
         _pf_2d_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, distance_bins, val_be,
-                             vD, ilist, culling; weights = weights, second_axis = second_axis)
+                             vD, share, culling; weights = weights, second_axis = second_axis)
         return sums, counts
     end
 
     _require_value_axis(second_axis, geometry)
-    _pf_2d_scalar_run!(sums, counts, geometry, structure_function_type, distance_bins, val_be, second_axis, ilist,
+    _pf_2d_scalar_run!(sums, counts, geometry, structure_function_type, distance_bins, val_be, second_axis, share,
                        _cull_sorted(x_vecs, u_vecs, weights, geometry, distance_bins, culling))
     return sums, counts
 end

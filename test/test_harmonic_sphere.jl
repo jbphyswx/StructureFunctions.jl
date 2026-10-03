@@ -11,7 +11,7 @@ using NonuniformFFTs: NonuniformFFTs
 using FlowGeometries: FlowGeometries as FG
 using Distances: Distances as DI
 using StaticArrays: StaticArrays as SA
-using LinearAlgebra: dot, cross
+using LinearAlgebra: LinearAlgebra as LA
 using Random: Random
 
 const DS = SB.DirectSumSpectralBackend()
@@ -35,7 +35,7 @@ end
 # 0.6(3z² − 1)/2, and its curl p̂ × ∇Φ, in (east, north) components; and a scalar of degree 2.
 function _field_at(p::SA.SVector{3})
     grad = SA.SVector(0.7p[2] + 0.3p[3] + 0.5, 0.7p[1], 0.3p[1] + 1.8p[3])
-    return grad - dot(grad, p) * p
+    return grad - LA.dot(grad, p) * p
 end
 _scalar_at(p::SA.SVector{3}) = 0.9p[1] * p[2] - 0.4p[3] + 0.5 * (3p[3]^2 - 1) / 2
 _east(lon, lat) = SA.SVector(-sin(lon), cos(lon), 0.0)
@@ -63,9 +63,9 @@ function _gl_grid(nlat, nlon)
         p = _position(lon, lat)
         t = _field_at(p)
         E, Nn = _east(lon, lat), _north(lon, lat)
-        ug[1, k], ug[2, k] = dot(t, E), dot(t, Nn)
-        c = cross(p, t)
-        uc[1, k], uc[2, k] = dot(c, E), dot(c, Nn)
+        ug[1, k], ug[2, k] = LA.dot(t, E), LA.dot(t, Nn)
+        c = LA.cross(p, t)
+        uc[1, k], uc[2, k] = LA.dot(c, E), LA.dot(c, Nn)
         Φ[k] = _scalar_at(p)
     end
     return x, w, ug, uc, Φ
@@ -83,7 +83,7 @@ function _fibonacci(N)
         x[1, i], x[2, i] = lon, lat
         p = _position(lon, lat)
         t = _field_at(p)
-        u[1, i], u[2, i] = dot(t, _east(lon, lat)), dot(t, _north(lon, lat))
+        u[1, i], u[2, i] = LA.dot(t, _east(lon, lat)), LA.dot(t, _north(lon, lat))
         Φ[i] = _scalar_at(p)
     end
     return x, u, Φ
@@ -107,14 +107,14 @@ function _rotation_average(sf, β; nlat = 40, nlon = 81, nα = 64, field = _fiel
         tA = cos(α) * θ̂ + sin(α) * φ̂                   # geodesic tangent at p, toward q
         q = cos(β) * p + sin(β) * tA
         tB = -sin(β) * p + cos(β) * tA                    # the geodesic's tangent at q, continuing
-        m̂ = cross(p, tA)
+        m̂ = LA.cross(p, tA)
         w = wμ[j]
         if scalar
             inc = SF.MultiFields.FieldIncrement{0, 0, 1, Float64}((), (_scalar_at(q) - _scalar_at(p),))
             acc += w * sf(inc, SA.SVector(1.0, 0.0))
         else
             uA, uB = field(p), field(q)
-            δu = SA.SVector(dot(uB, tB) - dot(uA, tA), dot(uB - uA, m̂))
+            δu = SA.SVector(LA.dot(uB, tB) - LA.dot(uA, tA), LA.dot(uB - uA, m̂))
             acc += w * sf(δu, SA.SVector(1.0, 0.0))
         end
         total += w
@@ -135,9 +135,9 @@ function _rotation_average(sf::SFT.MixedStructureFunctionType, β; nlat = 40, nl
         tA = cos(α) * (-_north(lon, lat)) + sin(α) * _east(lon, lat)
         q = cos(β) * p + sin(β) * tA
         tB = -sin(β) * p + cos(β) * tA
-        m̂ = cross(p, tA)
+        m̂ = LA.cross(p, tA)
         uA, uB = _field_at(p), _field_at(q)
-        δu = SA.SVector(dot(uB, tB) - dot(uA, tA), dot(uB - uA, m̂))
+        δu = SA.SVector(LA.dot(uB, tB) - LA.dot(uA, tA), LA.dot(uB - uA, m̂))
         inc = SF.MultiFields.FieldIncrement{2, 1, 1, Float64}((δu,), (_scalar_at(q) - _scalar_at(p),))
         acc += wμ[j] * sf(inc, SA.SVector(1.0, 0.0))
         total += wμ[j]
@@ -202,7 +202,7 @@ Test.@testset "a scalar's kernel-binned moments are the pseudo-spectral series e
     nodes = HarmonicNodes([0.3, 1.0, 2.0, 2.9], L)
     pts = [_position(x[1, i], x[2, i]) for i in 1:N]
     Pβ = [SFC.wigner_d_column(0, 0, β, L) for β in nodes.separations]
-    Pγ = [SFC.wigner_d_column(0, 0, acos(clamp(dot(pts[i], pts[j]), -1, 1)), L) for i in 1:N, j in 1:N]
+    Pγ = [SFC.wigner_d_column(0, 0, acos(clamp(LA.dot(pts[i], pts[j]), -1, 1)), L) for i in 1:N, j in 1:N]
     for sf in (SFT.ScalarSFType{2}(), SFT.ScalarSFType{3}(), SFT.ScalarSFType{4}())
         P = SFT.order(sf)
         if isodd(P)
@@ -246,10 +246,10 @@ Test.@testset "second-order vector statistics equal the spin-1 closed forms on a
         p = _position(lon, lat)
         Φ[k] = p[1] * p[2]
         grad = SA.SVector(p[2], p[1], 0.0)
-        t = grad - dot(grad, p) * p
-        ug[1, k], ug[2, k] = dot(t, _east(lon, lat)), dot(t, _north(lon, lat))
-        c = cross(p, t)
-        uc[1, k], uc[2, k] = dot(c, _east(lon, lat)), dot(c, _north(lon, lat))
+        t = grad - LA.dot(grad, p) * p
+        ug[1, k], ug[2, k] = LA.dot(t, _east(lon, lat)), LA.dot(t, _north(lon, lat))
+        c = LA.cross(p, t)
+        uc[1, k], uc[2, k] = LA.dot(c, _east(lon, lat)), LA.dot(c, _north(lon, lat))
     end
     meanΦ2 = sum(w .* Φ .^ 2) / (4π)
     CE2 = 6 * 4π * meanΦ2 / 5
@@ -382,7 +382,7 @@ Test.@testset "a spherical grid reaches the harmonic route with its cell measure
     for i in 1:N
         lon, lat = coords[1][i], coords[2][i]
         t = _field_at(_position(lon, lat))
-        u[1, i], u[2, i] = dot(t, _east(lon, lat)), dot(t, _north(lon, lat))
+        u[1, i], u[2, i] = LA.dot(t, _east(lon, lat)), LA.dot(t, _north(lon, lat))
     end
     nodes = HarmonicNodes(6, 10)
     ug = reshape(u, 2, size(FG.Grids.mask(grid))...)
@@ -486,4 +486,55 @@ Test.@testset "the harmonic route splits its point loop across backends" begin
         Test.@test maximum(abs, got.sums .- base.sums) <= 1e-9 * max(maximum(abs, base.sums), 1e-9)
         Test.@test maximum(abs, got.counts .- base.counts) <= 1e-9 * max(maximum(abs, base.counts), 1e-9)
     end
+end
+
+_harm_rel(a, b) = maximum(abs, a .- b) / max(maximum(abs, b), 1e-300)
+
+Test.@testset "the harmonic route runs on a device: coefficients, sweep, spectra and grid" begin
+    DEV = CB.GPUBackend(KA.CPU())
+    # the device direct sum across degree tiles, point chunks and every spin sign
+    for (N, lmax) in ((1, 0), (7, 5), (600, 12), (1300, 33)), s in (0, 1, -1, 2)
+        abs(s) > lmax && continue
+        Random.seed!(N + lmax + s)
+        θ, φ, f = acos.(2 .* rand(N) .- 1), 2π .* rand(N), randn(ComplexF64, N)
+        ref = SFC.pseudo_coefficients_direct(f, θ, φ, s, lmax; backend = CB.SerialBackend())
+        got = SFC.pseudo_coefficients_direct(f, θ, φ, s, lmax; backend = DEV)
+        Test.@test (N, lmax, s, size(got) == size(ref), _harm_rel(got, ref) < 1e-12) == (N, lmax, s, true, true)
+    end
+    # the public entry, masked and weighted, on both providers
+    Random.seed!(3300)
+    N = 500
+    x, u, Φ = _fibonacci(N)
+    valid = rand(N) .> 0.2
+    w = 0.5 .+ rand(N)
+    u3 = vcat(u, randn(1, N))
+    nodes = HarmonicNodes(collect(range(0.2, 2.5; length = 6)), 13)
+    fb = Fields(vectors = (u,), scalars = (Φ,))
+    cases = ((SFT.L2SFType(), u), (SFT.L3SFType(), u), (SFT.L2SFType(), u3), (SFT.ScalarSFType{2}(), fb),
+             (SFT.MixedSFType{1, 0, 2}(), fb))
+    for (sf, field) in cases, tag in (DS, NU)
+        ref = SFC.calculate_structure_function(sf, x, field, nodes, tag, SFO.StructureFunctionSumsAndCounts;
+            weights = w, valid, backend = CB.SerialBackend())
+        got = SFC.calculate_structure_function(sf, x, field, nodes, tag, SFO.StructureFunctionSumsAndCounts;
+            weights = w, valid, backend = DEV)
+        Test.@test (sf, tag, _harm_rel(got.sums, ref.sums) < 1e-10, _harm_rel(got.counts, ref.counts) < 1e-10) ==
+                   (sf, tag, true, true)
+    end
+    for tag in (DS, NU)
+        a = SFC.harmonic_spectra(x, u, 13, tag; weights = w, valid, backend = CB.SerialBackend())
+        b = SFC.harmonic_spectra(x, u, 13, tag; weights = w, valid, backend = DEV)
+        Test.@test _harm_rel(b.EE, a.EE) < 1e-10 && _harm_rel(b.BB, a.BB) < 1e-10
+        Test.@test maximum(abs, b.EB .- a.EB) < 1e-10 * maximum(abs, a.EE)
+        c = SFC.harmonic_spectra(x, reshape(Φ, 1, :), 13, tag; weights = w, valid, backend = DEV)
+        Test.@test _harm_rel(c.C, SFC.harmonic_spectra(x, reshape(Φ, 1, :), 13, tag; weights = w, valid).C) < 1e-10
+    end
+    # the grid entry forwards the backend
+    geo = FG.Geometry.SphericalGeometry(1.0)
+    grid = FG.Connectivity.structured_grid(FG.SphericalSampling.GaussLegendreSampling(), 10; geometry = geo, nlon = 21)
+    ug = randn(2, size(FG.Grids.mask(grid))...)
+    gs = SFC.calculate_structure_function(SFT.L2SFType(), grid, ug, HarmonicNodes(5, 9), DS,
+                                          SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
+    gd = SFC.calculate_structure_function(SFT.L2SFType(), grid, ug, HarmonicNodes(5, 9), DS,
+                                          SF.StructureFunctionSumsAndCounts; backend = DEV)
+    Test.@test _harm_rel(gd.sums, gs.sums) < 1e-10 && _harm_rel(gd.counts, gs.counts) < 1e-10
 end

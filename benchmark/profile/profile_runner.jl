@@ -1,10 +1,10 @@
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: Calculations as SFC, LogBinEdges
-using OhMyThreads
-using Profile
-using Serialization
-using Random
-using Printf
+using OhMyThreads: OhMyThreads
+using Profile: Profile
+using Serialization: Serialization
+using Random: Random
+using Printf: Printf
 
 function main()
     profile_dir = @__DIR__
@@ -48,7 +48,7 @@ function main()
     open(cpu_serial_txt, "w") do io
         Profile.print(io, format=:flat, sortedby=:rec)
     end
-    serialize(cpu_serial_jls, Profile.retrieve())
+    Serialization.serialize(cpu_serial_jls, Profile.retrieve())
     println("Saved Serial CPU Profile to:")
     println("  - Text format: $cpu_serial_txt")
     println("  - Binary data: $cpu_serial_jls")
@@ -66,7 +66,7 @@ function main()
     open(cpu_threaded_txt, "w") do io
         Profile.print(io, format=:flat, sortedby=:rec)
     end
-    serialize(cpu_threaded_jls, Profile.retrieve())
+    Serialization.serialize(cpu_threaded_jls, Profile.retrieve())
     println("Saved Threaded CPU Profile to:")
     println("  - Text format: $cpu_threaded_txt")
     println("  - Binary data: $cpu_threaded_jls")
@@ -101,7 +101,7 @@ function main()
             println(io, "--- Top Types by Allocated Bytes ---")
             sorted_types = sort(collect(by_type), by = pair -> pair[2][2], rev=true)
             for (t, stats) in sorted_types[1:min(end, 20)]
-                @printf(io, "  %s: %d allocations, %d bytes\n", string(t), stats[1], stats[2])
+                Printf.@printf(io, "  %s: %d allocations, %d bytes\n", string(t), stats[1], stats[2])
             end
             println(io)
 
@@ -120,7 +120,7 @@ function main()
             println(io, "--- Top Allocation Locations ---")
             sorted_locs = sort(collect(by_loc), by = pair -> pair[2][2], rev=true)
             for (loc, stats) in sorted_locs[1:min(end, 20)]
-                @printf(io, "  %s: %d allocations, %d bytes\n", loc, stats[1], stats[2])
+                Printf.@printf(io, "  %s: %d allocations, %d bytes\n", loc, stats[1], stats[2])
             end
         end
     end
@@ -135,7 +135,7 @@ function main()
     allocs_serial_txt = joinpath(profile_dir, "allocs_serial.txt")
     allocs_serial_jls = joinpath(profile_dir, "allocs_serial.jls")
     write_allocs_summary(allocs_serial_txt, allocs_serial_profile)
-    serialize(allocs_serial_jls, allocs_serial_profile)
+    Serialization.serialize(allocs_serial_jls, allocs_serial_profile)
     println("Saved Serial Allocations Profile to:")
     println("  - Text format: $allocs_serial_txt")
     println("  - Binary data: $allocs_serial_jls")
@@ -151,7 +151,7 @@ function main()
     allocs_threaded_txt = joinpath(profile_dir, "allocs_threaded.txt")
     allocs_threaded_jls = joinpath(profile_dir, "allocs_threaded.jls")
     write_allocs_summary(allocs_threaded_txt, allocs_threaded_profile)
-    serialize(allocs_threaded_jls, allocs_threaded_profile)
+    Serialization.serialize(allocs_threaded_jls, allocs_threaded_profile)
     println("Saved Threaded Allocations Profile to:")
     println("  - Text format: $allocs_threaded_txt")
     println("  - Binary data: $allocs_threaded_jls")

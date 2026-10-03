@@ -3,10 +3,10 @@
 #   include(joinpath(pkgdir(StructureFunctions), "gpu", "run.jl"))
 #   include_gpu("<script>.jl")
 
-using Pkg: pkgdir
+using Pkg: Pkg
 using StructureFunctions: StructureFunctions
 
-const SF_REPO = pkgdir(StructureFunctions)
+const SF_REPO = Pkg.pkgdir(StructureFunctions)
 const SF_GPU_DIR = joinpath(SF_REPO, "gpu")
 
 """Include any script under `gpu/`; path does not depend on `pwd`."""

@@ -45,7 +45,7 @@ let
     to = bench(fo)
     xn = CuArray(x_fix); un = CuArray(u)
     sn = CUDA.zeros(FT, 1, NB, B); cn = CUDA.zeros(UInt32, 1, NB, B)
-    plan = SFC.gpu_native_1d_plan(BE, FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NB, 1)
+    plan = SFC.gpu_native_1d_plan(BE, FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NB, sf2)
     fn() = (CUDA.fill!(sn, 0f0); CUDA.fill!(cn, UInt32(0));
         SFC.gpu_native_launch_1d!(plan, sn, cn, xn, un, SFC.NoWeights(), sf2, dig, N, NB, B, true, GEOM, nothing);
         CUDA.synchronize())

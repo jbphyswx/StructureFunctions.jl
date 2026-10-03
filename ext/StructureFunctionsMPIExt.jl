@@ -24,11 +24,11 @@ end
 
 @inline _comm(b::CB.AbstractMPIBackend) = isnothing(b.comm) ? MPI.COMM_WORLD : b.comm
 
-# Round-robin outer-index share: work for index i is ~ N - i, so a strided subset of the
-# triangular loop carries ~equal work on every rank.
-@inline function _rank_share(comm, ifull)
-    return (first(ifull) + MPI.Comm_rank(comm)):MPI.Comm_size(comm):last(ifull)
-end
+"""This rank's share `(w, k)` of a sweep's outer indices: share `w` of the `k` ranks."""
+@inline _rank_part(comm) = (MPI.Comm_rank(comm) + 1, MPI.Comm_size(comm))
+
+"""This rank's share of the outer indices `ifull` of a sweep over `grid`'s schedule."""
+@inline _rank_share(comm, ifull, grid) = SFC._outer_share(grid, ifull, _rank_part(comm)...)
 
 @inline function _allreduce_pair!(comm, sums, counts)
     MPI.Allreduce!(sums, +, comm)
@@ -43,8 +43,8 @@ end
 # Batch-leading executor: run this rank's share through the inner backend's executor, then
 # Allreduce so every rank holds the full histogram before it is permuted into the caller's buffer.
 function _mpi_bl_exec(comm, inner_exec)
-    return function (make_accum, run_chunk!, ifull, B, accum_bytes, ws)
-        acc = inner_exec(make_accum, run_chunk!, _rank_share(comm, ifull), B, accum_bytes, ws)
+    return function (make_accum, make_scratch, run_chunk!, ifull, grid, B, accum_bytes, ws)
+        acc = inner_exec(make_accum, make_scratch, run_chunk!, _rank_share(comm, ifull, grid), grid, B, accum_bytes, ws)
         return _allreduce_pair!(comm, _dense(acc[1]), _dense(acc[2]))
     end
 end
@@ -90,7 +90,6 @@ function _mpi_point_1d(
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
 ) where {CT}
     comm = _comm(b)
-    N = size(x, 2)
     geom, x_vecs, u_vecs = SFC._prepared_tuples(distance_metric, x, u)
 
     # A polynomial operator on a line has the exact `O(N log N)` route, and that sweep executes
@@ -109,8 +108,7 @@ function _mpi_point_1d(
     end
 
     part = SFC._partial_sums_counts(
-        CB.local_backend(b), structure_function_type, x_vecs, u_vecs, distance_bins,
-        _rank_share(comm, 1:(N - 1)), CT;
+        CB.local_backend(b), structure_function_type, x_vecs, u_vecs, distance_bins, _rank_part(comm), CT;
         geometry = geom, culling = culling, weights,
     )
     sums, counts = _allreduce_pair!(comm, _dense(part.sums), _dense(part.counts))
@@ -147,11 +145,9 @@ function SFC._dispatch_execution_backend(
             structure_function_type, distance_bins, value_bins, sums, counts)
     end
 
-    N = size(x, 2)
     geom, x_vecs, u_vecs = SFC._prepared_tuples(distance_metric, x, u)
     s, c = SFC._partial_2d_sums_counts(
-        CB.local_backend(b), structure_function_type, x_vecs, u_vecs, distance_bins, value_bins,
-        _rank_share(comm, 1:(N - 1)), CT;
+        CB.local_backend(b), structure_function_type, x_vecs, u_vecs, distance_bins, value_bins, _rank_part(comm), CT;
         geometry = geom, culling, weights, second_axis,
     )
     sums, counts = _allreduce_pair!(comm, s, c)
@@ -185,7 +181,7 @@ function SFC._dispatch_single_pass(
     end
 
     s, c = SFC._partial_single_pass_1d(
-        x, u, distance_bins, _rank_share(comm, 1:(size(x, 2) - 1)), CT;
+        CB.local_backend(b), x, u, distance_bins, _rank_part(comm), CT;
         distance_metric, culling, weights,
     )
     sums, counts = _allreduce_pair!(comm, s, c)
@@ -220,7 +216,7 @@ function SFC._dispatch_single_pass_2d(
     end
 
     s, c = SFC._partial_single_pass_2d(
-        x, u, distance_bins, value_bins, _rank_share(comm, 1:(size(x, 2) - 1)), CT;
+        CB.local_backend(b), x, u, distance_bins, value_bins, _rank_part(comm), CT;
         distance_metric, culling, weights,
     )
     rs, rc = _allreduce_pair!(comm, s, c)
@@ -361,8 +357,8 @@ function SFC.mpi_calculate_structure_function_tensor!(
     axis = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(), weights = SFC.NoWeights(),
 ) where {P, D}
     comm = _comm(backend)
-    ps, pc = SFC.tensor_partial(order, shape, x, u, distance_bins,
-        _rank_share(comm, 1:(size(u, 2) - 1)), eltype(counts);
+    ps, pc = SFC.tensor_partial(CB.local_backend(backend), order, shape, x, u, distance_bins, _rank_part(comm),
+        eltype(counts);
         distance_metric = distance_metric, axis = axis, culling = culling, weights = weights)
     rs, rc = _allreduce_pair!(comm, _dense(ps), _dense(pc))
     sums .+= rs
@@ -378,8 +374,8 @@ function SFC.mpi_calculate_structure_function!(
     backend::CB.AbstractMPIBackend, kwargs...,
 )
     comm = _comm(backend)
-    N = size(SFC.MF.packed(f), 2)
-    ps, pc = SFC.field_partial(sf, x, f, distance_bins, _rank_share(comm, 1:(N - 1)), eltype(counts); kwargs...)
+    ps, pc = SFC.field_partial(CB.local_backend(backend), sf, x, f, distance_bins, _rank_part(comm), eltype(counts);
+                               kwargs...)
     rs, rc = _allreduce_pair!(comm, _dense(ps), _dense(pc))
     sums .+= rs
     counts .+= rc
@@ -389,7 +385,8 @@ end
 # --- Harmonic pseudo-coefficients ---
 function SFC._direct_coefficients(b::CB.AbstractMPIBackend, f, θ, φ, s, lmax)
     comm = _comm(b)
-    out = SFC.direct_coefficients_partial(f, θ, φ, s, lmax, _rank_share(comm, eachindex(f)))
+    share = _rank_share(comm, eachindex(f), nothing)
+    out = SFC._direct_coefficients(CB.local_backend(b), f[share], θ[share], φ[share], s, lmax)
     MPI.Allreduce!(out, +, comm)
     return out
 end
@@ -404,7 +401,7 @@ function SFC.sweep_reduce!(sums, counts, b::CB.AbstractMPIBackend, items, make_s
     local_sums = zero(sums)
     local_counts = zero(counts)
     scratch = make_scratch()
-    for i in _rank_share(comm, 1:length(items))
+    for i in _rank_share(comm, 1:length(items), nothing)
         body!(local_sums, local_counts, items[i], scratch)
     end
     rs, rc = _allreduce_pair!(comm, _dense(local_sums), _dense(local_counts))

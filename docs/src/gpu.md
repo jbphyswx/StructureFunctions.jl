@@ -1,9 +1,13 @@
 # GPU acceleration
 
 The device kernels live in the `StructureFunctionsKernelAbstractionsExt` extension (loaded with
-`using KernelAbstractions`); `using CUDA` adds the CUDA launch configuration. Every device route is
-also run on `KernelAbstractions.CPU()`, which executes the same kernel source on the host and is how
-the default test suite covers the kernels without a device. CUDA is the tested hardware.
+`using KernelAbstractions`). `using CUDA` adds native CUDA kernels for the point, joint and
+single-pass routes and their batches: each call takes the launch plan measured fastest for its element
+types, coordinate width, bin count and size, and a call large enough for it to pay first samples the
+share of its pairs in range, which picks among plans measured fastest at different shares. Every
+device route is also run on `KernelAbstractions.CPU()`, which executes the same kernel source on the
+host and is how the default test suite covers the kernels without a device. CUDA is the tested
+hardware.
 
 For backend selection across serial / threaded / distributed / GPU see [Backends](backends.md); the
 CUDA validation and benchmark scripts are in the repository's
@@ -40,10 +44,11 @@ res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.
 The joint value-binned histogram (`value_bins`), the six single-pass invariants and the batches over
 auxiliary axes take the same `backend` keyword.
 
-### `GPUSFWorkspace` — reuse device histogram buffers
+### `GPUSFWorkspace` — reuse what a call prepares
 
-Repeated calls with one bin layout pass a workspace to the public entry alongside the GPU backend,
-which avoids reallocating the device histogram buffers on every launch:
+Repeated calls with one bin layout pass a workspace to the public entry alongside the GPU backend. It
+keeps what a call prepares from its bins and points — the device digitizers, the staged inputs, and the
+cull grid with its tile-pair lists — so a repeated call on the same points pays only for its fields:
 
 ```julia
 ws = SFC.GPUSFWorkspace(CUDA.CUDABackend(), bins)
@@ -57,57 +62,71 @@ SFC.release!(ws)
 `calculate_structure_functions_single_pass` and `calculate_structure_functions_single_pass_2d` take a
 workspace built with `kind = :single_pass` or `kind = :single_pass_2d` the same way.
 
+Every device point route culls: the points are sorted into cells on the device and only the tile pairs
+that can hold a pair within the largest finite bin edge are swept. `AlwaysCulling()` prepares the cells on
+every call; `AutoCulling()` prepares them when a workspace keeps them for later calls, and otherwise only
+for a call whose pairs are numerous enough to repay the sort. Call `refresh!(ws)` after changing
+coordinates in place.
+
 ### Time series — the batch drivers
 
 For `T` snapshots stack the data as `(D, N, T)`, upload once and call the batch driver, which keeps the
-batch on the device and synchronises once:
+batch on the device:
 
 ```julia
-x_batch = rand(Float32, 3, N, T)
-u_batch = rand(Float32, 3, N, T)
-sums = zeros(Float32, length(bins) - 1, T)
-counts = zeros(UInt32, length(bins) - 1, T)
+N, T = 20_000, 16
+x_batch = CUDA.CuArray(rand(Float32, 3, N, T))
+u_batch = CUDA.CuArray(rand(Float32, 3, N, T))
+sums = CUDA.zeros(Float32, length(bins) - 1, T)
+counts = CUDA.zeros(UInt32, length(bins) - 1, T)
 SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), x_batch, u_batch, bins;
                                         backend = CB.GPUBackend(CUDA.CUDABackend()))
 ```
+
+The output buffers of a device call are device arrays, filled in the order of the task's device stream: a
+call returns once its work is queued, as a device array operation does. `Array(sums)` waits for it and
+copies one to the host, and `StructureFunctions.to_host(res)` a result; time a call with `CUDA.@sync`.
 
 The batch entries — `calculate_structure_function_batch!`, `calculate_structure_function_2d_batch!`,
 `calculate_structure_functions_single_pass_batch!`, `calculate_structure_functions_single_pass_2d_batch!` —
 dispatch on the backend; the CPU backends run them too.
 
 A field sampled repeatedly on a grid takes the same entry with the grid in place of the coordinates,
-`(component, cells..., T)` in and `(n_distance, T)` out:
+`(component, cells..., T)` in and `(n_distance, T)` out; with the `grid` and `gbins` of the grid
+section below:
 
 ```julia
-u_batch = randn(2, 360, 180, T)
-sums = zeros(length(bins) - 1, T)
-counts = zeros(Int, length(bins) - 1, T)
-SFC.calculate_structure_function_batch!(sums, counts, SFT.L2SFType(), grid, u_batch, bins;
+ug_batch = randn(Float32, 2, 64, 64, T)
+gsums = CUDA.zeros(Float32, length(gbins) - 1, T)
+gcounts = CUDA.zeros(UInt64, length(gbins) - 1, T)
+SFC.calculate_structure_function_batch!(gsums, gcounts, SFT.L2SFType(), grid, ug_batch, gbins;
                                         backend = CB.GPUBackend(CUDA.CUDABackend()))
 ```
 
 Each pair's separation, distance bin, reading and geodesic frame belong to the grid, not to the
-field, so the batch computes them once and contracts every slice against them. In the device kernel
-one work item still owns one `(lag, slab pair)` and loops the slices inside.
+field, so the batch computes them once and contracts every slice against them. In the transform's
+binning kernel one work item owns one `(lag, slab pair)` and loops the slices inside.
 
 ### Route table for point lists
 
 | call | shapes | `D` | bins | device route |
 |---|---|---|---|---|
 | `calculate_structure_function(sf, x, u, bins; backend)` | `(D, N)` | any | linear, log, general | tiled pair blocks with a block-local histogram; above the shared-memory budget, global atomics |
+| points on a line, a polynomial `sf` (also over `fields`) | `x::(1, N)` | 1 | linear, log, general | the sorted line: a device sort, prefix sums of the centred field's monomials, each point's partners in a bin as one index range |
 | shared positions | `x::(D, N)`, `u::(D, N, aux...)` | any | linear for the fused route | fixed-position batch kernels |
 | varying positions | `x, u::(D, N, aux...)` | any | linear for the fused route | varying-position batch kernels |
 | `calculate_structure_function(sf, x, u, bins, value_bins; backend)` | `(D, N)` or batches | any | typed or vector value bins | shared-memory joint histogram when it fits, global atomics otherwise |
 | `calculate_structure_functions_single_pass(x, u, bins; backend)` | `(D, N)` or batches | any | linear, log, general | tiled six-row histogram |
-| `calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend)` | `(D, N)` or batches | any | typed or vector value bins | shared, type-plane or direct strategy, frozen when the workspace is built |
-| `calculate_structure_function_tensor(order, x, u, bins; backend)` | `(D, N)` or shared positions | flat and spherical | any | one thread per point, global atomics per tensor component (orders 2 and 3) |
+| `calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend)` | `(D, N)` or batches | any | typed or vector value bins | the whole histogram or one set of invariant planes per pass on chip when it fits, global atomics otherwise, chosen per call |
+| `calculate_structure_function_tensor(order, x, u, bins; backend)` | `(D, N)` or batches | any | any | the 1-D tiled kernels over the tensor's packed symmetric components, any order |
+| `calculate_structure_function_tensor(order, x, u, bins, angle_bins; second_axis, backend)` | `(D, N)` | any, flat | any | the joint tiled kernels over the packed components, binned by separation angle |
+| `calculate_structure_function(sf, x, fields, bins; backend)` | `(D, N)` | any | any | the 1-D tiled kernels over the packed multi-field column |
 
 `D = size(u, 1)` is the velocity width and `N = size(x, 2) = size(u, 2)`; trailing axes are
 independent auxiliary calculations. Widths 2 and 3 are compiled ahead of time; any other width is
-one more kernel instantiation, compiled the first time it is launched. Where a width's staged
-coordinate tiles exceed a kernel's shared-memory budget the 1-D routes take their global-atomic
-sibling, which stages nothing; the 2-D tiled kernels stage at every route, so they refuse above the
-width that budget admits and say what it is.
+one more kernel instantiation, compiled the first time it is launched. Where a width's staged tiles
+exceed a kernel's shared-memory budget the route takes its global-atomic sibling, which stages
+nothing.
 
 ## Grids: the transform engine on a device
 
@@ -117,11 +136,12 @@ another `AbstractFFTs` implementation) and `using KernelAbstractions: KernelAbst
 the device's own `AbstractFFTs` implementation, forms every inverse column of a batch of slab pairs in
 one kernel, and bins every lag of every slab pair in a second kernel with a privatized histogram.
 Uniform, stretched and lat-lon grids, masks, weights, multi-fields, every polynomial order, the
-joint histogram over angle and the soft-binned non-uniform FFT route run through it; the counts are
-exactly the CPU engine's.
+joint histogram over angle, slice batches, the rank-`P` moment tensor, the six single-pass invariants
+(`calculate_structure_functions_single_pass(grid, u, bins)`) and the soft-binned non-uniform FFT route
+run through it; the counts are exactly the CPU engine's.
 
 ```julia
-using FFTW
+using FFTW: FFTW
 using FlowGeometries: FlowGeometries as FG
 using SpectralBackends: SpectralBackends as SB
 
@@ -136,14 +156,19 @@ sf = SFC.calculate_structure_function(SFT.L3SFType(), grid, ug, gbins,
 ```
 
 `AutoSpectralBackend()` on a device takes the transform wherever the transform can express the
-operator. The direct lag sweep has a device kernel of its own,
-`Calculations.device_lag_sweep!`, which is the route a non-polynomial operator takes on a grid, since the transform computes polynomial moments and cannot
-express one.
+operator. The direct lag sweep has a device kernel of its own, `Calculations.device_lag_sweep!`: the
+route a non-polynomial operator takes on a grid, since the transform computes polynomial moments and
+cannot express one, and the only route of the joint histogram by value, which bins each pair's own
+value where a transform has only each lag's sum. It runs the distance histogram, both joint
+histograms, the single-pass invariants and slice batches: each slice, slab pair and lag gets lanes that
+sweep its cells side by side, more when there are fewer lags to fill the device and when the lag is
+longer.
 
 A schedule with many slabs transforms many short monomials, so the *number* of operations rather than
-their size sets the cost. Each monomial is built for every slab in one broadcast, the slabs are
-transformed in one batch, and the spectra are laid out in the order the spectral kernel reads them, so
-assembling its input is a reshape rather than a copy per spectrum.
+their size sets the cost. The monomials are built and transformed in blocks — every monomial of as
+many slabs as the batch budget admits, or one large slab's monomials in groups — each block in one
+broadcast and one batched transform, and the spectra are laid out in the order the spectral kernel
+reads them, so assembling its input is a reshape rather than a copy per spectrum.
 
 The binning kernel launches each slab pair over the lags that pair can reach, the same box the host
 loop takes. On a lat-lon grid a parallel spans less distance the nearer it lies to a pole, so the box
@@ -164,9 +189,10 @@ width a device fits, `joint2d_smem_max(backend, W, F, XT, OT, CT)` for `W`-wide 
 
 ## Six-invariant single-pass 2D
 
-The device path for `calculate_structure_functions_single_pass_2d!` picks its histogram
-strategy — `:shared`, `:typeplane` or `:direct` — on every call, from the device's static
-shared-memory budget and the call's element types. The six rows are `S2`, `L2`, `T2`, `S3`, `L3`, `L1T2`; the basis-dependent
+Where no native kernel takes the call, the device path for `calculate_structure_functions_single_pass_2d!`
+keeps the histogram on chip — whole (`:shared`) or one set of invariant planes per pair pass (`:typeplane`) —
+when the device's static shared-memory budget holds it for the call's element types, and accumulates in
+global memory otherwise. The six rows are `S2`, `L2`, `T2`, `S3`, `L3`, `L1T2`; the basis-dependent
 `T3` and `L2T1` are not part of the single-pass contract and take the general entries with their
 transverse convention.
 

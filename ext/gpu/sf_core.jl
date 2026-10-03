@@ -37,13 +37,6 @@ _device_plan(b::SF.InfPaddedBinEdges, kind::Val{:sf1d}) =
     (p = _device_plan(b.edges, kind); SF.InfPaddedBinEdges{eltype(p), typeof(p)}(p))
 _device_plan(t::Tuple, kind::Val) = map(b -> _device_plan(b, kind), t)
 
-"""Value bin of moment `m`. A tuple plan is indexed by an unrolled chain, so its columns may differ in type."""
-@inline _sf_value_bin(plan, x, m) = SFH.digitize(x, plan)
-@inline _sf_value_bin(plan::Tuple, x, m) = _sf_tuple_bin(plan, x, m)
-@inline _sf_tuple_bin(plan::Tuple{Any}, x, m) = SFH.digitize(x, first(plan))
-@inline _sf_tuple_bin(plan::Tuple, x, m) =
-    m == 1 ? SFH.digitize(x, first(plan)) : _sf_tuple_bin(Base.tail(plan), x, m - 1)
-
 """Edges per value column; every column of a tuple plan has as many."""
 @inline _n_value_edges(value_bins) = length(value_bins)
 @inline _n_value_edges(value_bins::Tuple) = length(first(value_bins))
@@ -58,7 +51,7 @@ KA.Adapt.adapt_structure(to, b::SF.BinEdges) = SF.BinEdges(KA.Adapt.adapt(to, b.
 function KA.Adapt.adapt_structure(to, b::SF.BucketedBinEdges{T}) where {T}
     e = KA.Adapt.adapt(to, b.edges)
     c = KA.Adapt.adapt(to, b.cells)
-    return SF.BucketedBinEdges{T, typeof(e), typeof(c)}(e, b.inv_width, b.offset, b.last_cell, b.last_edge, c)
+    return SF.BucketedBinEdges{T, typeof(e), typeof(c), typeof(b.map)}(e, b.map, b.last_edge, c)
 end
 function KA.Adapt.adapt_structure(to, p::SF.LogTableBinEdges{FT, T}) where {FT, T}
     e = KA.Adapt.adapt(to, p.edges)
@@ -80,6 +73,9 @@ KA.Adapt.adapt_structure(to, s::SFC.ZonalLagSchedule) =
     SFC.ZonalLagSchedule(KA.Adapt.adapt(to, s.lats), s.n_lon, s.dlon, s.radius, s.lon_periodic)
 KA.Adapt.adapt_structure(to, s::SFC.ScatteredModesSchedule) =
     SFC.ScatteredModesSchedule(KA.Adapt.adapt(to, s.points), s.origin, s.box, s.modes, s.taper)
+# An angle axis's reference reaches a kernel as a static vector, whatever array holds it on the host.
+KA.Adapt.adapt_structure(to, s::SFC.SeparationAngleAxis{<:AbstractVector}) =
+    SFC.SeparationAngleAxis(SA.SVector{length(s.reference_axis)}(Array(s.reference_axis)))
 
 # -----------------------------------------------------------------------------
 # Geometry (NDIMS-generic, via StaticArrays — unrolls for D = 2, 3)
@@ -147,44 +143,6 @@ shared bytes stays within `budget`; 0 when none fit.
     end
     return cells
 end
-
-# -----------------------------------------------------------------------------
-# Moments
-# -----------------------------------------------------------------------------
-
-"""
-    _sf_moments(Val(NMOM), sf_type, geom, frame, r, dU) -> NTuple{NMOM}
-
-The moments one pair adds, from its `frame` and separation `r` and its increment `dU`: `Val(1)` the
-value of `sf_type` ([`SFT.pair_value`](@ref)), `Val(6)` the six single-pass invariants.
-"""
-@inline _sf_moments(::Val{6}, sf_type, geom, frame, r, dU) =
-    SFC.single_pass_invariants(SFH.increment_invariants(geom, frame, r, dU)...)
-@inline _sf_moments(::Val{1}, sf_type, geom, frame, r, dU) = (SFT.pair_value(sf_type, geom, frame, r, dU),)
-
-"""The same moments along a unit separation `rhat` formed once per pair, for kernels that sweep a strip
-of fields over one pair."""
-@inline _sf_moments_along(::Val{6}, sf_type, dU, rhat) =
-    SFC.single_pass_invariants(SFH.fma_dot(dU, rhat), SFH.fma_dot(dU, dU))
-@inline _sf_moments_along(::Val{1}, sf_type, dU, rhat) = (sf_type(dU, rhat),)
-
-"""
-Moments needing a per-pair atomic. `T2 = S2 - L2` and `L1T2 = S3 - L3` hold for every pair, and a
-histogram bin is a sum, so both are recovered exactly at flush by [`_sf_flush_moment`](@ref) and
-cost no atomic on any pair.
-"""
-@inline _sf_accum_moments(::Val{6}) = (1, 2, 4, 5)
-@inline _sf_accum_moments(::Val{1}) = (1,)
-
-"""Value of moment `m` in bin `bin`, differencing the two moments that are never accumulated."""
-@inline function _sf_flush_moment(::Val{6}, ssum, NB::Int, m::Int, bin::Int)
-    @inbounds begin
-        m == 3 && return ssum[bin] - ssum[NB + bin]
-        m == 6 && return ssum[3 * NB + bin] - ssum[4 * NB + bin]
-        return ssum[(m - 1) * NB + bin]
-    end
-end
-@inline _sf_flush_moment(::Val{1}, ssum, ::Int, ::Int, bin::Int) = @inbounds ssum[bin]
 
 # -----------------------------------------------------------------------------
 # Shared-histogram layout (lane axis = R replicas or W batch strip)

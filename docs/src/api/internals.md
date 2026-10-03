@@ -88,6 +88,8 @@ StructureFunctionTypes.scalar_order
 digitize_plan
 BucketedBinEdges
 BucketCell
+LinearCells
+Log2Cells
 LogTableBinEdges
 AbstractSquaredDigitizePlan
 squared_digitize_plan

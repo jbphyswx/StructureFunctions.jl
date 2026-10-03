@@ -44,14 +44,22 @@ function sorted_line_sweep!(
     return _sorted_line_run!(sums, counts, sf, xs, ds, ws, be, nb, Val(W), Val(P), Val(D), Val(V), Val(K), backend)
 end
 
-"""The points in coordinate order, the field's columns and the weights permuted with them."""
+"""The type the sorted line's prefix sums and moments are formed in: the sum type `OT`, at least `Float64`."""
+_line_prefix_type(::Type{OT}) where {OT} = promote_type(OT, Float64)
+
+"""The points in coordinate order, the field's columns less their weighted mean, and the weights permuted
+with them. An increment is unchanged by the shift; its monomials then carry no offset into the prefix sums."""
 function _sorted_line_inputs(x::AbstractVector, data::AbstractMatrix, w, ::Type{OT}) where {OT}
     xs = collect(float(eltype(x)), x)
-    ds = Matrix{OT}(data)
-    issorted(xs) && return xs, ds, (w isa NoWeights ? w : collect(w))
-    perm = sortperm(xs)
-    return xs[perm], ds[:, perm], (w isa NoWeights ? w : w[perm])
+    perm = issorted(xs) ? eachindex(xs) : sortperm(xs)
+    ws = w isa NoWeights ? w : w[perm]
+    dp = _line_prefix_type(OT).(data[:, perm])
+    return xs[perm], Matrix{OT}(dp .- _line_centre(dp, ws)), ws
 end
+
+"""The weighted mean of each row of `d`, column `j` weighted by `w[j]`."""
+_line_centre(d::AbstractMatrix, ::NoWeights) = sum(d; dims = 2) ./ size(d, 2)
+_line_centre(d::AbstractMatrix{T}, w::AbstractVector) where {T} = (d * T.(w)) ./ T(sum(w))
 
 function _sorted_line_run!(
     sums::AbstractVector{OT}, counts, sf, xs::AbstractVector, ds::AbstractMatrix{OT}, w, be, nb::Int,
@@ -59,7 +67,7 @@ function _sorted_line_run!(
 ) where {OT, W, P, D, V, K}
     N = length(xs)
     S = _monomial_prefix_sums(ds, w, Val(W), Val(P))
-    r̂ = _unit_line(_direction_width(Val(D), Val(V), Val(1)), OT)
+    r̂ = _unit_line(_direction_width(Val(D), Val(V), Val(1)), _line_prefix_type(OT))
     n_tasks = max(1, sweep_tasks(backend))
     items = _consecutive_chunks(N - 1, n_tasks)
     make_scratch = () -> Vector{Int}(undef, nb + 1)
@@ -93,25 +101,27 @@ entry is the degree-zero monomial `1`.
         factors = [:(u[$c]) for c in key if c != 0]
         isempty(factors) ? :(one($T)) : Expr(:call, :*, factors...)
     end
-    return :(SA.SVector{$(length(keys)), $T}($(terms...)))
+    return :($(Expr(:meta, :inline)); SA.SVector{$(length(keys)), $T}($(terms...)))
 end
 
 """
     _monomial_prefix_sums(data, weights, Val(W), Val(P)) -> Matrix (n_keys, N + 1)
 
-`S[k, n + 1] = Σ_{j ≤ n} w_j μ_k(j)` for every monomial key `k` of degree `≤ P`, `S[:, 1] = 0`.
+`S[k, n + 1] = Σ_{j ≤ n} w_j μ_k(j)` for every monomial key `k` of degree `≤ P`, `S[:, 1] = 0`, in
+[`_line_prefix_type`](@ref).
 """
 _monomial_prefix_sums(ds::AbstractMatrix, w, ::Val{W}, ::Val{P}) where {W, P} =
     _monomial_prefix_sums(ds, w, Val(W), Val(P), _monomial_count(Val(W), Val(P)))
 
 function _monomial_prefix_sums(ds::AbstractMatrix{OT}, w, ::Val{W}, ::Val{P}, ::Val{NK}) where {OT, W, P, NK}
+    PT = _line_prefix_type(OT)
     N = size(ds, 2)
-    S = Matrix{OT}(undef, NK, N + 1)
-    acc = zero(SA.SVector{NK, OT})
-    @inbounds S[:, 1] .= zero(OT)
+    S = Matrix{PT}(undef, NK, N + 1)
+    acc = zero(SA.SVector{NK, PT})
+    @inbounds S[:, 1] .= zero(PT)
     @inbounds for j in 1:N
-        u = SA.SVector{W, OT}(ntuple(c -> ds[c, j], Val(W)))
-        acc += _line_monomials(u, Val(W), Val(P)) * OT(_point_weight(w, j))
+        u = SA.SVector{W, PT}(ntuple(c -> ds[c, j], Val(W)))
+        acc += _line_monomials(u, Val(W), Val(P)) * PT(_point_weight(w, j))
         for k in 1:NK
             S[k, j + 1] = acc[k]
         end
@@ -132,7 +142,7 @@ monomials, `Δ` the range's summed monomials, combined as `Σ_S (−1)^{P−|S|}
     entries = map(cols) do terms
         Expr(:call, :+, [:($sign * μi[$a] * Δ[$b]) for (sign, a, b) in terms]...)
     end
-    return :(SFT.SymmetricMoments{$W, $P}(SA.SVector{$(length(entries)), $T}($(entries...))))
+    return :($(Expr(:meta, :inline)); SFT.SymmetricMoments{$W, $P}(SA.SVector{$(length(entries)), $T}($(entries...))))
 end
 
 """The count a partner range `(lo, hi]` adds against a point of weight `wi`: its length, or the weighted
@@ -146,9 +156,9 @@ pair mass."""
 # pointers only advance. Bin `b` of point `i` is the range `(max(q[b], i), q[b + 1]]`.
 function _sorted_line_chunk!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, xs::AbstractVector, ds::AbstractMatrix{OT},
-    w, S::AbstractMatrix{OT}, be, nb::Int, q::Vector{Int}, chunk::UnitRange{Int}, r̂,
+    w, S::AbstractMatrix{PT}, be, nb::Int, q::Vector{Int}, chunk::UnitRange{Int}, r̂,
     ::Val{W}, ::Val{P}, ::Val{V}, ::Val{K}, ::Val{NK},
-) where {OT, CT, W, P, V, K, NK}
+) where {OT, CT, PT, W, P, V, K, NK}
     N = length(xs)
     i0 = first(chunk)
     @inbounds for b in 0:nb
@@ -165,25 +175,33 @@ function _sorted_line_chunk!(
             q[b + 1] = p
             prev = p
         end
-        ui = SA.SVector{W, OT}(ntuple(c -> ds[c, i], Val(W)))
+        ui = SA.SVector{W, PT}(ntuple(c -> ds[c, i], Val(W)))
         μi = _line_monomials(ui, Val(W), Val(P))
-        wi = OT(_point_weight(w, i))
+        wi = PT(_point_weight(w, i))
         for b in 1:nb
             lo = max(q[b], i)
             hi = q[b + 1]
             hi > lo || continue
-            Δ = SA.SVector{NK, OT}(ntuple(k -> S[k, hi + 1] - S[k, lo + 1], Val(NK)))
-            M = _line_moments(μi, Δ, Val(W), Val(P))
-            sums[b] += wi * SFT.moment_contract(sf, M, r̂, Val(V), Val(K))
+            sums[b] += OT(_line_range_value(sf, S, μi, wi, lo, hi, r̂, Val(W), Val(P), Val(V), Val(K), Val(NK)))
             counts[b] += _range_count(CT, w, wi, S, lo, hi)
         end
     end
     return nothing
 end
 
-"""The last index `j ∈ [i − 1, N]` whose separation from point `i` digitizes to a bin `≤ b`, by bisection."""
-function _line_partner_bound(xs::AbstractVector, be, i::Int, b::Int, N::Int)
-    lo, hi = i - 1, N
+"""The operator summed over the partners `(lo, hi]` of a point with monomials `μi` and weight `wi`, from the
+prefix sums `S`, in their type."""
+@inline function _line_range_value(
+    sf, S::AbstractMatrix{PT}, μi, wi, lo::Int, hi::Int, r̂, ::Val{W}, ::Val{P}, ::Val{V}, ::Val{K}, ::Val{NK},
+) where {PT, W, P, V, K, NK}
+    Δ = SA.SVector{NK, PT}(ntuple(@inline(k -> @inbounds(S[k, hi + 1] - S[k, lo + 1])), Val(NK)))
+    return wi * SFT.moment_contract(sf, _line_moments(μi, Δ, Val(W), Val(P)), r̂, Val(V), Val(K))
+end
+
+"""The last index `j ∈ [lo, N]` whose separation from point `i` digitizes to a bin `≤ b`, by bisection; `lo`
+is `i − 1` or an index already known to qualify."""
+@inline function _line_partner_bound(xs::AbstractVector, be, i::Int, b::Int, N::Int, lo::Int = i - 1)
+    hi = N
     xi = @inbounds xs[i]
     while lo < hi
         mid = (lo + hi + 1) >> 1

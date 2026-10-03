@@ -65,11 +65,12 @@ wigner_d_column(m::Integer, n::Integer, β::Real, lmax::Integer) =
 # ---------------------------------------------------------------------------------------------------
 
 """
-    pseudo_coefficients_direct(f, θ, φ, s, lmax) -> Matrix{ComplexF64}
+    pseudo_coefficients_direct(f, θ, φ, s, lmax; backend) -> ComplexF64 matrix
 
 `C[l + 1, m + lmax + 1] = Σ_i f_i conj(ₛY_lm(θ_i, φ_i))` with `ₛY_lm = √((2l+1)/4π) d^l_{m,−s}(θ) e^{imφ}`,
 by direct summation over the points: `O(N lmax²)`, and the reference every faster provider is checked
-against. `θ` is colatitude and `φ` longitude, both in radians.
+against. `θ` is colatitude and `φ` longitude, both in radians. On a GPU `backend` the matrix is on its
+device.
 """
 function pseudo_coefficients_direct(f::AbstractVector{<:Number}, θ::AbstractVector, φ::AbstractVector,
                                     s::Integer, lmax::Integer;
@@ -123,40 +124,34 @@ _direct_coefficients(::CB.AbstractSerialBackend, f, θ, φ, s, lmax) =
     direct_coefficients_partial(f, θ, φ, s, lmax, eachindex(f))
 
 _direct_coefficients(::CB.AbstractAutoBackend, f, θ, φ, s, lmax) =
-    _direct_coefficients(_auto_local_backend(), f, θ, φ, s, lmax)
+    _direct_coefficients(resolve_auto_backend(), f, θ, φ, s, lmax)
 
 """
     direct_sum_provider(θ, φ, lmax) -> (f, s) -> coefficients
 
 The pseudo-coefficient provider of the direct sum, in the form every provider takes: a callable of a
-complex point field and a spin.
+complex point field and a spin returning the `(lmax + 1, 2lmax + 1)` `ComplexF64` coefficients, the field
+and the coefficients in the array family of `θ` and `φ`.
 """
 direct_sum_provider(θ::AbstractVector, φ::AbstractVector, lmax::Integer;
                     backend::CB.AbstractExecutionBackend = CB.SerialBackend()) =
     (f, s) -> pseudo_coefficients_direct(f, θ, φ, s, lmax; backend)
 
 # Spin-(−s) pseudo-coefficients of `conj(f)` from the spin-`s` ones of `f`:
-# conj(ₛY_lm) = (−1)^{m+s} ₋ₛY_{l,−m}, so ₋ₛ[conj f]_lm = (−1)^{m+s} conj(ₛf_{l,−m}).
-function _conjugate_field_coefficients(C::AbstractMatrix, s::Integer, lmax::Integer)
-    out = similar(C)
-    @inbounds for l in 0:lmax, m in -lmax:lmax
-        out[l + 1, m + lmax + 1] = (isodd(m + s) ? -1 : 1) * conj(C[l + 1, -m + lmax + 1])
-    end
-    return out
-end
+# conj(ₛY_lm) = (−1)^{m+s} ₋ₛY_{l,−m}, so ₋ₛ[conj f]_lm = (−1)^{m+s} conj(ₛf_{l,−m}); `alt` is the row
+# `(−1)^m`, `m = −lmax:lmax`, in the array family of `C`.
+_conjugate_field_coefficients(C::AbstractMatrix, s::Integer, alt::AbstractMatrix) =
+    (isodd(s) ? -1 : 1) .* conj.(C[:, end:-1:1]) .* alt
 
-"""`X_l = (1/(2l+1)) Σ_m F_lm conj(G_lm)`, the cross pseudo-spectrum of two coefficient arrays."""
-function _cross_spectrum(F::AbstractMatrix, G::AbstractMatrix, lmax::Integer)
-    X = zeros(ComplexF64, lmax + 1)
-    @inbounds for l in 0:lmax
-        acc = zero(ComplexF64)
-        for m in -l:l
-            acc += F[l + 1, m + lmax + 1] * conj(G[l + 1, m + lmax + 1])
-        end
-        X[l + 1] = acc / (2l + 1)
-    end
-    return X
-end
+"""The row `(−1)^m` for `m = −lmax:lmax` that [`_conjugate_field_coefficients`](@ref) takes, moved by `to`."""
+_alternating_row(lmax::Integer, to) = to([isodd(m) ? -1.0 : 1.0 for _ in 1:1, m in (-lmax):lmax])
+
+"""The weights `1/(2l+1)` on `|m| ≤ l` and `0` elsewhere, `(lmax+1, 2lmax+1)`, moved by `to`."""
+_spectral_weights(lmax::Integer, to) = to([abs(m) <= l ? 1 / (2l + 1) : 0.0 for l in 0:lmax, m in (-lmax):lmax])
+
+"""`X_l = (1/(2l+1)) Σ_{|m| ≤ l} F_lm conj(G_lm)`, the cross pseudo-spectrum of two coefficient arrays, with
+the [`_spectral_weights`](@ref) `sw`."""
+_cross_spectrum(F::AbstractMatrix, G::AbstractMatrix, sw::AbstractMatrix) = vec(sum(F .* conj.(G) .* sw; dims = 2))
 
 # (2l+1)/(4π) b_l d^l_{ss′}(β_k) for every degree and node, as (lmax + 1, n_nodes).
 function _node_kernel(s::Integer, s′::Integer, nodes::HarmonicNodes, lf)
@@ -293,24 +288,33 @@ end
 # The sweep
 # ---------------------------------------------------------------------------------------------------
 
-# Point-wise values of a site monomial, weighted and masked: zero where the point holds nothing.
-function _monomial_values(p::SiteMonomial, U::AbstractMatrix{ComplexF64}, R::AbstractMatrix,
-                          Θ::AbstractMatrix, wm::AbstractVector)
-    N = length(wm)
-    out = Vector{ComplexF64}(undef, N)
-    @inbounds for i in 1:N
-        if iszero(wm[i])
-            out[i] = 0
-            continue
-        end
-        v = ComplexF64(wm[i])
-        for c in eachindex(p.a)
-            v *= U[c, i]^p.a[c] * conj(U[c, i])^p.b[c] * R[c, i]^p.r[c]
-        end
-        for k in eachindex(p.c)
-            v *= Θ[k, i]^p.c[k]
-        end
-        out[i] = v
+"""`v` where the weight `w` is nonzero, else zero: a point that holds nothing contributes nothing, even where
+its datum is not finite."""
+@inline _held(w, v) = iszero(w) ? zero(v) : v
+
+"""The weights `w`, zero where `valid` says a point holds nothing."""
+_held_weights(w::AbstractVector, ::AllValid) = w
+_held_weights(w::AbstractVector, valid::AbstractVector) = ifelse.(valid, w, zero(eltype(w)))
+
+@inline function _ipow(z, n::Int)
+    r = one(z)
+    for _ in 1:n
+        r *= z
+    end
+    return r
+end
+
+# Point-wise values of a site monomial, weighted and masked: zero where the point holds nothing. `U`, `R`
+# and `Θ` are tuples of per-point vectors, one per vector field (`R` its radial component) or scalar.
+function _monomial_values(p::SiteMonomial, U::Tuple, R::Tuple, Θ::Tuple, wm::AbstractVector)
+    out = complex.(wm)
+    for c in eachindex(p.a)
+        iszero(p.a[c]) || (out .*= _ipow.(U[c], p.a[c]))
+        iszero(p.b[c]) || (out .*= _ipow.(conj.(U[c]), p.b[c]))
+        iszero(p.r[c]) || (out .*= _ipow.(R[c], p.r[c]))
+    end
+    for k in eachindex(p.c)
+        iszero(p.c[k]) || (out .*= _ipow.(Θ[k], p.c[k]))
     end
     return out
 end
@@ -318,16 +322,17 @@ end
 # Pseudo-coefficients of every site monomial the operator needs, one transform per distinct monomial
 # of non-negative spin; a negative spin is the conjugate of a monomial already transformed. The mask's
 # transform, taken at construction, fixes the coefficient array type.
-mutable struct HarmonicTransforms{P, M <: SiteMonomial, AT <: AbstractMatrix{ComplexF64}}
+mutable struct HarmonicTransforms{P, M <: SiteMonomial, AT <: AbstractMatrix{ComplexF64}, AR <: AbstractMatrix}
     provider::P
     lmax::Int
+    alt::AR
     cache::Dict{M, AT}
     transforms::Int
 end
 
-function HarmonicTransforms(provider, lmax::Int, mask::SiteMonomial, U, R, Θ, wm)
+function HarmonicTransforms(provider, lmax::Int, mask::SiteMonomial, U, R, Θ, wm, alt)
     C = provider(_monomial_values(mask, U, R, Θ, wm), 0)
-    return HarmonicTransforms(provider, lmax, Dict{typeof(mask), typeof(C)}(mask => C), 1)
+    return HarmonicTransforms(provider, lmax, alt, Dict{typeof(mask), typeof(C)}(mask => C), 1)
 end
 
 function _coefficients!(ht::HarmonicTransforms, p::SiteMonomial, U, R, Θ, wm)
@@ -335,7 +340,7 @@ function _coefficients!(ht::HarmonicTransforms, p::SiteMonomial, U, R, Θ, wm)
     cached === nothing || return cached
     s = _spin(p)
     if s < 0
-        C = _conjugate_field_coefficients(_coefficients!(ht, _conjugate(p), U, R, Θ, wm), -s, ht.lmax)
+        C = _conjugate_field_coefficients(_coefficients!(ht, _conjugate(p), U, R, Θ, wm), -s, ht.alt)
     else
         C = ht.provider(_monomial_values(p, U, R, Θ, wm), s)
         ht.transforms += 1
@@ -349,19 +354,15 @@ end
 """
     _sphere_angles(geometry, x) -> (θ, φ)
 
-Colatitude and longitude in radians of each point of `x`, given as `(lon, lat)` in the geometry's
-metric's own angle unit.
+Colatitude and longitude in radians, in `Float64`, of each point of `x`, given as `(lon, lat)` in the
+geometry's metric's own angle unit; vectors in the array family of `x`.
 """
 function _sphere_angles(g::SFH.SphericalGeometry, x::AbstractMatrix)
     size(x, 1) == 2 || throw(DimensionMismatch("a point on a sphere is (lon, lat); got $(size(x, 1)) coordinates"))
-    N = size(x, 2)
-    θ = Vector{Float64}(undef, N)
-    φ = Vector{Float64}(undef, N)
-    @inbounds for i in 1:N
-        p = SFH.unit_position(g.metric, x[1, i], x[2, i])
-        θ[i] = acos(clamp(p[3], -1.0, 1.0))
-        φ[i] = mod(atan(p[2], p[1]), 2π)
-    end
+    p = broadcast((lon, lat) -> SFH.unit_position(g.metric, lon, lat), Float64.(view(x, 1, :)),
+                  Float64.(view(x, 2, :)))
+    θ = acos.(clamp.(getindex.(p, 3), -1.0, 1.0))
+    φ = mod.(atan.(getindex.(p, 2), getindex.(p, 1)), 2π)
     return θ, φ
 end
 
@@ -391,16 +392,18 @@ the hard-binned pair average.
 An operator odd in a scalar increment is refused: the kernel sum runs over both readings of every
 pair, so such a moment is identically zero here.
 
-`backend` splits the point loop this package owns, which is the direct sum's. A fast transform
-provider computes the pseudo-coefficients itself and parallelises them its own way, so `backend`
-reaches no loop of ours on that route.
+`backend` says where the sweep runs: a GPU backend moves the points and the field to its device, where
+the pseudo-coefficients, spectra and the accumulation into the device-resident `sums` and `counts` take
+place; on the host it splits the direct sum's point loop. A fast transform provider parallelises its own
+transforms on the device or host the points are on.
 """
 function harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::HarmonicNodes, ::Val{D}, ::Val{V},
                          ::Val{K}, ::SB.AbstractDirectSumSpectralBackend; valid = AllValid(),
                          backend::CB.AbstractExecutionBackend = CB.AutoBackend()) where {D, V, K}
     _require_backend(backend)
+    _require_device_outputs(backend, sums, counts)
     return _harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes, Val(D), Val(V), Val(K), valid,
-                            (θ, φ, L) -> direct_sum_provider(θ, φ, L; backend))
+                            _adaptor(backend), (θ, φ, L) -> direct_sum_provider(θ, φ, L; backend))
 end
 
 harmonic_sweep!(sums, counts, sf, geometry, x, weights, data, nodes::HarmonicNodes, ::Val{D}, ::Val{V}, ::Val{K},
@@ -416,7 +419,7 @@ _no_harmonic_provider(spectral_backend) = throw(ArgumentError(
 function _harmonic_sweep!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
     g::SFH.SphericalGeometry, x::AbstractMatrix, weights::AbstractVector, data::AbstractMatrix,
-    nodes::HarmonicNodes, ::Val{D}, ::Val{V}, ::Val{K}, valid, make_provider,
+    nodes::HarmonicNodes, ::Val{D}, ::Val{V}, ::Val{K}, valid, to, make_provider,
 ) where {OT, CT <: AbstractFloat, D, V, K}
     SFT.is_polynomial_operator(sf) || throw(ArgumentError(
         "$(typeof(sf)) is not a polynomial in the increment, so no harmonic series produces it; " *
@@ -442,66 +445,42 @@ function _harmonic_sweep!(
         "sums and counts must have one entry per node, $nb; got $(length(sums)) and $(length(counts))",
     ))
 
-    θ, φ = _sphere_angles(g, x)
+    θ, φ = _sphere_angles(g, to(x))
+    wm = _held_weights(Float64.(to(weights)), to(valid))
+    fd = to(data)
     # the spin-1 quantity u_θ + i u_φ of each vector field: θ̂ is south, φ̂ is east
-    U = Matrix{ComplexF64}(undef, V, N)
-    R = Matrix{Float64}(undef, V, N)
-    Θ = Matrix{Float64}(undef, K, N)
-    wm = Vector{Float64}(undef, N)
-    @inbounds for i in 1:N
-        ok = valid[i]
-        wm[i] = ok ? Float64(weights[i]) : 0.0
-        for v in 1:V
-            o = (v - 1) * D
-            U[v, i] = ok ? ComplexF64(-data[o + 2, i], data[o + 1, i]) : 0
-            R[v, i] = (ok && D == 3) ? data[o + 3, i] : 0.0
-        end
-        for k in 1:K
-            Θ[k, i] = ok ? data[V * D + k, i] : 0.0
-        end
+    U = ntuple(Val(V)) do v
+        o = (v - 1) * D
+        _held.(wm, complex.(.-Float64.(view(fd, o + 2, :)), Float64.(view(fd, o + 1, :))))
     end
+    R = ntuple(v -> _held.(wm, Float64.(view(fd, (v - 1) * D + 3, :))), Val(D == 3 ? V : 0))
+    Θ = ntuple(k -> _held.(wm, Float64.(view(fd, V * D + k, :))), Val(K))
 
     L = nodes.lmax
     lf = _log_factorials(2L + 2)
+    sw = _spectral_weights(L, to)
     mask = SiteMonomial(ntuple(_ -> 0, Val(V)), ntuple(_ -> 0, Val(V)), ntuple(_ -> 0, Val(V)), ntuple(_ -> 0, Val(K)))
-    ht = HarmonicTransforms(make_provider(θ, φ, L), L, mask, U, R, Θ, wm)
+    ht = HarmonicTransforms(make_provider(θ, φ, L), L, mask, U, R, Θ, wm, _alternating_row(L, to))
     Cm = _coefficients!(ht, mask, U, R, Θ, wm)
-    kernels = Dict{Tuple{Int, Int}, Matrix{Float64}}()
+    K00 = to(ComplexF64.(_node_kernel(0, 0, nodes, lf)))
+    kernels = Dict{Tuple{Int, Int}, typeof(K00)}((0, 0) => K00)
     kernel(s, s′) = get!(kernels, (s, s′)) do
-        _node_kernel(s, s′, nodes, lf)
+        to(ComplexF64.(_node_kernel(s, s′, nodes, lf)))
     end
-    Xmm = _cross_spectrum(Cm, Cm, L)
-    K00 = kernel(0, 0)
-    @inbounds for k in 1:nb
-        acc = zero(ComplexF64)
-        for l in 0:L
-            acc += Xmm[l + 1] * K00[l + 1, k]
-        end
-        counts[k] += CT(real(acc))
-    end
+    counts .+= CT.(real.(transpose(K00) * _cross_spectrum(Cm, Cm, sw)))
 
-    acc = zeros(ComplexF64, nb)
+    acc = fill!(similar(Cm, nb), 0)
     for ((F, G), coef) in _operator_terms(sf, Val(D), Val(V), Val(K))
         s, s′ = _spin(F), _spin(G)
-        X = _cross_spectrum(_coefficients!(ht, F, U, R, Θ, wm), _coefficients!(ht, G, U, R, Θ, wm), L)
-        Kd = kernel(s, s′)
-        sign = _spin_sign(s)
-        @inbounds for k in 1:nb
-            series = zero(ComplexF64)
-            for l in 0:L
-                series += X[l + 1] * Kd[l + 1, k]
-            end
-            acc[k] += coef * sign * series
-        end
+        X = _cross_spectrum(_coefficients!(ht, F, U, R, Θ, wm), _coefficients!(ht, G, U, R, Θ, wm), sw)
+        acc .+= (coef * _spin_sign(s)) .* (transpose(kernel(s, s′)) * X)
     end
-    @inbounds for k in 1:nb
-        sums[k] += OT(real(acc[k]))
-    end
+    sums .+= OT.(real.(acc))
     return sums, counts
 end
 
 """
-    calculate_structure_function(sf, x, u, nodes::HarmonicNodes, spectral_backend[, CT][, OT]; distance_metric, weights, valid)
+    calculate_structure_function(sf, x, u, nodes::HarmonicNodes, spectral_backend[, CT][, OT]; distance_metric, weights, valid, backend)
 
 The kernel-binned structure function of `u` sampled at the points `x` of a sphere, at the nodes'
 separations, by spherical harmonic pseudo-coefficients (see [`harmonic_sweep!`](@ref)). `x` is
@@ -512,7 +491,8 @@ one per point; on a grid the cell measure makes the statistic an area average.
 
 The result's `distance` is the `HarmonicNodes` object itself, one value per node, and its counts are
 the kernel-weighted pair mass, of the floating-point type `CT` (default the sums' type). `OT` is
-`StructureFunction` (the default) or `StructureFunctionSumsAndCounts`.
+`StructureFunction` (the default) or `StructureFunctionSumsAndCounts`. On a GPU `backend` the result is
+device-resident.
 """
 function calculate_structure_function(
     sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, u::Union{AbstractArray, MF.Fields},
@@ -533,8 +513,8 @@ function calculate_structure_function(
     w = weights === nothing ? ones(Float64, N) : weights
     v = valid === nothing ? field_validity(data) : valid
     nb = length(nodes)
-    sums = zeros(float(eltype(data)), nb)
-    counts = zeros(CT, nb)
+    sums = _result_zeros(backend, float(eltype(data)), nb)
+    counts = _result_zeros(backend, CT, nb)
     harmonic_sweep!(sums, counts, sf, geometry, x, w, data, nodes, vD, vV, vK, spectral_backend;
                     valid = v, backend)
     return _finalize(SFO.StructureFunctionSumsAndCounts(sf, nodes, sums, counts), OT)
@@ -557,7 +537,7 @@ calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::A
 # ---------------------------------------------------------------------------------------------------
 
 """
-    harmonic_spectra(x, u, lmax, spectral_backend; distance_metric, weights, valid) -> (l, C) or (l, EE, BB, EB)
+    harmonic_spectra(x, u, lmax, spectral_backend; distance_metric, weights, valid, backend) -> (l, C) or (l, EE, BB, EB)
 
 Pseudo-spectra of the masked, weighted field: `C̃_l = (1/(2l+1)) Σ_m |ũ_lm|²` for a `(1, N)` scalar;
 for a `(2, N)` tangent vector in `(east, north)`, the gradient (`E`) and curl (`B`) spectra and their
@@ -571,13 +551,14 @@ C^E_l = l(l+1) (1/(2l+1)) Σ_m |Φ_lm|²,   C^B_l likewise from Ψ,   C^{EB}_l f
 
 so that `Σ_l (2l+1)/(4π) (C^E_l + C^B_l)` is the mean square of `u` on a complete sphere with exact
 quadrature weights. On a masked or unevenly sampled sphere these are the pseudo-spectra of the
-window and the field together, the input to the kernel-binned statistics.
+window and the field together, the input to the kernel-binned statistics. On a GPU `backend` the spectra
+are device vectors.
 """
 function harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, ::SB.AbstractDirectSumSpectralBackend;
                           distance_metric::DI.PreMetric = DI.SphericalAngle(), weights = nothing, valid = nothing,
                           backend::CB.AbstractExecutionBackend = CB.AutoBackend())
     _require_backend(backend)
-    return _harmonic_spectra(x, u, lmax, distance_metric, weights, valid,
+    return _harmonic_spectra(x, u, lmax, distance_metric, weights, valid, _adaptor(backend),
                              (θ, φ, L) -> direct_sum_provider(θ, φ, L; backend))
 end
 
@@ -587,7 +568,7 @@ harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, spectral_b
     _no_harmonic_provider(spectral_backend)
 
 function _harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, distance_metric, weights,
-                           valid, make_provider)
+                           valid, to, make_provider)
     D = size(u, 1)
     D in (1, 2) || throw(ArgumentError(
         "harmonic spectra are defined for a scalar (1, N) or a tangent vector (2, N) in (east, north); got $D rows",
@@ -598,30 +579,28 @@ function _harmonic_spectra(x::AbstractMatrix, u::AbstractMatrix, lmax::Integer, 
     g isa SFH.SphericalGeometry || throw(ArgumentError(
         "harmonic spectra live on a sphere; $(typeof(distance_metric)) describes none.",
     ))
-    θ, φ = _sphere_angles(g, x)
+    θ, φ = _sphere_angles(g, to(x))
     w = weights === nothing ? ones(Float64, N) : weights
     v = valid === nothing ? field_validity(u) : valid
-    wm = [v[i] ? Float64(w[i]) : 0.0 for i in 1:N]
+    wm = _held_weights(Float64.(to(w)), to(v))
+    ud = to(u)
     provider = make_provider(θ, φ, lmax)
     l = 0:lmax
+    sw = _spectral_weights(lmax, to)
     if D == 1
-        f = [iszero(wm[i]) ? 0.0 : wm[i] * u[1, i] for i in 1:N]
+        f = complex.(_held.(wm, wm .* Float64.(view(ud, 1, :))))
         C = provider(f, 0)
-        return (l = l, C = real.(_cross_spectrum(C, C, lmax)))
+        return (l = l, C = real.(_cross_spectrum(C, C, sw)))
     end
-    U = [iszero(wm[i]) ? zero(ComplexF64) : wm[i] * ComplexF64(-u[2, i], u[1, i]) for i in 1:N]
-    Cp = provider(U, 1)                                    # ₁U, the spin-1 coefficients of u_θ + i u_φ
-    Cm = _conjugate_field_coefficients(Cp, 1, lmax)         # ₋₁[conj U], those of u_θ − i u_φ
-    Φ = zeros(ComplexF64, lmax + 1, 2lmax + 1)
-    Ψ = zeros(ComplexF64, lmax + 1, 2lmax + 1)
-    @inbounds for ll in 1:lmax, m in -ll:ll
-        f = 1 / (2 * sqrt(ll * (ll + 1)))
-        Φ[ll + 1, m + lmax + 1] = (Cp[ll + 1, m + lmax + 1] - Cm[ll + 1, m + lmax + 1]) * f
-        Ψ[ll + 1, m + lmax + 1] = -im * (Cp[ll + 1, m + lmax + 1] + Cm[ll + 1, m + lmax + 1]) * f
-    end
-    weight = [Float64(ll * (ll + 1)) for ll in l]
-    EE = real.(_cross_spectrum(Φ, Φ, lmax)) .* weight
-    BB = real.(_cross_spectrum(Ψ, Ψ, lmax)) .* weight
-    EB = real.(_cross_spectrum(Φ, Ψ, lmax)) .* weight
+    U = _held.(wm, wm .* complex.(.-Float64.(view(ud, 2, :)), Float64.(view(ud, 1, :))))
+    Cp = provider(U, 1)                                                  # ₁U, the spin-1 coefficients of u_θ + i u_φ
+    Cm = _conjugate_field_coefficients(Cp, 1, _alternating_row(lmax, to))  # ₋₁[conj U], those of u_θ − i u_φ
+    f = to([ll == 0 ? 0.0 : 1 / (2 * sqrt(ll * (ll + 1))) for ll in l])
+    Φ = (Cp .- Cm) .* f
+    Ψ = -im .* (Cp .+ Cm) .* f
+    weight = to([Float64(ll * (ll + 1)) for ll in l])
+    EE = real.(_cross_spectrum(Φ, Φ, sw)) .* weight
+    BB = real.(_cross_spectrum(Ψ, Ψ, sw)) .* weight
+    EB = real.(_cross_spectrum(Φ, Ψ, sw)) .* weight
     return (l = l, EE = EE, BB = BB, EB = EB)
 end

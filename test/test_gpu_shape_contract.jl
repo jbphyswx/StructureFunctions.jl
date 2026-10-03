@@ -159,6 +159,28 @@ Test.@testset "GPU public shape contract (KA.CPU)" begin
     end
 end
 
+Test.@testset "a configured device backend takes the outputs its device holds" begin
+    Random.seed!(11)
+    configured = CB.GPUBackend(KA.CPU(; static = true))
+    x, u = rand(Float32, 2, 300), randn(Float32, 2, 300)
+    bins = collect(Float32, range(0.0f0, 0.8f0; length = 9))
+    ref_s, ref_c = zeros(Float32, 8), zeros(UInt32, 8)
+    SFC.calculate_structure_function!(ref_s, ref_c, SFT.L2SFType(), x, u, bins; backend = GPU_SHAPE_BE)
+    s, c = zeros(Float32, 8), zeros(UInt32, 8)
+    SFC.calculate_structure_function!(s, c, SFT.L2SFType(), x, u, bins; backend = configured)
+    Test.@test c == ref_c
+    Test.@test s ≈ ref_s
+    grid = randn(Float32, 2, 24 * 16)
+    schedule = SFC.UniformLagSchedule((24, 16), (1.0, 1.0), (true, false))
+    lag_bins = collect(Float32, range(0.0f0, 6.0f0; length = 7))
+    ref_s, ref_c = zeros(Float32, 6), zeros(Int, 6)
+    SFC.gridded_lag_sweep!(ref_s, ref_c, SFT.S3SFType(), grid, schedule, lag_bins, Val(2); backend = GPU_SHAPE_BE)
+    s, c = zeros(Float32, 6), zeros(Int, 6)
+    SFC.gridded_lag_sweep!(s, c, SFT.S3SFType(), grid, schedule, lag_bins, Val(2); backend = configured)
+    Test.@test c == ref_c
+    Test.@test s ≈ ref_s
+end
+
 # Every GPU kernel family carries the geometry, so a non-Euclidean metric produces the transported
 # answer on GPU exactly as on CPU — the two must agree, and neither may silently return a flat one.
 Test.@testset "GPU point-field families honour a spherical metric" begin

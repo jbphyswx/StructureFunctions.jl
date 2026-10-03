@@ -154,8 +154,8 @@ Test.@testset "2D Joint-Probability Binning Tests" begin
         sf2 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins)
         
         combined = sf1 + sf2
-        Test.@test combined.sums == sf1.sums .* 2
-        Test.@test combined.counts == sf1.counts .* 2
+        Test.@test combined.sums == sf1.sums .+ sf2.sums
+        Test.@test combined.counts == sf1.counts .+ sf2.counts
     end
 
     # 7. A histogram wider than the device's shared-memory cap takes its global-atomic kernels,

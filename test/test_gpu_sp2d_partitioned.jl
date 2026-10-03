@@ -18,20 +18,15 @@ end
 const SP2D_EXT = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
 const SP2D_CAPS = SFC.gpu_device_caps(KA.CPU())
 
-"""The strategy a call with `D`-wide points and sums of `FT`, counts of `CST`, takes, with the static
-shared bytes of the kernel its mode compiles and of that kernel one cell wider than the mode's
-widest."""
-function _sp2d_strategy(n_dist::Int, n_val::Int, D::Int, ::Type{FT}, ::Type{CST} = UInt32) where {FT, CST}
-    ext = SP2D_EXT
-    cfg = ext._sp2d_accumulation_strategy(SP2D_CAPS, n_dist, n_val, D, D, FT, FT, CST)
-    bytes_at(hc) = cfg.accum_mode === :typeplane ? ext._sp2d_typeplane_smem_bytes(FT, FT, CST, D, D, hc) :
-                                                   ext._sp2d_sharedhist_smem_bytes(FT, FT, CST, D, D, hc)
-    compiled = cfg.accum_mode === :direct ? ext._sp2d_direct_smem_bytes(FT, D, D) :
-                                            bytes_at(ext._sp2d_sharedhist_compile_cells(cfg))
-    return cfg, compiled, bytes_at(cfg.max_shared_cells), bytes_at(cfg.max_shared_cells + 1)
-end
+"""The strategy a call with `D`-wide points and sums of `FT`, counts of `CST`, takes."""
+_sp2d_strategy(n_dist::Int, n_val::Int, D::Int, ::Type{FT}, ::Type{CST} = UInt32) where {FT, CST} =
+    SP2D_EXT._sp2d_accumulation_strategy(SP2D_CAPS, n_dist, n_val, D, D, FT, FT, CST)
+
+"""The strategy's accumulation mode, `nothing` when the histogram takes the global-atomic kernel."""
+_sp2d_mode(args...) = (cfg = _sp2d_strategy(args...); cfg === nothing ? nothing : cfg.accum_mode)
 
 Test.@testset "GPU sp2d strategy fits the static budget it was chosen against" begin
+    ext = SP2D_EXT
     budget = SFC.gpu_static_smem_budget(SP2D_CAPS)
     for (nd, nv, D, FT, CST, mode) in (
         (10, 8, 2, Float64, UInt32, :shared),
@@ -40,16 +35,22 @@ Test.@testset "GPU sp2d strategy fits the static budget it was chosen against" b
         (30, 30, 2, Float64, UInt32, :typeplane),
         (30, 30, 2, Float64, Float64, :typeplane),
         (30, 30, 3, Float64, Float64, :typeplane),
-        (60, 60, 2, Float64, UInt32, :direct),
-        (50, 52, 2, Float64, Float64, :direct),
+        (60, 60, 2, Float64, UInt32, nothing),
+        (50, 52, 2, Float64, Float64, nothing),
     )
-        cfg, compiled, at_max, past_max = _sp2d_strategy(nd, nv, D, FT, CST)
+        cfg = _sp2d_strategy(nd, nv, D, FT, CST)
+        if mode === nothing
+            Test.@test cfg === nothing
+            Test.@test ext._sp2d_typeplane_smem_bytes(FT, FT, CST, D, D, ext._sp2d_plane_cells(nd, nv)) > budget
+            continue
+        end
+        bytes_at(hc) = mode === :typeplane ? ext._sp2d_typeplane_smem_bytes(FT, FT, CST, D, D, hc) :
+                                             ext._sp2d_sharedhist_smem_bytes(FT, FT, CST, D, D, hc)
         Test.@test cfg.accum_mode === mode
         Test.@test cfg.smem_budget == budget
         Test.@test cfg.n_joint_cells == SFC.SINGLE_PASS_N * nd * nv
-        Test.@test compiled <= budget
-        Test.@test at_max <= budget < past_max
-        Test.@test cfg.needs_partition_merge == (mode === :direct)
+        Test.@test bytes_at(ext._sp2d_sharedhist_compile_cells(cfg)) <= budget
+        Test.@test bytes_at(cfg.max_shared_cells) <= budget < bytes_at(cfg.max_shared_cells + 1)
         if mode === :typeplane
             Test.@test cfg.types_per_pass * cfg.plane_shared_cells <= cfg.max_shared_cells <
                        (cfg.types_per_pass + 1) * cfg.plane_shared_cells
@@ -58,7 +59,7 @@ Test.@testset "GPU sp2d strategy fits the static budget it was chosen against" b
     end
 end
 
-Test.@testset "GPU sp2d HTP-EJ partitioned (KA.CPU)" begin
+Test.@testset "GPU sp2d HTP-EJ (KA.CPU)" begin
     backend = KA.CPU()
     N = 80
     FT = Float64
@@ -69,7 +70,7 @@ Test.@testset "GPU sp2d HTP-EJ partitioned (KA.CPU)" begin
     value_bins_ntuple = _synthetic_value_bins_ntuple(8, FT)
     n_val = length(value_bins_ntuple[1]) - 1
     NB = length(linear_dist) - 1
-    Test.@test first(_sp2d_strategy(NB, n_val, 2, FT)).accum_mode === :shared
+    Test.@test _sp2d_mode(NB, n_val, 2, FT) === :shared
 
     sums_lin_ref = zeros(FT, 6, NB, n_val)
     cnts_lin_ref = zeros(UInt32, 6, NB, n_val)
@@ -140,34 +141,6 @@ Test.@testset "GPU sp2d HTP-EJ partitioned (KA.CPU)" begin
     )
     Test.@test sums_ws ≈ sums_lin_ref atol = 1e-11
     Test.@test cnts_ws == cnts_lin_ref
-    Test.@test ws2.lazy.partition_sums_dev === nothing
-end
-
-Test.@testset "GPU sp2d merge kernels (KA.CPU)" begin
-    backend = KA.CPU()
-    FT = Float64
-    n_dist, n_val, n_blocks = 4, 3, 5
-    partition_sums = rand(FT, 6, n_dist, n_val, n_blocks)
-    ref_s = dropdims(sum(partition_sums; dims = 4); dims = 4)
-    # Unweighted partitions count in UInt32 and the merge widens into the output's count type, so
-    # block totals past typemax(UInt32) survive a UInt64 output; weighted partitions carry pair mass.
-    for (PCT, OCT, draw) in ((UInt32, UInt32, () -> rand(UInt32(0):UInt32(1000))),
-                             (UInt32, UInt64, () -> rand(UInt32(2)^31:typemax(UInt32))),
-                             (Float64, Float64, () -> rand()))
-        partition_counts = PCT[draw() for _ in 1:6, _ in 1:n_dist, _ in 1:n_val, _ in 1:n_blocks]
-        ref_c = dropdims(sum(OCT.(partition_counts); dims = 4); dims = 4)
-        # The merge adds into the output, which may already hold a caller's accumulation.
-        for merge in (SP2D_EXT.SerialMerge(), SP2D_EXT.ParallelMerge())
-            out_s = fill(FT(3), 6, n_dist, n_val)
-            out_c = fill(OCT(3), 6, n_dist, n_val)
-            SP2D_EXT._launch_merge_sp2d_partitions!(
-                backend, out_s, out_c, partition_sums, partition_counts, n_dist, n_val, n_blocks, merge,
-            )
-            Test.@test out_s ≈ ref_s .+ 3
-            Test.@test out_c ≈ ref_c .+ 3
-            OCT <: Integer && Test.@test out_c == ref_c .+ OCT(3)
-        end
-    end
 end
 
 Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
@@ -182,7 +155,7 @@ Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
     value_bins_ntuple = _synthetic_value_bins_ntuple(n_val_bins, FT)
     NB = n_dist_bins
     n_val = n_val_bins
-    Test.@test first(_sp2d_strategy(NB, n_val, 2, FT)).accum_mode === :typeplane
+    Test.@test _sp2d_mode(NB, n_val, 2, FT) === :typeplane
 
     sums_ref = zeros(FT, 6, NB, n_val)
     cnts_ref = zeros(UInt32, 6, NB, n_val)
@@ -199,7 +172,6 @@ Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
     )
     Test.@test sums_gpu ≈ sums_ref atol = 1e-11
     Test.@test cnts_gpu == cnts_ref
-    Test.@test ws.lazy.partition_sums_dev === nothing
 end
 
 Test.@testset "GPU sp2d typeplane production shape log+infpadded (KA.CPU)" begin
@@ -222,7 +194,7 @@ Test.@testset "GPU sp2d typeplane production shape log+infpadded (KA.CPU)" begin
     inf_val = InfPaddedBinEdges(inner)
     n_val = length(inf_val) - 1
     Test.@test n_val == 52
-    Test.@test first(_sp2d_strategy(n_dist_bins, n_val, 2, FT)).accum_mode === :typeplane
+    Test.@test _sp2d_mode(n_dist_bins, n_val, 2, FT) === :typeplane
 
     sums_ref = zeros(FT, 6, n_dist_bins, n_val)
     cnts_ref = zeros(UInt32, 6, n_dist_bins, n_val)
@@ -242,7 +214,7 @@ Test.@testset "GPU sp2d typeplane production shape log+infpadded (KA.CPU)" begin
     Test.@test cnts_gpu == cnts_ref
 end
 
-Test.@testset "GPU sp2d direct mode (KA.CPU)" begin
+Test.@testset "GPU sp2d histogram no on-chip mode holds takes global atomics (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float64
     N = 48
@@ -254,7 +226,7 @@ Test.@testset "GPU sp2d direct mode (KA.CPU)" begin
     value_bins_ntuple = _synthetic_value_bins_ntuple(n_val_bins, FT)
     NB = n_dist_bins
     n_val = n_val_bins
-    Test.@test first(_sp2d_strategy(NB, n_val, 2, FT)).accum_mode === :direct
+    Test.@test _sp2d_mode(NB, n_val, 2, FT) === nothing
 
     sums_ref = zeros(FT, 6, NB, n_val)
     cnts_ref = zeros(UInt32, 6, NB, n_val)
@@ -271,11 +243,9 @@ Test.@testset "GPU sp2d direct mode (KA.CPU)" begin
     )
     Test.@test sums_gpu ≈ sums_ref atol = 1e-11
     Test.@test cnts_gpu == cnts_ref
-    Test.@test ws.lazy.partition_sums_dev !== nothing
 end
 
-# A weighted count is a pair mass, so the on-chip histogram and the block partitions hold it in the
-# call's floating count type; every mode must then agree with the serial weighted histogram.
+# A weighted count is a pair mass, held in the call's floating count type by every kernel.
 Test.@testset "GPU sp2d weighted, every mode (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float64
@@ -284,9 +254,9 @@ Test.@testset "GPU sp2d weighted, every mode (KA.CPU)" begin
     x = rand(FT, 2, N)
     u = rand(FT, 2, N)
     w = FT(0.25) .+ rand(FT, N)
-    for (nd, nv, mode) in ((10, 8, :shared), (30, 30, :typeplane), (60, 60, :direct))
-        Test.@test first(_sp2d_strategy(nd, nv, 2, FT, FT)).accum_mode === mode
-        Test.@test first(_sp2d_strategy(nd, nv, 2, FT, UInt32)).accum_mode === mode
+    for (nd, nv, mode) in ((10, 8, :shared), (30, 30, :typeplane), (60, 60, nothing))
+        Test.@test _sp2d_mode(nd, nv, 2, FT, FT) === mode
+        Test.@test _sp2d_mode(nd, nv, 2, FT, UInt32) === mode
         dist = LinearBinEdges(range(FT(0), FT(1.5); length = nd + 1))
         vals = _synthetic_value_bins_ntuple(nv, FT)
         ref = SFC.calculate_structure_functions_single_pass_2d(
@@ -304,7 +274,7 @@ Test.@testset "GPU sp2d weighted, every mode (KA.CPU)" begin
                 Test.@test collect(got[k].sums) ≈ collect(ref[k].sums) rtol = 1e-12 atol = 1e-12
             end
         end
-        # The same workspace serves an unweighted call afterwards: its partitions change count type.
+        # The same workspace serves an unweighted call afterwards.
         cnts_ref = zeros(UInt32, 6, nd, nv)
         sums_ref = zeros(FT, 6, nd, nv)
         SFC.calculate_structure_functions_single_pass_2d!(
@@ -318,7 +288,6 @@ Test.@testset "GPU sp2d weighted, every mode (KA.CPU)" begin
         )
         Test.@test cnts_gpu == cnts_ref
         Test.@test sums_gpu ≈ sums_ref rtol = 1e-12 atol = 1e-12
-        mode === :direct && Test.@test eltype(ws.lazy.partition_counts_dev) === UInt32
     end
 end
 
@@ -466,13 +435,8 @@ Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
     Test.@test res.counts == cntsf_ref
 end
 
-# Large 2D bin counts. Before these existed, nothing in the suite went past 60×60 on either axis,
-# which is why two defects lived here unnoticed: SP2D threw outright for any `n_dist > 128` (the
-# naive global-atomic route demanded a value-edge workspace that nothing supplies by default), and
-# the `:direct` strategy was chosen over plain global atomics well past the point where it loses
-# 2–4×. Float64 because Float32 carries only ~7 digits and a histogram this sparse (few pairs per
-# cell, cancelling odd moments) disagrees with a Float64 reference by percent even on the CPU, so a
-# Float32 assertion would be testing arithmetic and not the kernel.
+# Histograms past `n_dist = 128`, without a workspace. Float64: a histogram this sparse (few pairs per
+# cell, cancelling odd moments) differs from a Float64 reference by percent in Float32 on any backend.
 Test.@testset "GPU sp2d large bin counts (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float64
@@ -498,25 +462,10 @@ Test.@testset "GPU sp2d large bin counts (KA.CPU)" begin
     end
 end
 
-# The routing decision itself, not just the numbers a route produces. Every SP2D defect found so far
-# was a *routing* fault that correctness assertions could not see, because each route computes the
-# right answer — just at very different speeds.
-Test.@testset "GPU sp2d strategy routing thresholds" begin
-    ext = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-    Test.@test ext !== nothing
-    cells_bytes(nd, nv, ::Type{FT}) where {FT} = 6 * nd * nv * (sizeof(FT) + sizeof(UInt32))
-    # Small histograms stay on chip; large ones must not select `:direct`, which loses to plain
-    # global atomics above the measured crossover.
-    Test.@test cells_bytes(60, 60, Float64) <= ext.SP2D_GLOBAL_ATOMIC_HIST_BYTES
-    Test.@test cells_bytes(100, 100, Float64) > ext.SP2D_GLOBAL_ATOMIC_HIST_BYTES
-    Test.@test cells_bytes(128, 128, Float32) > ext.SP2D_GLOBAL_ATOMIC_HIST_BYTES
-    # 80×80 Float32 (307 KB) measured `:direct` still ahead by ~11%; it must stay below the cut.
-    Test.@test cells_bytes(80, 80, Float32) <= ext.SP2D_GLOBAL_ATOMIC_HIST_BYTES
-    for (nd, nv, FT, mode, global_atomics) in ((16, 8, Float32, :shared, false),
-                                               (60, 60, Float64, :direct, false),
-                                               (100, 100, Float64, :direct, true))
-        cfg = first(_sp2d_strategy(nd, nv, 2, FT))
-        Test.@test cfg.accum_mode === mode
-        Test.@test ext._sp2d_prefers_global_atomics(cfg, FT, UInt32) === global_atomics
+# The routing decision itself: each route computes the same histogram, at different speeds.
+Test.@testset "GPU sp2d strategy routing" begin
+    for (nd, nv, FT, mode) in ((16, 8, Float32, :shared), (30, 30, Float64, :typeplane), (60, 60, Float64, nothing),
+                               (80, 80, Float32, nothing), (100, 100, Float64, nothing))
+        Test.@test _sp2d_mode(nd, nv, 2, FT) === mode
     end
 end

@@ -43,6 +43,90 @@ end
                     strides::NTuple{Dg, Int}) where {Dg} =
     ntuple(d -> @inbounds(lo[d] + ((lin - 1) ÷ strides[d]) % len[d]), Val(Dg))
 
+"""The slab pair in `lo:hi` owning work item `item`, from `off`, the exclusive prefix sum of every pair's
+lag-box volume: pair `b` owns `off[b] + 1 : off[b + 1]`."""
+@inline function _pair_of_item(off, item::Int, lo::Int, hi::Int)
+    while lo < hi
+        mid = (lo + hi + 1) >>> 1
+        if @inbounds(off[mid]) < item
+            lo = mid
+        else
+            hi = mid - 1
+        end
+    end
+    return lo
+end
+
+"""
+    _item_pair_lag(Val(UB), Val(Dg), gid, first_pair, last_pair, boxes) -> (pair, lag)
+
+The slab pair and the lag that work item `gid` of the pairs `first_pair:last_pair` owns. Under `UB` every
+pair carries the one box `(n_box, lo, len, strides)` and the pair follows by division; otherwise
+`boxes.off` indexes the per-pair boxes `boxes.lo`, `boxes.len`, `boxes.str`. One value, so neither
+part is a variable a caller's closure captures and reassigns.
+"""
+@inline function _item_pair_lag(::Val{UB}, ::Val{Dg}, gid::Int, first_pair::Int, last_pair::Int, boxes) where {UB, Dg}
+    if UB
+        g = first_pair + (gid - 1) ÷ boxes.n_box
+        return g, _decode_lag(gid - (g - first_pair) * boxes.n_box, boxes.lo, boxes.len, boxes.strides)
+    end
+    item = gid + @inbounds(boxes.off[first_pair])
+    g = _pair_of_item(boxes.off, item, first_pair, last_pair)
+    blo, blen, bstr = @inbounds(boxes.plo[g]), @inbounds(boxes.plen[g]), @inbounds(boxes.pstr[g])
+    return g, _decode_lag(item - @inbounds(boxes.off[g]), ntuple(d -> Int(blo[d]), Val(Dg)),
+                          ntuple(d -> Int(blen[d]), Val(Dg)), ntuple(d -> Int(bstr[d]), Val(Dg)))
+end
+
+"""
+    _lag_boxes(schedule, uniform, items, r_max, to) -> (UB, boxes, host_off)
+
+The lag boxes a device launch indexes its work items by, for the slab pairs `items` names: one box for
+every pair when [`uniform_lag_box`](@ref) holds, else each pair's own box from `lag_limits` with the
+exclusive prefix sum of their volumes. `boxes` is what a kernel reads, its per-pair tables moved by
+`to`; `host_off` is the prefix sum on the host, `nothing` under one box.
+"""
+function _lag_boxes(s::AbstractSeparableSchedule, su::UniformLagSchedule{Dg}, items, r_max, to) where {Dg}
+    lims = lag_limits(s, r_max)
+    lo = ntuple(d -> first(lag_range(su, d, lims[d])), Val(Dg))
+    len = ntuple(d -> length(lag_range(su, d, lims[d])), Val(Dg))
+    n_box = prod(len)
+    if uniform_lag_box(s)
+        return true, (n_box = n_box, lo = lo, len = len, strides = _lag_strides(len), off = nothing,
+                      plo = nothing, plen = nothing, pstr = nothing), nothing
+    end
+    boxes = [lag_limits(s, it[1], it[2], r_max) for it in items]
+    lens = NTuple{Dg, Int}[ntuple(d -> length(lag_range(su, d, L[d])), Val(Dg)) for L in boxes]
+    los = NTuple{Dg, Int32}[ntuple(d -> Int32(first(lag_range(su, d, L[d]))), Val(Dg)) for L in boxes]
+    offs = Vector{Int}(undef, length(items) + 1)
+    offs[1] = 0
+    for k in eachindex(lens)
+        offs[k + 1] = offs[k] + prod(lens[k])
+    end
+    return false, (n_box = n_box, lo = lo, len = len, strides = _lag_strides(len), off = to(offs), plo = to(los),
+                   plen = to(NTuple{Dg, Int32}[ntuple(d -> Int32(l[d]), Val(Dg)) for l in lens]),
+                   pstr = to(NTuple{Dg, Int32}[ntuple(d -> Int32(st[d]), Val(Dg)) for st in map(_lag_strides, lens)])),
+           offs
+end
+
+"""Work items of the pairs `lo:hi` under the boxes [`_lag_boxes`](@ref) built."""
+@inline _lag_items(n_box::Int, ::Nothing, lo::Int, hi::Int) = n_box * (hi - lo + 1)
+@inline _lag_items(::Int, host_off::AbstractVector, lo::Int, hi::Int) = host_off[hi + 1] - host_off[lo]
+
+"""Slab `I`'s place in forward spectra of layout `lay`, whose blocks hold a chunk of `lay.chunk` slabs (the last
+`lay.last_nb`, of `lay.nchunks`) for each of a group of monomials, slab fastest: its offset in its block, the block's
+chunk, and the offset between consecutive monomials of the block."""
+@inline function _slab_offsets(lay, I::Int)
+    c, i = divrem(I - 1, lay.chunk)
+    nb = c + 1 == lay.nchunks ? lay.last_nb : lay.chunk
+    return i * lay.L, c + 1, nb * lay.L
+end
+
+"""Monomial `k`'s group of `lay.group` monomials in forward spectra of layout `lay`, and its place in the group."""
+@inline function _key_group(lay, k::Int)
+    g, q = divrem(k - 1, lay.group)
+    return g + 1, q
+end
+
 """Linear position of lag `h` in a transform of size `P`, wrapping the negative offsets."""
 @inline function _lag_index(h::NTuple{Dg, Int}, P::NTuple{Dg, Int}, strides::NTuple{Dg, Int}) where {Dg}
     lin = 1
@@ -97,6 +181,32 @@ _columns(::FrameTransport, ::Val{W}, ::Val{P}, key_index::Dict) where {W, P} =
 
 _inverse_count(::IdentityTransport, W::Int, P::Int) = binomial(W + P - 1, P)
 _inverse_count(::FrameTransport, W::Int, P::Int) = _n_raw(W, P)
+
+"""
+    _sf_columns(sf, transport, ::Val{W}, keys) -> (columns, Val(N))
+
+The inverse columns of the moments `sf` reads, over the monomial `keys` of degree up to `order(sf)`, and
+their count: the degree-`order(sf)` moments, or for the single-pass invariants the degree-2 columns then
+the degree-3 ones, `N = (N2, N3)`.
+"""
+function _sf_columns(sf, tr::AbstractLagTransport, ::Val{W}, keys) where {W}
+    p = SFT.order(sf)
+    return _columns(tr, Val(W), Val(p), _degree_index(keys, p)), Val(_inverse_count(tr, W, p))
+end
+
+function _sf_columns(::SFT.SinglePassInvariants, tr::AbstractLagTransport, ::Val{W}, keys) where {W}
+    columns = vcat(_columns(tr, Val(W), Val(2), _degree_index(keys, 2)),
+                   _columns(tr, Val(W), Val(3), _degree_index(keys, 3)))
+    return columns, Val((_inverse_count(tr, W, 2), _inverse_count(tr, W, 3)))
+end
+
+"""Inverse columns per slab pair of the moments `sf` reads."""
+_sf_inverse_count(sf, tr::AbstractLagTransport, W::Int) = _inverse_count(tr, W, SFT.order(sf))
+_sf_inverse_count(::SFT.SinglePassInvariants, tr::AbstractLagTransport, W::Int) =
+    _inverse_count(tr, W, 2) + _inverse_count(tr, W, 3)
+
+"""Position of each monomial key of degree at most `P` in `keys`, keyed by its first `P` entries."""
+_degree_index(keys, P::Int) = Dict(k[1:P] => i for (i, k) in enumerate(keys) if all(iszero, k[(P + 1):end]))
 
 """
     _frame_moments(A, B, raw, scale, Val(W), Val(P)) -> SymmetricMoments{W, P}
@@ -197,17 +307,22 @@ end
     return _lag_moments(tr, out, idx, scale, nothing, nothing, Val(W), Val(P), Val(N)).data
 end
 
-@inline function _lag_tensor(
-    tr::FrameTransport, out, idx, scale::T, geometry, ::Val{W}, ::Val{P}, ::Val{N},
-) where {T, W, P, N}
-    return with_frames(tr, geometry) do frames
-        acc = _lag_moments(tr, out, idx, scale, frames[1].A, frames[1].B, Val(W), Val(P), Val(N)).data
-        for m in 2:length(frames)
-            f = frames[m]
-            acc += _lag_moments(tr, out, idx, scale, f.A, f.B, Val(W), Val(P), Val(N)).data
-        end
-        acc / length(frames)
+@inline _lag_tensor(tr::FrameTransport, out, idx, scale, geometry, ::Val{W}, ::Val{P}, ::Val{N}) where {W, P, N} =
+    with_frames(frames -> _frames_tensor(tr, out, idx, scale, frames, Val(W), Val(P), Val(N)), tr, geometry)
+
+"""The symmetric moment store of one lag under frames already built for it."""
+@inline _frames_tensor(tr::IdentityTransport, out, idx, scale, frames, ::Val{W}, ::Val{P}, ::Val{N}) where {W, P, N} =
+    _lag_tensor(tr, out, idx, scale, nothing, Val(W), Val(P), Val(N))
+
+@inline function _frames_tensor(
+    tr::FrameTransport, out, idx, scale::T, frames::NTuple{M, <:NamedTuple}, ::Val{W}, ::Val{P}, ::Val{N},
+) where {T, M, W, P, N}
+    acc = _lag_moments(tr, out, idx, scale, frames[1].A, frames[1].B, Val(W), Val(P), Val(N)).data
+    for m in 2:M
+        f = frames[m]
+        acc += _lag_moments(tr, out, idx, scale, f.A, f.B, Val(W), Val(P), Val(N)).data
     end
+    return acc / M
 end
 
 # The operator on one lag, averaged over the lag's frames.
@@ -234,4 +349,45 @@ end
     end
     return acc / M
 end
+
+# The six single-pass invariants of one lag, averaged over its frames: S2, L2 and T2 from the degree-2
+# moments in columns `1:N2`, S3, L3 and L1T2 from the degree-3 ones in the next `N3`.
+@inline function _lag_value(
+    tr::IdentityTransport, ::SFT.SinglePassInvariants, out, idx, scale::T, frames::NTuple{M, <:NamedTuple}, inv_r,
+    ::Val{W}, ::Val{P}, ::Val{NN}, ::Val{V}, ::Val{K},
+) where {T, M, W, P, NN, V, K}
+    N2, N3 = NN
+    M2 = _lag_moments(tr, out, idx, scale, nothing, nothing, Val(W), Val(2), Val(N2))
+    M3 = _lag_moments(tr, view(out, :, (N2 + 1):(N2 + N3)), idx, scale, nothing, nothing, Val(W), Val(3), Val(N3))
+    acc = zero(SA.SVector{SINGLE_PASS_N, T})
+    for f in frames
+        acc += _single_pass_contract(M2, M3, f.dir * inv_r, Val(V), Val(K))
+    end
+    return acc / M
+end
+
+@inline function _lag_value(
+    tr::FrameTransport, ::SFT.SinglePassInvariants, out, idx, scale::T, frames::NTuple{M, <:NamedTuple}, inv_r,
+    ::Val{W}, ::Val{P}, ::Val{NN}, ::Val{V}, ::Val{K},
+) where {T, M, W, P, NN, V, K}
+    N2, N3 = NN
+    out3 = view(out, :, (N2 + 1):(N2 + N3))
+    acc = zero(SA.SVector{SINGLE_PASS_N, T})
+    for f in frames
+        M2 = _lag_moments(tr, out, idx, scale, f.A, f.B, Val(W), Val(2), Val(N2))
+        M3 = _lag_moments(tr, out3, idx, scale, f.A, f.B, Val(W), Val(3), Val(N3))
+        acc += _single_pass_contract(M2, M3, f.dir, Val(V), Val(K))
+    end
+    return acc / M
+end
+
+"""The single-pass invariants, in `SINGLE_PASS_OPERATORS` order, from a lag's degree-2 and degree-3 moments."""
+@inline _single_pass_contract(M2, M3, r̂, vV::Val, vK::Val) = SA.SVector(
+    SFT.moment_contract(SINGLE_PASS_OPERATORS.S2, M2, r̂, vV, vK),
+    SFT.moment_contract(SINGLE_PASS_OPERATORS.L2, M2, r̂, vV, vK),
+    SFT.moment_contract(SINGLE_PASS_OPERATORS.T2, M2, r̂, vV, vK),
+    SFT.moment_contract(SINGLE_PASS_OPERATORS.S3, M3, r̂, vV, vK),
+    SFT.moment_contract(SINGLE_PASS_OPERATORS.L3, M3, r̂, vV, vK),
+    SFT.moment_contract(SINGLE_PASS_OPERATORS.L1T2, M3, r̂, vV, vK),
+)
 

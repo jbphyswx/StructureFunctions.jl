@@ -270,21 +270,44 @@ end
     searchsortedfirst(b, x, o):searchsortedlast(b, x, o)
 
 """
-    BucketedBinEdges(edges::AbstractVector{<:Base.IEEEFloat})
+    LinearCells(inv_width, offset, last_cell)
 
-Sorted `edges` with a table that brackets every lookup. The finite span of the edges is cut into
-`16(length(edges) - 1)` equal cells by `cell(x) = trunc(clamp(fma(x, inv_width, offset), 0, last_cell))`,
-which never decreases as `x` increases. Each cell holds a [`BucketCell`](@ref StructureFunctions.BucketCell):
-the first edge at or above it, how many edges lie in it, and that edge's value. A query in a cell of at
-most one edge is decided by one comparison with that value; a cell of more bisects its own edges.
-Built by [`digitize_plan`](@ref) once per call.
+Cells of equal width: `cell(x) = trunc(clamp(fma(x, inv_width, offset), 0, last_cell))`, which never decreases as
+`x` increases.
 """
-struct BucketedBinEdges{T <: Base.IEEEFloat, V <: AbstractVector{T}, C <: AbstractVector} <:
-       AbstractVectorBinEdges{T}
-    edges::V
+struct LinearCells{T}
     inv_width::T
     offset::T
     last_cell::T
+end
+
+"""
+    Log2Cells(lo, key0, shift, last_cell)
+
+Cells of equal width in `log₂ x` to within the piecewise-linear error of the float format: the cell of `x > lo` is
+the IEEE exponent and leading mantissa bits of `x` (its bit pattern shifted right by `shift`) less those of `lo`,
+clamped to `last_cell`; `x ≤ lo` takes cell 0. Never decreases as `x` increases.
+"""
+struct Log2Cells{T, U <: Unsigned}
+    lo::T
+    key0::U
+    shift::Int
+    last_cell::U
+end
+
+"""
+    BucketedBinEdges(edges::AbstractVector{<:Base.IEEEFloat}[, cells])
+
+Sorted `edges` with a table that brackets every lookup. The edges are cut into cells by the cell map `cells` — by
+default [`LinearCells`](@ref StructureFunctions.LinearCells) of `16(length(edges) - 1)` equal cells over the finite
+span. Each cell holds a [`BucketCell`](@ref StructureFunctions.BucketCell): the first edge at or above it, how many
+edges lie in it, and that edge's value. A query in a cell of at most one edge is decided by one comparison with that
+value; a cell of more bisects its own edges. Built by [`digitize_plan`](@ref) once per call.
+"""
+struct BucketedBinEdges{T <: Base.IEEEFloat, V <: AbstractVector{T}, C <: AbstractVector, M} <:
+       AbstractVectorBinEdges{T}
+    edges::V
+    map::M
     last_edge::T
     cells::C
 end
@@ -301,10 +324,9 @@ struct BucketCell{T}
     edge::T
 end
 
-function BucketedBinEdges(edges::AbstractVector{T}) where {T <: Base.IEEEFloat}
-    n = length(edges)
+function LinearCells(edges::AbstractVector{T}) where {T <: Base.IEEEFloat}
     lo, hi = findfirst(isfinite, edges), findlast(isfinite, edges)
-    n_cells = 16 * (n - 1)
+    n_cells = 16 * (length(edges) - 1)
     span = lo === nothing ? zero(T) : edges[hi] - edges[lo]
     inv_width = T(n_cells) / span
     offset = lo === nothing ? zero(T) : -edges[lo] * inv_width
@@ -312,10 +334,36 @@ function BucketedBinEdges(edges::AbstractVector{T}) where {T <: Base.IEEEFloat}
     if !(span > 0 && isfinite(span) && isfinite(inv_width) && isfinite(offset))
         n_cells, inv_width, offset = 1, one(T), zero(T)
     end
-    last_cell = T(n_cells - 1)
+    return LinearCells{T}(inv_width, offset, T(n_cells - 1))
+end
+
+"""
+    Log2Cells(edges)
+
+Logarithmic cells for sorted, positive, finite `edges`, with enough mantissa bits that a cell spans less than half the
+smallest gap between neighbouring edges in `log₂`, so each cell holds at most one edge — capped at `64(length(edges) -
+1)` cells.
+"""
+function Log2Cells(edges::AbstractVector{T}) where {T <: Base.IEEEFloat}
+    U = Base.uinttype(T)
+    lo, hi = first(edges), last(edges)
+    q = minimum(edges[k + 1] / edges[k] for k in 1:(length(edges) - 1))
+    mbits = Base.significand_bits(T)
+    bits = clamp(ceil(Int, log2(4 / log2(q))), 0, mbits)
+    key(x, b) = reinterpret(U, x) >> (mbits - b)
+    while bits > 0 && key(hi, bits) - key(lo, bits) + 1 > 64 * (length(edges) - 1)
+        bits -= 1
+    end
+    shift = mbits - bits
+    return Log2Cells{T, U}(lo, key(lo, bits), shift, key(hi, bits) - key(lo, bits))
+end
+
+function BucketedBinEdges(edges::AbstractVector{T}, map = LinearCells(edges)) where {T <: Base.IEEEFloat}
+    n = length(edges)
+    n_cells = Int(map.last_cell) + 1
     count = zeros(Int32, n_cells)
     for e in edges
-        count[_bucket_cell(inv_width, offset, last_cell, e) + 1] += 1
+        count[_bucket_cell(map, e) + 1] += 1
     end
     cells = Vector{BucketCell{T}}(undef, n_cells)
     first = 1
@@ -323,17 +371,21 @@ function BucketedBinEdges(edges::AbstractVector{T}) where {T <: Base.IEEEFloat}
         cells[j] = BucketCell{T}(first, count[j], first <= n ? edges[first] : T(Inf))
         first += count[j]
     end
-    return BucketedBinEdges{T, typeof(edges), typeof(cells)}(
-        edges, inv_width, offset, last_cell, edges[n], cells)
+    return BucketedBinEdges{T, typeof(edges), typeof(cells), typeof(map)}(edges, map, edges[n], cells)
 end
 
 # A NaN takes the last cell: the first select sends it to `last_cell`, so the index is in range for any `x`.
-@inline function _bucket_cell(inv_width::T, offset::T, last_cell::T, x::T) where {T}
-    t = fma(x, inv_width, offset)
-    t = ifelse(t < last_cell, t, last_cell)
+@inline function _bucket_cell(m::LinearCells{T}, x::T) where {T}
+    t = fma(x, m.inv_width, m.offset)
+    t = ifelse(t < m.last_cell, t, m.last_cell)
     return unsafe_trunc(Int32, ifelse(t > zero(T), t, zero(T)))
 end
-@inline _bucket_cell(b::BucketedBinEdges{T}, x) where {T} = _bucket_cell(b.inv_width, b.offset, b.last_cell, T(x))
+# `x ≤ lo`, a negative `x` and a NaN take cell 0.
+@inline function _bucket_cell(m::Log2Cells{T, U}, x::T) where {T, U}
+    k = (reinterpret(U, x) >> m.shift) - m.key0
+    return ifelse(x > m.lo, min(k, m.last_cell), zero(U)) % Int32
+end
+@inline _bucket_cell(b::BucketedBinEdges{T}, x) where {T} = _bucket_cell(b.map, T(x))
 
 """`searchsortedfirst(b, x)` given the cell `j` of `x`, which is read only when `x ≤ edges[end]`."""
 @inline function _bucket_first(b::BucketedBinEdges, x, j::Integer)
@@ -344,6 +396,16 @@ end
         k = _bisect_first(b.edges, x, Int(c.first), Int(c.first) + Int(c.count))
     end
     return k
+end
+
+"""[`_bucket_first`](@ref) with the test `x ≤ edges[end]` a select: the record of cell `j` is read for every `x`."""
+@inline function _bucket_first_select(b::BucketedBinEdges, x, j::Integer)
+    c = @inbounds b.cells[j + 1]
+    k = Int(c.first) + (c.edge < x)
+    if c.count > 1
+        k = _bisect_first(b.edges, x, Int(c.first), Int(c.first) + Int(c.count))
+    end
+    return ifelse(x <= b.last_edge, k, length(b.edges) + 1)
 end
 
 Base.size(b::BucketedBinEdges) = size(b.edges)
@@ -707,7 +769,7 @@ lookup. [`LinearBinEdges`](@ref) are their own plan; the edges of a [`BinEdges`]
 """
 digitize_plan(b::AbstractBinEdges) = b
 digitize_plan(b::BinEdges{<:Base.IEEEFloat}) = BucketedBinEdges(b.edges)
-digitize_plan(b::LogBinEdges) = BucketedBinEdges(collect(b))
+digitize_plan(b::LogBinEdges) = (e = collect(b); BucketedBinEdges(e, Log2Cells(e)))
 digitize_plan(b::InfPaddedBinEdges) = (p = digitize_plan(b.edges); InfPaddedBinEdges{eltype(p), typeof(p)}(p))
 digitize_plan(b::ModeBinEdges) = ModeBinEdges(digitize_plan(b.edges), b.schedule)
 digitize_plan(v::AbstractVector) = digitize_plan(BinEdges(v))
@@ -773,6 +835,46 @@ index `i` the vectorized half computed; otherwise `i` is ignored.
 # The implicit -Inf edge shifts every inner index up by one; the inner plan already reports
 # `n_bins + 1` above its last edge, which becomes the overflow bin. No separate range test needed.
 @inline squared_bin(p::SquaredInfPaddedPlan, key, i::Integer) = squared_bin(p.inner, key, i) + 1
+
+"""
+    squared_bin_select(plan, key, i) -> Int
+
+[`squared_bin`](@ref)`(plan, key, i)`, with a bucketed plan's test of `key` against its last threshold taken as a
+select, so the cell's record is read for every `key`.
+"""
+@inline squared_bin_select(p::AbstractSquaredDigitizePlan, key, i::Integer) = squared_bin(p, key, i)
+@inline squared_bin_select(p::SquaredBucketPlan, key, i::Integer) = _bucket_first_select(p.thresholds, key, i) - 1
+@inline squared_bin_select(p::SquaredInfPaddedPlan, key, i::Integer) = squared_bin_select(p.inner, key, i) + 1
+
+"""
+    squared_in_range(plan, key) -> Bool
+
+Whether a pair whose [`digitize_key`](@ref) is `key` lands in one of the plan's bins: `key` above the first
+threshold and at or below the last, which is `1 ≤ squared_bin(plan, key, i) ≤ n_histogram_bins(plan)` for
+every `key`, `false` for NaN. Every pair lands in a bin of an implicitly padded plan.
+"""
+@inline squared_in_range(p::SquaredLinearPlan, key) = (key > first(p.edges)) & (key <= last(p.edges))
+@inline squared_in_range(p::SquaredLogPlan, key) = (key > first(p.sqedges)) & (key <= last(p.sqedges))
+@inline squared_in_range(p::SquaredBucketPlan, key) = (key > first(p.thresholds.edges)) & (key <= p.thresholds.last_edge)
+@inline squared_in_range(::SquaredInfPaddedPlan, key) = true
+
+"""
+    vector_digitize(edges, x) -> Int32
+
+`digitize(x, edges)` formed with selects in place of branches, so a vectorized loop can compute it; defined
+where [`has_vector_digitize`](@ref) holds.
+"""
+@inline function vector_digitize(b::LinearBinEdges{T}, x::T) where {T}
+    t = fma(x, b.inv_step, -b.first_edge * b.inv_step)
+    k = clamp(unsafe_trunc(Int32, ceil(ifelse(isfinite(t), t, zero(T)))) + Int32(1), Int32(2), Int32(b.n_edges))
+    k = ifelse(x <= b.first_edge, Int32(1), k)
+    k = ifelse(x <= b.last_edge, k, Int32(b.n_edges + 1))
+    return k - Int32(1)
+end
+
+"""Whether [`vector_digitize`](@ref) takes `edges` and values of type `T`."""
+@inline has_vector_digitize(::LinearBinEdges{T}, ::Type{T}) where {T} = true
+@inline has_vector_digitize(_, ::Type) = false
 
 """
     squared_correct(plan, r2, i) -> Int

@@ -13,7 +13,7 @@ Test.@testset "Stable linear fits" begin
     # The dense covariance has condition number near 1/eps(); its small
     # eigenvalue is not representable reliably. Compare entries to BigFloat.
     Hbig = BigFloat.(H)
-    Cbig = (Hbig' * Hbig) \ Matrix{BigFloat}(I, 2, 2)
+    Cbig = (Hbig' * Hbig) \ Matrix{BigFloat}(LinearAlgebra.I, 2, 2)
     Test.@test covariance ≈ Float64.(Cbig) rtol=5e-8
     Test.@test_throws ArgumentError C.solve(C.RegularizedLeastSquares(nothing), ones(3, 2), ones(3), ones(3))
     Test.@test_throws ArgumentError C.solve(C.RegularizedLeastSquares(nothing), ones(1, 2), ones(1), ones(1))
@@ -25,10 +25,10 @@ Test.@testset "Stable linear fits" begin
     P = [2.0 0.4; 0.4 1]
     x, covariance = C.solve(C.RegularizedLeastSquares(P), H, y, W)
     Hb, Wb, Pb, yb = BigFloat.(H), BigFloat.(W), BigFloat.(P), BigFloat.(y)
-    precision = Hb' * (Wb \ Hb) + Pb \ Matrix{BigFloat}(I, 2, 2)
+    precision = Hb' * (Wb \ Hb) + Pb \ Matrix{BigFloat}(LinearAlgebra.I, 2, 2)
     Test.@test x ≈ Float64.(precision \ (Hb' * (Wb \ yb))) rtol=2e-14
-    Test.@test covariance ≈ Float64.(precision \ Matrix{BigFloat}(I, 2, 2)) rtol=2e-14
-    Test.@test isposdef(covariance)
+    Test.@test covariance ≈ Float64.(precision \ Matrix{BigFloat}(LinearAlgebra.I, 2, 2)) rtol=2e-14
+    Test.@test LinearAlgebra.isposdef(covariance)
     for bad in ([1.0, Inf, 1.0], [1.0, NaN, 1.0], [1.0, 0.0, 1.0])
         Test.@test_throws ArgumentError C.solve(C.RegularizedLeastSquares(nothing), H, y, bad)
     end
@@ -51,10 +51,10 @@ Test.@testset "NNLS termination and optimality" begin
         Test.@test minimum(gradient) >= -1e-12 * scale
         Test.@test maximum(abs, info.x .* gradient) <= 1e-12 * scale^2
     end
-    info = C._nnls(Matrix{Float64}(I, 2, 2), ones(2); maxiter=0, return_info=true)
+    info = C._nnls(Matrix{Float64}(LinearAlgebra.I, 2, 2), ones(2); maxiter=0, return_info=true)
     Test.@test !info.converged
     Test.@test info.iterations == 0
-    Test.@test_throws ErrorException C._nnls(Matrix{Float64}(I, 2, 2), ones(2); maxiter=0)
+    Test.@test_throws ErrorException C._nnls(Matrix{Float64}(LinearAlgebra.I, 2, 2), ones(2); maxiter=0)
     Test.@test C._nnls(zeros(3, 2), ones(3)) == zeros(2)
     Test.@test_throws ArgumentError C._nnls([1.0 NaN], [1.0])
 end
@@ -68,9 +68,9 @@ Test.@testset "Relative fitting with zero observations" begin
     Test.@test all(isfinite, p)
     Test.@test all(isfinite, covariance)
     Test.@test p[1] < 1e-12
-    x, covariance, info = C.solve(C.NonNegativeLeastSquares(), Matrix{Float64}(I, 2, 2), ones(2), nothing;
+    x, covariance, info = C.solve(C.NonNegativeLeastSquares(), Matrix{Float64}(LinearAlgebra.I, 2, 2), ones(2), nothing;
                                   maxiter=0, return_info=true)
     Test.@test !info.converged
     Test.@test covariance === nothing
-    Test.@test_throws ErrorException C.solve(C.NonNegativeLeastSquares(), Matrix{Float64}(I, 2, 2), ones(2), nothing; maxiter=0)
+    Test.@test_throws ErrorException C.solve(C.NonNegativeLeastSquares(), Matrix{Float64}(LinearAlgebra.I, 2, 2), ones(2), nothing; maxiter=0)
 end

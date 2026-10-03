@@ -14,7 +14,7 @@ function __init__()
 end
 
 """Bytes of monomial scratch the forward stage holds while it transforms a batch of them."""
-const FORWARD_BATCH_BYTES = Ref(1 << 28)
+const FORWARD_BATCH_BYTES = Ref(1 << 25)
 
 """
     _pad_dims(schedule, r_max) -> NTuple{Du, Int}
@@ -167,12 +167,21 @@ end
 # ---------------------------------------------------------------------------------------------------
 
 SFC.transform_engine(sf, data::AbstractMatrix, s::SFC.AbstractSeparableSchedule, dist_be, vD::Val, vV::Val, vK::Val,
-                     valid, weights, tag; to = identity) =
-    _transform_prepare(sf, data, s, dist_be, vD, vV, vK, valid, weights, tag; to)
+                     valid, weights, tag; to = identity, workspace = nothing, slice::NTuple{2, Int} = (1, 1)) =
+    _transform_prepare(sf, data, s, dist_be, vD, vV, vK, valid, weights, tag; to,
+                       forward = _kept_forward(workspace, slice...), workspace)
 
+"""
+    _transform_prepare(sf, data, schedule, distance_bins, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag; to, forward, workspace)
+
+The engine's state for one field. `forward(dp, FT, P, layout, keys) -> (stage, spectra, all)` supplies the
+forward stage's scratch and the buffer the field's spectra are written into, `all` being the array `spectra`
+is a slice of; a non-uniform FFT borrows its plan from `workspace`. `layout` is the spectra's
+([`_forward_layout`](@ref)), `nothing` for a non-uniform FFT's.
+"""
 function _transform_prepare(
     sf, data::AbstractMatrix, s::SFC.AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K},
-    valid, weights, tag; to = identity,
+    valid, weights, tag; to = identity, forward = _kept_forward(nothing, 1, 1), workspace = nothing,
 ) where {D, V, K}
     SFT.is_polynomial_operator(sf) || throw(ArgumentError(
         "$(typeof(sf)) is not a polynomial in the increment, so the transform cannot produce it. " *
@@ -189,74 +198,175 @@ function _transform_prepare(
     dp = to(dp0)
     vp = vp0 isa SFC.AllValid ? vp0 : to(Vector{Bool}(vp0))
     wp = wp0 isa SFC.NoWeights ? wp0 : to(wp0)
-    fwd, keys, flat = _slab_transforms(tag, s, dp, vp, wp, su, P, Val(W), Val(p); to)
-    key_index = Dict(k => i for (i, k) in enumerate(keys))
+    fwd, keys, spectra, layout = _slab_transforms(tag, s, dp, vp, wp, su, P, Val(W), Val(p); to, forward, workspace)
     transport = SFC.lag_transport(s)
-    columns = SFC._columns(transport, Val(W), Val(p), key_index)
+    columns, vN = SFC._sf_columns(sf, transport, Val(W), keys)
     # the count column: the two masks' correlation, the weighted pair mass, or a soft-binned kernel mass
     soft = SFC._soft_binned(s)
     masked = !(valid isa SFC.AllValid) || !(wp isa SFC.NoWeights) || soft
-    masked && push!(columns, [(1, key_index[keys[1]], key_index[keys[1]])])
-    N = SFC._inverse_count(transport, W, p)
+    masked && push!(columns, [(1, 1, 1)])
     weighted = (wp isa SFC.NoWeights && !soft) ? Val(false) : Val(true)
-    return (; s, su, P, r_max, fwd, flat, columns, masked, weighted, transport, vW = Val(W), vP = Val(p),
-            vN = Val(N))
+    return (; s, su, P, r_max, fwd, spectra, layout, columns, masked, weighted, transport, vW = Val(W), vP = Val(p), vN)
 end
 
-# Every monomial of degree ≤ Pm of every slab, transformed; the first key is the mask. Each monomial is
-# built for all slabs in one broadcast and all slabs are transformed in one batch, so the launch count
-# scales with the monomials alone. A scattered schedule's single slab is transformed by the non-uniform
-# FFT provider.
+"""
+    _kept_forward(workspace, t, nt)
+
+The `forward` source of slice `t` of `nt`: one forward stage, and the spectra of every slice as one
+`(blk, nchunks, ngroups, nt)` array, kept in `workspace` — allocated for this call without one.
+"""
+_kept_forward(workspace, t::Int, nt::Int) = (dp, FT, P, lay, keys) -> begin
+    family = _array_family(dp)
+    stage = SFC._kept!(workspace, :forward_stage, (family, FT, P, lay.chunk, lay.last_nb, lay.group, lay.last_ng,
+                                                   Tuple(keys)),
+                       () -> _forward_stage(dp, FT, P, lay, keys))
+    whole = SFC._kept!(workspace, :spectra, (family, FT, lay.blk, lay.nchunks, lay.ngroups, nt),
+                       () -> similar(parent(dp), Complex{FT}, lay.blk, lay.nchunks, lay.ngroups, nt))
+    (stage, view(whole, :, :, :, t), whole)
+end
+
+"""The kind of array `similar(parent(dp), …)` builds, whatever wraps `dp`."""
+_array_family(dp) = typeof(similar(parent(dp), Bool, 0))
+
+"""
+    _with_workspace(f, workspace)
+
+`f(ws)` with the caller's workspace, or with one this call owns, whose transform plans are finalized when the
+call returns.
+"""
+_with_workspace(f, workspace::SFC.TransformWorkspace) = f(workspace)
+function _with_workspace(f, ::Nothing)
+    ws = SFC.TransformWorkspace()
+    try
+        return f(ws)
+    finally
+        SFC._release_plans!(ws)
+    end
+end
+
+SFC._release_plan!(p::AbstractFFTs.ScaledPlan) = SFC._release_plan!(p.p)
+SFC._release_plan!(p::AbstractFFTs.Plan) = finalize(p)
+
+"""
+    _lent_forward(workspace, lent)
+
+The `forward` source of an executor sweeping one slice at a time: a stage and one slice's spectra borrowed
+from `workspace`'s pool, recorded in `lent[]` for [`_return_forward!`](@ref).
+"""
+_lent_forward(workspace, lent::Base.RefValue) = (dp, FT, P, lay, keys) -> begin
+    sizes = (:forward, _array_family(dp), FT, P, lay.chunk, lay.last_nb, lay.group, lay.last_ng, Tuple(keys), lay.blk,
+             lay.nchunks, lay.ngroups)
+    set = SFC._borrow!(workspace, sizes, () -> _kept_forward(nothing, 1, 1)(dp, FT, P, lay, keys))
+    lent[] = sizes => set
+    set
+end
+
+_return_forward!(workspace, lent::Base.RefValue) =
+    lent[] === nothing || SFC._give_back!(workspace, first(lent[]), last(lent[]))
+
+"""Bytes each block of forward spectra starts on: the widest alignment an FFT library plans a transform for."""
+const SPECTRA_ALIGNMENT = 64
+
+"""
+    _forward_layout(P, nslabs, nkeys, FT) -> (; half, L, chunk, nchunks, last_nb, group, ngroups, last_ng, blk)
+
+The shape of a field's forward spectra: `nslabs` slabs of half-spectra `half` (`L` entries) for each of `nkeys`
+monomials, in blocks of `blk` entries each holding a chunk of `chunk` slabs (the last of `nchunks` holding
+`last_nb`) for each of a group of `group` monomials (the last of `ngroups` holding `last_ng`), slab fastest.
+A block holds as many (slab, monomial) transforms as `FORWARD_BATCH_BYTES` admits: every monomial of a chunk of
+slabs, or one slab's monomials in groups when a slab's transforms do not fit together.
+"""
+function _forward_layout(P::NTuple, nslabs::Int, nkeys::Int, ::Type{FT}) where {FT}
+    half = (P[1] ÷ 2 + 1, Base.tail(P)...)
+    L = prod(half)
+    units = clamp(FORWARD_BATCH_BYTES[] ÷ max(prod(P) * sizeof(FT) + L * sizeof(Complex{FT}), 1), 1, nslabs * nkeys)
+    chunk, group = units >= nkeys ? (min(nslabs, units ÷ nkeys), nkeys) : (1, units)
+    nchunks, ngroups = cld(nslabs, chunk), cld(nkeys, group)
+    blk = cld(chunk * group * L * sizeof(Complex{FT}), SPECTRA_ALIGNMENT) * SPECTRA_ALIGNMENT ÷ sizeof(Complex{FT})
+    return (; half, L, chunk, nchunks, last_nb = nslabs - (nchunks - 1) * chunk, group, ngroups,
+            last_ng = nkeys - (ngroups - 1) * group, blk)
+end
+
+# The forward stage's scratch: the padded monomials of one block, the plans of a full block and of the last
+# block, which alone may hold fewer transforms, and the monomial keys. A plan applies to a view of `held` with
+# the strides it was planned for.
+function _forward_stage(dp, ::Type{FT}, P::NTuple{Dg}, lay, keys) where {FT, Dg}
+    colons = ntuple(_ -> Colon(), Val(Dg))
+    n, n_last = lay.chunk * lay.group, lay.last_nb * lay.last_ng
+    held = similar(parent(dp), FT, P..., n)
+    full = view(held, colons..., 1:n)
+    last = view(held, colons..., 1:n_last)
+    plan = AbstractFFTs.plan_rfft(full, 1:Dg)
+    plan_last = n_last == n ? plan : AbstractFFTs.plan_rfft(last, 1:Dg)
+    return (; held, full, last, plan, plan_last, keys = copyto!(similar(parent(dp), eltype(keys), length(keys)), keys))
+end
+
+# Every monomial of degree ≤ Pm of every slab, transformed; the first key is the mask. Each block of the
+# spectra is built in one broadcast and transformed in one batch straight into its place, so the launch count
+# scales with the blocks alone. A scattered schedule's single slab is transformed by the non-uniform FFT
+# provider.
 function _slab_transforms(
     ::SB.AbstractFastFourierTransformSpectralBackend, s::SFC.AbstractSeparableSchedule, dp, vp, wp, su, P,
-    ::Val{W}, ::Val{Pm}; to,
+    ::Val{W}, ::Val{Pm}; to, forward, workspace,
 ) where {W, Pm}
     keys = SFC._monomial_keys(Val(W), Val(Pm))
     FT = float(eltype(dp))
-    Dg = length(P)
     nslabs = SFC.n_slabs(s)
-    nkeys = length(keys)
-    half = (P[1] ÷ 2 + 1, Base.tail(P)...)
-    colons = ntuple(_ -> Colon(), Dg)
-    cells = map(n -> 1:n, su.dims)
-    # The sweep reads the spectra at every slab pair, so they are all kept; the monomials are scratch and
-    # are held one bounded batch of slabs at a time.
-    per_slab = prod(P) * sizeof(FT) + prod(half) * sizeof(Complex{FT})
-    chunk = clamp(FORWARD_BATCH_BYTES[] ÷ max(per_slab, 1), 1, nslabs)
-    spec = similar(parent(dp), Complex{FT}, half..., nkeys * nslabs)
-    held = similar(parent(dp), FT, P..., chunk)
-    plan = AbstractFFTs.plan_rfft(held, 1:Dg)
-    # Execute every transform into the same allocation so FFTW sees the plan's
-    # alignment class even when a destination slab begins at an odd complex offset.
-    transformed = similar(spec, half..., chunk)
-    # One monomial buffer for the whole key loop: `m` is scratch that the batch loop below reads
-    # and nothing keeps, and at 1024 x 1024 a fresh one per key is 8 MiB of page traffic on a
-    # route whose cost is memory.
-    mbuf = similar(parent(dp), FT, size(dp, 2))
-    for k in 1:nkeys
-        m = reshape(SFC._held_monomial_vector!(mbuf, dp, vp, wp, keys[k]), su.dims..., nslabs)
-        base = (k - 1) * nslabs
-        for lo in 1:chunk:nslabs
-            hi = min(lo + chunk - 1, nslabs)
-            nb = hi - lo + 1
-            fill!(held, zero(FT))   # the padding, and the unused slabs of a short last batch
-            view(held, cells..., 1:nb) .= view(m, colons..., lo:hi)
-            LA.mul!(transformed, plan, held)
-            view(spec, colons..., (base + lo):(base + hi)) .= view(transformed, colons..., 1:nb)
-        end
+    lay = _forward_layout(P, nslabs, length(keys), FT)
+    stage, spectra, whole = forward(dp, FT, P, lay, keys)
+    _fill_spectra!(spectra, stage, dp, vp, wp, su, P, lay)
+    fwd = [[_slab_spectrum(spectra, lay, I, k) for k in eachindex(keys)] for I in 1:nslabs]
+    return fwd, keys, whole, lay
+end
+
+"""Slab `I`'s half-spectrum of monomial `k` in the forward spectra of layout `lay`."""
+@inline function _slab_spectrum(spectra, lay, I::Int, k::Int)
+    o, c, s = SFC._slab_offsets(lay, I)
+    g, q = SFC._key_group(lay, k)
+    return reshape(view(spectra, (o + q * s) .+ (1:lay.L), c, g), lay.half)
+end
+
+"""
+The masked, weighted monomial at `I = (position in a padded slab..., slab, monomial)` of a block holding slabs from
+`lo` for each monomial from `keys[k0]`: `w_k Π_c data[c, k]` in a cell, selected by the mask (an empty cell may hold
+NaN), and zero in the padding.
+"""
+@inline function _block_monomial(I::CartesianIndex, dp, vp, wp, keys, dims::NTuple{Dg, Int}, lo::Int, k0::Int,
+                                 ::Type{FT}) where {Dg, FT}
+    t = Tuple(I)
+    pos = ntuple(d -> t[d], Val(Dg))
+    all(map(<=, pos, dims)) || return zero(FT)
+    col = LinearIndices(dims)[pos...] + (lo + t[Dg + 1] - 2) * prod(dims)
+    (vp isa SFC.AllValid || @inbounds(vp[col])) || return zero(FT)
+    v = one(FT)
+    for c in @inbounds(keys[k0 + t[Dg + 2] - 1])
+        c == 0 || (v *= @inbounds(dp[c, col]))
     end
-    fwd = map(1:nslabs) do I
-        [view(spec, colons..., (k - 1) * nslabs + I) for k in 1:nkeys]
+    return wp isa SFC.NoWeights ? v : v * @inbounds(wp[col])
+end
+
+function _fill_spectra!(spectra, stage, dp, vp, wp, su, P, lay)
+    FT = eltype(stage.held)
+    flat = vec(stage.held)
+    for g in 1:lay.ngroups, c in 1:lay.nchunks
+        nb = c == lay.nchunks ? lay.last_nb : lay.chunk
+        ng = g == lay.ngroups ? lay.last_ng : lay.group
+        n = nb * ng
+        held = reshape(view(flat, 1:(n * prod(P))), P..., nb, ng)
+        held .= _block_monomial.(CartesianIndices(held), Ref(dp), Ref(vp), Ref(wp), Ref(stage.keys), Ref(su.dims),
+                                 (c - 1) * lay.chunk + 1, (g - 1) * lay.group + 1, FT)
+        block = reshape(view(spectra, 1:(n * lay.L), c, g), lay.half..., n)
+        n == lay.chunk * lay.group ? LA.mul!(block, stage.plan, stage.full) : LA.mul!(block, stage.plan_last, stage.last)
     end
-    return fwd, keys, spec
+    return nothing
 end
 
 function _slab_transforms(
     tag::SB.AbstractNonUniformFastFourierTransformSpectralBackend, s::SFC.ScatteredModesSchedule, dp, vp, wp, su, P,
-    ::Val{W}, ::Val{Pm}; to,
+    ::Val{W}, ::Val{Pm}; to, forward, workspace,
 ) where {W, Pm}
     keys = SFC._monomial_keys(Val(W), Val(Pm))
-    return [SFC.nufft_monomial_transforms(tag, s, dp, vp, wp, keys, Val(Pm); to)], keys, nothing
+    return [SFC.nufft_monomial_transforms(tag, s, dp, vp, wp, keys, Val(Pm); to, workspace)], keys, nothing, nothing
 end
 
 # The per-executor scratch for `ncols` columns, in the transforms' array family: the buffers and the
@@ -279,10 +389,15 @@ function _inverse_plan(eng, ncols::Int)
     end
 end
 
+"""The `(make, done)` scratch source of a sweep's executors for `ncols` columns (see `SFC._executor_scratch`)."""
+_inverse_scratch(eng, ncols::Int, workspace, backend) =
+    SFC._executor_scratch(workspace, backend, (:inverse, typeof(eng.fwd[1][1]), size(eng.fwd[1][1]), eng.P, ncols),
+                          _inverse_plan(eng, ncols))
+
 function _transform_item!(
-    sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, eng, item::NTuple{4, Int}, scratch, plan,
+    sums::AbstractArray, counts::AbstractArray, sf, eng, item::NTuple{4, Int}, scratch, plan,
     nb, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
-) where {OT, CT, D, V, K, W, Po, N}
+) where {D, V, K, W, Po, N}
     out = _pair_inverse!(scratch, eng.fwd[item[1]], eng.fwd[item[2]], eng.columns)
     return _transform_lags!(sums, counts, sf, eng, out, item, plan, nb,
                             Val(D), Val(V), Val(K), Val(W), Val(Po), Val(N))
@@ -292,9 +407,9 @@ end
 # pair's lags. A share reads `out` and never writes it, so the pair's inverse is computed once and
 # the shares run concurrently over it.
 function _transform_lags!(
-    sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, eng, out, item::NTuple{4, Int}, plan,
+    sums::AbstractArray, counts::AbstractArray, sf, eng, out, item::NTuple{4, Int}, plan,
     nb, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
-) where {OT, CT, D, V, K, W, Po, N}
+) where {D, V, K, W, Po, N}
     I, J, part, n_parts = item
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
@@ -313,8 +428,7 @@ function _transform_lags!(
         val = SFC.with_frames(tr, geometry) do frames
             SFC._lag_value(tr, sf, out, idx, scale, frames, inv_r, Val(W), Val(Po), Val(N), Val(V), Val(K))
         end
-        sums[b] += OT(factor * val)
-        counts[b] += CT(n_pairs)
+        SFC._bin_add!(SFC._plain_add!, sums, counts, factor * val, n_pairs, b)
     end
     return nothing
 end
@@ -362,21 +476,22 @@ function _transform_lags!(
 end
 
 function SFC.gridded_sweep!(
-    sums::AbstractVector, counts::AbstractVector, sf::SFT.AbstractPairwiseStructureFunctionType,
+    sums::AbstractArray, counts::AbstractArray, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::SFC.AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K},
     tag::SB.AbstractFastFourierTransformSpectralBackend;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
 ) where {D, V, K}
     SFC._require_backend(backend)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
-    length(sums) == nb && length(counts) == nb || throw(DimensionMismatch(
-        "sums and counts must have length $nb; got $(length(sums)) and $(length(counts))",
-    ))
+    SFC._check_hist_shape(sums, counts, sf, nb)
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
     SFC._assert_grid_counts(s, counts, size(data, 2), w)
-    _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w, tag,
-                      nothing)
+    _with_workspace(workspace) do ws
+        _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w, tag,
+                          nothing, ws)
+    end
     return sums, counts
 end
 
@@ -385,9 +500,11 @@ function SFC.gridded_sweep!(
     data::AbstractMatrix, s::SFC.AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K},
     tag::SB.AbstractFastFourierTransformSpectralBackend;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
-    second_axis::SFC.SeparationAngleAxis,
+    workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
+    second_axis::SFC.AbstractSecondAxisSource,
 ) where {D, V, K}
     SFC._require_backend(backend)
+    _transform_axis(second_axis)
     SFC._require_directional(s)
     SFC._check_half_turn_counts(eltype(counts), s, dist_be)
     plan = SFC.squared_digitize_plan(dist_be)
@@ -399,8 +516,10 @@ function SFC.gridded_sweep!(
     ))
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
     SFC._assert_grid_counts(s, counts, size(data, 2), w)
-    _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w, tag,
-                      (axis_edges, na, second_axis))
+    _with_workspace(workspace) do ws
+        _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w, tag,
+                          (axis_edges, na, second_axis), ws)
+    end
     return sums, counts
 end
 
@@ -410,21 +529,22 @@ end
 # ---------------------------------------------------------------------------------------------------
 
 function SFC.gridded_sweep!(
-    sums::AbstractVector, counts::AbstractVector{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
+    sums::AbstractArray, counts::AbstractArray{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::SFC.ScatteredModesSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K},
     tag::SB.AbstractNonUniformFastFourierTransformSpectralBackend;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
 ) where {CT, D, V, K}
     SFC._require_backend(backend)
     SFC._assert_mass_counts(CT)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
-    length(sums) == nb && length(counts) == nb || throw(DimensionMismatch(
-        "sums and counts must have length $nb; got $(length(sums)) and $(length(counts))",
-    ))
+    SFC._check_hist_shape(sums, counts, sf, nb)
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
-    _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w, tag,
-                      nothing)
+    _with_workspace(workspace) do ws
+        _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w, tag,
+                          nothing, ws)
+    end
     return sums, counts
 end
 
@@ -433,9 +553,11 @@ function SFC.gridded_sweep!(
     data::AbstractMatrix, s::SFC.ScatteredModesSchedule, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K},
     tag::SB.AbstractNonUniformFastFourierTransformSpectralBackend;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
-    second_axis::SFC.SeparationAngleAxis,
+    workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
+    second_axis::SFC.AbstractSecondAxisSource,
 ) where {CT, D, V, K}
     SFC._require_backend(backend)
+    _transform_axis(second_axis)
     SFC._assert_mass_counts(CT)
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
@@ -445,10 +567,26 @@ function SFC.gridded_sweep!(
         "sums and counts must be ($nb, $na); got $(size(sums)) and $(size(counts))",
     ))
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
-    _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w, tag,
-                      (axis_edges, na, second_axis))
+    _with_workspace(workspace) do ws
+        _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w, tag,
+                          (axis_edges, na, second_axis), ws)
+    end
     return sums, counts
 end
+
+"""Throw unless a transform can bin by `second_axis`: it produces each lag's moment sum, which has one
+direction but not one value."""
+_transform_axis(::SFC.SeparationAngleAxis) = nothing
+_transform_axis(::SFC.InvariantValueAxis) = throw(ArgumentError(
+    "a transform produces the sum of each lag's increment moments, not the values of the lag's pairs, so it " *
+    "cannot bin pairs by value; DirectSumSpectralBackend() or AutoSpectralBackend() sweeps the lags and bins " *
+    "each pair's value.",
+))
+
+"""Whether `Auto` transforms a joint histogram over `second_axis`: never by value, which needs the pairs."""
+_auto_joint_transform(::SFC.InvariantValueAxis, sf, s, dist_be, W, valid, weights, backend) = false
+_auto_joint_transform(::SFC.SeparationAngleAxis, sf, s, dist_be, W, valid, weights, backend) =
+    _auto_transform(sf, s, dist_be, W, valid, weights, backend)
 
 _scattered_needs_nufft(tag) = throw(ArgumentError(
     "a ScatteredModesSchedule sums its pairs by non-uniform FFT, which $(nameof(typeof(tag))) does not name; pass " *
@@ -461,7 +599,7 @@ _nufft_needs_scattered(s) = throw(ArgumentError(
 
 for tagT in (:(SB.AbstractFastFourierTransformSpectralBackend), :(SB.AutoSpectralBackend))
     @eval begin
-        SFC.gridded_sweep!(::AbstractVector, ::AbstractVector, ::SFT.AbstractPairwiseStructureFunctionType,
+        SFC.gridded_sweep!(::AbstractArray, ::AbstractArray, ::SFT.AbstractPairwiseStructureFunctionType,
                            ::AbstractMatrix, ::SFC.ScatteredModesSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K},
                            tag::$tagT; kwargs...) where {D, V, K} = _scattered_needs_nufft(tag)
         SFC.gridded_sweep!(::AbstractMatrix, ::AbstractMatrix, ::SFT.AbstractPairwiseStructureFunctionType,
@@ -470,7 +608,7 @@ for tagT in (:(SB.AbstractFastFourierTransformSpectralBackend), :(SB.AutoSpectra
     end
 end
 
-SFC.gridded_sweep!(::AbstractVector, ::AbstractVector, ::SFT.AbstractPairwiseStructureFunctionType, ::AbstractMatrix,
+SFC.gridded_sweep!(::AbstractArray, ::AbstractArray, ::SFT.AbstractPairwiseStructureFunctionType, ::AbstractMatrix,
                    s::SFC.AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K},
                    ::SB.AbstractNonUniformFastFourierTransformSpectralBackend; kwargs...) where {D, V, K} =
     _nufft_needs_scattered(s)
@@ -503,6 +641,11 @@ function _inverse_plan_batch(eng, ncols::Int, nt::Int)
     end
 end
 
+_inverse_scratch_batch(eng, ncols::Int, nt::Int, workspace, backend) =
+    SFC._executor_scratch(workspace, backend,
+                          (:inverse_batch, typeof(eng.fwd[1][1]), size(eng.fwd[1][1]), eng.P, ncols, nt),
+                          _inverse_plan_batch(eng, ncols, nt))
+
 # Fill every slice's columns for slab pair (I, J) and invert them all at once; returns one
 # `(lags, columns)` matrix per slice.
 function _pair_inverse_batch!(scratch, engs::AbstractVector, I::Int, J::Int, columns::AbstractVector)
@@ -529,9 +672,9 @@ function _pair_inverse_batch!(scratch, engs::AbstractVector, I::Int, J::Int, col
 end
 
 function _transform_item_batch!(
-    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, engs, item::NTuple{4, Int}, scratch, plan,
+    sums::AbstractArray, counts::AbstractArray, sf, engs, item::NTuple{4, Int}, scratch, plan,
     nb, ::Val{D}, ::Val{V}, ::Val{K}, ::Val{W}, ::Val{Po}, ::Val{N},
-) where {OT, CT, D, V, K, W, Po, N}
+) where {D, V, K, W, Po, N}
     I, J = item[1], item[2]
     eng = engs[1]
     outs = _pair_inverse_batch!(scratch, engs, I, J, eng.columns)
@@ -554,8 +697,7 @@ function _transform_item_batch!(
                 n_pairs = SFC._named_pairs(eng.weighted, eng.masked, out, idx, ncol, su, h, self_reverse)
                 val = SFC._lag_value(tr, sf, out, idx, scale, frames, inv_r, Val(W), Val(Po), Val(N), Val(V),
                                      Val(K))
-                sums[b, t] += OT(factor * val)
-                counts[b, t] += CT(n_pairs)
+                SFC._bin_add!(SFC._plain_add!, sums, counts, factor * val, n_pairs, b, t)
             end
         end
     end
@@ -603,49 +745,68 @@ function _transform_item_batch!(
 end
 
 # One engine per slice: the slices share the schedule, the padding and the column table, and differ
-# only in the field the forward transforms are taken of.
-function _slice_engines(sf, data::AbstractArray{<:Any, 3}, s, dist_be, vD::Val, vV::Val, vK::Val, valid, weights, tag)
+# only in the field the forward transforms are taken of; their spectra are the slices of one array kept in
+# `workspace`.
+function _slice_engines(sf, data::AbstractArray{<:Any, 3}, s, dist_be, vD::Val, vV::Val, vK::Val, valid, weights, tag,
+                        workspace)
+    nt = size(data, 3)
     return [_transform_prepare(sf, view(data, :, :, t), s, dist_be, vD, vV, vK, SFC._valid_slice(valid, t), weights,
-                               tag) for t in 1:size(data, 3)]
+                               tag; forward = _kept_forward(workspace, t, nt), workspace) for t in 1:nt]
 end
 
 function _transform_sweep_batch!(
     sums, counts, backend::CB.AbstractExecutionBackend, sf, data, s, dist_be, plan, nb, vD::Val, vV::Val,
-    vK::Val, valid, weights, tag, axis,
+    vK::Val, valid, weights, tag, axis, workspace,
 )
     SFC.batch_shares_lag_geometry(s) ||
         return _transform_sweep_slices!(sums, counts, backend, sf, data, s, dist_be, plan, nb, vD, vV, vK,
-                                        valid, weights, tag, axis)
+                                        valid, weights, tag, axis, workspace)
     return _transform_sweep_fused!(sums, counts, backend, sf, data, s, dist_be, plan, nb, vD, vV, vK, valid,
-                                   weights, tag, axis)
+                                   weights, tag, axis, workspace)
 end
 
 function _transform_sweep_fused!(
     sums, counts, backend::CB.AbstractExecutionBackend, sf, data, s, dist_be, plan, nb, ::Val{D}, ::Val{V},
-    ::Val{K}, valid, weights, tag, axis,
+    ::Val{K}, valid, weights, tag, axis, workspace,
 ) where {D, V, K}
-    engs = _slice_engines(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag)
+    engs = _slice_engines(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag, workspace)
     eng = engs[1]
-    make_scratch = _inverse_plan_batch(eng, length(eng.columns), length(engs))
-    items = SFC.sweep_items(s, eng.r_max, SFC.sweep_tasks(backend), false)
-    body! = _item_body_batch(sf, engs, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
-    SFC.sweep_reduce!(sums, counts, backend, items, make_scratch, body!)
+    make_scratch, done = _inverse_scratch_batch(eng, length(eng.columns), length(engs), workspace, backend)
+    try
+        items = SFC.sweep_items(s, eng.r_max, SFC.sweep_tasks(backend), false)
+        body! = _item_body_batch(sf, engs, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
+        SFC.sweep_reduce!(sums, counts, backend, items, make_scratch, body!)
+    finally
+        done()
+    end
     return nothing
 end
 
 # One slice per work item, each with the engine and inverse scratch of a single slice: the
 # arrangement a schedule whose lag geometry is a displacement and a bin takes. Slices are
-# independent and write disjoint output columns, so any backend can execute them, and no slice's
-# engine outlives its item. FFTW serialises plan creation behind its own lock.
+# independent and write disjoint output columns, so any backend can execute them, and each item
+# borrows its buffers for the length of its slice. FFTW serialises plan creation behind its own lock.
 function _transform_sweep_slices!(
     sums, counts, backend::CB.AbstractExecutionBackend, sf, data, s, dist_be, plan, nb, vD::Val, vV::Val,
-    vK::Val, valid, weights, tag, axis,
+    vK::Val, valid, weights, tag, axis, workspace,
 )
-    body! = (ls, lc, t, _) -> _transform_sweep!(
-        _slice_out(ls, t), _slice_out(lc, t), CB.SerialBackend(), sf, view(data, :, :, t), s,
-        dist_be, plan, nb, vD, vV, vK, SFC._valid_slice(valid, t), weights, tag, axis,
-    )
+    ws = SFC._local_workspace(workspace, backend)
+    body! = (ls, lc, t, _) -> _slice_sweep!(_slice_out(ls, t), _slice_out(lc, t), sf, view(data, :, :, t), s,
+                                            dist_be, plan, nb, vD, vV, vK, SFC._valid_slice(valid, t), weights,
+                                            tag, axis, ws)
     SFC.sweep_reduce!(sums, counts, backend, 1:size(data, 3), () -> nothing, body!)
+    return nothing
+end
+
+function _slice_sweep!(sums, counts, sf, data, s, dist_be, plan, nb, vD, vV, vK, valid, weights, tag, axis,
+                       workspace)
+    lent = Ref{Any}(nothing)
+    try
+        _transform_sweep!(sums, counts, CB.SerialBackend(), sf, data, s, dist_be, plan, nb, vD, vV, vK, valid,
+                          weights, tag, axis, workspace; forward = _lent_forward(workspace, lent))
+    finally
+        _return_forward!(workspace, lent)
+    end
     return nothing
 end
 
@@ -662,31 +823,32 @@ _item_body_batch(sf, engs, plan, nb, axis::Tuple, vD, vV, vK, vW, vP, vN) =
 
 _transform_sweep_batch!(
     sums, counts, backend::CB.AbstractGPUBackend, sf, data, s, dist_be, plan, nb, vD::Val, vV::Val, vK::Val,
-    valid, weights, tag, axis,
+    valid, weights, tag, axis, workspace,
 ) = SFC.device_transform_sweep_batch!(sums, counts, backend, sf, data, s, dist_be, plan, nb, vD, vV, vK, valid,
-                                      weights, tag, axis)
+                                      weights, tag, axis, workspace)
 
 const BatchTransformTag = Union{SB.AbstractFastFourierTransformSpectralBackend,
                                 SB.AbstractNonUniformFastFourierTransformSpectralBackend}
 
 function SFC.gridded_sweep_batch!(
-    sums::AbstractMatrix, counts::AbstractMatrix{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
+    sums::AbstractArray, counts::AbstractArray, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractArray{<:Any, 3}, s::SFC.AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K},
     tag::BatchTransformTag;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
-) where {CT, D, V, K}
+    workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
+) where {D, V, K}
     SFC._require_backend(backend)
     _batch_tag_schedule(tag, s)
     nt = SFC._check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
     plan = SFC.squared_digitize_plan(dist_be)
     nb = SFC.n_histogram_bins(plan)
-    size(sums) == (nb, nt) && size(counts) == (nb, nt) || throw(DimensionMismatch(
-        "sums and counts must be ($nb, $nt); got $(size(sums)) and $(size(counts))",
-    ))
+    SFC._check_hist_shape(sums, counts, sf, nb, nt)
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
     SFC._assert_grid_counts(s, counts, size(data, 2), w)
-    _transform_sweep_batch!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w,
-                            tag, nothing)
+    _with_workspace(workspace) do ws
+        _transform_sweep_batch!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid,
+                                w, tag, nothing, ws)
+    end
     return sums, counts
 end
 
@@ -695,9 +857,11 @@ function SFC.gridded_sweep_batch!(
     data::AbstractArray{<:Any, 3}, s::SFC.AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, ::Val{V},
     ::Val{K}, tag::BatchTransformTag;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
-    second_axis::SFC.SeparationAngleAxis,
+    workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
+    second_axis::SFC.AbstractSecondAxisSource,
 ) where {CT, D, V, K}
     SFC._require_backend(backend)
+    _transform_axis(second_axis)
     _batch_tag_schedule(tag, s)
     SFC._require_directional(s)
     SFC._check_half_turn_counts(CT, s, dist_be)
@@ -711,8 +875,10 @@ function SFC.gridded_sweep_batch!(
     ))
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
     SFC._assert_grid_counts(s, counts, size(data, 2), w)
-    _transform_sweep_batch!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid, w,
-                            tag, (axis_edges, na, second_axis))
+    _with_workspace(workspace) do ws
+        _transform_sweep_batch!(sums, counts, backend, sf, data, s, dist_be, plan, nb, Val(D), Val(V), Val(K), valid,
+                                w, tag, (axis_edges, na, second_axis), ws)
+    end
     return sums, counts
 end
 
@@ -725,14 +891,14 @@ _batch_tag_schedule(::SB.AbstractNonUniformFastFourierTransformSpectralBackend, 
     _nufft_needs_scattered(s)
 
 function SFC.gridded_sweep_batch!(
-    sums::AbstractMatrix, counts::AbstractMatrix, sf::SFT.AbstractPairwiseStructureFunctionType,
+    sums::AbstractArray, counts::AbstractArray, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractArray{<:Any, 3}, s::SFC.AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K},
     tag::SB.AutoSpectralBackend; valid = SFC.AllValid(), weights = nothing,
-    backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    backend::CB.AbstractExecutionBackend = CB.SerialBackend(), workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
 ) where {D, V, K}
     return _auto_transform(sf, s, dist_be, V * D + K, valid, weights, backend) ?
         SFC.gridded_sweep_batch!(sums, counts, sf, data, s, dist_be, Val(D), Val(V), Val(K),
-                                 _batch_auto_tag(tag, s); valid, weights, backend) :
+                                 _batch_auto_tag(tag, s); valid, weights, backend, workspace) :
         SFC.gridded_lag_sweep_batch!(sums, counts, sf, data, s, dist_be, Val(D), Val(V), Val(K);
                                      valid, weights, backend)
 end
@@ -741,11 +907,12 @@ function SFC.gridded_sweep_batch!(
     sums::AbstractArray{<:Any, 3}, counts::AbstractArray{<:Any, 3}, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractArray{<:Any, 3}, s::SFC.AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, ::Val{V},
     ::Val{K}, tag::SB.AutoSpectralBackend; valid = SFC.AllValid(), weights = nothing,
-    backend::CB.AbstractExecutionBackend = CB.SerialBackend(), second_axis::SFC.SeparationAngleAxis,
+    backend::CB.AbstractExecutionBackend = CB.SerialBackend(), second_axis::SFC.AbstractSecondAxisSource,
+    workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
 ) where {D, V, K}
-    return _auto_transform(sf, s, dist_be, V * D + K, valid, weights, backend) ?
+    return _auto_joint_transform(second_axis, sf, s, dist_be, V * D + K, valid, weights, backend) ?
         SFC.gridded_sweep_batch!(sums, counts, sf, data, s, dist_be, axis_be, Val(D), Val(V), Val(K),
-                                 _batch_auto_tag(tag, s); valid, weights, backend, second_axis) :
+                                 _batch_auto_tag(tag, s); valid, weights, backend, second_axis, workspace) :
         SFC.gridded_lag_sweep_batch!(sums, counts, sf, data, s, dist_be, axis_be, Val(D), Val(V), Val(K);
                                      valid, weights, backend, second_axis)
 end
@@ -770,18 +937,55 @@ _tensor_tag(tag::SB.AbstractAutoSpectralBackend, ::SFC.ScatteredModesSchedule) =
 const TensorTag = Union{SB.AbstractFastFourierTransformSpectralBackend, SB.AbstractNonUniformFastFourierTransformSpectralBackend,
                         SB.AbstractAutoSpectralBackend}
 
-function _tensor_engine(order::Val{P}, data, s, dist_be, ::Val{D}, valid, weights, counts, tag) where {P, D}
-    tag = _tensor_tag(tag, s)
+# The pair weights and the tag of a tensor sweep, after its boundary's count check.
+function _tensor_boundary(data, s, counts, weights, tag)
     w = SFC._pair_weights(weights, size(data, 2), float(eltype(data)))
     SFC._assert_grid_counts(s, counts, size(data, 2), w)
-    eng = _transform_prepare(SFT.MomentTensorOperator{P}(), data, s, dist_be, Val(D), Val(1), Val(0), valid, w, tag)
-    return eng, binomial(D + P - 1, P)
+    return w, _tensor_tag(tag, s)
+end
+
+# Every lag's rank-`P` symmetric store `(n_sym, size(counts)...)`, binned on `backend` and added into the
+# dense `sums`; `axis` is `nothing` or `(axis_edges, n_axis, second_axis)`.
+function _tensor_run!(sums, counts, ::Val{P}, data, s, dist_be, plan, nb, axis, ::Val{D}, valid, w, tag,
+                      backend::CB.AbstractExecutionBackend, workspace) where {P, D}
+    sf = SFT.MomentTensorOperator{P}()
+    eng = _transform_prepare(sf, data, s, dist_be, Val(D), Val(1), Val(0), valid, w, tag;
+                             forward = _kept_forward(workspace, 1, 1), workspace)
+    make_scratch, done = _inverse_scratch(eng, length(eng.columns), workspace, backend)
+    try
+        _tensor_pairs!(sums, counts, sf, eng, plan, nb, axis, Val(D), Val(P), backend, make_scratch)
+    finally
+        done()
+    end
+    return nothing
+end
+
+function _tensor_pairs!(sums, counts, sf, eng, plan, nb, axis, ::Val{D}, ::Val{P}, backend, make_scratch) where {D, P}
+    Ns = binomial(D + P - 1, P)
+    items = SFC.sweep_items(eng.s, eng.r_max, SFC.sweep_tasks(backend), false)
+    sym = zeros(eltype(sums), Ns, size(counts)...)
+    body! = (ls, lc, it, scratch) -> _transform_tensor_item!(ls, lc, sf, eng, it, scratch, plan, nb, axis, Val(D),
+                                                             eng.vW, eng.vP, eng.vN, Val(Ns))
+    SFC.sweep_reduce!(sym, counts, backend, items, make_scratch, body!)
+    SFC._expand_symmetric!(sums, sym, Val(D), Val(P))
+    return nothing
+end
+
+function _tensor_run!(sums, counts, ::Val{P}, data, s, dist_be, plan, nb, axis, ::Val{D}, valid, w, tag,
+                      backend::CB.AbstractGPUBackend, workspace) where {P, D}
+    SFC._require_device_outputs(backend, sums, counts)
+    sym = SFC._result_zeros(backend, eltype(sums), binomial(D + P - 1, P), size(counts)...)
+    SFC.device_transform_sweep!(sym, counts, backend, SFT.MomentTensorOperator{P}(), data, s, dist_be, plan, nb,
+                                Val(D), Val(1), Val(0), valid, w, tag, axis, workspace)
+    SFC._expand_symmetric!(sums, sym, Val(D), Val(P))
+    return nothing
 end
 
 function SFC.gridded_tensor_sweep!(
     sums::AbstractArray{OT}, counts::AbstractVector{CT}, order::Val{P}, data::AbstractMatrix,
     s::SFC.AbstractSeparableSchedule, dist_be, ::Val{D}, tag::TensorTag;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
 ) where {OT, CT, P, D}
     SFC._require_backend(backend)
     plan = SFC.squared_digitize_plan(dist_be)
@@ -789,15 +993,10 @@ function SFC.gridded_tensor_sweep!(
     size(sums) == (ntuple(_ -> D, P)..., nb) && length(counts) == nb || throw(DimensionMismatch(
         "sums must be $((ntuple(_ -> D, P)..., nb)) and counts of length $nb; got $(size(sums)) and $(length(counts))",
     ))
-    eng, Ns = _tensor_engine(order, data, s, dist_be, Val(D), valid, weights, counts, tag)
-    make_scratch = _inverse_plan(eng, length(eng.columns))
-    items = SFC.sweep_items(s, eng.r_max, SFC.sweep_tasks(backend), false)
-    sf = SFT.MomentTensorOperator{P}()
-    sym = zeros(OT, Ns, nb)
-    body! = (ls, lc, it, scratch) -> _transform_tensor_item!(ls, lc, sf, eng, it, scratch, plan, nb, nothing,
-                                                             Val(D), eng.vW, eng.vP, eng.vN, Val(Ns))
-    SFC.sweep_reduce!(sym, counts, backend, items, make_scratch, body!)
-    SFC._expand_symmetric!(sums, sym, Val(D), Val(P))
+    w, run_tag = _tensor_boundary(data, s, counts, weights, tag)
+    _with_workspace(workspace) do ws
+        _tensor_run!(sums, counts, order, data, s, dist_be, plan, nb, nothing, Val(D), valid, w, run_tag, backend, ws)
+    end
     return sums, counts
 end
 
@@ -805,6 +1004,7 @@ function SFC.gridded_tensor_sweep!(
     sums::AbstractArray{OT}, counts::AbstractMatrix{CT}, order::Val{P}, data::AbstractMatrix,
     s::SFC.AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, tag::TensorTag;
     valid = SFC.AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
     second_axis::SFC.SeparationAngleAxis,
 ) where {OT, CT, P, D}
     SFC._require_backend(backend)
@@ -817,16 +1017,11 @@ function SFC.gridded_tensor_sweep!(
     size(sums) == (ntuple(_ -> D, P)..., nb, na) && size(counts) == (nb, na) || throw(DimensionMismatch(
         "sums must be $((ntuple(_ -> D, P)..., nb, na)) and counts ($nb, $na); got $(size(sums)) and $(size(counts))",
     ))
-    eng, Ns = _tensor_engine(order, data, s, dist_be, Val(D), valid, weights, counts, tag)
-    make_scratch = _inverse_plan(eng, length(eng.columns))
-    items = SFC.sweep_items(s, eng.r_max, SFC.sweep_tasks(backend), false)
-    sf = SFT.MomentTensorOperator{P}()
-    sym = zeros(OT, Ns, nb, na)
-    body! = (ls, lc, it, scratch) -> _transform_tensor_item!(ls, lc, sf, eng, it, scratch, plan, nb,
-                                                             (axis_edges, na, second_axis), Val(D), eng.vW, eng.vP,
-                                                             eng.vN, Val(Ns))
-    SFC.sweep_reduce!(sym, counts, backend, items, make_scratch, body!)
-    SFC._expand_symmetric!(sums, sym, Val(D), Val(P))
+    w, run_tag = _tensor_boundary(data, s, counts, weights, tag)
+    _with_workspace(workspace) do ws
+        _tensor_run!(sums, counts, order, data, s, dist_be, plan, nb, (axis_edges, na, second_axis), Val(D), valid, w,
+                     run_tag, backend, ws)
+    end
     return sums, counts
 end
 
@@ -894,13 +1089,25 @@ function _transform_tensor_item!(
     return nothing
 end
 
-# The CPU engine: one inverse per slab pair, the lags of each read on the host.
+# The CPU engine: one inverse per slab pair, the lags of each read on the host. `forward` is where the field's
+# spectra go (see `_transform_prepare`).
 function _transform_sweep!(
     sums, counts, backend::CB.AbstractExecutionBackend, sf, data, s, dist_be, plan, nb, ::Val{D}, ::Val{V},
-    ::Val{K}, valid, weights, tag, axis,
+    ::Val{K}, valid, weights, tag, axis, workspace; forward = _kept_forward(workspace, 1, 1),
 ) where {D, V, K}
-    eng = _transform_prepare(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag)
-    make_scratch = _inverse_plan(eng, length(eng.columns))
+    eng = _transform_prepare(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag; forward, workspace)
+    make_scratch, done = _inverse_scratch(eng, length(eng.columns), workspace, backend)
+    try
+        _transform_pairs!(sums, counts, backend, sf, eng, plan, nb, axis, make_scratch, Val(D), Val(V), Val(K))
+    finally
+        done()
+    end
+    return nothing
+end
+
+function _transform_pairs!(sums, counts, backend, sf, eng, plan, nb, axis, make_scratch, ::Val{D}, ::Val{V},
+                           ::Val{K}) where {D, V, K}
+    s = eng.s
     n_tasks = SFC.sweep_tasks(backend)
     pairs = SFC.sweep_items(s, eng.r_max, 1, false)
     if length(pairs) >= n_tasks
@@ -938,9 +1145,9 @@ _lag_body(sf, eng, out, plan, nb, axis::Tuple, vD, vV, vK, vW, vP, vN) =
 # A device runs the engine through the KernelAbstractions extension.
 _transform_sweep!(
     sums, counts, backend::CB.AbstractGPUBackend, sf, data, s, dist_be, plan, nb, vD::Val, vV::Val, vK::Val,
-    valid, weights, tag, axis,
+    valid, weights, tag, axis, workspace,
 ) = SFC.device_transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, vD, vV, vK, valid, weights,
-                                tag, axis)
+                                tag, axis, workspace)
 
 # `Auto` is answered here because only this extension knows what a transform would cost: the sweep
 # visits every lag of every slab pair over the slab's cells, the transform pays one forward transform
@@ -949,8 +1156,8 @@ _transform_sweep!(
 _auto_transform(sf, s, dist_be, W::Int, valid, weights, ::CB.AbstractExecutionBackend) =
     _prefers_transform(sf, s, dist_be, W, valid, weights)
 
-# A device runs only the transform.
-_auto_transform(sf, s, dist_be, W::Int, valid, weights, ::CB.AbstractGPUBackend) = true
+# A device runs the transform for a polynomial operator and the direct sweep for any other.
+_auto_transform(sf, s, dist_be, W::Int, valid, weights, ::CB.AbstractGPUBackend) = SFT.is_polynomial_operator(sf)
 
 function _prefers_transform(sf, s::SFC.AbstractSeparableSchedule, dist_be, W::Int, valid, weights)
     SFT.is_polynomial_operator(sf) || return false
@@ -964,20 +1171,20 @@ function _prefers_transform(sf, s::SFC.AbstractSeparableSchedule, dist_be, W::In
     p = SFT.order(sf)
     n_pairs = SFC.n_enumerated_pairs(s, r_max)
     count_column = (valid isa SFC.AllValid && weights === nothing) ? 0 : 1
-    per_pair = SFC._inverse_count(SFC.lag_transport(s), W, p) + count_column
+    per_pair = SFC._sf_inverse_count(sf, SFC.lag_transport(s), W) + count_column
     transforms = SFC.n_slabs(s) * binomial(W + p, p) + n_pairs * per_pair
     return transforms * n * log2(max(2, n)) < n_pairs * n_lags * SFC.n_cells(su)
 end
 
 function SFC.gridded_sweep!(
-    sums::AbstractVector, counts::AbstractVector, sf::SFT.AbstractPairwiseStructureFunctionType,
+    sums::AbstractArray, counts::AbstractArray, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::SFC.AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K},
     ::SB.AutoSpectralBackend; valid = SFC.AllValid(), weights = nothing,
-    backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
+    backend::CB.AbstractExecutionBackend = CB.SerialBackend(), workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
 ) where {D, V, K}
     return _auto_transform(sf, s, dist_be, V * D + K, valid, weights, backend) ?
         SFC.gridded_sweep!(sums, counts, sf, data, s, dist_be, Val(D), Val(V), Val(K),
-                           SB.FastFourierTransformSpectralBackend(); valid, weights, backend) :
+                           SB.FastFourierTransformSpectralBackend(); valid, weights, backend, workspace) :
         SFC.gridded_lag_sweep!(sums, counts, sf, data, s, dist_be, Val(D), Val(V), Val(K); valid, weights, backend)
 end
 
@@ -986,11 +1193,11 @@ function SFC.gridded_sweep!(
     data::AbstractMatrix, s::SFC.AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K},
     ::SB.AutoSpectralBackend; valid = SFC.AllValid(), weights = nothing,
     backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
-    second_axis::SFC.SeparationAngleAxis,
+    second_axis::SFC.AbstractSecondAxisSource, workspace::Union{Nothing, SFC.TransformWorkspace} = nothing,
 ) where {D, V, K}
-    return _auto_transform(sf, s, dist_be, V * D + K, valid, weights, backend) ?
+    return _auto_joint_transform(second_axis, sf, s, dist_be, V * D + K, valid, weights, backend) ?
         SFC.gridded_sweep!(sums, counts, sf, data, s, dist_be, axis_be, Val(D), Val(V), Val(K),
-                           SB.FastFourierTransformSpectralBackend(); valid, weights, backend, second_axis) :
+                           SB.FastFourierTransformSpectralBackend(); valid, weights, backend, second_axis, workspace) :
         SFC.gridded_lag_sweep!(sums, counts, sf, data, s, dist_be, axis_be, Val(D), Val(V), Val(K);
                                valid, weights, backend, second_axis)
 end

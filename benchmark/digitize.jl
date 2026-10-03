@@ -9,7 +9,7 @@
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
     BinEdges, LinearBinEdges, LogBinEdges, InfPaddedBinEdges
-using Printf: @printf
+using Printf: Printf
 using Random: Random
 
 const N_POINTS = parse(Int, get(ENV, "SF_DIGITIZE_N", "20000"))
@@ -74,7 +74,7 @@ end
 
 function lookup_rows()
     println("lookup: ns per query, typed vs binary search over collect(bins); squared: ns per r², plan vs sqrt + search")
-    @printf("%-8s %-9s %5s  %8s %8s  %8s %8s  %10s %12s\n",
+    Printf.@printf("%-8s %-9s %5s  %8s %8s  %8s %8s  %10s %12s\n",
             "T", "bins", "n", "typed", "search", "squared", "sqrt+srch", "plan µs", "sq plan µs")
     for T in (Float32, Float64), n in (17, 65, 1025), (name, bins) in bin_cases(T, n)
         ref = collect(bins)
@@ -92,14 +92,14 @@ function lookup_rows()
         t_sqref = best_seconds(() -> sqrt_lookup_sum(ref, r2s)) / nq * 1e9
         t_plan = best_seconds(() -> SF.digitize_plan(bins)) * 1e6
         t_sqplan = best_seconds(() -> SF.squared_digitize_plan(bins)) * 1e6
-        @printf("%-8s %-9s %5d  %8.2f %8.2f  %8.2f %8.2f  %10.2f %12.2f\n",
+        Printf.@printf("%-8s %-9s %5d  %8.2f %8.2f  %8.2f %8.2f  %10.2f %12.2f\n",
                 T, name, n, t_typed, t_ref, t_sq, t_sqref, t_plan, t_sqplan)
         flush(stdout)
     end
 end
 
 function s2_rows()
-    @printf("\nS2, serial, %d thread(s), N = %d: ns per pair\n", Threads.nthreads(), N_POINTS)
+    Printf.@printf("\nS2, serial, %d thread(s), N = %d: ns per pair\n", Threads.nthreads(), N_POINTS)
     rng = Random.Xoshiro(2)
     x = rand(rng, 2, N_POINTS)
     u = randn(rng, 2, N_POINTS)
@@ -109,7 +109,7 @@ function s2_rows()
         name == "log plan" && continue
         t = best_seconds(() -> SFC.calculate_structure_function(sf, x, u, bins,
             SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend()))
-        @printf("%-9s %8.3f\n", name, t / pairs * 1e9)
+        Printf.@printf("%-9s %8.3f\n", name, t / pairs * 1e9)
         flush(stdout)
     end
 end

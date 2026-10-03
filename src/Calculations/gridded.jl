@@ -17,29 +17,18 @@ struct AllValid end
 @inline Base.getindex(::AllValid, ::Integer) = true
 
 """
-    field_validity(u[, cell_mask]) -> BitVector or AllValid
+    field_validity(u[, cell_mask]) -> Bool vector or AllValid
 
 Which cells of `u` hold a usable datum: every component finite, and — where a `cell_mask` is given,
-as a grid carries one — the cell marked as existing. `u` is `(components, cells...)` or a `Fields`.
+as a grid carries one — the cell marked as existing. `u` is `(components, cells...)` or a `Fields`; the
+vector is in the array family of `u`.
 
 Returns [`AllValid`](@ref) when nothing is excluded, so a complete field costs nothing downstream.
 """
 function field_validity(u::AbstractArray, cell_mask = nothing)
-    W = size(u, 1)
-    n = length(u) ÷ W
-    uf = reshape(u, W, n)
-    v = trues(n)
-    any_invalid = false
-    @inbounds for k in 1:n
-        ok = true
-        for c in 1:W
-            ok &= isfinite(uf[c, k])
-        end
-        cell_mask === nothing || (ok &= cell_mask[k])
-        v[k] = ok
-        any_invalid |= !ok
-    end
-    return any_invalid ? v : AllValid()
+    v = vec(mapreduce(isfinite, &, reshape(u, size(u, 1), :); dims = 1))
+    cell_mask === nothing || (v .&= cell_mask)
+    return all(v) ? AllValid() : v
 end
 
 field_validity(f::MF.Fields, cell_mask = nothing) = field_validity(MF.packed(f), cell_mask)
@@ -124,16 +113,15 @@ end
 
 """One pair's increment from the packed field: the plain vector for one vector field, else a multi-field."""
 @inline _lag_increment(::Val{D}, ::Val{1}, ::Val{0}, data::AbstractMatrix{T}, k, kp) where {D, T} =
-    SA.SVector{D, T}(ntuple(c -> @inbounds(data[c, kp] - data[c, k]), Val(D)))
+    SA.SVector{D, T}(ntuple(@inline(c -> @inbounds(data[c, kp] - data[c, k])), Val(D)))
 
 @inline function _lag_increment(
     ::Val{D}, ::Val{V}, ::Val{K}, data::AbstractMatrix{T}, k, kp,
 ) where {D, V, K, T}
-    vectors = ntuple(Val(V)) do a
-        o = (a - 1) * D
-        SA.SVector{D, T}(ntuple(d -> @inbounds(data[o + d, kp] - data[o + d, k]), Val(D)))
-    end
-    scalars = ntuple(c -> @inbounds(data[V * D + c, kp] - data[V * D + c, k]), Val(K))
+    vectors = ntuple(@inline(a -> SA.SVector{D, T}(ntuple(@inline(d -> @inbounds(data[(a - 1) * D + d, kp] -
+                                                                                 data[(a - 1) * D + d, k])), Val(D)))),
+                     Val(V))
+    scalars = ntuple(@inline(c -> @inbounds(data[V * D + c, kp] - data[V * D + c, k])), Val(K))
     return MF.FieldIncrement{D, V, K, T}(vectors, scalars)
 end
 
@@ -141,11 +129,8 @@ end
 @inline _split_increment(::Val{D}, ::Val{1}, ::Val{0}, δ::SA.SVector{D}) where {D} = δ
 
 @inline function _split_increment(::Val{D}, ::Val{V}, ::Val{K}, δ::SA.SVector{W, T}) where {D, V, K, W, T}
-    vectors = ntuple(Val(V)) do a
-        o = (a - 1) * D
-        SA.SVector{D, T}(ntuple(d -> @inbounds(δ[o + d]), Val(D)))
-    end
-    scalars = ntuple(c -> @inbounds(δ[V * D + c]), Val(K))
+    vectors = ntuple(@inline(a -> SA.SVector{D, T}(ntuple(@inline(d -> @inbounds(δ[(a - 1) * D + d])), Val(D)))), Val(V))
+    scalars = ntuple(@inline(c -> @inbounds(δ[V * D + c])), Val(K))
     return MF.FieldIncrement{D, V, K, T}(vectors, scalars)
 end
 
@@ -179,10 +164,13 @@ moment tensor of every lag at once and so serves the operators that are polynomi
 is loaded — an extension supplies the transform, and answers `Auto` with a cost comparison because
 only it knows what a transform would cost. `backend` names the hardware, as on the unstructured entry.
 
-With `axis_bins` the histogram is joint in separation and the angle a [`SeparationAngleAxis`](@ref)
-reads from each lag; `sums` and `counts` are then `(n_distance, n_angle)`.
+With `axis_bins` the histogram is joint in separation and `second_axis`: each pair's value
+([`InvariantValueAxis`](@ref)), which only the lag sweep bins, or the angle a
+[`SeparationAngleAxis`](@ref) reads from each lag; `sums` and `counts` are then `(n_distance, n_axis)`.
+With `sf = SinglePassInvariants()` the distance histogram holds the six single-pass invariants,
+`sums` and `counts` `(6, n_distance)`.
 """
-gridded_sweep!(sums::AbstractVector, counts::AbstractVector, sf, data::AbstractMatrix, schedule, distance_bins,
+gridded_sweep!(sums::AbstractArray, counts::AbstractArray, sf, data::AbstractMatrix, schedule, distance_bins,
                ::Val{D}, ::Val{V}, ::Val{K}, ::Union{SB.AbstractDirectSumSpectralBackend, SB.AbstractAutoSpectralBackend}; kwargs...) where {D, V, K} =
     gridded_lag_sweep!(sums, counts, sf, data, schedule, distance_bins, Val(D), Val(V), Val(K); kwargs...)
 
@@ -190,14 +178,14 @@ gridded_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, data::AbstractM
                axis_bins, ::Val{D}, ::Val{V}, ::Val{K}, ::Union{SB.AbstractDirectSumSpectralBackend, SB.AbstractAutoSpectralBackend}; kwargs...) where {D, V, K} =
     gridded_lag_sweep!(sums, counts, sf, data, schedule, distance_bins, axis_bins, Val(D), Val(V), Val(K); kwargs...)
 
-gridded_sweep!(::AbstractVector, ::AbstractVector, sf, ::AbstractMatrix, schedule, distance_bins, ::Val{D}, ::Val{V},
+gridded_sweep!(::AbstractArray, ::AbstractArray, sf, ::AbstractMatrix, schedule, distance_bins, ::Val{D}, ::Val{V},
                ::Val{K}, tag::SB.AbstractSpectralBackend; kwargs...) where {D, V, K} = _no_transform_loaded(tag, schedule)
 
 gridded_sweep!(::AbstractMatrix, ::AbstractMatrix, sf, ::AbstractMatrix, schedule, distance_bins, axis_bins, ::Val{D},
                ::Val{V}, ::Val{K}, tag::SB.AbstractSpectralBackend; kwargs...) where {D, V, K} =
     _no_transform_loaded(tag, schedule)
 
-gridded_sweep!(::AbstractVector, ::AbstractVector, sf, ::AbstractMatrix, schedule, distance_bins, ::Val{D}, ::Val{V},
+gridded_sweep!(::AbstractArray, ::AbstractArray, sf, ::AbstractMatrix, schedule, distance_bins, ::Val{D}, ::Val{V},
                ::Val{K}, spectral_backend; kwargs...) where {D, V, K} = _not_a_spectral_tag(spectral_backend)
 
 gridded_sweep!(::AbstractMatrix, ::AbstractMatrix, sf, ::AbstractMatrix, schedule, distance_bins, axis_bins, ::Val{D},
@@ -209,7 +197,7 @@ _not_a_spectral_tag(x) = throw(ArgumentError(
 ))
 
 # The array and `Fields` forms of both sweeps route through `_packed`, so every kernel sees one layout.
-function gridded_sweep!(sums::AbstractVector, counts::AbstractVector, sf, u::AbstractArray, schedule,
+function gridded_sweep!(sums::AbstractArray, counts::AbstractArray, sf, u::AbstractArray, schedule,
                         distance_bins, ::Val{D}, spectral_backend; kwargs...) where {D}
     size(u, 1) == D || throw(DimensionMismatch("field has $(size(u, 1)) components, declared $D"))
     return gridded_sweep!(sums, counts, sf, reshape(u, D, :), schedule, distance_bins, Val(D), Val(1),
@@ -233,7 +221,7 @@ gridded_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, f::MF.Fields{D,
     gridded_sweep!(sums, counts, sf, MF.packed(f), schedule, distance_bins, axis_bins, Val(D), Val(V),
                    Val(K), spectral_backend; kwargs...)
 
-function gridded_lag_sweep!(sums::AbstractVector, counts::AbstractVector, sf, u::AbstractArray,
+function gridded_lag_sweep!(sums::AbstractArray, counts::AbstractArray, sf, u::AbstractArray,
                             schedule, distance_bins, ::Val{D}; kwargs...) where {D}
     size(u, 1) == D || throw(DimensionMismatch("field has $(size(u, 1)) components, declared $D"))
     return gridded_lag_sweep!(sums, counts, sf, reshape(u, D, :), schedule, distance_bins, Val(D),
@@ -560,6 +548,7 @@ resolves to its own `Val`.
 @generated function _with_images(f, dx, amb::NTuple{Dg, Bool}) where {Dg}
     branches = [:(K == $k && return f(_lag_images(dx, amb, Val($k)))) for k in 0:(Dg - 1)]
     return quote
+        $(Expr(:meta, :inline))
         K = count(amb)
         $(branches...)
         return f(_lag_images(dx, amb, Val($Dg)))
@@ -725,23 +714,110 @@ sweep_reduce!(sums, counts, backend::CB.AbstractExecutionBackend, items, make_sc
 function threaded_sweep_reduce! end
 
 """
-    transform_engine(sf, data, schedule, distance_bins, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag; to = identity)
+    transform_engine(sf, data, schedule, distance_bins, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag; to = identity, workspace = nothing, slice = (1, 1))
 
 The transform engine's prepared state for a field: the forward transforms of every masked, weighted
 monomial of every slab — by FFT for a grid's slabs, by non-uniform FFT for a
 [`ScatteredModesSchedule`](@ref), as the spectral `tag` names — the inverse columns and the lag
-bookkeeping, every array moved by `to`. Supplied by the AbstractFFTs extension.
+bookkeeping, every array moved by `to`. The field is slice `t` of `slice = (t, nt)`: its FFT spectra are
+slice `t` of one `(blk, nchunks, n_monomials, nt)` array kept in `workspace` (the engine's `spectra`),
+each chunk of slabs contiguous at 64-byte alignment. Supplied by the AbstractFFTs extension.
 """
 function transform_engine end
 
 """
-    device_transform_sweep!(sums, counts, backend, sf, data, schedule, distance_bins, plan, nb, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag, axis)
+    device_transform_sweep!(sums, counts, backend, sf, data, schedule, distance_bins, plan, nb, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag, axis, workspace)
 
 The transform engine on a device backend, supplied by the KernelAbstractions extension together with
 an AbstractFFTs implementation for the device's arrays. `axis` is `nothing` for the distance
-histogram or `(axis_edges, n_angle, second_axis)` for the joint one.
+histogram or `(axis_edges, n_angle, second_axis)` for the joint one; `workspace` is a
+[`TransformWorkspace`](@ref) or `nothing`.
 """
 function device_transform_sweep! end
+
+"""
+    TransformWorkspace()
+
+The buffers and plans a transform on a grid keeps from one call to the next: each slice's forward
+spectra, the forward stage's monomial scratch and plans, the inverse scratch of the executors on this
+process, and the non-uniform FFT plans set to a scattered schedule's points. Pass it as `workspace` to
+repeated transform calls on one grid, as a time series makes; a call whose sizes or array types differ
+rebuilds what it keeps and releases what it replaces. A workspace serves one call at a time.
+"""
+mutable struct TransformWorkspace
+    kept::Dict{Any, Pair{Any, Any}}
+    pool::Vector{Pair{Any, Any}}
+    lock::ReentrantLock
+end
+
+TransformWorkspace() = TransformWorkspace(Dict{Any, Pair{Any, Any}}(), Pair{Any, Any}[], ReentrantLock())
+
+"""The buffers `workspace` keeps under `slot`, rebuilt by `build()` unless they were built for `sizes`; the
+buffers they replace are released."""
+_kept!(::Nothing, slot, sizes, build) = build()
+function _kept!(ws::TransformWorkspace, slot, sizes, build)
+    held = lock(() -> get(ws.kept, slot, nothing), ws.lock)
+    held !== nothing && first(held) == sizes && return last(held)
+    fresh = build()
+    lock(() -> (ws.kept[slot] = sizes => fresh), ws.lock)
+    held === nothing || _release_plan!(last(held))
+    return fresh
+end
+
+"""One executor's scratch of `sizes` from `workspace`'s pool, or `build()` when none is free. The first element
+of `sizes` names the kind of scratch; free sets of that kind and other sizes are released."""
+_borrow!(::Nothing, sizes, build) = build()
+function _borrow!(ws::TransformWorkspace, sizes, build)
+    stale, free = lock(ws.lock) do
+        stale = filter(e -> first(first(e)) === first(sizes) && first(e) != sizes, ws.pool)
+        filter!(e -> first(first(e)) !== first(sizes) || first(e) == sizes, ws.pool)
+        i = findlast(e -> first(e) == sizes, ws.pool)
+        stale, i === nothing ? nothing : last(popat!(ws.pool, i))
+    end
+    foreach(e -> _release_plan!(last(e)), stale)
+    return free === nothing ? build() : free
+end
+
+_give_back!(::Nothing, sizes, scratch) = nothing
+_give_back!(ws::TransformWorkspace, sizes, scratch) = (lock(() -> push!(ws.pool, sizes => scratch), ws.lock); nothing)
+
+"""
+    _release_plan!(x)
+
+Free what a transform plan kept in a [`TransformWorkspace`](@ref) holds outside Julia's memory; a tuple or named
+tuple of buffers releases each member. The transform extensions add methods for their plans.
+"""
+_release_plan!(x::Union{Tuple, NamedTuple}) = foreach(_release_plan!, x)
+_release_plan!(_) = nothing
+
+"""Release every plan `ws` holds and drop what it keeps; `ws` is not used again."""
+function _release_plans!(ws::TransformWorkspace)
+    foreach(held -> _release_plan!(last(held)), values(ws.kept))
+    foreach(held -> _release_plan!(last(held)), ws.pool)
+    empty!(ws.kept)
+    empty!(ws.pool)
+    return nothing
+end
+
+"""The workspace the executors of `backend` share: `workspace` on this process, none across worker processes."""
+_local_workspace(workspace, ::CB.AbstractExecutionBackend) = workspace
+_local_workspace(workspace, ::Union{CB.AbstractDistributedBackend, CB.AbstractMPIBackend}) = nothing
+
+"""
+    _executor_scratch(workspace, backend, sizes, build) -> (make, done)
+
+The scratch source of one sweep: `make()` gives an executor a set borrowed from `workspace` or built by
+`build()`, and `done()` returns every set borrowed. Without a workspace, and on worker processes, each
+executor builds its own.
+"""
+_executor_scratch(workspace, backend, sizes, build) = _executor_scratch(_local_workspace(workspace, backend), sizes, build)
+_executor_scratch(::Nothing, sizes, build) = (build, Returns(nothing))
+function _executor_scratch(ws::TransformWorkspace, sizes, build)
+    lent = Any[]
+    make = () -> (scratch = _borrow!(ws, sizes, build); lock(() -> push!(lent, scratch), ws.lock); scratch)
+    done = () -> foreach(scratch -> _give_back!(ws, sizes, scratch), lent)
+    return make, done
+end
 
 """Tasks a backend sweeps with, which is how far the work is split."""
 @inline sweep_tasks(::CB.AbstractSerialBackend) = 1
@@ -792,7 +868,7 @@ end
     ::Val{D}, ::Val{V}, ::Val{K}, ::Type{T},
 ) where {M, D, V, K, T}
     δu = _lag_increment(Val(D), Val(V), Val(K), data, k, kp)
-    return ntuple(m -> T(SFT.flat_pair_value(sf, δu, frames[m].dir, r2)), Val(M))
+    return ntuple(@inline(m -> T(SFT.flat_pair_value(sf, δu, frames[m].dir, r2))), Val(M))
 end
 
 @inline function _lag_values(
@@ -800,12 +876,79 @@ end
     ::Val{D}, ::Val{V}, ::Val{K}, ::Type{T},
 ) where {M, UT, D, V, K, T}
     W = V * D + K
-    uA = SA.SVector{W, UT}(ntuple(c -> @inbounds(data[c, k]), Val(W)))
-    uB = SA.SVector{W, UT}(ntuple(c -> @inbounds(data[c, kp]), Val(W)))
-    return ntuple(Val(M)) do m
-        f = @inbounds frames[m]
-        T(sf(_split_increment(Val(D), Val(V), Val(K), f.B * uB - f.A * uA), f.dir))
+    uA = SA.SVector{W, UT}(ntuple(@inline(c -> @inbounds(data[c, k])), Val(W)))
+    uB = SA.SVector{W, UT}(ntuple(@inline(c -> @inbounds(data[c, kp])), Val(W)))
+    return ntuple(@inline(m -> _frame_value(sf, @inbounds(frames[m]), uA, uB, Val(D), Val(V), Val(K), T)), Val(M))
+end
+
+"""A pair's operator value under one frame's transport."""
+@inline _frame_value(sf, f, uA, uB, vD::Val, vV::Val, vK::Val, ::Type{T}) where {T} =
+    T(sf(_split_increment(vD, vV, vK, f.B * uB - f.A * uA), f.dir))
+
+@inline function _lag_values(
+    ::IdentityTransport, ::SFT.SinglePassInvariants, frames::NTuple{M, <:NamedTuple}, data, k, kp, r2,
+    ::Val{D}, ::Val{1}, ::Val{0}, ::Type{T},
+) where {M, D, T}
+    δu = _lag_increment(Val(D), Val(1), Val(0), data, k, kp)
+    r = sqrt(r2)
+    return ntuple(@inline(m -> SA.SVector{SINGLE_PASS_N, T}(single_pass_invariants(
+        SFH.increment_invariants(SFH.FlatGeometry{D}(), frames[m].dir, r, δu)...))), Val(M))
+end
+
+@inline function _lag_values(
+    ::FrameTransport, ::SFT.SinglePassInvariants, frames::NTuple{M, <:NamedTuple}, data::AbstractMatrix{UT}, k,
+    kp, r2, ::Val{D}, ::Val{1}, ::Val{0}, ::Type{T},
+) where {M, UT, D, T}
+    uA = SA.SVector{D, UT}(ntuple(@inline(c -> @inbounds(data[c, k])), Val(D)))
+    uB = SA.SVector{D, UT}(ntuple(@inline(c -> @inbounds(data[c, kp])), Val(D)))
+    return ntuple(@inline(m -> _frame_invariants(@inbounds(frames[m]), uA, uB, T)), Val(M))
+end
+
+"""The six single-pass invariants of a pair under one frame's transport."""
+@inline function _frame_invariants(f, uA, uB, ::Type{T}) where {T}
+    δu = f.B * uB - f.A * uA
+    return SA.SVector{SINGLE_PASS_N, T}(single_pass_invariants(SFH.fma_dot(δu, f.dir), SFH.fma_dot(δu, δu)))
+end
+
+"""The zero of one pair's value under `sf`: a number, or the six single-pass invariants."""
+@inline _zero_value(sf, ::Type{T}) where {T} = zero(T)
+@inline _zero_value(::SFT.SinglePassInvariants, ::Type{T}) where {T} = zero(SA.SVector{SINGLE_PASS_N, T})
+
+"""The leading axes a pair's value under `sf` takes in a histogram: none, or the six single-pass rows."""
+@inline _value_dims(sf) = ()
+@inline _value_dims(::SFT.SinglePassInvariants) = (SINGLE_PASS_N,)
+
+"""The leading index of row `q` of a value under `sf` in a histogram: none, or `(q,)`."""
+@inline _value_row(sf, q::Int) = ()
+@inline _value_row(::SFT.SinglePassInvariants, q::Int) = (q,)
+
+"""Throw unless `sums` and `counts` both have the shape of a histogram of `sf` over `cells`."""
+function _check_hist_shape(sums, counts, sf, cells::Int...)
+    want = (_value_dims(sf)..., cells...)
+    size(sums) == want && size(counts) == want || throw(DimensionMismatch(
+        "sums and counts must be $want; got $(size(sums)) and $(size(counts))",
+    ))
+    return nothing
+end
+
+"""
+    _bin_add!(add!, sums, counts, v, n, I...)
+
+Add a lag's value `v` and its pair count `n` to cell `I` through `add!(array, x, index...)`: one cell for a
+number, and for a vector of values one cell per row `q`, at `(q, I...)`, each row counting the pairs.
+"""
+@inline function _bin_add!(add!::F, sums, counts, v::Number, n, I::Vararg{Int}) where {F}
+    add!(sums, eltype(sums)(v), I...)
+    add!(counts, eltype(counts)(n), I...)
+    return nothing
+end
+
+@inline function _bin_add!(add!::F, sums, counts, v::SA.SVector{Q}, n, I::Vararg{Int}) where {F, Q}
+    for q in 1:Q
+        add!(sums, eltype(sums)(v[q]), q, I...)
+        add!(counts, eltype(counts)(n), q, I...)
     end
+    return nothing
 end
 
 """
@@ -827,12 +970,10 @@ than a per-cell branch.
     baseI::Int, baseJ::Int,
 ) where {UT, D, V, K, Dg, M}
     T = float(promote_type(UT, eltype(frames[1].dir)))
-    totals = ntuple(_ -> zero(T), Val(M))
+    totals = ntuple(_ -> _zero_value(sf, T), Val(M))
     n_pairs = _zero_count(weights)
     @inbounds for combo in 0:((1 << Dg) - 1)
-        segs = ntuple(Val(Dg)) do d
-            _lag_segments(su, d, h[d], d == half_dim)[1 + ((combo >> (d - 1)) & 1)]
-        end
+        segs = _box_segments(su, h, half_dim, combo)
         ranges = map(first, segs)
         any(isempty, ranges) && continue
         off = 0
@@ -864,9 +1005,9 @@ end
 # own so the running totals are never a captured variable that is reassigned, which Julia would box.
 # An unweighted pair carries the weight `true`, which the compiler folds away.
 @inline _accumulate(totals::NTuple{M}, vals::NTuple{M}, ok::Bool, ::Bool) where {M} =
-    ntuple(m -> @inbounds(totals[m] + (ok ? vals[m] : zero(vals[m]))), Val(M))
+    ntuple(@inline(m -> @inbounds(totals[m] + (ok ? vals[m] : zero(vals[m])))), Val(M))
 @inline _accumulate(totals::NTuple{M}, vals::NTuple{M}, ok::Bool, w) where {M} =
-    ntuple(m -> @inbounds(totals[m] + (ok ? w * vals[m] : zero(vals[m]))), Val(M))
+    ntuple(@inline(m -> @inbounds(totals[m] + (ok ? w * vals[m] : zero(vals[m])))), Val(M))
 
 @inline _pair_weight(::NoWeights, k::Int, kp::Int) = true
 @inline _pair_weight(w::AbstractVector, k::Int, kp::Int) = @inbounds w[k] * w[kp]
@@ -880,8 +1021,11 @@ end
     gridded_lag_sweep!(sums, counts, sf, fields, schedule, distance_bins[, axis_bins]; valid, weights, backend, second_axis)
 
 Accumulate every pair `schedule` names into the distance histogram `sums`/`counts`, or with
-`axis_bins` into the joint histogram over separation and the angle `second_axis` reads from each
-lag's direction, `sums` and `counts` then being `(n_distance, n_angle)`.
+`axis_bins` into the joint histogram over separation and `second_axis` — each pair's own value
+(`InvariantValueAxis`, on every schedule) or the angle a `SeparationAngleAxis` reads from each lag's
+direction (on a flat schedule) — `sums` and `counts` then being `(n_distance, n_axis)`. With
+`sf = SinglePassInvariants()` the distance histogram holds the six single-pass invariants of one vector
+field, `sums` and `counts` `(6, n_distance)`, each row counting every pair.
 
 `u` is stored `(component, cells...)` with its trailing axes matching the schedule, and `D` is its
 component count, which may exceed the grid's dimension — a lag then lies in the grid's directions
@@ -902,32 +1046,32 @@ minimal paths of equal length and opposite sign, so the separation direction is 
 The operator is averaged over those equal-length displacements, which is the only choice that does
 not favour one of them; an operator odd in the separation direction therefore vanishes on the pairs
 whose every offset half-turns, as it must when no direction is preferred. In the joint histogram
-such a lag's pairs are split between the two angle bins in equal halves, so `counts` must then hold
+such a lag's pairs are split between their images' bins in equal halves, so `counts` must then hold
 a floating-point type.
 """
 function gridded_lag_sweep!(
-    sums::AbstractVector{OT}, counts::AbstractVector{CT},
+    sums::AbstractArray, counts::AbstractArray,
     sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-) where {OT, CT, D, V, K}
+) where {D, V, K}
     _require_backend(backend)
     _check_grid_field(sf, data, s, Val(D), Val(V), Val(K))
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
     _assert_counts_can_accumulate(counts, size(data, 2), w)
     plan = squared_digitize_plan(dist_be)
     nb = n_histogram_bins(plan)
-    length(sums) == nb && length(counts) == nb || throw(DimensionMismatch(
-        "sums and counts must have length $nb; got $(length(sums)) and $(length(counts))",
-    ))
+    _check_hist_shape(sums, counts, sf, nb)
     su = uniform_axes(s)
     T = eltype(su.spacing)
     r_max = _cull_is_unbounded(dist_be) ? T(Inf) : T(float(last(dist_be)))
     dp, vp, wp = separable_layout(s, data, valid, w)
     transport = lag_transport(s)
     if backend isa CB.AbstractGPUBackend
-        return device_lag_sweep!(sums, counts, backend, sf, s, su, dp, vp, wp, plan, nb, r_max,
-                                 transport, Val(D), Val(V), Val(K))
+        device_lag_sweep!(reshape(sums, size(sums)..., 1), reshape(counts, size(counts)..., 1), backend, sf, s, su,
+                          _one_slice(dp), _one_slice_valid(vp), wp, plan, nb, r_max, transport, nothing, Val(D),
+                          Val(V), Val(K))
+        return sums, counts
     end
     items = sweep_items(s, r_max, sweep_tasks(backend), true)
     body! = (ls, lc, it, _) -> _sweep_item!(ls, lc, sf, s, su, dp, vp, wp, it, plan, nb, r_max, transport,
@@ -937,18 +1081,44 @@ function gridded_lag_sweep!(
 end
 
 """
-    device_lag_sweep!(sums, counts, backend, sf, s, su, data, valid, weights, plan, nb, r_max, transport, ::Val{D}, ::Val{V}, ::Val{K})
+    device_lag_sweep!(sums, counts, backend, sf, s, su, data, valid, weights, plan, nb, r_max, transport, axis,
+                      ::Val{D}, ::Val{V}, ::Val{K})
 
-Accumulate the direct lag sweep on a device: one work item per (slab pair, lag), each reducing over
-the cells of the uniform directions. Supplied by the KernelAbstractions extension; this is the
-route a non-polynomial operator takes on a grid, which the transform cannot express.
+Accumulate the direct lag sweep on a device into `sums`/`counts` `(nb, nt)` — `(6, nb, nt)` for the
+single-pass invariants — or `(nb, n_axis, nt)` with `axis = (axis_plan, n_axis, second_axis)`: one work item
+per (slab pair, lag), each reducing over the
+cells of the uniform directions for every slice of `data` `(W, cells, nt)`, laid out as the schedule's
+slabs, with `valid` `AllValid()` or `(cells, nt)`. Supplied by the KernelAbstractions extension; this is
+the route a non-polynomial operator and a value histogram take on a grid, which the transform cannot
+express.
 """
 function device_lag_sweep! end
 
+"""A slice's field or validity as the one slice of a batch."""
+@inline _one_slice(data::AbstractMatrix) = reshape(data, size(data, 1), size(data, 2), 1)
+@inline _one_slice_valid(::AllValid) = AllValid()
+@inline _one_slice_valid(v::AbstractVector) = reshape(v, length(v), 1)
+
+"""The slices of a `(W, cells, nt)` batch laid out as the schedule's slabs, as one `(W, cells, nt)` array,
+with the validity as `(cells, nt)` and the weights laid out once."""
+function _batch_layout(s::AbstractSeparableSchedule, data::AbstractArray{<:Any, 3}, valid, weights)
+    dps, vps, wp = _batch_slices(s, data, valid, weights)
+    laid = similar(data, size(data, 1), size(data, 2), length(dps))
+    for t in eachindex(dps)
+        laid[:, :, t] .= dps[t]
+    end
+    valid isa AllValid && return laid, valid, wp
+    v = Matrix{Bool}(undef, size(data, 2), length(vps))
+    for t in eachindex(vps)
+        v[:, t] .= vps[t]
+    end
+    return laid, v, wp
+end
+
 function _sweep_item!(
-    sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf, s, su::UniformLagSchedule{Dg}, data, valid, weights,
+    sums::AbstractArray, counts::AbstractArray, sf, s, su::UniformLagSchedule{Dg}, data, valid, weights,
     item::NTuple{4, Int}, plan, nb, r_max, transport, ::Val{D}, ::Val{V}, ::Val{K},
-) where {OT, CT, Dg, D, V, K}
+) where {Dg, D, V, K}
     I, J, part, n_parts = item
     lags = _pair_lags(s, su, I, J, r_max)
     strides = grid_strides(su)
@@ -964,8 +1134,7 @@ function _sweep_item!(
             _lag_reduce(transport, sf, data, valid, weights, Val(D), Val(V), Val(K), Val(Dg), su, strides, h,
                         frames, r2, half_dim, baseI, baseJ)
         end
-        sums[b] += OT(factor * sum(totals) / length(totals))
-        counts[b] += CT(n_pairs)
+        _bin_add!(_plain_add!, sums, counts, factor * sum(totals) / length(totals), n_pairs, b)
     end
     return nothing
 end
@@ -975,11 +1144,11 @@ function gridded_lag_sweep!(
     sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K};
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-    second_axis::SeparationAngleAxis,
+    second_axis::AbstractSecondAxisSource,
 ) where {OT, CT, D, V, K}
     _require_backend(backend)
     _check_grid_field(sf, data, s, Val(D), Val(V), Val(K))
-    _require_directional(s)
+    _require_axis(second_axis, s)
     _check_half_turn_counts(CT, s, dist_be)
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
     _assert_counts_can_accumulate(counts, size(data, 2), w)
@@ -995,6 +1164,12 @@ function gridded_lag_sweep!(
     r_max = _cull_is_unbounded(dist_be) ? T(Inf) : T(float(last(dist_be)))
     dp, vp, wp = separable_layout(s, data, valid, w)
     transport = lag_transport(s)
+    if backend isa CB.AbstractGPUBackend
+        device_lag_sweep!(reshape(sums, nb, na, 1), reshape(counts, nb, na, 1), backend, sf, s, su, _one_slice(dp),
+                          _one_slice_valid(vp), wp, plan, nb, r_max, transport, (axis_edges, na, second_axis),
+                          Val(D), Val(V), Val(K))
+        return sums, counts
+    end
     items = sweep_items(s, r_max, sweep_tasks(backend), true)
     body! = (ls, lc, it, _) -> _sweep_item!(ls, lc, sf, s, su, dp, vp, wp, it, plan, nb, r_max, transport,
                                              axis_edges, na, second_axis, Val(D), Val(V), Val(K))
@@ -1004,7 +1179,7 @@ end
 
 function _sweep_item!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, s, su::UniformLagSchedule{Dg}, data, valid, weights,
-    item::NTuple{4, Int}, plan, nb, r_max, transport, axis_edges, na, second_axis,
+    item::NTuple{4, Int}, plan, nb, r_max, transport, axis_edges, na, second_axis::SeparationAngleAxis,
     ::Val{D}, ::Val{V}, ::Val{K},
 ) where {OT, CT, Dg, D, V, K}
     I, J, part, n_parts = item
@@ -1027,6 +1202,171 @@ function _sweep_item!(
     end
     return nothing
 end
+
+function _sweep_item!(
+    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, s, su::UniformLagSchedule{Dg}, data, valid, weights,
+    item::NTuple{4, Int}, plan, nb, r_max, transport, value_plan, nv, ::InvariantValueAxis,
+    ::Val{D}, ::Val{V}, ::Val{K},
+) where {OT, CT, Dg, D, V, K}
+    I, J, part, n_parts = item
+    lags = _pair_lags(s, su, I, J, r_max)
+    strides = grid_strides(su)
+    Nu = n_cells(su)
+    baseI, baseJ = (I - 1) * Nu, (J - 1) * Nu
+    @inbounds for lin in part:n_parts:length(lags)
+        h = Tuple(lags[lin])
+        v = _lag_visit(sf, s, su, I, J, h, plan, nb, Val(D), Val(V), Val(K))
+        v === nothing && continue
+        b, r2, factor, geometry, self_reverse = v
+        half_dim = self_reverse ? findfirst(!iszero, h)::Int : 0
+        with_frames(transport, geometry) do frames
+            _lag_scatter!(_plain_add!, sums, counts, (), transport, sf, data, valid, weights, Val(D), Val(V), Val(K),
+                          Val(Dg), su, strides, h, frames, r2, half_dim, baseI, baseJ, b, factor, value_plan, nv)
+        end
+    end
+    return nothing
+end
+
+"""`A[I...] += x`: the host's accumulation, where a device's is atomic."""
+@inline _plain_add!(A, x, I::Vararg{Int}) = (@inbounds A[I...] += x; nothing)
+
+"""
+    _lag_scatter!(add!, sums, counts, tail, transport, sf, data, valid, weights, ::Val{D}, ::Val{V}, ::Val{K},
+                  ::Val{Dg}, uniform, strides, h, frames, r2, half_dim, baseI, baseJ, b, factor, value_plan, nv)
+
+Add every pair one lag names between the slabs starting at columns `baseI` and `baseJ` to row `b` of
+the joint histogram at the bin of its own value, once per frame with a `1/M` share of the pair, through
+`add!(array, value, b, value_bin, tail...)`: the cells swept as [`_lag_reduce`](@ref) sweeps them.
+"""
+@inline function _lag_scatter!(
+    add!::F, sums::AbstractArray{OT}, counts::AbstractArray{CT}, tail::Tuple, transport::AbstractLagTransport,
+    sf::SFT.AbstractPairwiseStructureFunctionType, data::AbstractMatrix{UT}, valid, weights, ::Val{D}, ::Val{V},
+    ::Val{K}, ::Val{Dg}, su::UniformLagSchedule, strides::NTuple{Dg, Int}, h::NTuple{Dg, Int},
+    frames::NTuple{M, <:NamedTuple}, r2, half_dim::Int, baseI::Int, baseJ::Int, b::Int, factor, value_plan,
+    nv::Int,
+) where {F, OT, CT, UT, D, V, K, Dg, M}
+    T = float(promote_type(UT, eltype(frames[1].dir)))
+    @inbounds for combo in 0:((1 << Dg) - 1)
+        segs = _box_segments(su, h, half_dim, combo)
+        ranges = map(first, segs)
+        any(isempty, ranges) && continue
+        off = 0
+        for d in 1:Dg
+            off += segs[d][2] * strides[d]
+        end
+        for J in CartesianIndices(Base.tail(ranges))
+            base = 0
+            for d in 2:Dg
+                base += (J[d - 1] - 1) * strides[d]
+            end
+            for i1 in ranges[1]
+                k = baseI + base + i1
+                _scatter_pair!(add!, sums, counts, tail, transport, sf, frames, data, valid, weights, k,
+                               baseJ + base + i1 + off, k, r2, b, factor, value_plan, nv, Val(D), Val(V), Val(K), T)
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    _scatter_pair!(add!, sums, counts, tail, transport, sf, frames, data, valid, weights, k, kp, kw, r2, b, factor,
+                   value_plan, nv, ::Val{D}, ::Val{V}, ::Val{K}, T)
+
+Add the pair of data columns `k` and `kp` to row `b` of the joint histogram at the bin of its own value, once
+per frame with a `1/M` share of the pair's weight, through `add!(array, value, b, value_bin, tail...)`.
+`kw` is the pair's first cell, which the weights are indexed by.
+"""
+@inline function _scatter_pair!(
+    add!::F, sums::AbstractArray{OT}, counts::AbstractArray{CT}, tail::Tuple, transport, sf,
+    frames::NTuple{M, <:NamedTuple}, data, valid, weights, k::Int, kp::Int, kw::Int, r2, b::Int, factor, value_plan,
+    nv::Int, ::Val{D}, ::Val{V}, ::Val{K}, ::Type{T},
+) where {F, OT, CT, M, D, V, K, T}
+    (@inbounds(valid[k]) & @inbounds(valid[kp])) || return nothing
+    share = _frame_share(_pair_weight(weights, kw, kp - k + kw), Val(M))
+    vals = _lag_values(transport, sf, frames, data, k, kp, r2, Val(D), Val(V), Val(K), T)
+    for m in 1:M
+        value = factor * vals[m]
+        vb = SFH.digitize(value, value_plan)
+        1 <= vb <= nv || continue
+        add!(sums, OT(share * value), b, vb, tail...)
+        add!(counts, CT(share), b, vb, tail...)
+    end
+    return nothing
+end
+
+"""
+    _lag_fold(op, acc, uniform, strides, h, half_dim, baseI, baseJ, lane, n_lanes) -> acc
+
+Fold `acc = op(acc, k, kp)` over the pairs one lag names between the slabs starting at columns `baseI`
+and `baseJ` that fall to lane `lane` of `n_lanes`: each of the lag's boxes, as [`_lag_reduce`](@ref)
+sweeps them, flattened with direction 1 fastest, at the positions `lane, lane + n_lanes, …`, so
+consecutive lanes read consecutive cells.
+"""
+@inline function _lag_fold(
+    op::F, acc, su::UniformLagSchedule, strides::NTuple{Dg, Int}, h::NTuple{Dg, Int}, half_dim::Int,
+    baseI::Int, baseJ::Int, lane::Int, n_lanes::Int,
+) where {F, Dg}
+    for combo in 0:((1 << Dg) - 1)
+        segs = _box_segments(su, h, half_dim, combo)
+        lens = map(sg -> length(first(sg)), segs)
+        any(iszero, lens) && continue
+        off = baseJ - baseI
+        k0 = baseI + 1
+        for d in 1:Dg
+            off += segs[d][2] * strides[d]
+            k0 += (first(segs[d][1]) - 1) * strides[d]
+        end
+        pos = _mixed_digits(lane - 1, lens)
+        step = _mixed_digits(n_lanes, lens)
+        while @inbounds(pos[Dg]) < @inbounds(lens[Dg])
+            k = k0
+            for d in 1:Dg
+                k += @inbounds(pos[d]) * @inbounds(strides[d])
+            end
+            acc = op(acc, k, k + off)
+            pos = _mixed_add(pos, step, lens)
+        end
+    end
+    return acc
+end
+
+"""The `(cells, offset)` segment along each direction of box `combo` of lag `h` (its bit `d - 1` choosing the
+direction's second segment), as [`_lag_segments`](@ref) gives them."""
+@inline _box_segments(su::UniformLagSchedule, h::NTuple{Dg, Int}, half_dim::Int, combo::Int) where {Dg} =
+    ntuple(@inline(d -> _lag_segments(su, d, h[d], d == half_dim)[1 + ((combo >> (d - 1)) & 1)]), Val(Dg))
+
+"""Digits of `f` in the mixed radix `lens`, direction 1 fastest; the last digit is unbounded."""
+@inline _mixed_digits(f::Int, lens::NTuple{Dg, Int}) where {Dg} = ntuple(@inline(d -> _mixed_digit(f, lens, d)), Val(Dg))
+
+"""Digit `d` of `f` in the mixed radix `lens`."""
+@inline function _mixed_digit(f::Int, lens::NTuple{Dg, Int}, d::Int) where {Dg}
+    q = f
+    for e in 1:(d - 1)
+        q ÷= @inbounds lens[e]
+    end
+    return d == Dg ? q : q % @inbounds(lens[d])
+end
+
+"""The digits `a + b` in the mixed radix `lens` (every digit of both below its radix but the last)."""
+@inline function _mixed_add(a::NTuple{Dg, Int}, b::NTuple{Dg, Int}, lens::NTuple{Dg, Int}) where {Dg}
+    out = a
+    carry = 0
+    for d in 1:Dg
+        s = @inbounds(a[d]) + @inbounds(b[d]) + carry
+        carry = (d < Dg && s >= @inbounds(lens[d])) ? 1 : 0
+        out = Base.setindex(out, s - carry * @inbounds(lens[d]), d)
+    end
+    return out
+end
+
+"""A pair's weight split over its `M` equal-length images; one image keeps the weight as given."""
+@inline _frame_share(w, ::Val{1}) = w
+@inline _frame_share(w, ::Val{M}) where {M} = w / M
+
+"""Throw unless `second_axis` is defined on `schedule`'s pairs: an angle needs a directional schedule."""
+_require_axis(::SeparationAngleAxis, s::AbstractSeparableSchedule) = _require_directional(s)
+_require_axis(::InvariantValueAxis, ::AbstractSeparableSchedule) = nothing
 
 # A pair's direction on a sphere lives in its own geodesic frame, so an angle to one fixed reference
 # axis is not a property of the pair.
@@ -1071,30 +1411,18 @@ _assert_grid_counts(s, counts::AbstractArray, n_cells::Int, weights) =
 # ---------------------------------------------------------------------------------------------------
 
 """
-    batch_validity(u[, cell_mask]) -> BitMatrix or AllValid
+    batch_validity(u[, cell_mask]) -> Bool matrix or AllValid
 
 Which cells hold a usable datum in each slice of `u`, stored `(components, cells..., slices)`: one
-column of cell validity per slice. `cell_mask`, where a grid carries one, marks the cells that exist.
+column of cell validity per slice, in the array family of `u`. `cell_mask`, where a grid carries one,
+marks the cells that exist.
 
 Returns [`AllValid`](@ref) when nothing is excluded, as [`field_validity`](@ref) does for one slice.
 """
 function batch_validity(u::AbstractArray, cell_mask = nothing)
-    W = size(u, 1)
-    nt = size(u)[end]
-    n = length(u) ÷ (W * nt)
-    uf = reshape(u, W, n, nt)
-    v = trues(n, nt)
-    any_invalid = false
-    @inbounds for t in 1:nt, k in 1:n
-        ok = true
-        for c in 1:W
-            ok &= isfinite(uf[c, k, t])
-        end
-        cell_mask === nothing || (ok &= cell_mask[k])
-        v[k, t] = ok
-        any_invalid |= !ok
-    end
-    return any_invalid ? v : AllValid()
+    v = dropdims(mapreduce(isfinite, &, reshape(u, size(u, 1), :, size(u)[end]); dims = 1); dims = 1)
+    cell_mask === nothing || (v .&= cell_mask)
+    return all(v) ? AllValid() : v
 end
 
 """Slice `t`'s cell validity: its own column, or the complete-field value for every slice."""
@@ -1223,8 +1551,8 @@ end
     gridded_lag_sweep_batch!(sums, counts, sf, u, schedule, distance_bins[, axis_bins], ::Val{D}; valid, weights, backend)
 
 Sweep the lags of `schedule` once and reduce every slice of a batch against each of them, into
-`sums`/`counts` of shape `(n_distance, n_slices)` — with `axis_bins`,
-`(n_distance, n_angle, n_slices)`.
+`sums`/`counts` of shape `(n_distance, n_slices)` — with `axis_bins`, `(n_distance, n_axis, n_slices)`;
+for `sf = SinglePassInvariants()`, `(6, n_distance, n_slices)`.
 
 `u` is `(component, cells..., slices)`, the cells matching the schedule. `valid` is `AllValid()` or
 one column of cell validity per slice ([`batch_validity`](@ref)); `weights` is one finite weight per
@@ -1233,24 +1561,28 @@ cell, shared by the slices, so a cell measure is given once. `backend` names the
 follows exactly: slice `t` of the output is that sweep on slice `t` of the field.
 """
 function gridded_lag_sweep_batch!(
-    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
+    sums::AbstractArray, counts::AbstractArray, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractArray{<:Any, 3}, s::AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K};
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-) where {OT, CT, D, V, K}
+) where {D, V, K}
     _require_backend(backend)
     nt = _check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
     _assert_counts_can_accumulate(counts, size(data, 2), w)
     plan = squared_digitize_plan(dist_be)
     nb = n_histogram_bins(plan)
-    size(sums) == (nb, nt) && size(counts) == (nb, nt) || throw(DimensionMismatch(
-        "sums and counts must be ($nb, $nt); got $(size(sums)) and $(size(counts))",
-    ))
+    _check_hist_shape(sums, counts, sf, nb, nt)
     su = uniform_axes(s)
     T = eltype(su.spacing)
     r_max = _cull_is_unbounded(dist_be) ? T(Inf) : T(float(last(dist_be)))
-    dps, vps, wp = _batch_slices(s, data, valid, w)
     transport = lag_transport(s)
+    if backend isa CB.AbstractGPUBackend
+        laid, lv, lw = _batch_layout(s, data, valid, w)
+        device_lag_sweep!(sums, counts, backend, sf, s, su, laid, lv, lw, plan, nb, r_max, transport, nothing,
+                          Val(D), Val(V), Val(K))
+        return sums, counts
+    end
+    dps, vps, wp = _batch_slices(s, data, valid, w)
     items = sweep_items(s, r_max, sweep_tasks(backend), true)
     body! = (ls, lc, it, _) -> _sweep_item_batch!(ls, lc, sf, s, su, dps, vps, wp, it, plan, nb, r_max, transport,
                                                   Val(D), Val(V), Val(K))
@@ -1259,9 +1591,9 @@ function gridded_lag_sweep_batch!(
 end
 
 function _sweep_item_batch!(
-    sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT}, sf, s, su::UniformLagSchedule{Dg}, dps, vps, weights,
+    sums::AbstractArray, counts::AbstractArray, sf, s, su::UniformLagSchedule{Dg}, dps, vps, weights,
     item::NTuple{4, Int}, plan, nb, r_max, transport, ::Val{D}, ::Val{V}, ::Val{K},
-) where {OT, CT, Dg, D, V, K}
+) where {Dg, D, V, K}
     I, J, part, n_parts = item
     lags = _pair_lags(s, su, I, J, r_max)
     strides = grid_strides(su)
@@ -1277,8 +1609,7 @@ function _sweep_item_batch!(
             for t in eachindex(dps)
                 totals, n_pairs = _lag_reduce(transport, sf, dps[t], vps[t], weights, Val(D), Val(V), Val(K),
                                               Val(Dg), su, strides, h, frames, r2, half_dim, baseI, baseJ)
-                sums[b, t] += OT(factor * sum(totals) / length(totals))
-                counts[b, t] += CT(n_pairs)
+                _bin_add!(_plain_add!, sums, counts, factor * sum(totals) / length(totals), n_pairs, b, t)
             end
         end
     end
@@ -1289,11 +1620,11 @@ function gridded_lag_sweep_batch!(
     sums::AbstractArray{OT, 3}, counts::AbstractArray{CT, 3}, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractArray{<:Any, 3}, s::AbstractSeparableSchedule, dist_be, axis_be, ::Val{D}, ::Val{V}, ::Val{K};
     valid = AllValid(), weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-    second_axis::SeparationAngleAxis,
+    second_axis::AbstractSecondAxisSource,
 ) where {OT, CT, D, V, K}
     _require_backend(backend)
     nt = _check_batch(sf, data, s, valid, Val(D), Val(V), Val(K))
-    _require_directional(s)
+    _require_axis(second_axis, s)
     _check_half_turn_counts(CT, s, dist_be)
     w = _pair_weights(weights, size(data, 2), float(eltype(data)))
     _assert_counts_can_accumulate(counts, size(data, 2), w)
@@ -1307,8 +1638,14 @@ function gridded_lag_sweep_batch!(
     su = uniform_axes(s)
     T = eltype(su.spacing)
     r_max = _cull_is_unbounded(dist_be) ? T(Inf) : T(float(last(dist_be)))
-    dps, vps, wp = _batch_slices(s, data, valid, w)
     transport = lag_transport(s)
+    if backend isa CB.AbstractGPUBackend
+        laid, lv, lw = _batch_layout(s, data, valid, w)
+        device_lag_sweep!(sums, counts, backend, sf, s, su, laid, lv, lw, plan, nb, r_max, transport,
+                          (axis_edges, na, second_axis), Val(D), Val(V), Val(K))
+        return sums, counts
+    end
+    dps, vps, wp = _batch_slices(s, data, valid, w)
     items = sweep_items(s, r_max, sweep_tasks(backend), true)
     body! = (ls, lc, it, _) -> _sweep_item_batch!(ls, lc, sf, s, su, dps, vps, wp, it, plan, nb, r_max, transport,
                                                   axis_edges, na, second_axis, Val(D), Val(V), Val(K))
@@ -1318,7 +1655,35 @@ end
 
 function _sweep_item_batch!(
     sums::AbstractArray{OT, 3}, counts::AbstractArray{CT, 3}, sf, s, su::UniformLagSchedule{Dg}, dps, vps, weights,
-    item::NTuple{4, Int}, plan, nb, r_max, transport, axis_edges, na, second_axis, ::Val{D}, ::Val{V}, ::Val{K},
+    item::NTuple{4, Int}, plan, nb, r_max, transport, value_plan, nv, ::InvariantValueAxis, ::Val{D}, ::Val{V},
+    ::Val{K},
+) where {OT, CT, Dg, D, V, K}
+    I, J, part, n_parts = item
+    lags = _pair_lags(s, su, I, J, r_max)
+    strides = grid_strides(su)
+    Nu = n_cells(su)
+    baseI, baseJ = (I - 1) * Nu, (J - 1) * Nu
+    @inbounds for lin in part:n_parts:length(lags)
+        h = Tuple(lags[lin])
+        v = _lag_visit(sf, s, su, I, J, h, plan, nb, Val(D), Val(V), Val(K))
+        v === nothing && continue
+        b, r2, factor, geometry, self_reverse = v
+        half_dim = self_reverse ? findfirst(!iszero, h)::Int : 0
+        with_frames(transport, geometry) do frames
+            for t in eachindex(dps)
+                _lag_scatter!(_plain_add!, sums, counts, (t,), transport, sf, dps[t], vps[t], weights, Val(D), Val(V),
+                              Val(K), Val(Dg), su, strides, h, frames, r2, half_dim, baseI, baseJ, b, factor,
+                              value_plan, nv)
+            end
+        end
+    end
+    return nothing
+end
+
+function _sweep_item_batch!(
+    sums::AbstractArray{OT, 3}, counts::AbstractArray{CT, 3}, sf, s, su::UniformLagSchedule{Dg}, dps, vps, weights,
+    item::NTuple{4, Int}, plan, nb, r_max, transport, axis_edges, na, second_axis::SeparationAngleAxis,
+    ::Val{D}, ::Val{V}, ::Val{K},
 ) where {OT, CT, Dg, D, V, K}
     I, J, part, n_parts = item
     lags = _pair_lags(s, su, I, J, r_max)
@@ -1345,12 +1710,12 @@ function _sweep_item_batch!(
 end
 
 """
-    device_transform_sweep_batch!(sums, counts, backend, sf, data, schedule, distance_bins, plan, nb, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag, axis)
+    device_transform_sweep_batch!(sums, counts, backend, sf, data, schedule, distance_bins, plan, nb, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag, axis, workspace)
 
 The transform engine on a device backend for a batch over a trailing slice axis, supplied by the
 KernelAbstractions extension together with an AbstractFFTs implementation for the device's arrays.
 `axis` is `nothing` for the distance histogram or `(axis_edges, n_angle, second_axis)` for the joint
-one.
+one; `workspace` is a [`TransformWorkspace`](@ref) or `nothing`.
 """
 function device_transform_sweep_batch! end
 

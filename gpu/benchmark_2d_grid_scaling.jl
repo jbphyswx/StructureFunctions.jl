@@ -8,12 +8,11 @@ Compare single-type joint 2D vs six-type single-pass 2D on GPU.
   tiled block-local when its histogram fits the device's shared memory; default exact `@localmem`
   width (`joint2d_compile_cells = n_dist × n_val`). A/B vs the widest fitting width via two workspaces.
 
-**Six-type single-pass 2D** (`gpu_calculate_structure_functions_single_pass_2d!`):
-  HTP-EJ path when distance bins are typed and `n_dist ≤ 64`:
-  - `:shared` / `:typeplane` — on-chip shared histogram + direct flush to output (no merge)
-  - `:direct` — partitioned global accumulation + the strategy's merge (serial), timed against the parallel merge
+**Six-type single-pass 2D** (`gpu_calculate_structure_functions_single_pass_2d!`), and its portable kernel alone:
+  the HTP-EJ on-chip histogram (`:shared` / `:typeplane`) flushed into the output, or the global-atomic kernel for a
+  histogram neither mode holds.
 
-Gate: e2e SP2D < `6 × joint_2d`. Logs `output=on-chip-flush` vs `partition+merge`.
+Gate: e2e SP2D < `6 × joint_2d`.
 
 Run on GPU:
 
@@ -139,14 +138,14 @@ function main()
     # --- six-type sp2d (HTP-EJ privatized) ---
     ws_sp = SFC.GPUSFWorkspace(backend, dist, value_bins; kind = :single_pass_2d)
     cfg = _GPUExt._sp2d_accumulation_strategy(caps, n_dist, n_val, 2, 2, FT, FT, UInt32)
-    mode_label = if cfg.accum_mode == :typeplane
+    mode_label = if cfg === nothing
+        "global atomics"
+    elseif cfg.accum_mode == :typeplane
         "typeplane ($(cfg.types_per_pass)×$(cfg.n_type_passes) passes)"
     else
         string(cfg.accum_mode)
     end
-    output_path = cfg.needs_partition_merge ? "partition+merge" : "on-chip-flush"
-    Printf.@printf("sp2d accum_mode          %s  (max_shared=%d, output=%s)\n",
-        mode_label, cfg.max_shared_cells, output_path)
+    Printf.@printf("sp2d portable kernel     %s\n", mode_label)
 
     sums = CUDA.zeros(FT, 6, n_dist, n_val)
     counts = CUDA.zeros(UInt32, 6, n_dist, n_val)
@@ -155,7 +154,6 @@ function main()
     )
     t_sp2d = _bench(sp_run, warmup, repeat_)
 
-    # Phase split: pair kernel vs merge (reuse workspace private partitions)
     x_dev = KA.allocate(backend, FT, 2, N)
     u_dev = KA.allocate(backend, FT, 2, N)
     copyto!(x_dev, x)
@@ -165,58 +163,12 @@ function main()
     n_dist_edges = length(dist)
     n_val_edges = _GPUExt._n_value_edges(value_bins)
     geom = SF.HelperFunctions.FlatGeometry{2}()
-
-    pair_run = if cfg.needs_partition_merge
-        () -> begin
-            _GPUExt._sp2d_partition_pair_bufs_and_launch!(
-                backend, sums, counts, x_dev, u_dev, ddig, vplan,
-                N, n_dist_edges, n_val_edges, n_dist, cfg, geom; workspace = ws_sp,
-            )
-        end
-    else
-        () -> begin
-            _GPUExt._launch_sp2d_onchip!(
-                backend, sums, counts, x_dev, u_dev,
-                ddig, vplan, N, n_dist_edges, n_val_edges, n_dist, cfg, geom;
-                workspace = ws_sp,
-            )
-        end
-    end
-    pair_run()
-    CUDA.synchronize()
-    t_pair = _bench(pair_run, warmup, repeat_)
-    if cfg.needs_partition_merge
-        part_sums, part_cnts, n_tb = pair_run()
-        CUDA.synchronize()
-        merge_serial = () -> _GPUExt._launch_merge_sp2d_partitions!(
-            backend, sums, counts, part_sums, part_cnts,
-            n_dist, n_val, n_tb, _GPUExt.SerialMerge(),
-        )
-        merge_parallel = () -> _GPUExt._launch_merge_sp2d_partitions!(
-            backend, sums, counts, part_sums, part_cnts,
-            n_dist, n_val, n_tb, _GPUExt.ParallelMerge(),
-        )
-        t_merge_serial = _bench(merge_serial, warmup, repeat_)
-        pair_run()
-        CUDA.synchronize()
-        t_merge_parallel = _bench(merge_parallel, warmup, repeat_)
-        t_merge_prod = t_merge_serial
-    else
-        t_merge_serial = 0.0
-        t_merge_parallel = 0.0
-        t_merge_prod = 0.0
-    end
-
-    Printf.@printf("sp2d pair kernel         %8.3f ms  [%s; %s]\n", 1_000t_pair, mode_label, output_path)
-    if cfg.needs_partition_merge
-        Printf.@printf("sp2d merge (serial)     %8.3f ms  [the strategy's merge]\n", 1_000t_merge_serial)
-        Printf.@printf("sp2d merge (parallel)   %8.3f ms  [comparison only; slow when C large]\n", 1_000t_merge_parallel)
-        Printf.@printf("sp2d total (end-to-end)  %8.3f ms  [pair + serial merge + host]\n", 1_000t_sp2d)
-    else
-        Printf.@printf("sp2d merge (serial)     %8.3f ms  [skipped — on-chip direct flush]\n", 0.0)
-        Printf.@printf("sp2d merge (parallel)   %8.3f ms  [skipped — on-chip direct flush]\n", 0.0)
-        Printf.@printf("sp2d total (end-to-end)  %8.3f ms  [pair flush + host]\n", 1_000t_sp2d)
-    end
+    portable_run = () -> _GPUExt._launch_single_pass_2d_portable!(
+        backend, 64, sums, counts, x_dev, u_dev, ddig, vplan, N, n_dist_edges, n_val_edges, geom,
+    )
+    t_portable = _bench(portable_run, warmup, repeat_)
+    Printf.@printf("sp2d portable kernel     %8.3f ms  [%s]\n", 1_000t_portable, mode_label)
+    Printf.@printf("sp2d total (end-to-end)  %8.3f ms\n", 1_000t_sp2d)
 
     # --- reference: six-type sp1d same distance bins ---
     ws_sp1 = SFC.GPUSFWorkspace(backend, dist; kind = :single_pass)
@@ -233,19 +185,16 @@ function main()
         "\nsp2d / joint_2d = %.1f×   sp2d / sp1d = %.1f×   sp2d < 6×joint = %s\n",
         t_sp2d / t_joint, t_sp2d / t_sp1, gate_ok ? "PASS" : "FAIL",
     )
-    Printf.@printf("sp2d pair+merge ≈ %.1f ms (%.0f%% pair; production merge=serial)\n",
-        1_000(t_pair + t_merge_prod), 100t_pair / (t_pair + t_merge_prod))
 
     open(log_path, "a") do io
         println(io, "--- $(Dates.now()) ---")
         Printf.@printf(io,
-            "device=%s N=%d n_dist=%d n_val=%d NB2=%d compile_exact=%d compile_max=%d dist_route=%s val_route=%s C=%d mode=%s output=%s tpp=%d ntp=%d\n",
+            "device=%s N=%d n_dist=%d n_val=%d NB2=%d compile_exact=%d compile_max=%d dist_route=%s val_route=%s C=%d portable=%s\n",
             CUDA.name(CUDA.device()), N, n_dist, n_val, NB2, compile_exact, compile_max,
-            dist_route, val_route, C, cfg.accum_mode, output_path, cfg.types_per_pass, cfg.n_type_passes)
+            dist_route, val_route, C, mode_label)
         Printf.@printf(io,
-            "joint_exact=%.6f joint_max=%.6f joint6=%.6f sp2d=%.6f pair=%.6f merge_s=%.6f merge_p=%.6f sp1d=%.6f gate=%s\n",
-            t_joint_exact, t_joint_max, t_joint6, t_sp2d, t_pair, t_merge_serial,
-            t_merge_parallel, t_sp1, gate_ok ? "PASS" : "FAIL")
+            "joint_exact=%.6f joint_max=%.6f joint6=%.6f sp2d=%.6f portable=%.6f sp1d=%.6f gate=%s\n",
+            t_joint_exact, t_joint_max, t_joint6, t_sp2d, t_portable, t_sp1, gate_ok ? "PASS" : "FAIL")
     end
     println("\nLogged to ", log_path)
     println("Re-run production grid: N_DIST=50 N_VAL=50 julia --project=gpu gpu/benchmark_2d_grid_scaling.jl")

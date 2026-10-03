@@ -106,9 +106,9 @@ _no_lag_sweep(::ScatteredModesSchedule) = throw(ArgumentError(
 ))
 
 function gridded_lag_sweep!(
-    sums::AbstractVector{OT}, counts::AbstractVector{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
+    sums::AbstractArray, counts::AbstractArray, sf::SFT.AbstractPairwiseStructureFunctionType,
     data::AbstractMatrix, s::ScatteredModesSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K}; kwargs...,
-) where {OT, CT, D, V, K}
+) where {D, V, K}
     _no_lag_sweep(s)
 end
 
@@ -174,13 +174,15 @@ _nufft_package(::Type{NonuniformFFTsSpectralBackend}) = "NonuniformFFTs"
 _nufft_package(::Type{FINUFFTSpectralBackend}) = "FINUFFT"
 
 """
-    nufft_monomial_transforms(tag, schedule::ScatteredModesSchedule, data, valid, weights, keys, ::Val{Pm}; to = identity) -> Vector
+    nufft_monomial_transforms(tag, schedule::ScatteredModesSchedule, data, valid, weights, keys, ::Val{Pm}; to = identity, workspace = nothing) -> Vector
 
 Type-1 non-uniform FFTs of the masked, weighted monomials `keys` of the packed point field onto the
 schedule's mode grid, one array per key in the real-to-complex half-spectrum layout
 `(M₁ ÷ 2 + 1, M₂, …)`, each weighted by the schedule's taper; the arrays in the family `to` returns.
 `tag` is a provider tag, [`NonuniformFFTsSpectralBackend`](@ref) or [`FINUFFTSpectralBackend`](@ref);
-supplied by the provider's extension.
+supplied by the provider's extension. The plan, set to the schedule's points, is borrowed from the
+[`TransformWorkspace`](@ref) `workspace` and returned to it, so every field transformed on one schedule
+reuses it.
 """
 nufft_monomial_transforms(tag::SB.AbstractNonUniformFastFourierTransformSpectralBackend, args...; kwargs...) =
     throw(ArgumentError(_nufft_missing(typeof(tag))))
@@ -201,13 +203,22 @@ plan from the NonuniformFFTs extension for an `Array`, a device plan from its Ke
 nufft_plan(tag, ::Type, modes, x) = throw(ArgumentError(_needs_device_extension(tag, x)))
 
 """
-    nufft_type1!(tag::FINUFFTSpectralBackend, full, strengths, θ, modes)
+    nufft_type1_plan(tag::FINUFFTSpectralBackend, θ, modes, ntrans)
 
-FINUFFT's batched type-1 transform of the complex `strengths` `(N, ntrans)` at the points `θ` onto the
-full FFT-ordered mode grid `full` `(modes…, ntrans)`: the host transform from the FINUFFT extension for
-`Array`s, cuFINUFFT from its KernelAbstractions extension for arrays on a CUDA device.
+FINUFFT's batched type-1 plan for `ntrans` transforms onto the full FFT-ordered mode grid `modes`, set to the
+points `θ`: the host plan from the FINUFFT extension for `Array`s, a cuFINUFFT plan from its
+KernelAbstractions extension for arrays on a CUDA device. [`nufft_type1_exec!`](@ref) runs it, and
+[`_release_plan!`](@ref) destroys it.
 """
-nufft_type1!(tag, full, strengths, θ, modes) = throw(ArgumentError(_needs_device_extension(tag, full)))
+nufft_type1_plan(tag, θ, modes, ntrans) = throw(ArgumentError(_needs_device_extension(tag, first(θ))))
+
+"""
+    nufft_type1_exec!(plan, strengths, full)
+
+The type-1 transform of the complex `strengths` `(N, ntrans)` by a [`nufft_type1_plan`](@ref) onto `full`
+`(modes…, ntrans)`.
+"""
+function nufft_type1_exec! end
 
 _needs_device_extension(tag, x) =
     "$(nameof(typeof(tag))) on $(typeof(x)) needs `using KernelAbstractions` beside " *
@@ -219,7 +230,7 @@ _no_nufft_route() = throw(ArgumentError(
     "transforms, and a provider: `using NonuniformFFTs` or `using FINUFFT`.",
 ))
 
-gridded_sweep!(::AbstractVector, ::AbstractVector, sf, ::AbstractMatrix, schedule, distance_bins, ::Val{D}, ::Val{V},
+gridded_sweep!(::AbstractArray, ::AbstractArray, sf, ::AbstractMatrix, schedule, distance_bins, ::Val{D}, ::Val{V},
                ::Val{K}, ::SB.AbstractNonUniformFastFourierTransformSpectralBackend; kwargs...) where {D, V, K} =
     _no_nufft_route()
 
@@ -247,19 +258,22 @@ _held_monomial_vector(data::AbstractMatrix, valid, weights, key::Tuple, ::Type{F
     _held_monomial_vector!(similar(parent(data), FT, size(data, 2)), data, valid, weights, key)
 
 """
-    calculate_structure_function(sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend[, CT][, OT]; weights, backend)
+    calculate_structure_function(sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend[, CT][, OT]; weights, backend, workspace)
 
 The soft-binned structure function of scattered points by non-uniform FFT. `u` is `(D, N)` over the
 `N` points of `schedule`, or a multi-field over them; `spectral_backend` is a provider tag,
 [`NonuniformFFTsSpectralBackend`](@ref) or [`FINUFFTSpectralBackend`](@ref). Counts are the
 kernel-weighted pair mass, of the floating-point type `CT` (default the sums' type), and the result's
 `distance` is a [`ModeBinEdges`](@ref) carrying the schedule; `OT` is `StructureFunction` (the default)
-or `StructureFunctionSumsAndCounts`. See [`ScatteredModesSchedule`](@ref) for what is and is not exact.
+or `StructureFunctionSumsAndCounts`. On a GPU `backend` the result is device-resident. A
+[`TransformWorkspace`](@ref) passed as `workspace` keeps the schedule's plan for later fields. See
+[`ScatteredModesSchedule`](@ref) for what is and is not exact.
 """
 function calculate_structure_function(
     sf::SFT.AbstractPairwiseStructureFunctionType, s::ScatteredModesSchedule, u::Union{AbstractArray, MF.Fields},
     distance_bins::AbstractVector, spectral_backend, ::Type{CT}, ::Type{OT};
     weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
+    workspace::Union{Nothing, TransformWorkspace} = nothing,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _assert_mass_counts(CT)
     data, vD, vV, vK = _packed(u)
@@ -267,9 +281,10 @@ function calculate_structure_function(
     size(data, 2) == N || throw(DimensionMismatch("u covers $(size(data, 2)) points, the schedule $N"))
     valid = field_validity(data)
     nb = n_histogram_bins(distance_bins)
-    sums = zeros(float(eltype(data)), nb)
-    counts = zeros(CT, nb)
-    gridded_sweep!(sums, counts, sf, data, s, distance_bins, vD, vV, vK, spectral_backend; valid, weights, backend)
+    sums = _result_zeros(backend, float(eltype(data)), nb)
+    counts = _result_zeros(backend, CT, nb)
+    gridded_sweep!(sums, counts, sf, data, s, distance_bins, vD, vV, vK, spectral_backend; valid, weights, backend,
+                   _workspace_kw(workspace)...)
     return _finalize(SFO.StructureFunctionSumsAndCounts(sf, ModeBinEdges(distance_bins, s), sums, counts), OT)
 end
 
@@ -292,20 +307,23 @@ calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, s::S
     calculate_structure_function(sf, s, u, distance_bins, spectral_backend, _mass_type(u), OT; kwargs...)
 
 """
-    calculate_structure_function_batch!(sums, counts, sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend; weights, backend)
+    calculate_structure_function_batch!(sums, counts, sf, schedule::ScatteredModesSchedule, u, distance_bins, spectral_backend; weights, backend, workspace)
 
 The soft-binned structure function of one set of scattered points sampled repeatedly: `u` is
 `(D, N, slices)` over the `N` points of `schedule` and `sums`/`counts` are
 `(n_distance, n_slices)`, the counts a kernel-weighted pair mass.
 
 The points fix every pair, so the lags are enumerated once and every slice is summed against them —
-the fixed-station case of the point-list slice batch. Accumulates into the caller's arrays and
-returns nothing. See [`ScatteredModesSchedule`](@ref) for what is and is not exact.
+the fixed-station case of the point-list slice batch, with one plan set to the points for every slice.
+Accumulates into the caller's arrays and returns nothing. A [`TransformWorkspace`](@ref) passed as
+`workspace` keeps the plan for later calls. See [`ScatteredModesSchedule`](@ref) for what is and is not
+exact.
 """
 function calculate_structure_function_batch!(
     sums::AbstractMatrix, counts::AbstractMatrix, sf::SFT.AbstractPairwiseStructureFunctionType,
     s::ScatteredModesSchedule, u::AbstractArray, distance_bins::AbstractVector, spectral_backend;
     weights = nothing, backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
+    workspace::Union{Nothing, TransformWorkspace} = nothing,
 )
     ndims(u) >= 3 || throw(DimensionMismatch(
         "a slice batch is stored (component, points, slices) and so has at least three axes; got $(size(u))",
@@ -317,6 +335,6 @@ function calculate_structure_function_batch!(
     size(data, 2) == N || throw(DimensionMismatch("each slice covers $(size(data, 2)) points, the schedule $N"))
     valid = batch_validity(u)
     gridded_sweep_batch!(sums, counts, sf, data, s, distance_bins, Val(D), Val(1), Val(0), spectral_backend;
-                         valid, weights, backend)
+                         valid, weights, backend, _workspace_kw(workspace)...)
     return nothing
 end

@@ -201,10 +201,10 @@ Test.@testset "directional output on a grid agrees with the unstructured joint p
     Test.@test isapprox(vec(sum(ps; dims = 2)), ps1; rtol = 1e-9, atol = 1e-10)
 end
 
-Test.@testset "the forward transforms batch, and the batch size changes nothing" begin
+Test.@testset "the forward transforms batch, and the batch size changes nothing beyond rounding" begin
     # Every (slab, monomial) is a short transform along the uniform directions, so they go through one
     # batched call; the batch is bounded by a byte budget. Driving the budget down to one column at a
-    # time, and to a size that leaves a short last batch, must not move a single number.
+    # time, and to a size that leaves a short last batch, keeps every count and every sum to rounding.
     ext = Base.get_extension(SF, :StructureFunctionsAbstractFFTsExt)
     Random.seed!(9550)
     dims = (24, 9)                       # 9 slabs of 24, so the stretched axis makes many small transforms
@@ -218,12 +218,13 @@ Test.@testset "the forward transforms batch, and the batch size changes nothing"
         run() = (a = zeros(Float64, nb); c = zeros(Int, nb);
                  SFC.gridded_sweep!(a, c, SFT.L2SFType(), u, s, bins, Val(2), FFT_TAG); (a, c))
         ref_s, ref_c = run()
-        # a slab costs 24·8 + 13·16 = 400 bytes here, so these give batches of 9 (one), 1, 2 (a short
-        # last batch of 1) and 4 (a short last batch of 1)
-        for bytes in (budget, 1, 800, 1600)
+        # a (slab, monomial) transform costs 24·8 + 13·16 = 400 bytes and there are 9 × 6 of them, so these
+        # give one batch; batches of 1; each slab's monomials in groups of 2; in groups of 4 and a short
+        # group of 2; and chunks of 4 slabs' monomials with a short last chunk of 1
+        for bytes in (budget, 1, 800, 1600, 9600)
             ext.FORWARD_BATCH_BYTES[] = bytes
             got_s, got_c = run()
-            Test.@test got_s == ref_s
+            Test.@test isapprox(got_s, ref_s; rtol = 1e-12)
             Test.@test got_c == ref_c
         end
         Test.@test sum(ref_c) > 0

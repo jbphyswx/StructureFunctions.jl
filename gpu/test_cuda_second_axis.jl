@@ -1,7 +1,9 @@
 # The separation-angle second axis on real CUDA: the joint kernels gained an axis argument, and
 # only a device compile can establish that the generated tiled family and the three global-atomic
 # kernels still build. `KA.CPU()` accepts host values a device rejects.
-using CUDA, Random, Printf
+using CUDA: CUDA
+using Random: Random
+using Printf: Printf
 using StructureFunctions
 using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
@@ -21,7 +23,7 @@ function compare(name, got, ref; rtol = 1e-9)
     dc = maximum(abs.(float.(gc) .- float.(rc))) / (maximum(abs, float.(rc)) + eps())
     ok = ds < rtol && dc < rtol
     ok || push!(failures, name)
-    @printf("%-52s Δsum=%.3e Δcount=%.3e  %s\n", name, ds, dc, ok ? "ok" : "FAILED")
+    Printf.@printf("%-52s Δsum=%.3e Δcount=%.3e  %s\n", name, ds, dc, ok ? "ok" : "FAILED")
     return ok
 end
 
@@ -76,7 +78,7 @@ let x = rand(2, 64), u = rand(2, 64)
         e isa ArgumentError
     end
     refused || push!(failures, "curved metric refusal")
-    @printf("%-52s %s\n", "angle axis on a curved metric is refused by name",
+    Printf.@printf("%-52s %s\n", "angle axis on a curved metric is refused by name",
             refused ? "ok" : "FAILED")
 end
 

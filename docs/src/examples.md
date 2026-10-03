@@ -5,12 +5,12 @@ These examples use small fixtures and a serial backend. Executable scripts for p
 ## Six invariants in one pass
 
 ```@example recipes
-using Random
+using Random: Random
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 using ComputationalBackends: SerialBackend
-rng = MersenneTwister(12)
-x = rand(rng, 2, 32)
-u = randn(rng, 2, 32)
+rng = Random.MersenneTwister(12)
+x = Random.rand(rng, 2, 32)
+u = Random.randn(rng, 2, 32)
 bins = range(0.0, 1.5; length=7)
 result = SFC.calculate_structure_functions_single_pass(x, u, bins;
     backend=SerialBackend())

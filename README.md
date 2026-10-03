@@ -9,7 +9,7 @@ Julia 1.12 or later is required.
 ## Installation
 
 ```julia
-using Pkg; Pkg.add(url="https://github.com/jbphyswx/StructureFunctions.jl.git")
+using Pkg: Pkg; Pkg.add(url="https://github.com/jbphyswx/StructureFunctions.jl.git")
 ```
 
 ## Calculate a structure function
@@ -17,14 +17,14 @@ using Pkg; Pkg.add(url="https://github.com/jbphyswx/StructureFunctions.jl.git")
 Columns contain points; rows contain vector components. This example computes the mean squared longitudinal velocity increment in each separation bin.
 
 ```julia
-using Random
+using Random: Random
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT,
     StructureFunctionSumsAndCounts
 using ComputationalBackends: SerialBackend
 
-rng = MersenneTwister(42)
-x = rand(rng, 2, 32)
-u = randn(rng, 2, 32)
+rng = Random.MersenneTwister(42)
+x = Random.rand(rng, 2, 32)
+u = Random.randn(rng, 2, 32)
 bins = range(0.0, 1.5; length=9)
 sf = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
     backend=SerialBackend())

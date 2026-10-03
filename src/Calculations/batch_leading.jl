@@ -107,12 +107,23 @@ end
 @inline _bl_shared_positions(x::AbstractMatrix, ::SFH.FlatGeometry{D}) where {D} = ntuple(d -> x[d, :], Val(D))
 @inline _bl_shared_positions(x, geom) = x
 
-"""Per-call buffers of a flat shared-position kernel under `window`: digitize key, approximate bin,
-direction."""
-@inline function _bl_geometry_scratch(window::PairWindow, xc::NTuple{W, AbstractVector{T}}, ::Val{W}) where {T, W}
+"""
+    _bl_kernel_scratch(xs, ::Val{W}) -> scratch
+
+A task's scratch for the batch kernel over the shared positions `xs`: for flat component vectors the pair window
+and its buffers — digitize key, approximate bin, direction, compacted slots; `nothing` for a kernel that takes
+none.
+"""
+@inline function _bl_kernel_scratch(xc::Tuple{AbstractVector{T}, Vararg{AbstractVector{T}}}, ::Val{W}) where {T, W}
+    window = _pair_window(length(xc[1]))
     L = _pair_scratch_length(window, length(xc[1]))
-    return Vector{T}(undef, L), Vector{Int32}(undef, L), Matrix{T}(undef, L, W)
+    return (window, Vector{T}(undef, L), Vector{Int32}(undef, L), Matrix{T}(undef, L, W), Vector{Int32}(undef, L))
 end
+@inline _bl_kernel_scratch(xs, ::Val) = nothing
+
+"""The trailing kernel arguments a scratch supplies: its buffers, or none."""
+@inline _bl_scratch_args(::Nothing) = ()
+@inline _bl_scratch_args(scratch::Tuple) = scratch
 
 """
     _bl_block_geometry!(keybuf, idxbuf, rhbuf, plan, xc, Xi, js, o, vW)
@@ -139,16 +150,6 @@ end
 @inline _bl_direction(rhbuf, k, ::Val{W}) where {W} = SA.SVector{W}(ntuple(d -> @inbounds(rhbuf[k, d]), Val(W)))
 
 function _bl_shared_1d!(
-    sums_bl::AbstractMatrix, counts_bl::AbstractMatrix, xc::NTuple{D, AbstractVector}, ub::AbstractArray{<:Any, 3},
-    sf_type::SFT.AbstractPairwiseStructureFunctionType, plan::AbstractSquaredDigitizePlan, geom::SFH.FlatGeometry,
-    vD::Val{D}, blocks, brange, weights = NoWeights(),
-) where {D}
-    window = _pair_window(length(xc[1]))
-    return _bl_shared_1d!(sums_bl, counts_bl, xc, ub, sf_type, plan, geom, vD, blocks, brange, weights, window,
-                          _bl_geometry_scratch(window, xc, vD)...)
-end
-
-function _bl_shared_1d!(
     sums_bl::AbstractMatrix{OT},
     counts_bl::AbstractMatrix{CT},
     xc::NTuple{D, AbstractVector},
@@ -161,11 +162,12 @@ function _bl_shared_1d!(
     brange,
     weights,
     window::PairWindow,
-    keybuf, idxbuf, rhbuf,
+    keybuf, idxbuf, rhbuf, sel,
 ) where {OT, CT, D}
     nb = size(sums_bl, 2)
     boff = first(brange) - 1
     vD = Val(D)
+    chooses = _chooses_compaction(blocks)
     @inbounds for (ir, jr) in blocks
         _check_run_fits(window, keybuf, jr)
         o = _slot_offset(window, jr)
@@ -175,16 +177,32 @@ function _bl_shared_1d!(
             Xi = _component_point(xc, i, vD)
             wi = _point_weight(weights, i)
             _bl_block_geometry!(keybuf, idxbuf, rhbuf, plan, xc, Xi, jlo:last(jr), o, vD)
-            for k in (jlo - o):(last(jr) - o)
-                bin = squared_bin(plan, keybuf[k], idxbuf[k])
-                1 <= bin <= nb || continue
-                j = k + o
-                rh = _bl_direction(rhbuf, k, vD)
-                w = wi * _point_weight(weights, j)
-                @simd ivdep for b in brange
-                    du = _bl_vel(ub, b, j, vD) - _bl_vel(ub, b, i, vD)
-                    sums_bl[b - boff, bin] += w * sf_type(du, rh)
-                    counts_bl[b - boff, bin] += CT(w)
+            ks = (jlo - o):(last(jr) - o)
+            if chooses && _compacts(_sample_in_range(plan, keybuf, ks)...)
+                for m in 1:_compact_in_range!(sel, plan, keybuf, ks)
+                    k = Int(sel[m])
+                    bin = squared_bin_select(plan, keybuf[k], idxbuf[k])
+                    j = k + o
+                    rh = _bl_direction(rhbuf, k, vD)
+                    w = wi * _point_weight(weights, j)
+                    @simd ivdep for b in brange
+                        du = _bl_vel(ub, b, j, vD) - _bl_vel(ub, b, i, vD)
+                        sums_bl[b - boff, bin] += w * sf_type(du, rh)
+                        counts_bl[b - boff, bin] += CT(w)
+                    end
+                end
+            else
+                for k in ks
+                    bin = chooses ? squared_bin_select(plan, keybuf[k], idxbuf[k]) : squared_bin(plan, keybuf[k], idxbuf[k])
+                    1 <= bin <= nb || continue
+                    j = k + o
+                    rh = _bl_direction(rhbuf, k, vD)
+                    w = wi * _point_weight(weights, j)
+                    @simd ivdep for b in brange
+                        du = _bl_vel(ub, b, j, vD) - _bl_vel(ub, b, i, vD)
+                        sums_bl[b - boff, bin] += w * sf_type(du, rh)
+                        counts_bl[b - boff, bin] += CT(w)
+                    end
                 end
             end
         end
@@ -374,23 +392,14 @@ end
 end
 
 function _bl_sp1d_shared!(
-    sums_bl::AbstractArray{<:Any, 3}, counts_bl::AbstractArray{<:Any, 3}, xc::NTuple{D, AbstractVector},
-    ub::AbstractArray{<:Any, 3}, plan::AbstractSquaredDigitizePlan, geom::SFH.FlatGeometry, vD::Val{D}, blocks,
-    brange, weights = NoWeights(),
-) where {D}
-    window = _pair_window(length(xc[1]))
-    return _bl_sp1d_shared!(sums_bl, counts_bl, xc, ub, plan, geom, vD, blocks, brange, weights, window,
-                            _bl_geometry_scratch(window, xc, vD)...)
-end
-
-function _bl_sp1d_shared!(
     sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{CT, 3},
     xc::NTuple{D, AbstractVector}, ub::AbstractArray{<:Any, 3}, plan::AbstractSquaredDigitizePlan,
-    geom::SFH.FlatGeometry, ::Val{D}, blocks, brange, weights, window::PairWindow, keybuf, idxbuf, rhbuf,
+    geom::SFH.FlatGeometry, ::Val{D}, blocks, brange, weights, window::PairWindow, keybuf, idxbuf, rhbuf, sel,
 ) where {OT, CT, D}
     nb = size(sums_bl, 3)
     boff = first(brange) - 1
     vD = Val(D)
+    chooses = _chooses_compaction(blocks)
     @inbounds for (ir, jr) in blocks
         _check_run_fits(window, keybuf, jr)
         o = _slot_offset(window, jr)
@@ -400,15 +409,30 @@ function _bl_sp1d_shared!(
             Xi = _component_point(xc, i, vD)
             wi = _point_weight(weights, i)
             _bl_block_geometry!(keybuf, idxbuf, rhbuf, plan, xc, Xi, jlo:last(jr), o, vD)
-            for k in (jlo - o):(last(jr) - o)
-                bin = squared_bin(plan, keybuf[k], idxbuf[k])
-                1 <= bin <= nb || continue
-                j = k + o
-                rh = _bl_direction(rhbuf, k, vD)
-                w = wi * _point_weight(weights, j)
-                @simd ivdep for b in brange
-                    du = _bl_vel(ub, b, j, vD) - _bl_vel(ub, b, i, vD)
-                    _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, SFH.fma_dot(du, rh), SFH.fma_dot(du, du), CT, w)
+            ks = (jlo - o):(last(jr) - o)
+            if chooses && _compacts(_sample_in_range(plan, keybuf, ks)...)
+                for m in 1:_compact_in_range!(sel, plan, keybuf, ks)
+                    k = Int(sel[m])
+                    bin = squared_bin_select(plan, keybuf[k], idxbuf[k])
+                    j = k + o
+                    rh = _bl_direction(rhbuf, k, vD)
+                    w = wi * _point_weight(weights, j)
+                    @simd ivdep for b in brange
+                        du = _bl_vel(ub, b, j, vD) - _bl_vel(ub, b, i, vD)
+                        _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, SFH.fma_dot(du, rh), SFH.fma_dot(du, du), CT, w)
+                    end
+                end
+            else
+                for k in ks
+                    bin = chooses ? squared_bin_select(plan, keybuf[k], idxbuf[k]) : squared_bin(plan, keybuf[k], idxbuf[k])
+                    1 <= bin <= nb || continue
+                    j = k + o
+                    rh = _bl_direction(rhbuf, k, vD)
+                    w = wi * _point_weight(weights, j)
+                    @simd ivdep for b in brange
+                        du = _bl_vel(ub, b, j, vD) - _bl_vel(ub, b, i, vD)
+                        _bl_sp1d_write!(sums_bl, counts_bl, b - boff, bin, SFH.fma_dot(du, rh), SFH.fma_dot(du, du), CT, w)
+                    end
                 end
             end
         end
@@ -550,22 +574,24 @@ end
 # Drivers: prep (transpose to batch-leading) + run kernel via an EXECUTOR + transpose back.
 #
 # Parallelism is over the outer pair index `i`, so each pair's geometry is computed once and the
-# inner batch loop over `b` stays full and SIMD-vectorized. `i` is partitioned into round-robin
-# chunks, which balances the triangle, and thread-local accumulators are reduced at the end.
+# inner batch loop over `b` stays full and SIMD-vectorized. `i` is partitioned into chunks as the
+# schedule wants them, and thread-local accumulators are reduced at the end.
 #
-# executor(make_accum, run_chunk!, ifull, B, accum_bytes, ws) → reduced (sums, counts), width B:
-#   make_accum(bw)                     → fresh zeroed (sums_bl, counts_bl) of batch width bw
-#   run_chunk!(acc, isub, brange)      → kernel over outer i ∈ isub and batch b ∈ brange
-#   accum_bytes                        → bytes of one full-width accumulator, for the split model
-#   ws                                 → CPUSFWorkspace to draw accumulators from, or `nothing`
+# executor(make_accum, make_scratch, run_chunk!, ifull, grid, B, accum_bytes, ws) → reduced (sums, counts), width B:
+#   make_accum(bw)                          → fresh zeroed (sums_bl, counts_bl) of batch width bw
+#   make_scratch()                          → a task's kernel scratch
+#   run_chunk!(acc, scratch, isub, brange)  → kernel over outer i ∈ isub and batch b ∈ brange
+#   grid                                    → the cull grid of the sweep, per-slice grids, or `nothing`
+#   accum_bytes                             → bytes of one full-width accumulator, for the split model
+#   ws                                      → CPUSFWorkspace to draw accumulators from, or `nothing`
 #   serial  : one full-width accumulator over ifull
 #   threaded: partitions (i, b); per-task accumulators are only as wide as their b-chunk
 # ========================================================================================
 
-@inline function _bl_serial_exec(make_accum, run_chunk!, ifull, B, accum_bytes, ws)
+@inline function _bl_serial_exec(make_accum, make_scratch, run_chunk!, ifull, grid, B, accum_bytes, ws)
     acc = _bl_accum_pool(ws, make_accum, [B])[1]
     _bl_zero_accum!(acc)
-    run_chunk!(acc, ifull, 1:B)
+    run_chunk!(acc, make_scratch(), ifull, 1:B)
     return acc
 end
 
@@ -683,17 +709,17 @@ end
 """
     _bl_chunk_runner(kernel!, grid, xs, us, ws, N) -> run_chunk!
 
-The executor's `run_chunk!(acc, isub, brange)` for [`_bl_cull`](@ref)'s output: `kernel!(sums,
-counts, x, u, blocks, brange, weights)` once over the slices of `brange` with one set of blocks, or,
+The executor's `run_chunk!(acc, scratch, isub, brange)` for [`_bl_cull`](@ref)'s output: `kernel!(sums,
+counts, x, u, blocks, brange, weights, scratch)` once over the slices of `brange` with one set of blocks, or,
 for per-slice grids, once per slice with that slice's inputs and blocks into its row of `acc`.
 """
 function _bl_chunk_runner(kernel!::K, grid, xs, us, ws, N::Int) where {K}
     grid isa AbstractVector ||
-        return (acc, isub, br) -> kernel!(acc[1], acc[2], xs, us, pair_blocks(N, isub; grid), br, ws)
-    return function (acc, isub, br)
+        return (acc, scratch, isub, br) -> kernel!(acc[1], acc[2], xs, us, pair_blocks(N, isub; grid), br, ws, scratch)
+    return function (acc, scratch, isub, br)
         for (k, b) in enumerate(br)
             kernel!(selectdim(acc[1], 1, k:k), selectdim(acc[2], 1, k:k), xs[b], us[b],
-                    pair_blocks(N, isub; grid = grid[b]), 1:1, ws[b])
+                    pair_blocks(N, isub; grid = grid[b]), 1:1, ws[b], scratch)
         end
         return nothing
     end
@@ -711,11 +737,15 @@ function _bl_run_1d!(sums, counts, sf_type, x, u, distance_bins, distance_metric
     grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)
     sh_plan = _bl_shared_plan(geom, distance_bins)
     make_accum(bw) = (zeros(OT, bw, n_bins), zeros(CT, bw, n_bins))
+    xk = fixed_x ? _bl_shared_positions(xs, geom) : xs
+    make_scratch() = fixed_x ? _bl_kernel_scratch(xk, vD) : nothing
     kernel! = fixed_x ?
-        ((s, c, xk, uk, blocks, br, w) -> _bl_shared_1d!(s, c, xk, uk, sf_type, sh_plan, geom, vD, blocks, br, w)) :
-        ((s, c, xk, uk, blocks, br, w) -> _bl_varying_1d!(s, c, xk, uk, sf_type, dist_be, geom, vD, blocks, br, w))
-    run_chunk! = _bl_chunk_runner(kernel!, grid, fixed_x ? _bl_shared_positions(xs, geom) : xs, us, ws, N)
-    sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, n_bins), workspace)
+        ((s, c, xk, uk, blocks, br, w, scr) -> _bl_shared_1d!(s, c, xk, uk, sf_type, sh_plan, geom, vD, blocks, br, w,
+                                                              _bl_scratch_args(scr)...)) :
+        ((s, c, xk, uk, blocks, br, w, scr) -> _bl_varying_1d!(s, c, xk, uk, sf_type, dist_be, geom, vD, blocks, br, w))
+    run_chunk! = _bl_chunk_runner(kernel!, grid, xk, us, ws, N)
+    sums_bl, counts_bl = executor(make_accum, make_scratch, run_chunk!, 1:(N - 1), grid, B,
+                                  _bl_accum_bytes(OT, CT, B, n_bins), workspace)
     _bl_add_permuted!(reshape(sums, n_bins, B), sums_bl, (2, 1))
     _bl_add_permuted!(reshape(counts, n_bins, B), counts_bl, (2, 1))
     return nothing
@@ -735,12 +765,13 @@ function _bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins
     grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)
     make_accum(bw) = (zeros(OT, bw, n_dist, n_val), zeros(CT, bw, n_dist, n_val))
     kernel! = fixed_x ?
-        ((s, c, xk, uk, blocks, br, w) -> _bl_joint2d_shared!(s, c, xk, uk, sf_type, dist_be, val_be, geom, vD,
-                                                              blocks, br, w, second_axis)) :
-        ((s, c, xk, uk, blocks, br, w) -> _bl_joint2d_varying!(s, c, xk, uk, sf_type, dist_be, val_be, geom, vD,
-                                                               blocks, br, w, second_axis))
+        ((s, c, xk, uk, blocks, br, w, _) -> _bl_joint2d_shared!(s, c, xk, uk, sf_type, dist_be, val_be, geom, vD,
+                                                                 blocks, br, w, second_axis)) :
+        ((s, c, xk, uk, blocks, br, w, _) -> _bl_joint2d_varying!(s, c, xk, uk, sf_type, dist_be, val_be, geom, vD,
+                                                                  blocks, br, w, second_axis))
     run_chunk! = _bl_chunk_runner(kernel!, grid, xs, us, ws, N)
-    sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, n_dist, n_val), workspace)
+    sums_bl, counts_bl = executor(make_accum, () -> nothing, run_chunk!, 1:(N - 1), grid, B,
+                                  _bl_accum_bytes(OT, CT, B, n_dist, n_val), workspace)
     _bl_add_permuted!(reshape(sums, n_dist, n_val, B), sums_bl, (2, 3, 1))
     _bl_add_permuted!(reshape(counts, n_dist, n_val, B), counts_bl, (2, 3, 1))
     return nothing
@@ -758,11 +789,15 @@ function _bl_run_sp1d!(sums, counts, x, u, distance_bins, distance_metric, execu
     grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)
     sh_plan = _bl_shared_plan(geom, distance_bins)
     make_accum(bw) = (zeros(OT, bw, SINGLE_PASS_N, n_bins), zeros(CT, bw, SINGLE_PASS_N, n_bins))
+    xk = fixed_x ? _bl_shared_positions(xs, geom) : xs
+    make_scratch() = fixed_x ? _bl_kernel_scratch(xk, vD) : nothing
     kernel! = fixed_x ?
-        ((s, c, xk, uk, blocks, br, w) -> _bl_sp1d_shared!(s, c, xk, uk, sh_plan, geom, vD, blocks, br, w)) :
-        ((s, c, xk, uk, blocks, br, w) -> _bl_sp1d_varying!(s, c, xk, uk, dist_be, geom, vD, blocks, br, w))
-    run_chunk! = _bl_chunk_runner(kernel!, grid, fixed_x ? _bl_shared_positions(xs, geom) : xs, us, ws, N)
-    sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins), workspace)
+        ((s, c, xk, uk, blocks, br, w, scr) -> _bl_sp1d_shared!(s, c, xk, uk, sh_plan, geom, vD, blocks, br, w,
+                                                                _bl_scratch_args(scr)...)) :
+        ((s, c, xk, uk, blocks, br, w, scr) -> _bl_sp1d_varying!(s, c, xk, uk, dist_be, geom, vD, blocks, br, w))
+    run_chunk! = _bl_chunk_runner(kernel!, grid, xk, us, ws, N)
+    sums_bl, counts_bl = executor(make_accum, make_scratch, run_chunk!, 1:(N - 1), grid, B,
+                                  _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins), workspace)
     _bl_add_permuted!(reshape(sums, SINGLE_PASS_N, n_bins, B), sums_bl, (2, 3, 1))
     _bl_add_permuted!(reshape(counts, SINGLE_PASS_N, n_bins, B), counts_bl, (2, 3, 1))
     return nothing
@@ -782,10 +817,11 @@ function _bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins, distance_m
     grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)
     make_accum(bw) = (zeros(OT, bw, SINGLE_PASS_N, n_bins, n_val), zeros(CT, bw, SINGLE_PASS_N, n_bins, n_val))
     kernel! = fixed_x ?
-        ((s, c, xk, uk, blocks, br, w) -> _bl_sp2d_shared!(s, c, xk, uk, dist_be, val_plan, geom, vD, blocks, br, w)) :
-        ((s, c, xk, uk, blocks, br, w) -> _bl_sp2d_varying!(s, c, xk, uk, dist_be, val_plan, geom, vD, blocks, br, w))
+        ((s, c, xk, uk, blocks, br, w, _) -> _bl_sp2d_shared!(s, c, xk, uk, dist_be, val_plan, geom, vD, blocks, br, w)) :
+        ((s, c, xk, uk, blocks, br, w, _) -> _bl_sp2d_varying!(s, c, xk, uk, dist_be, val_plan, geom, vD, blocks, br, w))
     run_chunk! = _bl_chunk_runner(kernel!, grid, xs, us, ws, N)
-    sums_bl, counts_bl = executor(make_accum, run_chunk!, 1:(N - 1), B, _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins, n_val), workspace)
+    sums_bl, counts_bl = executor(make_accum, () -> nothing, run_chunk!, 1:(N - 1), grid, B,
+                                  _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins, n_val), workspace)
     _bl_add_permuted!(reshape(sums, SINGLE_PASS_N, n_bins, n_val, B), sums_bl, (2, 3, 4, 1))
     _bl_add_permuted!(reshape(counts, SINGLE_PASS_N, n_bins, n_val, B), counts_bl, (2, 3, 4, 1))
     return nothing

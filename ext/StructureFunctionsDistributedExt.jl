@@ -14,12 +14,16 @@ function __init__()
     return nothing
 end
 
-# A `LocalManager` worker is another process on this node, competing for the cores the threaded
-# backend already has; any other manager placed the worker somewhere this process cannot reach.
+# A `LocalManager` worker shares this node's cores, which a threaded process already uses; any other manager placed
+# the worker where this process cannot reach.
 SFC.distributed_adds_hardware(::Val{:distributed}) =
-    Distributed.nworkers() > 1 &&
-    any(w -> !(Distributed.worker_from_id(w).manager isa Distributed.LocalManager),
-        Distributed.workers())
+    Distributed.nprocs() > 1 &&
+    (Threads.nthreads() == 1 ||
+     any(w -> !(Distributed.worker_from_id(w).manager isa Distributed.LocalManager), Distributed.workers()))
+
+"""One share `(w, k)` of the outer indices per worker, `k` the worker count; each worker resolves its share against
+the cull grid it builds (`SFC._share_indices`)."""
+_worker_shares() = (k = max(1, Distributed.nworkers()); [(w, k) for w in 1:k])
 
 # --- Non-Mutating 1D Dispatch (returns the raw accumulator; public boundary finalizes) ---
 function SFC._dispatch_execution_backend(
@@ -76,15 +80,6 @@ function _parallel_calculate_structure_function_core(
     weights = SFC.NoWeights(),
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
 ) where {CT}
-    # One balanced i-list per worker; each worker computes its partial via `inner` (Serial, or
-    # Threaded for hybrid distributed+threaded). Collect the partials and accumulate them into a
-    # preallocated, concretely-typed buffer. (We deliberately avoid `@distributed (+)`, whose
-    # reduction is inferred as `Any` and would force a return-type assertion and make
-    # AutoBackend+Distributed type-unstable. `pmap`-into-typed-buffer mirrors the batched path
-    # and infers natively.)
-    N = length(x_vecs[1])
-    nw = max(1, Distributed.nworkers())
-    chunks = SFC._balanced_index_chunks(N, nw)
     OT0 = promote_type(float(eltype(x_vecs[1])), float(eltype(u_vecs[1])))
 
     # A polynomial operator on a line has the exact `O(N log N)` route, and that sweep executes
@@ -101,9 +96,9 @@ function _parallel_calculate_structure_function_core(
                                                   lsums, lcounts)
     end
 
-    partials = Distributed.pmap(chunks) do ch
+    partials = Distributed.pmap(_worker_shares()) do share
         SFC._partial_sums_counts(
-            inner, structure_function_type, x_vecs, u_vecs, distance_bins, ch, CT;
+            inner, structure_function_type, x_vecs, u_vecs, distance_bins, share, CT;
             geometry = geometry, culling = culling, weights,
         )
     end
@@ -123,23 +118,15 @@ end
     _dist_bl_exec(inner_exec) -> executor
 
 The batch-leading executor for the Distributed backend: split the **outer pair index** across
-workers, run the batch-leading kernel on each share, and add the partials.
-
-Splitting the outer index rather than the slice axis is what keeps the amortisation the
-batch-leading kernels exist for — a pair's geometry is computed once and reused across all `B`
-slices inside the kernel. A slice-wise split recomputes every pair's frame, distance and bin once
-per slice, which costs `B` times the geometry and measured 6.4× the serial total at `B = 8`.
-Same shape as the MPI extension's `_mpi_bl_exec`, with `pmap` and a sum where that has an
-`Allreduce!`.
+workers (`SFC._outer_shares`), run the batch-leading kernel on each share, and add the partials.
+Each pair's geometry is then computed once for all `B` slices inside the kernel.
 """
 function _dist_bl_exec(inner_exec)
-    return function (make_accum, run_chunk!, ifull, B, accum_bytes, ws)
-        nw = max(1, Distributed.nworkers())
-        chunks = SFC._balanced_index_chunks(length(ifull), nw)
-        shares = [ifull[c] for c in chunks if !isempty(c)]
-        length(shares) <= 1 && return inner_exec(make_accum, run_chunk!, ifull, B, accum_bytes, ws)
+    return function (make_accum, make_scratch, run_chunk!, ifull, grid, B, accum_bytes, ws)
+        shares = filter(!isempty, SFC._outer_shares(grid, ifull, Distributed.nworkers()))
+        length(shares) <= 1 && return inner_exec(make_accum, make_scratch, run_chunk!, ifull, grid, B, accum_bytes, ws)
         parts = Distributed.pmap(shares) do share
-            acc = inner_exec(make_accum, run_chunk!, share, B, accum_bytes, nothing)
+            acc = inner_exec(make_accum, make_scratch, run_chunk!, share, grid, B, accum_bytes, nothing)
             (Array(acc[1]), Array(acc[2]))
         end
         total = parts[1]
@@ -229,21 +216,14 @@ function SFC._dispatch_execution_backend(
     culling::SFC.CullingPolicy = SFC.AutoCulling(),
     weights = SFC.NoWeights(),
 ) where {CT}
-    # Each worker accumulates its stride-`nw` share of the outer indices into a local 2D buffer,
-    # then we sum the partials into a preallocated typed buffer. (Same rationale as the 1D core:
-    # avoids `@distributed (+)`'s `Any`-typed reduction / the return-type assertion.)
-    N = length(x_vecs[1])
-    nw = max(1, Distributed.nworkers())
-    chunks = SFC._balanced_index_chunks(N, nw)
-
     nd = SFC.n_histogram_bins(distance_bins)
     nv = SFC.n_histogram_bins(value_bins)
     OT = promote_type(float(eltype(x_vecs[1])), float(eltype(u_vecs[1])))
     inner = CB.local_backend(db)
 
-    partials = Distributed.pmap(chunks) do ichunk
+    partials = Distributed.pmap(_worker_shares()) do share
         SFC._partial_2d_sums_counts(
-            inner, structure_function_type, x_vecs, u_vecs, distance_bins, value_bins, ichunk, CT;
+            inner, structure_function_type, x_vecs, u_vecs, distance_bins, value_bins, share, CT;
             geometry, culling, weights, second_axis,
         )
     end
@@ -284,7 +264,7 @@ end
 
 # --- Single Pass Dispatch ---
 function SFC._dispatch_single_pass(
-    ::CB.AbstractDistributedBackend,
+    db::CB.AbstractDistributedBackend,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
@@ -295,15 +275,10 @@ function SFC._dispatch_single_pass(
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
     n_bins = SFC.n_histogram_bins(distance_bins)
-    n_points = size(x, 2)
-
-    # One accumulator per worker chunk, not per outer index: the old `@distributed (+)` body
-    # allocated a (12, n_bins) matrix for every `i` and reduced O(N) full matrices. Chunks also let
-    # each worker take the SIMD kernel, and the accumulator is typed from the inputs.
-    chunks = SFC._balanced_index_chunks(n_points, max(1, Distributed.nworkers()))
-    partials = Distributed.pmap(chunks) do ch
+    inner = CB.local_backend(db)
+    partials = Distributed.pmap(_worker_shares()) do share
         SFC._partial_single_pass_1d(
-            x, u, distance_bins, ch, CT;
+            inner, x, u, distance_bins, share, CT;
             distance_metric, culling, weights,
         )
     end
@@ -318,7 +293,7 @@ function SFC._dispatch_single_pass(
 end
 
 function SFC._dispatch_single_pass_2d(
-    ::CB.AbstractDistributedBackend,
+    db::CB.AbstractDistributedBackend,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},
@@ -331,14 +306,10 @@ function SFC._dispatch_single_pass_2d(
     OT = promote_type(float(FT1), float(FT2))
     n_bins = SFC.n_histogram_bins(distance_bins)
     n_val = length(SFC._sp2d_value_bin_at(value_bins, 1)) - 1
-    n_points = size(x, 2)
-
-    # One accumulator per worker chunk, not per outer index: the old `@distributed (+)` body
-    # allocated a (12, n_bins, n_val) matrix for every `i` and reduced O(N) of them.
-    chunks = SFC._balanced_index_chunks(n_points, max(1, Distributed.nworkers()))
-    partials = Distributed.pmap(chunks) do ch
+    inner = CB.local_backend(db)
+    partials = Distributed.pmap(_worker_shares()) do share
         SFC._partial_single_pass_2d(
-            x, u, distance_bins, value_bins, ch, CT;
+            inner, x, u, distance_bins, value_bins, share, CT;
             distance_metric, culling, weights,
         )
     end
@@ -585,9 +556,10 @@ end
 
 # --- Harmonic pseudo-coefficients ---
 function SFC._direct_coefficients(db::CB.AbstractDistributedBackend, f, θ, φ, s, lmax)
-    chunks = SFC._balanced_index_chunks(length(f), max(1, Distributed.nworkers()))
-    parts = Distributed.pmap(chunks) do ch
-        SFC.direct_coefficients_partial(f, θ, φ, s, lmax, ch)
+    inner = CB.local_backend(db)
+    shares = [(f[ch], θ[ch], φ[ch]) for ch in SFC._outer_shares(nothing, 1:length(f), Distributed.nworkers())]
+    parts = Distributed.pmap(shares) do (fs, θs, φs)
+        SFC._direct_coefficients(inner, fs, θs, φs, s, lmax)
     end
     return reduce(+, parts)
 end
@@ -604,7 +576,7 @@ function SFC.sweep_reduce!(
     sums, counts, db::CB.AbstractDistributedBackend, items, make_scratch, body!,
 )
     inner = CB.local_backend(db)
-    chunks = SFC._balanced_index_chunks(length(items), max(1, Distributed.nworkers()))
+    chunks = SFC._outer_shares(nothing, 1:length(items), Distributed.nworkers())
     partials = Distributed.pmap(chunks) do ch
         local_sums = zero(sums)
         local_counts = zero(counts)
@@ -621,21 +593,18 @@ end
 
 # --- Tensor structure functions ---
 
-# Each worker takes a balanced share of the outer index and returns its own accumulators, which add
-# because a histogram is order-independent. `pmap` takes the chunk list as items, so the inputs are
-# serialised once per item; a closure capture would re-serialise them on every remotecall.
+# Each worker takes its share of the outer index and returns its own accumulators, which add because a histogram is
+# order-independent.
 function SFC.distributed_calculate_structure_function_tensor!(
-    sums::AbstractArray, counts::AbstractArray, order::Val{P},
+    inner::CB.AbstractExecutionBackend, sums::AbstractArray, counts::AbstractArray, order::Val{P},
     shape::SFC.AbstractFieldShape{D}, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
     distance_metric::DI.PreMetric = DI.Euclidean(), axis = nothing,
     culling::SFC.CullingPolicy = SFC.AutoCulling(), weights = SFC.NoWeights(),
 ) where {P, D}
-    N = size(u, 2)
-    chunks = SFC._balanced_index_chunks(N, max(Distributed.nworkers(), 1))
     CT = eltype(counts)
-    partials = Distributed.pmap(chunks) do chunk
-        SFC.tensor_partial(order, shape, x, u, distance_bins, chunk, CT; distance_metric, axis, culling, weights)
+    partials = Distributed.pmap(_worker_shares()) do share
+        SFC.tensor_partial(inner, order, shape, x, u, distance_bins, share, CT; distance_metric, axis, culling, weights)
     end
     for (ps, pc) in partials
         sums .+= ps
@@ -648,15 +617,13 @@ end
 # --- Multi-field (`Fields`) sweeps ---
 
 function SFC.distributed_calculate_structure_function!(
-    sums::AbstractVector, counts::AbstractVector,
+    inner::CB.AbstractExecutionBackend, sums::AbstractVector, counts::AbstractVector,
     sf::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractMatrix, f::SFC.MF.Fields, distance_bins; kwargs...,
 )
-    N = size(SFC.MF.packed(f), 2)
-    chunks = SFC._balanced_index_chunks(N - 1, max(Distributed.nworkers(), 1))
     CT = eltype(counts)
-    partials = Distributed.pmap(chunks) do chunk
-        SFC.field_partial(sf, x, f, distance_bins, chunk, CT; kwargs...)
+    partials = Distributed.pmap(_worker_shares()) do share
+        SFC.field_partial(inner, sf, x, f, distance_bins, share, CT; kwargs...)
     end
     for (ps, pc) in partials
         sums .+= ps

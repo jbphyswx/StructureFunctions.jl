@@ -195,12 +195,12 @@ assembly points number more than twenty.
 end
 
 """
-    _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, window, blocks)
+    _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, sel, window, blocks)
 
 Single-pass (6 invariants) point-field SIMD compute/scatter kernel over the pairs `blocks` covers.
 For each `i`: `@simd` over its `j` block computes distance, `du_L = du·r̂`, and `|du|²` into buffers
-(contiguous components ⇒ packed loads, no scatter ⇒ vectorizes), then a scalar loop digitizes
-and scatters the 6 invariants. Like [`_pf_simd_pairs!`](@ref) it consumes `(i-block, j-block)`
+(contiguous components ⇒ packed loads, no scatter ⇒ vectorizes), then a scalar loop scatters the 6
+invariants of the in-range pairs as [`_pf_simd_pairs!`](@ref) does. Like it, it consumes `(i-block, j-block)`
 pairs (see [`block_pairs`](@ref)), so it gets both cache blocking and culling, and the loop must
 live in this one kernel (not a per-`i` helper) for the `@simd` to vectorize. The buffers are
 indexed by `window` ([`PairWindow`](@ref)). Shared by serial + threaded.
@@ -209,9 +209,10 @@ function _pf_sp_simd_pairs!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, ::Val{D},
     keybuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector,
-    idxbuf::AbstractVector{Int32}, window::PairWindow, blocks, weights = NoWeights(),
+    idxbuf::AbstractVector{Int32}, sel::AbstractVector{Int32}, window::PairWindow, blocks, weights = NoWeights(),
 ) where {OT, CT, D}
     nb = n_histogram_bins(plan)
+    chooses = _chooses_compaction(blocks)
     FTx = eltype(xc[1])
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
@@ -233,23 +234,41 @@ function _pf_sp_simd_pairs!(
                     idxbuf[j - o] = squared_approx_index(plan, r2)
                 end
             end
-            for k in (jlo - o):(j_last - o)
-                bin = squared_bin(plan, keybuf[k], idxbuf[k])
-                if 1 <= bin <= nb
-                    duL = duLbuf[k]
-                    dn2 = dn2buf[k]
-                    duL2 = duL * duL
-                    w = wi * _point_weight(weights, k + o)
-                    sums[1, bin] += w * dn2
-                    sums[2, bin] += w * duL2
-                    sums[4, bin] += w * duL * dn2
-                    sums[5, bin] += w * duL * duL2
-                    counts[1, bin] += CT(w)
+            ks = (jlo - o):(j_last - o)
+            if chooses && _compacts(_sample_in_range(plan, keybuf, ks)...)
+                for m in 1:_compact_in_range!(sel, plan, keybuf, ks)
+                    k = Int(sel[m])
+                    _sp1d_accumulate!(sums, counts, duLbuf, dn2buf, weights, wi, o, k,
+                                      squared_bin_select(plan, keybuf[k], idxbuf[k]))
+                end
+            else
+                for k in ks
+                    bin = chooses ? squared_bin_select(plan, keybuf[k], idxbuf[k]) : squared_bin(plan, keybuf[k], idxbuf[k])
+                    if 1 <= bin <= nb
+                        _sp1d_accumulate!(sums, counts, duLbuf, dn2buf, weights, wi, o, k, bin)
+                    end
                 end
             end
         end
     end
     _sp1d_derive_rows!(sums, counts)
+    return nothing
+end
+
+"""Add slot `k`'s single-pass sums (rows 1, 2, 4, 5) and count into bin `bin`, weighted by the outer point's
+weight `wi` times that of point `k + o`."""
+@inline function _sp1d_accumulate!(sums, counts::AbstractMatrix{CT}, duLbuf, dn2buf, weights, wi, o, k, bin) where {CT}
+    @inbounds begin
+        duL = duLbuf[k]
+        dn2 = dn2buf[k]
+        duL2 = duL * duL
+        w = wi * _point_weight(weights, k + o)
+        sums[1, bin] += w * dn2
+        sums[2, bin] += w * duL2
+        sums[4, bin] += w * duL * dn2
+        sums[5, bin] += w * duL * duL2
+        counts[1, bin] += CT(w)
+    end
     return nothing
 end
 
@@ -260,16 +279,16 @@ Single-pass analogue of [`_pf_run_blocks!`](@ref): dispatch on `grid` so the ker
 concretely typed schedule.
 """
 @inline _sp_run_blocks!(
-    sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, ilist, N, ::Nothing,
+    sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, sel, ilist, N, ::Nothing,
     weights = NoWeights(),
 ) where {D} = _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf,
-    idxbuf, _pair_window(N), pair_blocks(N, ilist), weights)
+    idxbuf, sel, _pair_window(N), pair_blocks(N, ilist), weights)
 
 @inline _sp_run_blocks!(
-    sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, ilist, N,
+    sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, sel, ilist, N,
     grid::CellGrid, weights = NoWeights(),
 ) where {D} = _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf,
-    idxbuf, _pair_window(N), pair_blocks(N, ilist; grid = grid), weights)
+    idxbuf, sel, _pair_window(N), pair_blocks(N, ilist; grid = grid), weights)
 
 # Serial driver: the full outer range through the same per-worker kernel.
 function _sp_simd_run!(
@@ -277,22 +296,23 @@ function _sp_simd_run!(
     x::AbstractMatrix, u::AbstractMatrix, dist_be, ::Val{D},
     culling::CullingPolicy = AutoCulling(), weights = NoWeights(),
 ) where {OT, CT, D}
-    N = size(x, 2)
-    return _sp_simd_partial!(sums, counts, x, u, dist_be, Val(D), 1:(N - 1), culling, weights)
+    return _sp_simd_partial!(sums, counts, x, u, dist_be, Val(D), nothing, culling, weights)
 end
 
 """
-    _partial_single_pass_1d(x, u, distance_bins, ilist, CT; distance_metric, culling, weights)
+    _partial_single_pass_1d(inner, x, u, distance_bins, share, CT; distance_metric, culling, weights)
 
-Six-invariant partial sums/counts over an explicit outer-index list, for one distributed worker or
-MPI rank. Euclidean `D ∈ {2,3}` takes the SIMD kernel; other metrics use the scalar loop. The sum
-element type comes from the inputs.
+Six-invariant partial sums/counts over share `share = (w, k)` of the outer indices ([`_share_indices`](@ref)), for
+one distributed worker or MPI rank, computed on its local backend `inner`; this method runs serially, and the
+OhMyThreads extension threads a threaded `inner`. Euclidean `D ∈ {2,3}` takes the SIMD kernel; other metrics use the
+scalar loop. The sum element type comes from the inputs.
 """
 function _partial_single_pass_1d(
+    ::CB.AbstractExecutionBackend,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector,
-    ilist,
+    share::NTuple{2, Int},
     ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
@@ -306,7 +326,7 @@ function _partial_single_pass_1d(
 
     geom = SFH.pair_geometry_for(distance_metric, Val(D))
     if geom isa SFH.FlatGeometry && (D == 2 || D == 3)
-        _sp_simd_partial!(sums, counts, x, u, distance_bins, D == 2 ? Val(2) : Val(3), ilist, culling, weights)
+        _sp_simd_partial!(sums, counts, x, u, distance_bins, D == 2 ? Val(2) : Val(3), share, culling, weights)
         return sums, counts
     end
 
@@ -314,7 +334,8 @@ function _partial_single_pass_1d(
     dist_be = digitize_plan(distance_bins)
     grid, xk, uk = cull_sorted_matrices(xk, uk, geom, distance_bins, culling)
     wc = grid === nothing ? weights : _permuted_point_weights(weights, grid.perm)
-    _sp1d_run_blocks!(sums, counts, xk, uk, dist_be, geom, nb, ilist, size(xk, 2), grid, wc)
+    N = size(xk, 2)
+    _sp1d_run_blocks!(sums, counts, xk, uk, dist_be, geom, nb, _share_indices(grid, N - 1, share), N, grid, wc)
     return sums, counts
 end
 
@@ -380,10 +401,11 @@ receives one concretely typed schedule.
     _sp1d_pairs!(sums, counts, x, u, dist_be, geom, n_bins, pair_blocks(N, ilist; grid = grid),
                  weights)
 
-"""Run [`_pf_sp_simd_pairs!`](@ref) over an explicit outer-index list, with this worker's buffers."""
+"""Run [`_pf_sp_simd_pairs!`](@ref) over the outer indices `share` selects ([`_share_indices`](@ref)), with this
+call's buffers."""
 function _sp_simd_partial!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
-    x::AbstractMatrix, u::AbstractMatrix, dist_be, ::Val{D}, ilist,
+    x::AbstractMatrix, u::AbstractMatrix, dist_be, ::Val{D}, share,
     culling::CullingPolicy = AutoCulling(), weights = NoWeights(),
 ) where {OT, CT, D}
     x_raw = ntuple(d -> collect(view(x, d, :)), Val(D))
@@ -395,6 +417,7 @@ function _sp_simd_partial!(
     duLbuf = Vector{OT}(undef, L)
     dn2buf = Vector{OT}(undef, L)
     idxbuf = Vector{Int32}(undef, L)
+    sel = Vector{Int32}(undef, L)
     plan = squared_digitize_plan(dist_be)
     grid = culling isa NoCulling ? nothing :
            cull_grid_for(x_raw, SFH.FlatGeometry{D}(), dist_be, culling)
@@ -402,8 +425,8 @@ function _sp_simd_partial!(
              (apply_perm(x_raw, grid.perm), apply_perm(u_raw, grid.perm))
     # The cull reorders the points, so the weights are gathered the same way.
     wc = isnothing(grid) ? weights : _permuted_point_weights(weights, grid.perm)
-    _sp_run_blocks!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf, idxbuf,
-        ilist, N, grid, wc)
+    _sp_run_blocks!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf, idxbuf, sel,
+        _share_indices(grid, N - 1, share), N, grid, wc)
     return nothing
 end
 
@@ -412,17 +435,19 @@ end
 @inline _permuted_point_weights(w::AbstractVector, perm) = w[perm]
 
 """
-    _partial_single_pass_2d(x, u, distance_bins, value_bins, ilist, CT; distance_metric, culling, weights)
+    _partial_single_pass_2d(inner, x, u, distance_bins, value_bins, share, CT; distance_metric, culling, weights)
 
-Six-invariant 2D joint partial sums/counts over an explicit outer-index list, for one distributed
-worker or MPI rank. The sum element type comes from the inputs.
+Six-invariant 2D joint partial sums/counts over share `share = (w, k)` of the outer indices, for one distributed
+worker or MPI rank, computed on its local backend `inner` as [`_partial_single_pass_1d`](@ref) is.
+The sum element type comes from the inputs.
 """
 function _partial_single_pass_2d(
+    ::CB.AbstractExecutionBackend,
     x::AbstractMatrix{FT1},
     u::AbstractMatrix{FT2},
     distance_bins::AbstractVector,
     value_bins::SinglePass2DValueBins,
-    ilist,
+    share::NTuple{2, Int},
     ::Type{CT};
     distance_metric::DI.PreMetric = DI.Euclidean(),
     culling::CullingPolicy = AutoCulling(),
@@ -435,7 +460,7 @@ function _partial_single_pass_2d(
     sums = zeros(OT, SINGLE_PASS_N, n_bins, n_val)
     counts = zeros(CT, SINGLE_PASS_N, n_bins, n_val)
     _sp2d_accumulate_range!(sums, counts, x, u, distance_bins, digitize_plan(value_bins),
-        distance_metric, n_bins, n_val, ilist, culling, weights)
+        distance_metric, n_bins, n_val, share, culling, weights)
     return sums, counts
 end
 
@@ -472,14 +497,9 @@ function _dispatch_single_pass!(
     return _accumulate_single_pass_1d!(sums, counts, x, u, distance_bins; kwargs...)
 end
 
-function _dispatch_single_pass!(
-    ::CB.AbstractAutoBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector; kwargs...
-)
-    if distributed_adds_hardware(Val(:distributed))
-        return _dispatch_single_pass!(CB.DistributedBackend(), sums, counts, x, u, distance_bins; kwargs...)
-    end
-    return _dispatch_single_pass!(_auto_local_backend(), sums, counts, x, u, distance_bins; kwargs...)
-end
+_dispatch_single_pass!(::CB.AbstractAutoBackend, sums::AbstractMatrix, counts::AbstractMatrix, x::AbstractMatrix,
+                       u::AbstractMatrix, distance_bins::AbstractVector; kwargs...) =
+    _dispatch_single_pass!(resolve_auto_backend(), sums, counts, x, u, distance_bins; kwargs...)
 
 function _dispatch_single_pass(
     ::CB.AbstractSerialBackend,
@@ -572,14 +592,9 @@ function _dispatch_single_pass(
 end
 
 
-function _dispatch_single_pass(::CB.AbstractAutoBackend, shape::AbstractFieldShape, x::AbstractArray, u::AbstractArray,
-                               distance_bins::AbstractVector, ::Type{CT}; kwargs...) where {CT}
-    backend = resolve_auto_backend(
-        shape,
-        _ohmythreads_loaded,
-    )
-    return _dispatch_single_pass(backend, shape, x, u, distance_bins, CT; kwargs...)
-end
+_dispatch_single_pass(::CB.AbstractAutoBackend, shape::AbstractFieldShape, x::AbstractArray, u::AbstractArray,
+                      distance_bins::AbstractVector, ::Type{CT}; kwargs...) where {CT} =
+    _dispatch_single_pass(resolve_auto_backend(), shape, x, u, distance_bins, CT; kwargs...)
 
 # --- Single-pass result collections (keyed by invariant) ---
 
@@ -728,7 +743,6 @@ function _accumulate_single_pass_2d!(
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
-    n_points = size(x, 2)
     n_bins = length(distance_bins) - 1
     n_val = size(sums_3d, 3)
     size(sums_3d, 1) == SINGLE_PASS_N && size(sums_3d, 2) == n_bins ||
@@ -738,7 +752,7 @@ function _accumulate_single_pass_2d!(
     _validate_value_bins!(value_bins, n_val)
 
     _sp2d_accumulate_range!(sums_3d, counts_3d, x, u, distance_bins, digitize_plan(value_bins),
-        distance_metric, n_bins, n_val, 1:n_points, culling, weights)
+        distance_metric, n_bins, n_val, nothing, culling, weights)
     return sums_3d, counts_3d
 end
 
@@ -752,18 +766,20 @@ Base.zero(::Type{SumCount{OT, CT}}) where {OT, CT} = SumCount{OT, CT}(zero(OT), 
 Base.:+(a::SumCount{OT, CT}, b::SumCount{OT, CT}) where {OT, CT} =
     SumCount{OT, CT}(a.sum + b.sum, a.count + b.count)
 
-"""Accumulate single-pass 2D pairs for outer indices `ilist` into the caller's sums/counts."""
+"""Accumulate single-pass 2D pairs for the outer indices `share` selects ([`_share_indices`](@ref)) into the caller's
+sums/counts."""
 function _sp2d_accumulate_range!(
     sums_3d::AbstractArray{OT, 3}, counts_3d::AbstractArray{CT, 3},
     x::AbstractMatrix, u::AbstractMatrix, distance_bins, value_bins, distance_metric,
-    n_bins::Int, n_val::Int, ilist, culling::CullingPolicy = AutoCulling(),
+    n_bins::Int, n_val::Int, share, culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {OT, CT}
     h = _sp2d_histogram(OT, CT, n_bins, n_val)
     geom = SFH.pair_geometry_for(distance_metric, Val(size(u, 1)))
     grid, x, u = cull_sorted_inputs(x, u, geom, distance_bins, culling)
     wc = grid === nothing ? weights : _permuted_point_weights(weights, grid.perm)
-    _sp2d_fill!(h, x, u, distance_bins, value_bins, distance_metric, n_bins, n_val, ilist, grid, wc)
+    _sp2d_fill!(h, x, u, distance_bins, value_bins, distance_metric, n_bins, n_val,
+                _share_indices(grid, size(x, 2) - 1, share), grid, wc)
     return _sp2d_unpack!(sums_3d, counts_3d, h, n_bins, n_val)
 end
 
@@ -786,9 +802,11 @@ function _sp2d_fill!(
         xc = ntuple(d -> collect(view(x, d, :)), vD)
         uc = ntuple(d -> collect(view(u, d, :)), vD)
         L = _pair_scratch_length(N)
+        Lc = _sp2d_has_columns(value_bins, OT) ? L : 0
         _sp2d_run_blocks!(h, xc, uc, squared_digitize_plan(distance_bins), value_bins, vD,
-            Vector{eltype(xc[1])}(undef, L), Vector{OT}(undef, L), Vector{OT}(undef, L),
-            Vector{Int32}(undef, L), n_val, ilist, N, grid, weights)
+            Vector{eltype(xc[1])}(undef, L), Vector{OT}(undef, L), Vector{OT}(undef, L), Vector{Int32}(undef, L),
+            ntuple(_ -> Vector{Int32}(undef, Lc), Val(SINGLE_PASS_N)), Vector{Int32}(undef, L), n_val, ilist, N, grid,
+            weights)
         return nothing
     end
     xk, uk = SFH.prepare_pair_inputs(geom, x, u)
@@ -800,24 +818,20 @@ end
 """
     _sp2d_histogram(OT, CT, n_bins, n_val) -> Array{SumCount{OT, CT}, 3}
 
-The single-pass 2D accumulator, laid out `(invariant, value_bin, distance_bin)`, each cell a sum of
-`OT` beside its count of `CT`.
-
-Each pair writes all six invariants at ONE distance bin but six different value bins, so putting
-the value axis inside the distance axis keeps a pair's six updates inside one distance slab, and
-keeping each sum beside its count puts each invariant's two updates on one cache line, so a pair
-touches 6 lines and the cost stops scaling with histogram size.
+The single-pass 2D accumulator, laid out `(invariant, value column, distance_bin)`, each cell a sum of
+`OT` beside its count of `CT`: value column `c + 1` holds value bin `c`, and columns `1` and `n_val + 2`
+the values below and above the value edges.
 """
 @inline _sp2d_histogram(::Type{OT}, ::Type{CT}, n_bins::Int, n_val::Int) where {OT, CT} =
-    zeros(SumCount{OT, CT}, SINGLE_PASS_N, n_val, n_bins)
+    zeros(SumCount{OT, CT}, SINGLE_PASS_N, n_val + 2, n_bins)
 
-"""Add the interleaved accumulator into the caller's `(6, n_bins, n_val)` sums/counts."""
+"""Add the interleaved accumulator's value bins into the caller's `(6, n_bins, n_val)` sums/counts."""
 function _sp2d_unpack!(
     sums_3d::AbstractArray{OT, 3}, counts_3d::AbstractArray{CT, 3},
     h::AbstractArray{<:SumCount, 3}, n_bins::Int, n_val::Int,
 ) where {OT, CT}
     @inbounds for d in 1:n_bins, v in 1:n_val, t in 1:SINGLE_PASS_N
-        c = h[t, v, d]
+        c = h[t, v + 1, d]
         sums_3d[t, d, v] += c.sum
         counts_3d[t, d, v] += c.count
     end
@@ -882,37 +896,114 @@ kernel receives one concretely typed schedule.
 ) = _sp2d_pairs!(h, x, u, dist_be, value_bins, geom, n_bins, n_val,
     pair_blocks(N, ilist; grid = grid), weights)
 
-"""Scatter the six invariants of one pair into their cells of the interleaved accumulator."""
+"""Scatter the six invariants of one pair into their value columns of the interleaved accumulator."""
 @inline function _sp2d_scatter!(
     h::AbstractArray{SumCount{OT, CT}, 3}, dbin::Int, vals::NTuple{SINGLE_PASS_N}, value_bins,
     n_val::Int, w = true,
 ) where {OT, CT}
     @sp2d_each_invariant value_bins t vb begin
-        vbin = SFH.digitize(vals[t], vb)
-        if 1 <= vbin <= (length(vb) - 1) && vbin <= n_val
-            @inbounds c = h[t, vbin, dbin]
-            @inbounds h[t, vbin, dbin] = SumCount{OT, CT}(c.sum + w * vals[t], c.count + CT(w))
+        _sp2d_add!(h, t, _value_column(vb, vals[t], n_val), dbin, vals[t], w)
+    end
+    return nothing
+end
+
+"""Add value `v`, weighted by `w`, and the count `w` to cell `(t, c, dbin)` of the interleaved accumulator."""
+@inline function _sp2d_add!(h::AbstractArray{SumCount{OT, CT}, 3}, t, c, dbin, v, w) where {OT, CT}
+    @inbounds x = h[t, c, dbin]
+    @inbounds h[t, c, dbin] = SumCount{OT, CT}(x.sum + w * v, x.count + CT(w))
+    return nothing
+end
+
+"""Add slot `k`'s six invariants, formed from its stored `du_L` and `|du|²`, into their stored value columns
+`C1 … C6` at distance bin `dbin`, weighted by `w`."""
+@inline function _sp2d_add_columns!(h, k, dbin, duLbuf, dn2buf, C1, C2, C3, C4, C5, C6, w)
+    @inbounds begin
+        s = single_pass_invariants(duLbuf[k], dn2buf[k])
+        _sp2d_add!(h, 1, Int(C1[k]), dbin, s[1], w)
+        _sp2d_add!(h, 2, Int(C2[k]), dbin, s[2], w)
+        _sp2d_add!(h, 3, Int(C3[k]), dbin, s[3], w)
+        _sp2d_add!(h, 4, Int(C4[k]), dbin, s[4], w)
+        _sp2d_add!(h, 5, Int(C5[k]), dbin, s[5], w)
+        _sp2d_add!(h, 6, Int(C6[k]), dbin, s[6], w)
+    end
+    return nothing
+end
+
+"""Whether the vectorized half forms the value columns of a run: for sums of 4 bytes always on a `culled`
+schedule, else when the previous run's sample had more than 1/8 of its `n` slots in range (`n_in`); for wider
+sums when it had more than 1/2."""
+@inline _sp2d_column_pass(::Type{OT}, culled::Bool, n_in::Int, n::Int) where {OT} =
+    sizeof(OT) <= 4 ? culled || 8 * n_in > n : 2 * n_in > n
+
+"""Whether value edges `value_bins` give each invariant a linear edge set of the sums' type `OT` of its own, whose
+value columns the vectorized half forms in a pass per invariant."""
+@inline _sp2d_invariant_linear(::NTuple{SINGLE_PASS_N, LinearBinEdges{OT}}, ::Type{OT}) where {OT} = true
+@inline _sp2d_invariant_linear(_, ::Type) = false
+
+"""Whether a pass per invariant forms the value columns of a run, from the run's own sample of `n` slots, `n_in` of
+them in range: more than 3/16 in range for sums of 4 bytes, more than 3/8 for wider sums."""
+@inline _sp2d_invariant_column_pass(::Type{OT}, n_in::Int, n::Int) where {OT} =
+    sizeof(OT) <= 4 ? 16 * n_in > 3 * n : 8 * n_in > 3 * n
+
+"""Slots `ks`' value column of each invariant, from their stored `du_L` and `|du|²`, into `C`: a pass per invariant
+over its own linear edges."""
+@inline function _sp2d_invariant_columns!(C, value_bins, duLbuf, dn2buf, ks, n_val::Int)
+    C1, C2, C3, C4, C5, C6 = C
+    vb1, vb2, vb3, vb4, vb5, vb6 = value_bins
+    @inbounds begin
+        @simd ivdep for k in ks
+            C1[k] = _vector_value_column(vb1, single_pass_invariants(duLbuf[k], dn2buf[k])[1], n_val)
+        end
+        @simd ivdep for k in ks
+            C2[k] = _vector_value_column(vb2, single_pass_invariants(duLbuf[k], dn2buf[k])[2], n_val)
+        end
+        @simd ivdep for k in ks
+            C3[k] = _vector_value_column(vb3, single_pass_invariants(duLbuf[k], dn2buf[k])[3], n_val)
+        end
+        @simd ivdep for k in ks
+            C4[k] = _vector_value_column(vb4, single_pass_invariants(duLbuf[k], dn2buf[k])[4], n_val)
+        end
+        @simd ivdep for k in ks
+            C5[k] = _vector_value_column(vb5, single_pass_invariants(duLbuf[k], dn2buf[k])[5], n_val)
+        end
+        @simd ivdep for k in ks
+            C6[k] = _vector_value_column(vb6, single_pass_invariants(duLbuf[k], dn2buf[k])[6], n_val)
         end
     end
     return nothing
 end
 
+"""Whether the six value columns of `value_bins` can be formed in the vectorized half, in one pass or one per
+invariant."""
+@inline _sp2d_has_columns(value_bins, ::Type{OT}) where {OT} =
+    has_vector_digitize(value_bins, OT) || _sp2d_invariant_linear(value_bins, OT)
+
 """
-    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, window, n_val, blocks)
+    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, C, sel, window,
+                      n_val, blocks, weights)
 
 Single-pass 2D point-field SIMD compute/scatter kernel over the pairs `blocks` covers, the 2D analogue
-of [`_pf_sp_simd_pairs!`](@ref). The `@simd` half computes distance, `du_L` and `|du|²` into buffers
-indexed by `window`; the scalar half derives the six invariants from those two scalars and scatters
-each into its own `(distance, value)` cell. Shared by serial + threaded.
+of [`_pf_sp_simd_pairs!`](@ref). The `@simd` half computes the distance key, `du_L` and `|du|²` into buffers
+indexed by `window`, and the six invariants' value columns into `C` where [`has_vector_digitize`](@ref) holds
+for the value edges and [`_sp2d_column_pass`](@ref) for the run; with a linear edge set per invariant, a pass per
+invariant forms them when [`_sp2d_invariant_column_pass`](@ref) holds for the run. The scalar half adds each
+in-range pair's six invariants into their cells, over the compacted in-range slots ([`_compact_in_range!`](@ref))
+when the schedule and the run's sample choose it, under the range test otherwise. Shared by serial + threaded.
 """
 function _sp2d_simd_pairs!(
-    h::AbstractArray{<:SumCount, 3},
+    h::AbstractArray{SumCount{OT, CT}, 3},
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, value_bins, ::Val{D},
-    keybuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector,
-    idxbuf::AbstractVector{Int32}, window::PairWindow, n_val::Int, blocks, weights = NoWeights(),
-) where {D}
+    keybuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector, idxbuf::AbstractVector{Int32},
+    C::NTuple{SINGLE_PASS_N, AbstractVector{Int32}}, sel::AbstractVector{Int32}, window::PairWindow, n_val::Int,
+    blocks, weights = NoWeights(),
+) where {OT, CT, D}
     nb = n_histogram_bins(plan)
+    vector_columns = has_vector_digitize(value_bins, OT)
+    invariant_columns = _sp2d_invariant_linear(value_bins, OT)
+    chooses = _chooses_compaction(blocks)
     FTx = eltype(xc[1])
+    C1, C2, C3, C4, C5, C6 = C
+    s_in, s_n = 0, 0
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
         _check_run_fits(window, duLbuf, jr)
@@ -923,22 +1014,73 @@ function _sp2d_simd_pairs!(
             wi = _point_weight(weights, i)
             Xi = SA.SVector{D, FTx}(ntuple(d -> xc[d][i], Val(D)))
             Ui = SA.SVector{D}(ntuple(d -> uc[d][i], Val(D)))
-            @simd for j in jlo:j_last
-                dx = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D))) - Xi
-                r2 = SFH.fma_dot(dx, dx)
-                du = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D))) - Ui
-                keybuf[j - o] = digitize_key(plan, r2)
-                duLbuf[j - o], dn2buf[j - o] = SFH.increment_invariants(SFH.FlatGeometry{D}(), dx, sqrt(r2), du)
-                if has_vector_index(plan)
-                    idxbuf[j - o] = squared_approx_index(plan, r2)
+            fused = vector_columns && _sp2d_column_pass(OT, !chooses, s_in, s_n)
+            if fused
+                @simd ivdep for j in jlo:j_last
+                    dx = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D))) - Xi
+                    r2 = SFH.fma_dot(dx, dx)
+                    du = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D))) - Ui
+                    k = j - o
+                    keybuf[k] = digitize_key(plan, r2)
+                    if has_vector_index(plan)
+                        idxbuf[k] = squared_approx_index(plan, r2)
+                    end
+                    duL, dn2 = SFH.increment_invariants(SFH.FlatGeometry{D}(), dx, sqrt(r2), du)
+                    a, b = OT(duL), OT(dn2)
+                    duLbuf[k], dn2buf[k] = a, b
+                    s = single_pass_invariants(a, b)
+                    C1[k] = _vector_value_column(value_bins, s[1], n_val)
+                    C2[k] = _vector_value_column(value_bins, s[2], n_val)
+                    C3[k] = _vector_value_column(value_bins, s[3], n_val)
+                    C4[k] = _vector_value_column(value_bins, s[4], n_val)
+                    C5[k] = _vector_value_column(value_bins, s[5], n_val)
+                    C6[k] = _vector_value_column(value_bins, s[6], n_val)
+                end
+            else
+                @simd for j in jlo:j_last
+                    dx = SA.SVector{D, FTx}(ntuple(d -> xc[d][j], Val(D))) - Xi
+                    r2 = SFH.fma_dot(dx, dx)
+                    du = SA.SVector{D}(ntuple(d -> uc[d][j], Val(D))) - Ui
+                    keybuf[j - o] = digitize_key(plan, r2)
+                    duLbuf[j - o], dn2buf[j - o] = SFH.increment_invariants(SFH.FlatGeometry{D}(), dx, sqrt(r2), du)
+                    if has_vector_index(plan)
+                        idxbuf[j - o] = squared_approx_index(plan, r2)
+                    end
                 end
             end
-            for k in (jlo - o):(j_last - o)
-                dbin = squared_bin(plan, keybuf[k], idxbuf[k])
-                if 1 <= dbin <= nb
-                    vals = single_pass_invariants(duLbuf[k], dn2buf[k])
-                    _sp2d_scatter!(h, dbin, vals, value_bins, n_val,
+            ks = (jlo - o):(j_last - o)
+            s_in, s_n = _sample_in_range(plan, keybuf, ks)
+            columns = fused || (invariant_columns && _sp2d_invariant_column_pass(OT, s_in, s_n))
+            columns && invariant_columns && _sp2d_invariant_columns!(C, value_bins, duLbuf, dn2buf, ks, n_val)
+            compact = chooses && _compacts(s_in, s_n)
+            if columns && compact
+                for m in 1:_compact_in_range!(sel, plan, keybuf, ks)
+                    k = Int(sel[m])
+                    _sp2d_add_columns!(h, k, squared_bin_select(plan, keybuf[k], idxbuf[k]), duLbuf, dn2buf,
+                                       C1, C2, C3, C4, C5, C6, wi * _point_weight(weights, k + o))
+                end
+            elseif columns
+                for k in ks
+                    dbin = chooses ? squared_bin_select(plan, keybuf[k], idxbuf[k]) : squared_bin(plan, keybuf[k], idxbuf[k])
+                    if 1 <= dbin <= nb
+                        _sp2d_add_columns!(h, k, dbin, duLbuf, dn2buf, C1, C2, C3, C4, C5, C6,
+                                           wi * _point_weight(weights, k + o))
+                    end
+                end
+            elseif compact
+                for m in 1:_compact_in_range!(sel, plan, keybuf, ks)
+                    k = Int(sel[m])
+                    _sp2d_scatter!(h, squared_bin_select(plan, keybuf[k], idxbuf[k]),
+                                   single_pass_invariants(duLbuf[k], dn2buf[k]), value_bins, n_val,
                                    wi * _point_weight(weights, k + o))
+                end
+            else
+                for k in ks
+                    dbin = chooses ? squared_bin_select(plan, keybuf[k], idxbuf[k]) : squared_bin(plan, keybuf[k], idxbuf[k])
+                    if 1 <= dbin <= nb
+                        _sp2d_scatter!(h, dbin, single_pass_invariants(duLbuf[k], dn2buf[k]), value_bins, n_val,
+                                       wi * _point_weight(weights, k + o))
+                    end
                 end
             end
         end
@@ -953,16 +1095,16 @@ Single-pass 2D analogue of [`_pf_run_blocks!`](@ref): dispatch on `grid` so the 
 concretely typed schedule.
 """
 @inline _sp2d_run_blocks!(
-    h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, n_val,
+    h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, C, sel, n_val,
     ilist, N, ::Nothing, weights = NoWeights(),
 ) where {D} = _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, Val(D), keybuf, duLbuf, dn2buf,
-    idxbuf, _pair_window(N), n_val, pair_blocks(N, ilist), weights)
+    idxbuf, C, sel, _pair_window(N), n_val, pair_blocks(N, ilist), weights)
 
 @inline _sp2d_run_blocks!(
-    h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, n_val,
+    h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, C, sel, n_val,
     ilist, N, grid::CellGrid, weights = NoWeights(),
 ) where {D} = _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, Val(D), keybuf, duLbuf, dn2buf,
-    idxbuf, _pair_window(N), n_val, pair_blocks(N, ilist; grid = grid), weights)
+    idxbuf, C, sel, _pair_window(N), n_val, pair_blocks(N, ilist; grid = grid), weights)
 
 function _dispatch_single_pass_2d!(
     ::CB.AbstractSerialBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
@@ -977,14 +1119,10 @@ function _dispatch_single_pass_2d!(
     return sums_3d, counts_3d
 end
 
-function _dispatch_single_pass_2d!(
-    ::CB.AbstractAutoBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
-)
-    if distributed_adds_hardware(Val(:distributed))
-        return _dispatch_single_pass_2d!(CB.DistributedBackend(), sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
-    end
-    return _dispatch_single_pass_2d!(_auto_local_backend(), sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
-end
+_dispatch_single_pass_2d!(::CB.AbstractAutoBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix,
+                          u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins;
+                          kwargs...) =
+    _dispatch_single_pass_2d!(resolve_auto_backend(), sums_3d, counts_3d, x, u, distance_bins, value_bins; kwargs...)
 
 function _dispatch_single_pass_2d(
     ::CB.AbstractSerialBackend,
@@ -1093,15 +1231,10 @@ function _dispatch_single_pass_2d(
 end
 
 
-function _dispatch_single_pass_2d(::CB.AbstractAutoBackend, shape::AbstractFieldShape, x::AbstractArray, u::AbstractArray,
-                                  distance_bins::AbstractVector, value_bins::SinglePass2DValueBins, ::Type{CT};
-                                  kwargs...) where {CT}
-    backend = resolve_auto_backend(
-        shape,
-        _ohmythreads_loaded,
-    )
-    return _dispatch_single_pass_2d(backend, shape, x, u, distance_bins, value_bins, CT; kwargs...)
-end
+_dispatch_single_pass_2d(::CB.AbstractAutoBackend, shape::AbstractFieldShape, x::AbstractArray, u::AbstractArray,
+                         distance_bins::AbstractVector, value_bins::SinglePass2DValueBins, ::Type{CT};
+                         kwargs...) where {CT} =
+    _dispatch_single_pass_2d(resolve_auto_backend(), shape, x, u, distance_bins, value_bins, CT; kwargs...)
 
 # Per-invariant value bins: a single vector is shared across invariants; a 6-tuple is per-invariant.
 @inline _sp_valuebins(vb::AbstractVector, t::Int) = vb

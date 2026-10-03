@@ -3,28 +3,34 @@
 # which reads the fields it names.
 
 """
-    field_increment(::Fields{D,V,K}, data, geom, frame, r, i, j) -> FieldIncrement
+    field_increment(Val(F), Val(V), Val(K), geom, frame, a, b) -> FieldIncrement
 
-One pair's increment across every field of a packed field.
+One pair's increment across every field of a packed column: `a` and `b` are the two points' columns,
+`V` vector fields of width `F` followed by `K` scalars.
 
 Each vector field is transported into the pair's common frame before differencing, exactly as a
 single-field case is; each scalar field is differenced where it stands, because a scalar has
 nothing to transport.
 """
-@inline function field_increment(
-    ::Val{F}, ::Val{V}, ::Val{K}, data::AbstractMatrix{T}, geom, frame, i::Integer, j::Integer,
-) where {F, V, K, T}
+@inline function field_increment(::Val{F}, ::Val{V}, ::Val{K}, geom, frame, a::SA.SVector{L, T},
+                                 b::SA.SVector{L, T}) where {F, V, K, L, T}
     vectors = ntuple(Val(V)) do c
         o = (c - 1) * F
-        a = SA.SVector{F, T}(ntuple(d -> @inbounds(data[o + d, i]), Val(F)))
-        b = SA.SVector{F, T}(ntuple(d -> @inbounds(data[o + d, j]), Val(F)))
-        SFH.pair_delta(geom, frame, nothing, nothing, a, b)
+        ac = SA.SVector{F, T}(ntuple(d -> @inbounds(a[o + d]), Val(F)))
+        bc = SA.SVector{F, T}(ntuple(d -> @inbounds(b[o + d]), Val(F)))
+        SFH.pair_delta(geom, frame, nothing, nothing, ac, bc)
     end
-    scalars = ntuple(Val(K)) do c
-        @inbounds data[V * F + c, j] - data[V * F + c, i]
-    end
+    scalars = ntuple(c -> @inbounds(b[V * F + c] - a[V * F + c]), Val(K))
     Dp = V == 0 ? 0 : length(first(vectors))
     return MF.FieldIncrement{Dp, V, K, T}(vectors, scalars)
+end
+
+"""The increment of the pair `(i, j)` of the packed field `data`."""
+@inline function field_increment(vF::Val{F}, vV::Val{V}, vK::Val{K}, data::AbstractMatrix{T}, geom, frame,
+                                 i::Integer, j::Integer) where {F, V, K, T}
+    a = SA.SVector{V * F + K, T}(ntuple(r -> @inbounds(data[r, i]), Val(V * F + K)))
+    b = SA.SVector{V * F + K, T}(ntuple(r -> @inbounds(data[r, j]), Val(V * F + K)))
+    return field_increment(vF, vV, vK, geom, frame, a, b)
 end
 
 """
@@ -189,7 +195,8 @@ function _field_pairs!(
     window = _pair_window(size(xk, 2))
     L = _pair_scratch_length(window, size(xk, 2))
     return _field_pairs!(sums, counts, sf, xk, data, geom, vF, vV, vK, plan, nb, vW, blocks, weights, window,
-                         Vector{eltype(xk)}(undef, L), Vector{OT}(undef, L), Vector{Int32}(undef, L))
+                         Vector{eltype(xk)}(undef, L), Vector{OT}(undef, L), Vector{Int32}(undef, L),
+                         Vector{Int32}(undef, L))
 end
 
 function _field_pairs!(
@@ -197,10 +204,11 @@ function _field_pairs!(
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xk::AbstractMatrix, data::AbstractMatrix, geom::SFH.FlatGeometry, ::Val{F}, ::Val{V}, ::Val{K},
     plan::AbstractSquaredDigitizePlan, nb::Int, ::Val{W}, blocks, weights, window::PairWindow,
-    keybuf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32},
+    keybuf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32}, sel::AbstractVector{Int32},
 ) where {OT, CT, F, V, K, W}
     FTx = eltype(xk)
     T = eltype(data)
+    chooses = _chooses_compaction(blocks)
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
         _check_run_fits(window, valbuf, jr)
@@ -227,12 +235,19 @@ function _field_pairs!(
                     idxbuf[j - off] = squared_approx_index(plan, r2)
                 end
             end
-            for k in (jlo - off):(j_last - off)
-                b = squared_bin(plan, keybuf[k], idxbuf[k])
-                if 1 <= b <= nb
-                    w = wi * _point_weight(weights, k + off)
-                    sums[b] += w * valbuf[k]
-                    counts[b] += CT(w)
+            ks = (jlo - off):(j_last - off)
+            if chooses && _compacts(_sample_in_range(plan, keybuf, ks)...)
+                for m in 1:_compact_in_range!(sel, plan, keybuf, ks)
+                    k = Int(sel[m])
+                    _pf_accumulate!(sums, counts, valbuf, weights, wi, off, k,
+                                    squared_bin_select(plan, keybuf[k], idxbuf[k]))
+                end
+            else
+                for k in ks
+                    b = chooses ? squared_bin_select(plan, keybuf[k], idxbuf[k]) : squared_bin(plan, keybuf[k], idxbuf[k])
+                    if 1 <= b <= nb
+                        _pf_accumulate!(sums, counts, valbuf, weights, wi, off, k, b)
+                    end
                 end
             end
         end
@@ -308,39 +323,49 @@ function validate_fields(sf::SFT.AbstractPairwiseStructureFunctionType, ::Val{V}
     return nothing
 end
 
-"""
-    field_partial(sf, x, fields, distance_bins, outer, CT; distance_metric, culling, weights) -> (sums, counts)
-
-A worker's share of a multi-field sweep: the pairs whose lower index is in `outer`, in freshly
-allocated accumulators.
-
-The outer lists partition `1:(N-1)`, so the partials add to the whole sweep exactly. Note the
-indices are into the **culled ordering** when culling is on, which is a permutation of the input and
-therefore still a partition.
-"""
-function field_partial(
-    sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::MF.Fields{D, V, K},
-    distance_bins, outer, ::Type{CT};
-    distance_metric::DI.PreMetric = DI.Euclidean(),
-    culling::CullingPolicy = AutoCulling(),
-    weights = NoWeights(),
-) where {D, V, K, CT}
-    N = size(MF.packed(f), 2)
-    nb = n_histogram_bins(distance_bins)
-    OT = float(eltype(MF.packed(f)))
-    sums = zeros(OT, nb)
-    counts = zeros(CT, nb)
-    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, weights)
-    _field_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan,
-                         n_histogram_bins(plan), SFH.coordinate_width(geom),
-                         outer, N, grid, wk)
-    return sums, counts
+function validate_fields(::SFT.SinglePassInvariants, ::Val{V}, ::Val{K}) where {V, K}
+    (V == 1 && K == 0) || throw(ArgumentError(
+        "the single-pass invariants are of one vector field; got $V vector and $K scalar field(s)",
+    ))
+    return nothing
 end
 
 """
-    distributed_calculate_structure_function!(sums, counts, sf, x, fields, bins; kwargs...)
+    field_partial(inner, sf, x, fields, distance_bins, share, CT; distance_metric, culling, weights) -> (sums, counts)
 
-Accumulate a multi-field sweep across worker processes. Supplied by the Distributed extension.
+A worker's share of a multi-field sweep: the pairs whose lower index is in share `share = (w, k)` of the outer
+indices, resolved against the cull grid the worker builds ([`_share_indices`](@ref)), in freshly allocated
+accumulators, computed on the worker's local backend `inner`. The shares of `w = 1:k` partition the sweep, so the
+partials add to it exactly.
+"""
+function field_partial(
+    inner::CB.AbstractExecutionBackend, sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix,
+    f::MF.Fields, distance_bins, share::NTuple{2, Int}, ::Type{CT}; kwargs...,
+) where {CT}
+    nb = n_histogram_bins(distance_bins)
+    sums, counts = zeros(float(eltype(MF.packed(f))), nb), zeros(CT, nb)
+    _field_into!(inner, sums, counts, sf, x, f, distance_bins, share; kwargs...)
+    return sums, counts
+end
+
+"""The pairs of a multi-field sweep whose lower index is in share `share` of the outer indices added into
+`sums`/`counts` on the backend `inner`: serially here, threaded by the OhMyThreads extension."""
+function _field_into!(
+    ::CB.AbstractExecutionBackend, sums, counts, sf, x, f::MF.Fields{D, V, K}, distance_bins, share;
+    distance_metric::DI.PreMetric = DI.Euclidean(), culling::CullingPolicy = AutoCulling(), weights = NoWeights(),
+) where {D, V, K}
+    geom, xk, data, vF, plan, grid, wk = field_setup(f, x, distance_bins, distance_metric, culling, weights)
+    N = size(MF.packed(f), 2)
+    _field_run_blocks!(sums, counts, sf, xk, data, geom, vF, Val(V), Val(K), plan, n_histogram_bins(plan),
+                       SFH.coordinate_width(geom), _share_indices(grid, N - 1, share), N, grid, wk)
+    return nothing
+end
+
+"""
+    distributed_calculate_structure_function!(inner, sums, counts, sf, x, fields, bins; kwargs...)
+
+Accumulate a multi-field sweep across worker processes, each on the local backend `inner`. Supplied by
+the Distributed extension.
 """
 function distributed_calculate_structure_function! end
 
@@ -371,9 +396,9 @@ function mpi_calculate_structure_function! end
     return mpi_calculate_structure_function!(sums, counts, sf, x, f, bins; backend = b, kwargs...)
 end
 
-@inline function _field_dispatch!(::CB.AbstractDistributedBackend, sums, counts, sf, x, f, bins;
+@inline function _field_dispatch!(b::CB.AbstractDistributedBackend, sums, counts, sf, x, f, bins;
                                     kwargs...)
-    return distributed_calculate_structure_function!(sums, counts, sf, x, f, bins; kwargs...)
+    return distributed_calculate_structure_function!(CB.local_backend(b), sums, counts, sf, x, f, bins; kwargs...)
 end
 
 @inline function _field_dispatch!(be::CB.AbstractGPUBackend, sums, counts, sf, x, f, bins; kwargs...)
@@ -428,8 +453,8 @@ function calculate_structure_function(
     _assert_count_type(CT, N, w)
     nb = n_histogram_bins(distance_bins)
     validate_fields(sf, f)
-    sums = zeros(ST, nb)
-    counts = zeros(CT, nb)
+    sums = _result_zeros(backend, ST, nb)
+    counts = _result_zeros(backend, CT, nb)
     _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; weights = w, kwargs...)
     raw = SFO.StructureFunctionSumsAndCounts(sf, distance_bins, sums, counts)
     return _finalize(raw, OT)

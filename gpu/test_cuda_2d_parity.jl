@@ -21,13 +21,14 @@ const B = parse(Int, get(ENV, "SF_T_B", "8"))
 const D = 2
 const sf2 = SFT.SecondOrderStructureFunctionType()
 const GEOM = SF.HelperFunctions.FlatGeometry{D}()
+moments(NMOM) = NMOM == 1 ? sf2 : SFT.SinglePassInvariants()
 
-# Reference: force the KA path on CPU (default hook returns false → KA unified).
+# Reference: the portable kernels on KA.CPU(), which has no native plan.
 function ka_cpu_2d(x, u, ddig_cpu, vplan_cpu, N, n_dist, n_val, B, NMOM, fixed_x)
     out = zeros(FT, NMOM, n_dist, n_val, B)
     cnt = zeros(UInt32, NMOM, n_dist, n_val, B)
-    GE._sf_launch_2d_batch!(KA.CPU(), out, cnt, x, u, sf2, ddig_cpu, vplan_cpu,
-                            N, n_dist, n_val, B, Val(NMOM), fixed_x, GEOM, SFC.InvariantValueAxis())
+    GE._sf_launch_2d_batch!(KA.CPU(), out, cnt, x, u, moments(NMOM), ddig_cpu, vplan_cpu,
+                            N, n_dist, n_val, B, fixed_x, GEOM, SFC.InvariantValueAxis())
     KA.synchronize(KA.CPU())
     return out, cnt
 end
@@ -35,9 +36,10 @@ end
 function cuda_2d(xd, ud, ddig, vplan, N, n_dist, n_val, B, NMOM, fixed_x)
     out = CUDA.zeros(FT, NMOM, n_dist, n_val, B)
     cnt = CUDA.zeros(UInt32, NMOM, n_dist, n_val, B)
-    plan = SFC.gpu_native_2d_plan(CUDA.CUDABackend(), FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NMOM, n_dist, n_val)
+    plan = SFC.gpu_native_2d_plan(CUDA.CUDABackend(), FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, moments(NMOM),
+                                  n_dist, n_val, vplan)
     handled = plan !== nothing
-    handled && SFC.gpu_native_launch_2d!(plan, out, cnt, xd, ud, SFC.NoWeights(), sf2, ddig, vplan,
+    handled && SFC.gpu_native_launch_2d!(plan, out, cnt, xd, ud, SFC.NoWeights(), moments(NMOM), ddig, vplan,
                                          N, n_dist, n_val, B, fixed_x, GEOM, SFC.InvariantValueAxis(), nothing)
     CUDA.synchronize()
     return out, cnt, handled
@@ -90,8 +92,8 @@ let n_dist = 50, n_val = 50, NMOM = 6, fixed_x = true
     xd = CuArray(x_h); ud = CuArray(u_h)
     out = CUDA.zeros(FT, NMOM, n_dist, n_val, B); cnt = CUDA.zeros(UInt32, NMOM, n_dist, n_val, B)
     f() = (CUDA.fill!(out, 0f0); CUDA.fill!(cnt, UInt32(0));
-           GE._sf_launch_2d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, sf2, ddig, vplan,
-                                   N, n_dist, n_val, B, Val(6), true, GEOM, SFC.InvariantValueAxis());
+           GE._sf_launch_2d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, SFT.SinglePassInvariants(), ddig, vplan,
+                                   N, n_dist, n_val, B, true, GEOM, SFC.InvariantValueAxis());
            CUDA.synchronize())
     f(); f(); ts = Float64[]; for _ in 1:5; t = time_ns(); f(); push!(ts, (time_ns()-t)/1e9); end
     t = median(ts); bapps = (N*(N-1)/2)*B/t/1e9

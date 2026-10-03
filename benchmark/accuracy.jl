@@ -11,7 +11,8 @@
 
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT
-using Printf, Random
+using Printf: Printf
+using Random: Random
 
 const SFTYPE = SFT.L2SFType()
 
@@ -56,15 +57,15 @@ function blocked_sum(v::Vector{T}, blk::Int) where {T}
 end
 
 function main()
-    @printf("%s\nFloat32 accumulation error vs Float64 reference (same pairs, kernel-order values)\n%s\n",
+    Printf.@printf("%s\nFloat32 accumulation error vs Float64 reference (same pairs, kernel-order values)\n%s\n",
             "="^100, "="^100)
-    @printf("%8s %12s | %14s %14s %14s %14s\n",
+    Printf.@printf("%8s %12s | %14s %14s %14s %14s\n",
             "N", "pairs", "naive f32", "blk=512 f32", "blk=2048 f32", "pairwise f32")
     for N in (1_000, 3_000, 10_000)
         v32, v64 = bin_values(N)
         ref = sum(v64)                                  # Float64 pairwise (Base) = reference
         rel(x) = abs(Float64(x) - ref) / abs(ref)
-        @printf("%8d %12d | %14.3e %14.3e %14.3e %14.3e\n",
+        Printf.@printf("%8d %12d | %14.3e %14.3e %14.3e %14.3e\n",
                 N, length(v32),
                 rel(naive_sum(v32)),
                 rel(blocked_sum(v32, 512)),

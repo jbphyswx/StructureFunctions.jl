@@ -83,9 +83,9 @@ Start Julia once inside the allocation. Precompile is expensive; do not spawn a 
 `julia script.jl` process for every benchmark.
 
 ```julia
-using Pkg: pkgdir
+using Pkg: Pkg
 using StructureFunctions: StructureFunctions
-include(joinpath(pkgdir(StructureFunctions), "gpu", "run.jl"))
+include(joinpath(Pkg.pkgdir(StructureFunctions), "gpu", "run.jl"))
 
 include_gpu("smoke_cuda.jl")
 include_gpu("test_cuda_parity.jl")

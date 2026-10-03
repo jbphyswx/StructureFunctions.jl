@@ -9,6 +9,7 @@ using StructureFunctions
 import KernelAbstractions as KA
 using CUDA, Printf
 using Statistics: median
+using Random: Random
 const SF = StructureFunctions
 const SFC = SF.Calculations
 const SFT = SF.StructureFunctionTypes
@@ -20,22 +21,22 @@ const GPU_BE = CB.GPUBackend(CUDA.CUDABackend())
 const SF_TYPE = SFT.L2SFType()
 const SP2D_INV = (:S2, :L2, :T2, :S3, :L3, :L1T2)
 
-maxrel(a, b) = maximum(abs.(a .- b) ./ max.(abs.(b), 1f-3))
+# A pair whose value rounds differently on the two backends lands in another value bin; the table reports those
+# pairs and the largest sum difference against the largest sum.
+scaled(a, b) = maximum(abs.(a .- b)) / maximum(abs, b)
+moved(c, ref) = sum(abs.(Int64.(c) .- Int64.(ref))) ÷ 2
+row(case, bins, s, m, total) = @printf("| %s | %s | %.2e | %d / %d = %.1e |\n", case, bins, s, m, total, m / max(total, 1))
 
-# Max relative error of a keyed SP2D result `g` against a stacked (6, ...) ref `cs`,
-# and whether all per-invariant counts match the corresponding ref slice `cc`.
-function _sp2d_maxrel_counts(g, cs, cc)
-    mr = 0.0
-    counts_ok = true
-    for (t, k) in enumerate(SP2D_INV)
-        mr = max(mr, maxrel(g[k].sums, cs[t, :, :, :]))
-        counts_ok &= g[k].counts == cc[t, :, :, :]
-    end
-    return mr, counts_ok
+# A keyed SP2D result `g` against a stacked (6, ...) reference `cs`, `cc`, over every invariant.
+function _sp2d_report(case, bins, g, cs, cc)
+    s = maximum(t -> scaled(g[SP2D_INV[t]].sums, cs[t, :, :, :]), 1:6)
+    m = sum(t -> moved(g[SP2D_INV[t]].counts, cc[t, :, :, :]), 1:6)
+    row(case, bins, s, m, Int(sum(Int64, cc)))
 end
 
+Random.seed!(20260926)
 println("End-to-end 2D CUDA public-API parity vs serial CPU\n")
-println("| case | bins | max relΔ | counts exact |")
+println("| case | bins | max |Δsum| / max |sum| | pairs in another value bin |")
 
 # ---- SP2D fixed-x ----
 let N = 1500, B = 4
@@ -46,8 +47,7 @@ let N = 1500, B = 4
         cs = zeros(FT, 6, nd, nv, B); cc = zeros(UInt32, 6, nd, nv, B)
         serial_calculate_structure_functions_single_pass_2d!(cs, cc, x, u, lbe, ve)
         g = SF.to_host(SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE))
-        mr, counts_ok = _sp2d_maxrel_counts(g, cs, cc)
-        @printf("| SP2D fixed | %dx%d | %.2e | %s |\n", nd, nv, mr, counts_ok)
+        _sp2d_report("SP2D fixed", "$(nd)x$(nv)", g, cs, cc)
     end
 end
 # ---- SP2D varying-x ----
@@ -59,8 +59,7 @@ let N = 1500, B = 4
         cs = zeros(FT, 6, nd, nv, B); cc = zeros(UInt32, 6, nd, nv, B)
         serial_calculate_structure_functions_single_pass_2d!(cs, cc, x, u, lbe, ve)
         g = SF.to_host(SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE))
-        mr, counts_ok = _sp2d_maxrel_counts(g, cs, cc)
-        @printf("| SP2D varying | %dx%d | %.2e | %s |\n", nd, nv, mr, counts_ok)
+        _sp2d_report("SP2D varying", "$(nd)x$(nv)", g, cs, cc)
     end
 end
 # ---- joint 2D fixed-x and varying-x ----
@@ -71,13 +70,13 @@ let N = 1500, B = 4
     cs = zeros(FT, 20, 20, B); cc = zeros(UInt32, 20, 20, B)
     auxiliary_joint2d!(cs, cc, SF_TYPE, x, u, lbe, ve)
     g = SF.to_host(SFC.calculate_structure_function(SF_TYPE, x, u, lbe, ve; backend = GPU_BE))
-    @printf("| joint2d fixed | 20x20 | %.2e | %s |\n", maxrel(g.sums, cs), g.counts == cc)
+    row("joint2d fixed", "20x20", scaled(g.sums, cs), moved(g.counts, cc), Int(sum(Int64, cc)))
 
     xv = rand(FT, 2, N, B)
     cs2 = zeros(FT, 20, 20, B); cc2 = zeros(UInt32, 20, 20, B)
     auxiliary_joint2d!(cs2, cc2, SF_TYPE, xv, u, lbe, ve)
     g2 = SF.to_host(SFC.calculate_structure_function(SF_TYPE, xv, u, lbe, ve; backend = GPU_BE))
-    @printf("| joint2d varying | 20x20 | %.2e | %s |\n", maxrel(g2.sums, cs2), g2.counts == cc2)
+    row("joint2d varying", "20x20", scaled(g2.sums, cs2), moved(g2.counts, cc2), Int(sum(Int64, cc2)))
 end
 
 # ---- headline timing: SP2D 50x50 fixed-x at real N=20000 (public API wall-clock) ----
