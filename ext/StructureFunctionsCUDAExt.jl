@@ -39,11 +39,16 @@ include(joinpath(@__DIR__, "cuda", "kernels_1d.jl"))
 const CU_CHOICES = Dict{Tuple, Any}()
 const CU_CHOICES_LOCK = ReentrantLock()
 
-"""The choice `build(caps)` makes for the current device and `key`, built on the first call."""
+"""The choice `build(caps)` makes for the current device and `key`, built on the first call, or again when the kept one
+is not of the type `build` returns."""
 function _cuda_choice(build, key::Tuple)
-    dev = CUDA.device()
+    T = Base.promote_op(build, SFC.GPUDeviceCaps)
+    k = (CUDA.device(), key...)
     return lock(CU_CHOICES_LOCK) do
-        get!(() -> build(SFC.gpu_device_caps(CUDA.CUDABackend())), CU_CHOICES, (dev, key...))
+        haskey(CU_CHOICES, k) && CU_CHOICES[k] isa T && return CU_CHOICES[k]::T
+        fresh = build(SFC.gpu_device_caps(CUDA.CUDABackend()))
+        CU_CHOICES[k] = fresh
+        fresh
     end
 end
 
@@ -65,9 +70,9 @@ SFC.gpu_native_2d_plan(::CUDA.CUDABackend, ::Type{XT}, ::Type{UT}, ::Type{OT}, :
     end
 
 SFC.gpu_native_launch_2d!(plan::Union{CUDA2DPlan, CUDA2DGlobalPlan, CUDAChoice}, out, cnt, x, u, wts, sf_type,
-                          dist_dig, val_plan, N, n_dist, n_val, B, fixed_x, geom, second_axis, cull) =
+                          dist_dig, val_plan, N, n_dist, n_val, B, fixed_x, geom, second_axis, cull, portable!) =
     _cuda_launch_2d!(plan, out, cnt, x, u, wts, sf_type, dist_dig, val_plan, Int(N), Int(n_dist), Int(n_val),
-                     Int(B), fixed_x, geom, second_axis, cull)
+                     Int(B), fixed_x, geom, second_axis, cull, portable!)
 
 SFC.gpu_free_memory(::CUDA.CUDABackend) = Int(CUDA.free_memory())
 

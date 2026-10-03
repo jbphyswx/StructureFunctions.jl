@@ -33,6 +33,9 @@ end
 
 field_validity(f::MF.Fields, cell_mask = nothing) = field_validity(MF.packed(f), cell_mask)
 
+"""`f(valid)`, compiled apart for a complete field ([`AllValid`](@ref)) and a masked one."""
+_with_valid(f::F, valid) where {F} = f(valid)
+
 """
     NoWeights()
 
@@ -743,41 +746,69 @@ repeated transform calls on one grid, as a time series makes; a call whose sizes
 rebuilds what it keeps and releases what it replaces. A workspace serves one call at a time.
 """
 mutable struct TransformWorkspace
-    kept::Dict{Any, Pair{Any, Any}}
-    pool::Vector{Pair{Any, Any}}
+    kept::Dict{Symbol, Any}
+    pool::Vector{Tuple{Symbol, Any}}
     lock::ReentrantLock
 end
 
-TransformWorkspace() = TransformWorkspace(Dict{Any, Pair{Any, Any}}(), Pair{Any, Any}[], ReentrantLock())
+TransformWorkspace() = TransformWorkspace(Dict{Symbol, Any}(), Tuple{Symbol, Any}[], ReentrantLock())
 
-"""The buffers `workspace` keeps under `slot`, rebuilt by `build()` unless they were built for `sizes`; the
-buffers they replace are released."""
+"""Whether `held`, a `sizes => buffers` pair a [`TransformWorkspace`](@ref) keeps, holds buffers of type `T` built for
+`sizes`."""
+@inline _holds(held, sizes::S, ::Type{T}) where {S, T} = held isa Pair{S, <:T} && first(held) == sizes
+
+"""Release what a [`TransformWorkspace`](@ref) kept as `held`, a `sizes => buffers` pair or `nothing`: the one call
+dispatched on the type of a kept value."""
+@noinline function _release_held(@nospecialize(held))
+    held isa Pair && _release_plan!(held.second)
+    return nothing
+end
+
+"""The buffers `workspace` keeps under `slot`, rebuilt by `build()` unless they were built for `sizes` and are of the
+type `build()` returns; the buffers they replace are released."""
 _kept!(::Nothing, slot, sizes, build) = build()
-function _kept!(ws::TransformWorkspace, slot, sizes, build)
+function _kept!(ws::TransformWorkspace, slot::Symbol, sizes, build)
+    T = Base.promote_op(build)
     held = lock(() -> get(ws.kept, slot, nothing), ws.lock)
-    held !== nothing && first(held) == sizes && return last(held)
+    _holds(held, sizes, T) && return last(held::Pair{typeof(sizes), <:T})
     fresh = build()
     lock(() -> (ws.kept[slot] = sizes => fresh), ws.lock)
-    held === nothing || _release_plan!(last(held))
+    _release_held(held)
     return fresh
 end
 
-"""One executor's scratch of `sizes` from `workspace`'s pool, or `build()` when none is free. The first element
-of `sizes` names the kind of scratch; free sets of that kind and other sizes are released."""
+"""One executor's scratch of `sizes` and of the type `build()` returns from `workspace`'s pool, or `build()` when none
+is free. The first element of `sizes` names the kind of scratch; free sets of that kind that do not fit are
+released."""
 _borrow!(::Nothing, sizes, build) = build()
-function _borrow!(ws::TransformWorkspace, sizes, build)
-    stale, free = lock(ws.lock) do
-        stale = filter(e -> first(first(e)) === first(sizes) && first(e) != sizes, ws.pool)
-        filter!(e -> first(first(e)) !== first(sizes) || first(e) == sizes, ws.pool)
-        i = findlast(e -> first(e) == sizes, ws.pool)
-        stale, i === nothing ? nothing : last(popat!(ws.pool, i))
+function _borrow!(ws::TransformWorkspace, sizes::Tuple{Symbol, Vararg{Any}}, build)
+    T = Base.promote_op(build)
+    kind = first(sizes)
+    stale = Any[]
+    free = nothing
+    lock(ws.lock)
+    try
+        for i in reverse(eachindex(ws.pool))
+            k, held = ws.pool[i]
+            k === kind || continue
+            if free === nothing && _holds(held, sizes, T)
+                free = last(held::Pair{typeof(sizes), <:T})
+                deleteat!(ws.pool, i)
+            elseif !_holds(held, sizes, T)
+                push!(stale, held)
+                deleteat!(ws.pool, i)
+            end
+        end
+    finally
+        unlock(ws.lock)
     end
-    foreach(e -> _release_plan!(last(e)), stale)
+    foreach(_release_held, stale)
     return free === nothing ? build() : free
 end
 
 _give_back!(::Nothing, sizes, scratch) = nothing
-_give_back!(ws::TransformWorkspace, sizes, scratch) = (lock(() -> push!(ws.pool, sizes => scratch), ws.lock); nothing)
+_give_back!(ws::TransformWorkspace, sizes::Tuple{Symbol, Vararg{Any}}, scratch) =
+    (lock(() -> push!(ws.pool, (first(sizes), sizes => scratch)), ws.lock); nothing)
 
 """
     _release_plan!(x)
@@ -790,8 +821,8 @@ _release_plan!(_) = nothing
 
 """Release every plan `ws` holds and drop what it keeps; `ws` is not used again."""
 function _release_plans!(ws::TransformWorkspace)
-    foreach(held -> _release_plan!(last(held)), values(ws.kept))
-    foreach(held -> _release_plan!(last(held)), ws.pool)
+    foreach(_release_held, values(ws.kept))
+    foreach(e -> _release_held(e[2]), ws.pool)
     empty!(ws.kept)
     empty!(ws.pool)
     return nothing
@@ -811,7 +842,7 @@ executor builds its own.
 _executor_scratch(workspace, backend, sizes, build) = _executor_scratch(_local_workspace(workspace, backend), sizes, build)
 _executor_scratch(::Nothing, sizes, build) = (build, Returns(nothing))
 function _executor_scratch(ws::TransformWorkspace, sizes, build)
-    lent = Any[]
+    lent = Base.promote_op(build)[]
     make = () -> (scratch = _borrow!(ws, sizes, build); lock(() -> push!(lent, scratch), ws.lock); scratch)
     done = () -> foreach(scratch -> _give_back!(ws, sizes, scratch), lent)
     return make, done

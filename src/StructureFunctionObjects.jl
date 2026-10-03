@@ -86,12 +86,13 @@ struct StructureFunctionSumsAndCounts{
 end
 
 """
-    StructureFunction2DSumsAndCounts{FT, OT, BT, VT, MT}
+    StructureFunction2DSumsAndCounts{FT, OT, BT, VT, MT, CT, AT}
 
 Joint histogram of separation and a second bin coordinate. `sums` and `counts`
 have matching shape `(B_distance, B_second, batch...)`; each edge vector has one
-more element than its corresponding histogram axis. The second coordinate is
-the operator value or the directional coordinate selected by the calculation.
+more element than its corresponding histogram axis. `second_axis` is the source the
+second coordinate reads from each pair: the operator value (`InvariantValueAxis()`) or the
+angle of the separation (`SeparationAngleAxis`).
 
 `sums` accumulates actual pair values, including weights when supplied. `counts`
 stores integer pair counts or floating-point mass for weighted or split
@@ -105,12 +106,14 @@ struct StructureFunction2DSumsAndCounts{
     VT,
     MT,
     CT,
+    AT,
 } <: AbstractStructureFunction
     operator::OT
     distance_bins::BT
     value_bins::VT
     sums::MT
     counts::CT
+    second_axis::AT
 
     function StructureFunction2DSumsAndCounts(
         operator::OT,
@@ -118,12 +121,13 @@ struct StructureFunction2DSumsAndCounts{
         value_bins::VT,
         sums::MT,
         counts::CT,
-    ) where {OT, BT, VT, MT, CT}
+        second_axis::AT,
+    ) where {OT, BT, VT, MT, CT, AT}
         (size(sums) == size(counts)) || throw(DimensionMismatch("Sums and counts matrices must have identical shape (got sums: $(size(sums)), counts: $(size(counts)))"))
         (size(sums, 1) == length(distance_bins) - 1) || throw(DimensionMismatch("distance_bins must have length size(sums,1)+1 (got $(length(distance_bins)) edges, $(size(sums,1)) distance bins)"))
         (size(sums, 2) == length(value_bins) - 1) || throw(DimensionMismatch("value_bins must have length size(sums,2)+1 (got $(length(value_bins)) edges, $(size(sums,2)) value bins)"))
         FT = eltype(sums)
-        return new{FT, OT, BT, VT, MT, CT}(operator, distance_bins, value_bins, sums, counts)
+        return new{FT, OT, BT, VT, MT, CT, AT}(operator, distance_bins, value_bins, sums, counts, second_axis)
     end
 end
 
@@ -325,12 +329,14 @@ function Base.:+(sf1::StructureFunction2DSumsAndCounts, sf2::StructureFunction2D
     (sf1.operator == sf2.operator) || throw(ArgumentError("Cannot add results with different operators: got $(sf1.operator) and $(sf2.operator)"))
     (sf1.distance_bins == sf2.distance_bins) || throw(ArgumentError("Cannot add results with different distance binning"))
     (sf1.value_bins == sf2.value_bins) || throw(ArgumentError("Cannot add results with different value binning"))
+    (sf1.second_axis == sf2.second_axis) || throw(ArgumentError("Cannot add results binning different second axes"))
     return StructureFunction2DSumsAndCounts(
         sf1.operator,
         sf1.distance_bins,
         sf1.value_bins,
         sf1.sums + sf2.sums,
         _add_counts(sf1.counts, sf2.counts),
+        sf1.second_axis,
     )
 end
 
@@ -347,7 +353,8 @@ to_host(r::StructureFunction) = StructureFunction(r.operator, r.distance, Array(
 to_host(r::StructureFunctionSumsAndCounts) =
     StructureFunctionSumsAndCounts(r.operator, r.distance, Array(r.sums), Array(r.counts))
 to_host(r::StructureFunction2DSumsAndCounts) =
-    StructureFunction2DSumsAndCounts(r.operator, r.distance_bins, r.value_bins, Array(r.sums), Array(r.counts))
+    StructureFunction2DSumsAndCounts(r.operator, r.distance_bins, r.value_bins, Array(r.sums), Array(r.counts),
+                                     r.second_axis)
 to_host(r::StructureFunctionTensor) = StructureFunctionTensor(r.order, r.distance_bins, Array(r.values))
 to_host(r::StructureFunctionTensorSumsAndCounts) =
     StructureFunctionTensorSumsAndCounts(r.order, r.distance_bins, Array(r.sums), Array(r.counts))

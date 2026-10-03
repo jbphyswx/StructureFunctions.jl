@@ -226,7 +226,8 @@ function SFC._dispatch_execution_backend(
         sums .+= ls
         counts .+= lc
     end
-    return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts)
+    return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts,
+                                                second_axis)
 end
 
 function SFC._dispatch_execution_backend(
@@ -369,7 +370,7 @@ function SFC._dispatch_execution_backend(
     )
     return SFO.StructureFunction2DSumsAndCounts(
         structure_function_type, distance_bins, value_bins,
-        reshape(sums, nd, nv, bdims...), reshape(counts, nd, nv, bdims...),
+        reshape(sums, nd, nv, bdims...), reshape(counts, nd, nv, bdims...), second_axis,
     )
 end
 

@@ -200,7 +200,7 @@ function _transform_prepare(
     wp = wp0 isa SFC.NoWeights ? wp0 : to(wp0)
     fwd, keys, spectra, layout = _slab_transforms(tag, s, dp, vp, wp, su, P, Val(W), Val(p); to, forward, workspace)
     transport = SFC.lag_transport(s)
-    columns, vN = SFC._sf_columns(sf, transport, Val(W), keys)
+    columns, vN = SFC._sf_columns(sf, transport, Val(W), Val(p))
     # the count column: the two masks' correlation, the weighted pair mass, or a soft-binned kernel mass
     soft = SFC._soft_binned(s)
     masked = !(valid isa SFC.AllValid) || !(wp isa SFC.NoWeights) || soft
@@ -218,7 +218,7 @@ The `forward` source of slice `t` of `nt`: one forward stage, and the spectra of
 _kept_forward(workspace, t::Int, nt::Int) = (dp, FT, P, lay, keys) -> begin
     family = _array_family(dp)
     stage = SFC._kept!(workspace, :forward_stage, (family, FT, P, lay.chunk, lay.last_nb, lay.group, lay.last_ng,
-                                                   Tuple(keys)),
+                                                   keys),
                        () -> _forward_stage(dp, FT, P, lay, keys))
     whole = SFC._kept!(workspace, :spectra, (family, FT, lay.blk, lay.nchunks, lay.ngroups, nt),
                        () -> similar(parent(dp), Complex{FT}, lay.blk, lay.nchunks, lay.ngroups, nt))
@@ -254,7 +254,7 @@ The `forward` source of an executor sweeping one slice at a time: a stage and on
 from `workspace`'s pool, recorded in `lent[]` for [`_return_forward!`](@ref).
 """
 _lent_forward(workspace, lent::Base.RefValue) = (dp, FT, P, lay, keys) -> begin
-    sizes = (:forward, _array_family(dp), FT, P, lay.chunk, lay.last_nb, lay.group, lay.last_ng, Tuple(keys), lay.blk,
+    sizes = (:forward, _array_family(dp), FT, P, lay.chunk, lay.last_nb, lay.group, lay.last_ng, keys, lay.blk,
              lay.nchunks, lay.ngroups)
     set = SFC._borrow!(workspace, sizes, () -> _kept_forward(nothing, 1, 1)(dp, FT, P, lay, keys))
     lent[] = sizes => set
@@ -961,11 +961,11 @@ function _tensor_run!(sums, counts, ::Val{P}, data, s, dist_be, plan, nb, axis, 
 end
 
 function _tensor_pairs!(sums, counts, sf, eng, plan, nb, axis, ::Val{D}, ::Val{P}, backend, make_scratch) where {D, P}
-    Ns = binomial(D + P - 1, P)
+    vNs = Val(length(SFT.symmetric_indices(Val(D), Val(P))))
     items = SFC.sweep_items(eng.s, eng.r_max, SFC.sweep_tasks(backend), false)
-    sym = zeros(eltype(sums), Ns, size(counts)...)
+    sym = zeros(eltype(sums), SFC._val_int(vNs), size(counts)...)
     body! = (ls, lc, it, scratch) -> _transform_tensor_item!(ls, lc, sf, eng, it, scratch, plan, nb, axis, Val(D),
-                                                             eng.vW, eng.vP, eng.vN, Val(Ns))
+                                                             eng.vW, eng.vP, eng.vN, vNs)
     SFC.sweep_reduce!(sym, counts, backend, items, make_scratch, body!)
     SFC._expand_symmetric!(sums, sym, Val(D), Val(P))
     return nothing

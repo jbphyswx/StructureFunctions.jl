@@ -180,7 +180,7 @@ Test.@testset "a transform workspace keeps its buffers and changes no answer" be
             Test.@test isapprox(gb, rb; rtol = 1e-10, atol = 1e-12)
         end
         # every kind of scratch a slice borrows comes back for the next slice and the next call
-        pooled() = Dict(first(first(e)) => last(e) for e in ws.pool)
+        pooled() = Dict(e[1] => last(e[2]) for e in ws.pool)
         SFC.gridded_sweep_batch!(zeros(nb, 3), zeros(Int, nb, 3), SFT.L3SFType(), ub, s, bins, Val(2), fft;
                                  backend = CB.SerialBackend(), workspace = ws)
         before = pooled()
@@ -231,8 +231,8 @@ Test.@testset "a call's own workspace finalizes its plans on return" begin
     plans = map(_FlagPlan, flags)
     ws = SFC.TransformWorkspace()
     ws.kept[:stage] = (1,) => (plan = plans[1], plan_last = plans[1], held = zeros(2))
-    push!(ws.pool, (2,) => (iplan = AbstractFFTs.ScaledPlan(plans[2], 0.5), spec = zeros(2)))
-    push!(ws.pool, (3,) => (B = 1, buffers = (out = zeros(1), iplan = plans[3])))
+    push!(ws.pool, (:inverse, (:inverse,) => (iplan = AbstractFFTs.ScaledPlan(plans[2], 0.5), spec = zeros(2))))
+    push!(ws.pool, (:device_batch, (:device_batch,) => (B = 1, buffers = (out = zeros(1), iplan = plans[3]))))
     SFC._release_plans!(ws)
     Test.@test all(f -> f[], flags)
     Test.@test isempty(ws.kept) && isempty(ws.pool)

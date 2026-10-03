@@ -40,6 +40,9 @@ struct SeparationAngleAxis{V} <: AbstractSecondAxisSource
     reference_axis::V
 end
 
+Base.:(==)(a::SeparationAngleAxis, b::SeparationAngleAxis) = a.reference_axis == b.reference_axis
+Base.hash(s::SeparationAngleAxis, h::UInt) = hash(s.reference_axis, hash(SeparationAngleAxis, h))
+
 """
 Whether the source needs its own per-pair buffer, or reads the operator value the kernel already
 computed. Constant-folded, so binning the operator's value costs no extra store.

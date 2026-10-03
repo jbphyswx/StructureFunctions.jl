@@ -178,7 +178,7 @@ end
 """Sums and counts per histogram cell: one value, a rank-`P` tensor's packed components (one count), or
 the six single-pass invariants (a count each)."""
 @inline _cell_entries(sf, ::Val{D}) where {D} = (1, 1)
-@inline _cell_entries(::SFT.MomentTensorOperator{P}, ::Val{D}) where {P, D} = (binomial(D + P - 1, P), 1)
+@inline _cell_entries(::SFT.MomentTensorOperator{P}, ::Val{D}) where {P, D} = (length(SFT.symmetric_indices(Val(D), Val(P))), 1)
 @inline _cell_entries(::SFT.SinglePassInvariants, ::Val{D}) where {D} = (SFC.SINGLE_PASS_N, SFC.SINGLE_PASS_N)
 
 """Static shared bytes of `_lag_kernel!` with `NS` sums `OT` and `NC` counts `CT`."""

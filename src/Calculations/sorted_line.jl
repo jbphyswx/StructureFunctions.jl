@@ -136,9 +136,7 @@ The symmetric increment moment tensor of one point against a range of partners: 
 monomials, `Δ` the range's summed monomials, combined as `Σ_S (−1)^{P−|S|} μ_{c_{Sᶜ}}(i) Δ[c_S]`.
 """
 @generated function _line_moments(μi::SA.SVector{NK, T}, Δ::SA.SVector{NK, T}, ::Val{W}, ::Val{P}) where {NK, T, W, P}
-    keys = _monomial_keys(Val(W), Val(P))
-    key_index = Dict(k => n for (n, k) in enumerate(keys))
-    cols = _columns(IdentityTransport(), Val(W), Val(P), key_index)
+    cols = _columns(IdentityTransport(), Val(W), Val(P), Val(P))
     entries = map(cols) do terms
         Expr(:call, :+, [:($sign * μi[$a] * Δ[$b]) for (sign, a, b) in terms]...)
     end

@@ -124,8 +124,8 @@ function _launch_single_pass_2d_kernel!(
     return nothing
 end
 
-"""Launch a point list's six single-pass invariant joint histograms `(6, n_dist, n_val)`: the native
-kernel with its plan for the call ([`SFC.gpu_native_2d_plan`](@ref)), or
+"""Launch a point list's six single-pass invariant joint histograms `(6, n_dist, n_val)`: the backend's native plan
+for the call ([`SFC.gpu_native_2d_plan`](@ref)), handed the portable launch as a candidate, or
 [`_launch_single_pass_2d_portable!`](@ref) when there is none."""
 function _launch_single_pass_2d!(
     backend::KA.Backend,
@@ -147,14 +147,17 @@ function _launch_single_pass_2d!(
     plan = SFC.gpu_native_2d_plan(backend, eltype(x_dev), eltype(u_dev), eltype(out_sums_dev),
                                   eltype(out_cnts_dev), weights, geom, SFT.SinglePassInvariants(), n_dist, n_val,
                                   vplan)
+    portable!(o, c) = _launch_single_pass_2d_portable!(backend, workgroup_size,
+                                                       reshape(o, SINGLE_PASS_N, n_dist, n_val),
+                                                       reshape(c, SINGLE_PASS_N, n_dist, n_val), x_dev, u_dev, ddig,
+                                                       vplan, N_points, n_dist_edges, n_val_edges, geom; cull, weights)
     if plan === nothing
-        _launch_single_pass_2d_portable!(backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
-                                         ddig, vplan, N_points, n_dist_edges, n_val_edges, geom; cull, weights)
+        portable!(out_sums_dev, out_cnts_dev)
     else
         SFC.gpu_native_launch_2d!(plan, reshape(out_sums_dev, SINGLE_PASS_N, n_dist, n_val, 1),
                                   reshape(out_cnts_dev, SINGLE_PASS_N, n_dist, n_val, 1), x_dev, u_dev,
                                   weights, SFT.SinglePassInvariants(), ddig, vplan, N_points, n_dist, n_val, 1, true,
-                                  geom, SFC.InvariantValueAxis(), cull)
+                                  geom, SFC.InvariantValueAxis(), cull, portable!)
     end
     return nothing
 end

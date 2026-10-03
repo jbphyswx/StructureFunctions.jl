@@ -1142,21 +1142,23 @@ end
 # Dispatch helpers used when rewiring the public API onto the unified kernels.
 # -----------------------------------------------------------------------------
 
-"""Launch a 2D batch of the moment set `sf_type`: the backend's native kernel with its plan for the call
-([`SFC.gpu_native_2d_plan`](@ref)), or [`_sf_launch_2d_batch_portable!`](@ref) when there is none."""
+"""Launch a 2D batch of the moment set `sf_type`: the backend's native plan for the call
+([`SFC.gpu_native_2d_plan`](@ref)), handed the portable launch as a candidate, or
+[`_sf_launch_2d_batch_portable!`](@ref) when there is none."""
 function _sf_launch_2d_batch!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
                               N, n_dist, n_val, B, fixed_x::Bool, geom, second_axis;
                               weights = SFC.NoWeights(), cull = nothing)
     wts = _sf_weights_to_device(backend, weights)
     plan = SFC.gpu_native_2d_plan(backend, eltype(x_dev), eltype(u_dev), eltype(out_dev), eltype(cnt_dev),
                                   wts, geom, sf_type, n_dist, n_val, vplan)
+    portable!(o, c) = _sf_launch_2d_batch_portable!(backend, o, c, x_dev, u_dev, sf_type, ddig, vplan,
+                                                    N, n_dist, n_val, B, fixed_x, geom, second_axis;
+                                                    weights = wts, cull)
     if plan === nothing
-        _sf_launch_2d_batch_portable!(backend, out_dev, cnt_dev, x_dev, u_dev, sf_type, ddig, vplan,
-                                      N, n_dist, n_val, B, fixed_x, geom, second_axis;
-                                      weights = wts, cull)
+        portable!(out_dev, cnt_dev)
     else
         SFC.gpu_native_launch_2d!(plan, out_dev, cnt_dev, x_dev, u_dev, wts, sf_type, ddig, vplan,
-                                  N, n_dist, n_val, B, fixed_x, geom, second_axis, cull)
+                                  N, n_dist, n_val, B, fixed_x, geom, second_axis, cull, portable!)
     end
     return nothing
 end

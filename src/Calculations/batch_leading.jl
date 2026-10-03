@@ -9,7 +9,7 @@ using Distances: Distances as DI
 
 # Prepare batch-leading (B,D,N) buffers for `geom`. Handles the default plain `(D,N,B...)` (transposed
 # once) and `BatchLeading` `(B,D,N)` (zero-copy). `x` may be fixed (D,N) or varying. Returns
-# (xb, ub, B, D, W, N, fixed_x): `D` and `W` are the field and coordinate widths of the staged arrays.
+# (xb, ub, B, D, W, N, Val(fixed_x)): `D` and `W` are the field and coordinate widths of the staged arrays.
 """
 Component-first view of an input, so `prepare_pair_inputs` — which reads components from axis 1 —
 can convert it. Only a batch-leading `(B, W, N)` array needs permuting; the default `(W, N, B…)`
@@ -45,8 +45,12 @@ function _bl_prepare(x, u, geom, workspace = nothing)
     end
     xb = fixed_x ? x_raw :
          (x_bl ? x_raw : _to_batch_leading(reshape(x_raw, W, N, B), _ws_xb(workspace)))
-    return xb, ub, B, D, W, N, fixed_x
+    return xb, ub, B, D, W, N, Val(fixed_x)
 end
+
+"""The kernel for the positions' layout: `shared` for positions shared by every slice, `varying` otherwise."""
+@inline _bl_by_layout(::Val{true}, shared, varying) = shared
+@inline _bl_by_layout(::Val{false}, shared, varying) = varying
 
 # Statically-sized, unchecked loads for the two layouts the batch drivers hold: `(W, N)` shared
 # positions and `(B, W, N)` batch-leading, indexed within the shapes `_bl_prepare` validated. The width
@@ -107,8 +111,9 @@ A task's scratch for the batch kernel over the shared positions `xs`: for flat c
 and its buffers — digitize key, approximate bin, direction, compacted slots; `nothing` for a kernel that takes
 none.
 """
-@inline function _bl_kernel_scratch(xc::Tuple{AbstractVector{T}, Vararg{AbstractVector{T}}}, ::Val{W}) where {T, W}
-    window = _pair_window(length(xc[1]))
+@inline _bl_kernel_scratch(xc::Tuple{AbstractVector{T}, Vararg{AbstractVector{T}}}, vW::Val) where {T} =
+    _bl_kernel_scratch(_pair_window(length(xc[1])), xc, vW)
+@inline function _bl_kernel_scratch(window, xc::Tuple{AbstractVector{T}, Vararg{AbstractVector{T}}}, ::Val{W}) where {T, W}
     L = _pair_scratch_length(window, length(xc[1]))
     return (window, Vector{T}(undef, L), Vector{Int32}(undef, L), Matrix{T}(undef, L, W), Vector{Int32}(undef, L))
 end
@@ -674,7 +679,7 @@ and allocates nothing.
 end
 
 """
-    _bl_cull(xb, ub, geom, distance_bins, culling, fixed_x, weights) -> (grid, xs, us, ws)
+    _bl_cull(xb, ub, geom, distance_bins, culling, Val(fixed_x), weights) -> (grid, xs, us, ws)
 
 The inputs sorted into cull grids, or unchanged with `grid === nothing` when `culling` declines.
 
@@ -683,16 +688,19 @@ Shared positions are sorted once for every slice: one grid, and the `(W, N)` pos
 `grid[b]` is slice `b`'s grid (`nothing` where that slice declines), `xs[b]` and `us[b]` its
 `(1, W, N)` positions and `(1, D, N)` fields in that order, `ws[b]` its weights.
 """
-function _bl_cull(xb, ub, geom, distance_bins, culling::CullingPolicy, fixed_x::Bool, weights)
+function _bl_cull(xb, ub, geom, distance_bins, culling::CullingPolicy, ::Val{true}, weights)
+    _cull_enabled(culling) || return nothing, xb, ub, weights
+    grid = cull_grid_for(ntuple(d -> view(xb, d, :), SFH.coordinate_width(geom)), geom, distance_bins, culling)
+    grid === nothing && return nothing, xb, ub, weights
+    p = grid.perm
+    return grid, xb[:, p], ub[:, :, p], _permuted_point_weights(weights, p)
+end
+
+function _bl_cull(xb, ub, geom, distance_bins, culling::CullingPolicy, ::Val{false}, weights)
     _cull_enabled(culling) || return nothing, xb, ub, weights
     vW = SFH.coordinate_width(geom)
-    if fixed_x
-        grid = cull_grid_for(ntuple(d -> view(xb, d, :), vW), geom, distance_bins, culling)
-        grid === nothing && return nothing, xb, ub, weights
-        p = grid.perm
-        return grid, xb[:, p], ub[:, :, p], _permuted_point_weights(weights, p)
-    end
-    grids = [cull_grid_for(ntuple(d -> view(xb, b, d, :), vW), geom, distance_bins, culling) for b in axes(ub, 1)]
+    grid_of(b) = cull_grid_for(ntuple(d -> view(xb, b, d, :), vW), geom, distance_bins, culling)
+    grids = Base.promote_op(grid_of, Int)[grid_of(b) for b in axes(ub, 1)]
     all(isnothing, grids) && return nothing, xb, ub, weights
     perms = [g === nothing ? collect(axes(ub, 3)) : g.perm for g in grids]
     return grids, [xb[b:b, :, p] for (b, p) in pairs(perms)], [ub[b:b, :, p] for (b, p) in pairs(perms)],
@@ -718,27 +726,39 @@ function _bl_chunk_runner(kernel!::K, grid, xs, us, ws, N::Int) where {K}
     end
 end
 
+"""
+    _bl_sweep(executor, culled, kernel!, stage, make_accum, vD, N, B, accum_bytes, workspace) -> (sums_bl, counts_bl)
+
+`executor` over [`_bl_cull`](@ref)'s output `culled`, the kernel loading the positions `stage(xs)` with the scratch
+[`_bl_kernel_scratch`](@ref) builds for them.
+"""
+function _bl_sweep(executor::E, culled::Tuple, kernel!::K, stage::S, make_accum::A, vD::Val, N::Int, B::Int,
+                   accum_bytes::Int, workspace) where {E, K, S, A}
+    grid, xs, us, ws = culled
+    xk = stage(xs)
+    make_scratch() = _bl_kernel_scratch(xk, vD)
+    return executor(make_accum, make_scratch, _bl_chunk_runner(kernel!, grid, xk, us, ws, N), 1:(N - 1), grid, B,
+                    accum_bytes, workspace)
+end
+
 function _bl_run_1d!(sums, counts, sf_type, x, u, distance_bins, geom, executor, workspace = nothing;
                      weights = NoWeights(), culling::CullingPolicy = AutoCulling())
     dist_be = digitize_plan(distance_bins)
     n_bins = n_histogram_bins(dist_be)
     OT = eltype(sums); CT = eltype(counts)
-    x0, u0, B, D, W, N, fixed_x = _bl_prepare(x, u, geom, workspace)
+    x0, u0, B, D, W, N, vFX = _bl_prepare(x, u, geom, workspace)
     vD = SFH.field_width(geom)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :sf1d, (n_bins,), OT, CT)
-    grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)
     sh_plan = _bl_shared_plan(geom, distance_bins)
     make_accum(bw) = (zeros(OT, bw, n_bins), zeros(CT, bw, n_bins))
-    xk = fixed_x ? _bl_shared_positions(xs, geom) : xs
-    make_scratch() = fixed_x ? _bl_kernel_scratch(xk, vD) : nothing
-    kernel! = fixed_x ?
-        ((s, c, xk, uk, blocks, br, w, scr) -> _bl_shared_1d!(s, c, xk, uk, sf_type, sh_plan, geom, vD, blocks, br, w,
-                                                              _bl_scratch_args(scr)...)) :
-        ((s, c, xk, uk, blocks, br, w, scr) -> _bl_varying_1d!(s, c, xk, uk, sf_type, dist_be, geom, vD, blocks, br, w))
-    run_chunk! = _bl_chunk_runner(kernel!, grid, xk, us, ws, N)
-    sums_bl, counts_bl = executor(make_accum, make_scratch, run_chunk!, 1:(N - 1), grid, B,
-                                  _bl_accum_bytes(OT, CT, B, n_bins), workspace)
+    kernel! = _bl_by_layout(vFX,
+        (s, c, xk, uk, blocks, br, w, scr) -> _bl_shared_1d!(s, c, xk, uk, sf_type, sh_plan, geom, vD, blocks, br, w,
+                                                             _bl_scratch_args(scr)...),
+        (s, c, xk, uk, blocks, br, w, scr) -> _bl_varying_1d!(s, c, xk, uk, sf_type, dist_be, geom, vD, blocks, br, w))
+    sums_bl, counts_bl = _bl_sweep(executor, _bl_cull(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
+                                   xs -> _bl_shared_positions(xs, geom), make_accum, vD, N, B,
+                                   _bl_accum_bytes(OT, CT, B, n_bins), workspace)
     _bl_add_permuted!(reshape(sums, n_bins, B), sums_bl, (2, 1))
     _bl_add_permuted!(reshape(counts, n_bins, B), counts_bl, (2, 1))
     return nothing
@@ -750,21 +770,19 @@ function _bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins
     dist_be = digitize_plan(distance_bins); val_be = digitize_plan(value_bins)
     n_dist = n_histogram_bins(dist_be); n_val = n_histogram_bins(val_be)
     OT = eltype(sums); CT = eltype(counts)
-    x0, u0, B, D, W, N, fixed_x = _bl_prepare(x, u, geom, workspace)
+    x0, u0, B, D, W, N, vFX = _bl_prepare(x, u, geom, workspace)
     vD = SFH.field_width(geom)
     _validate_bl_geometry(geom, W, D)
     _require_value_axis(second_axis, geom)
     _validate_ws_layout(workspace, :joint2d, (n_dist, n_val), OT, CT)
-    grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)
     make_accum(bw) = (zeros(OT, bw, n_dist, n_val), zeros(CT, bw, n_dist, n_val))
-    kernel! = fixed_x ?
-        ((s, c, xk, uk, blocks, br, w, _) -> _bl_joint2d_shared!(s, c, xk, uk, sf_type, dist_be, val_be, geom, vD,
-                                                                 blocks, br, w, second_axis)) :
-        ((s, c, xk, uk, blocks, br, w, _) -> _bl_joint2d_varying!(s, c, xk, uk, sf_type, dist_be, val_be, geom, vD,
-                                                                  blocks, br, w, second_axis))
-    run_chunk! = _bl_chunk_runner(kernel!, grid, xs, us, ws, N)
-    sums_bl, counts_bl = executor(make_accum, () -> nothing, run_chunk!, 1:(N - 1), grid, B,
-                                  _bl_accum_bytes(OT, CT, B, n_dist, n_val), workspace)
+    kernel! = _bl_by_layout(vFX,
+        (s, c, xk, uk, blocks, br, w, _) -> _bl_joint2d_shared!(s, c, xk, uk, sf_type, dist_be, val_be, geom, vD,
+                                                                blocks, br, w, second_axis),
+        (s, c, xk, uk, blocks, br, w, _) -> _bl_joint2d_varying!(s, c, xk, uk, sf_type, dist_be, val_be, geom, vD,
+                                                                 blocks, br, w, second_axis))
+    sums_bl, counts_bl = _bl_sweep(executor, _bl_cull(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
+                                   identity, make_accum, vD, N, B, _bl_accum_bytes(OT, CT, B, n_dist, n_val), workspace)
     _bl_add_permuted!(reshape(sums, n_dist, n_val, B), sums_bl, (2, 3, 1))
     _bl_add_permuted!(reshape(counts, n_dist, n_val, B), counts_bl, (2, 3, 1))
     return nothing
@@ -775,22 +793,19 @@ function _bl_run_sp1d!(sums, counts, x, u, distance_bins, geom, executor, worksp
     dist_be = digitize_plan(distance_bins)
     n_bins = n_histogram_bins(dist_be)
     OT = eltype(sums); CT = eltype(counts)
-    x0, u0, B, D, W, N, fixed_x = _bl_prepare(x, u, geom, workspace)
+    x0, u0, B, D, W, N, vFX = _bl_prepare(x, u, geom, workspace)
     vD = SFH.field_width(geom)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :single_pass, (SINGLE_PASS_N, n_bins), OT, CT)
-    grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)
     sh_plan = _bl_shared_plan(geom, distance_bins)
     make_accum(bw) = (zeros(OT, bw, SINGLE_PASS_N, n_bins), zeros(CT, bw, SINGLE_PASS_N, n_bins))
-    xk = fixed_x ? _bl_shared_positions(xs, geom) : xs
-    make_scratch() = fixed_x ? _bl_kernel_scratch(xk, vD) : nothing
-    kernel! = fixed_x ?
-        ((s, c, xk, uk, blocks, br, w, scr) -> _bl_sp1d_shared!(s, c, xk, uk, sh_plan, geom, vD, blocks, br, w,
-                                                                _bl_scratch_args(scr)...)) :
-        ((s, c, xk, uk, blocks, br, w, scr) -> _bl_sp1d_varying!(s, c, xk, uk, dist_be, geom, vD, blocks, br, w))
-    run_chunk! = _bl_chunk_runner(kernel!, grid, xk, us, ws, N)
-    sums_bl, counts_bl = executor(make_accum, make_scratch, run_chunk!, 1:(N - 1), grid, B,
-                                  _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins), workspace)
+    kernel! = _bl_by_layout(vFX,
+        (s, c, xk, uk, blocks, br, w, scr) -> _bl_sp1d_shared!(s, c, xk, uk, sh_plan, geom, vD, blocks, br, w,
+                                                               _bl_scratch_args(scr)...),
+        (s, c, xk, uk, blocks, br, w, scr) -> _bl_sp1d_varying!(s, c, xk, uk, dist_be, geom, vD, blocks, br, w))
+    sums_bl, counts_bl = _bl_sweep(executor, _bl_cull(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
+                                   xs -> _bl_shared_positions(xs, geom), make_accum, vD, N, B,
+                                   _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins), workspace)
     _bl_add_permuted!(reshape(sums, SINGLE_PASS_N, n_bins, B), sums_bl, (2, 3, 1))
     _bl_add_permuted!(reshape(counts, SINGLE_PASS_N, n_bins, B), counts_bl, (2, 3, 1))
     return nothing
@@ -803,18 +818,17 @@ function _bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins, geom, exec
     n_val = size(sums, 3)
     _validate_value_bins!(val_plan, n_val)
     OT = eltype(sums); CT = eltype(counts)
-    x0, u0, B, D, W, N, fixed_x = _bl_prepare(x, u, geom, workspace)
+    x0, u0, B, D, W, N, vFX = _bl_prepare(x, u, geom, workspace)
     vD = SFH.field_width(geom)
     _validate_bl_geometry(geom, W, D)
     _validate_ws_layout(workspace, :single_pass_2d, (SINGLE_PASS_N, n_bins, n_val), OT, CT)
-    grid, xs, us, ws = _bl_cull(x0, u0, geom, distance_bins, culling, fixed_x, weights)
     make_accum(bw) = (zeros(OT, bw, SINGLE_PASS_N, n_bins, n_val), zeros(CT, bw, SINGLE_PASS_N, n_bins, n_val))
-    kernel! = fixed_x ?
-        ((s, c, xk, uk, blocks, br, w, _) -> _bl_sp2d_shared!(s, c, xk, uk, dist_be, val_plan, geom, vD, blocks, br, w)) :
-        ((s, c, xk, uk, blocks, br, w, _) -> _bl_sp2d_varying!(s, c, xk, uk, dist_be, val_plan, geom, vD, blocks, br, w))
-    run_chunk! = _bl_chunk_runner(kernel!, grid, xs, us, ws, N)
-    sums_bl, counts_bl = executor(make_accum, () -> nothing, run_chunk!, 1:(N - 1), grid, B,
-                                  _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins, n_val), workspace)
+    kernel! = _bl_by_layout(vFX,
+        (s, c, xk, uk, blocks, br, w, _) -> _bl_sp2d_shared!(s, c, xk, uk, dist_be, val_plan, geom, vD, blocks, br, w),
+        (s, c, xk, uk, blocks, br, w, _) -> _bl_sp2d_varying!(s, c, xk, uk, dist_be, val_plan, geom, vD, blocks, br, w))
+    sums_bl, counts_bl = _bl_sweep(executor, _bl_cull(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
+                                   identity, make_accum, vD, N, B,
+                                   _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins, n_val), workspace)
     _bl_add_permuted!(reshape(sums, SINGLE_PASS_N, n_bins, n_val, B), sums_bl, (2, 3, 4, 1))
     _bl_add_permuted!(reshape(counts, SINGLE_PASS_N, n_bins, n_val, B), counts_bl, (2, 3, 4, 1))
     return nothing

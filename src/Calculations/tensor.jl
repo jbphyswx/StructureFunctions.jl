@@ -328,7 +328,7 @@ function _tensor_setup(
     dist_be = digitize_plan(distance_bins)
     N = size(u, 2)
     B = isempty(auxiliary_dims) ? 1 : prod(auxiliary_dims)
-    fixed_x = ndims(x) == 2
+    vFX = Val(ndims(x) == 2)
 
     axis === nothing || geom isa SFH.FlatGeometry || _require_directional(FrameTransport())
     xk, uk = SFH.prepare_pair_inputs(geom, x, u)
@@ -337,30 +337,38 @@ function _tensor_setup(
     W = _val_int(vW)
     F = _val_int(vF)
 
-    grid, xk, uk, weights = _tensor_cull(xk, uk, weights, geom, distance_bins, culling, fixed_x, W, F, N, B)
     axis_plan = axis === nothing ? nothing : (digitize_plan(axis[1]), axis[2], axis[3])
-    return (; n_bins, auxiliary_dims, dist_be, N, B, fixed_x, geom, xk, uk, vW, vF, W, F,
-            D = D, P = P, axis = axis_plan, weights, grid)
+    setup = (; n_bins, auxiliary_dims, dist_be, N, B, vFX, geom, vW, vF, W, F, vD = Val(D), vP = Val(P),
+             axis = axis_plan)
+    return _tensor_state(setup, _tensor_cull(xk, uk, weights, geom, distance_bins, culling, vFX, W, F, N, B))
+end
+
+"""The tensor `setup` with the inputs [`_tensor_cull`](@ref) returned, `culled = (grid, xk, uk, weights)`."""
+function _tensor_state(setup::NamedTuple, culled::Tuple)
+    grid, xk, uk, weights = culled
+    return (; setup..., xk, uk, weights, grid)
 end
 
 """
-    _tensor_cull(xk, uk, weights, geom, distance_bins, culling, fixed_x, W, F, N, B) -> (grid, xk, uk, weights)
+    _tensor_cull(xk, uk, weights, geom, distance_bins, culling, Val(fixed_x), W, F, N, B) -> (grid, xk, uk, weights)
 
 The tensor sweep's inputs sorted into cull grids, or unchanged with `grid === nothing` when `culling`
 declines. Shared positions are sorted once for every slice; positions varying per slice are sorted per
 slice, `grid[b]` being slice `b`'s grid (`nothing` where it declines) and `weights[b]` its weights.
 """
-function _tensor_cull(xk, uk, weights, geom, distance_bins, culling::CullingPolicy, fixed_x::Bool, W, F, N, B)
+function _tensor_cull(xk, uk, weights, geom, distance_bins, culling::CullingPolicy, ::Val{true}, W, F, N, B)
     _cull_enabled(culling) || return nothing, xk, uk, weights
-    if fixed_x
-        grid = cull_grid_for(ntuple(d -> view(xk, d, :), SFH.coordinate_width(geom)), geom, distance_bins, culling)
-        grid === nothing && return nothing, xk, uk, weights
-        p = grid.perm
-        return grid, xk[:, p], reshape(reshape(uk, F, N, B)[:, p, :], size(uk)), _permuted_point_weights(weights, p)
-    end
+    grid = cull_grid_for(ntuple(d -> view(xk, d, :), SFH.coordinate_width(geom)), geom, distance_bins, culling)
+    grid === nothing && return nothing, xk, uk, weights
+    p = grid.perm
+    return grid, xk[:, p], reshape(reshape(uk, F, N, B)[:, p, :], size(uk)), _permuted_point_weights(weights, p)
+end
+
+function _tensor_cull(xk, uk, weights, geom, distance_bins, culling::CullingPolicy, ::Val{false}, W, F, N, B)
+    _cull_enabled(culling) || return nothing, xk, uk, weights
     xs, us = reshape(xk, W, N, B), reshape(uk, F, N, B)
-    grids = [cull_grid_for(ntuple(d -> view(xs, d, :, b), SFH.coordinate_width(geom)), geom, distance_bins, culling)
-             for b in 1:B]
+    grid_of(b) = cull_grid_for(ntuple(d -> view(xs, d, :, b), SFH.coordinate_width(geom)), geom, distance_bins, culling)
+    grids = Base.promote_op(grid_of, Int)[grid_of(b) for b in 1:B]
     all(isnothing, grids) && return nothing, xk, uk, weights
     perms = [g === nothing ? collect(1:N) : g.perm for g in grids]
     xn, un = similar(xs), similar(us)
@@ -372,9 +380,10 @@ function _tensor_cull(xk, uk, weights, geom, distance_bins, culling::CullingPoli
 end
 
 """Flattened views of the accumulators, so the kernel indexes one auxiliary axis."""
-@inline _tensor_flat(sums, counts, s) = s.axis === nothing ?
-    (reshape(sums, ntuple(_ -> s.D, s.P)..., s.n_bins, s.B), reshape(counts, s.n_bins, s.B)) :
-    (sums, counts)
+@inline _tensor_flat(sums, counts, s) = _tensor_flat(sums, counts, s, s.axis, s.vD, s.vP)
+@inline _tensor_flat(sums, counts, s, ::Nothing, ::Val{D}, ::Val{P}) where {D, P} =
+    (reshape(sums, ntuple(_ -> D, Val(P))..., s.n_bins, s.B), reshape(counts, s.n_bins, s.B))
+@inline _tensor_flat(sums, counts, s, axis, ::Val, ::Val) = (sums, counts)
 
 """
     serial_calculate_structure_function_tensor!(sums, counts, order, shape, x, u, distance_bins; geometry, axis)
@@ -422,11 +431,7 @@ function _tensor_pairs!(sums_flat, counts_flat, order::Val{P}, s, outer) where {
     end
     blocks = pair_blocks(s.N, outer; grid = s.grid)
     s.axis === nothing || return _tensor_pairs_joint_inner!(sums_flat, counts_flat, order, s, blocks, s.vW, s.vF)
-    # `s` carries the widths and the staging choice as values. They become type parameters here so
-    # the `SVector`s below are statically sized and the branch is resolved at compile time; read
-    # off `s` they make every pair's coordinate load a heap allocation.
-    return _tensor_pairs_inner!(sums_flat, counts_flat, order, s, blocks, s.vW, s.vF,
-                                Val(s.fixed_x), 1:s.B, s.weights)
+    return _tensor_pairs_inner!(sums_flat, counts_flat, order, s, blocks, s.vW, s.vF, s.vFX, 1:s.B, s.weights)
 end
 
 function _tensor_pairs_inner!(sums_flat, counts_flat, order::Val{P}, s, blocks,

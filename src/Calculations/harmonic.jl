@@ -509,12 +509,13 @@ function calculate_structure_function(
         ))
         N = size(x, 2)
         w = weights === nothing ? ones(Float64, N) : weights
-        v = valid === nothing ? field_validity(data) : valid
         nb = length(nodes)
         sums = _result_zeros(backend, float(eltype(data)), nb)
         counts = _result_zeros(backend, CT, nb)
-        harmonic_sweep!(sums, counts, sf, geometry, x, w, data, nodes, vD, vV, vK, spectral_backend;
-                        valid = v, backend)
+        _with_valid(valid === nothing ? field_validity(data) : valid) do v
+            harmonic_sweep!(sums, counts, sf, geometry, x, w, data, nodes, vD, vV, vK, spectral_backend;
+                            valid = v, backend)
+        end
         SFO.StructureFunctionSumsAndCounts(sf, nodes, sums, counts)
     end
     return _finalize(raw, OT)

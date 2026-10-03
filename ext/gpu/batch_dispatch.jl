@@ -310,7 +310,8 @@ function _gpu_calculate_structure_function_2d_batch(
                                                  n_dist, n_val, SFC.batch_size(u), fixed_x, FT, CT, geometry;
                                                  weights, workspace, culling, source, second_axis)
     return SF.StructureFunction2DSumsAndCounts(sf_type, distance_bins, value_bins,
-        reshape(out_dev, n_dist, n_val, bdims...), reshape(_result_counts(cnt_dev, CT), n_dist, n_val, bdims...))
+        reshape(out_dev, n_dist, n_val, bdims...), reshape(_result_counts(cnt_dev, CT), n_dist, n_val, bdims...),
+        second_axis)
 end
 
 function _gpu_calculate_structure_function_2d_batch!(

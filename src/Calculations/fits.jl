@@ -190,12 +190,6 @@ flux_matrix(m::FluxForwardModel) = m.G
 # Data covariance
 # ---------------------------------------------------------------------------------------------------
 
-"""
-    _whitened(H, y, W) -> (Hw, yw)
-
-`W^{-1/2} H` and `W^{-1/2} y` for a data covariance `W` given as the variances of `y` (a vector), a
-full matrix, or `nothing` for the identity.
-"""
 function _check_fit_data(H, y)
     size(H, 1) == length(y) || throw(DimensionMismatch("H rows must match the number of observations"))
     size(H, 1) > 0 && size(H, 2) > 0 || throw(ArgumentError("the fit needs observations and parameters"))
@@ -212,58 +206,74 @@ function _covariance_factor(W, label)
     return factor
 end
 
-function _whitened(H::AbstractMatrix, y::AbstractVector, ::Nothing)
-    _check_fit_data(H, y)
-    return Matrix{Float64}(H), Vector{Float64}(y)
-end
+"""
+    _whitening(W, n) -> whiten
 
-function _whitened(H::AbstractMatrix, y::AbstractVector, W::AbstractVector)
-    _check_fit_data(H, y)
-    length(W) == length(y) || throw(DimensionMismatch(
-        "the data covariance names $(length(W)) variances for $(length(y)) values",
-    ))
+The map `v -> W^{-1/2} v` over vectors and matrices of `n` rows, for a data covariance `W` given as the variances of
+the `n` values (a vector), a full matrix, or `nothing` for the identity.
+"""
+_whitening(::Nothing, n::Int) = v -> Float64.(v)
+
+function _whitening(W::AbstractVector, n::Int)
+    length(W) == n || throw(DimensionMismatch("the data covariance names $(length(W)) variances for $n values"))
     all(v -> isfinite(v) && v > 0, W) || throw(ArgumentError("every data variance must be finite and positive"))
-    s = 1 ./ sqrt.(W)
-    return H .* s, y .* s
+    s = 1 ./ sqrt.(Vector{Float64}(W))
+    return v -> v .* s
 end
 
-function _whitened(H::AbstractMatrix, y::AbstractVector, W::AbstractMatrix)
-    _check_fit_data(H, y)
-    size(W) == (length(y), length(y)) || throw(DimensionMismatch(
-        "the data covariance is $(size(W)) for $(length(y)) values",
-    ))
+function _whitening(W::AbstractMatrix, n::Int)
+    size(W) == (n, n) || throw(DimensionMismatch("the data covariance is $(size(W)) for $n values"))
     L = _covariance_factor(W, "data covariance").L
-    return L \ Matrix{Float64}(H), L \ Vector{Float64}(y)
+    return v -> L \ Float64.(v)
 end
 
 """
-    independent_pair_variance(joint::StructureFunction2DSumsAndCounts) -> Vector
+    _whitened(H, y, W) -> (Hw, yw)
 
-The variance of each distance bin's mean pair value under the assumption that the pairs are
-independent: the variance of the pair values in the bin over the bin's count. Read from a
-value-binned joint histogram (`InvariantValueAxis`), each value cell contributing its own mean, so
-the spread inside a value cell is not seen and the result is a lower bound. A bin holding no pair is
-`NaN`. This is the data covariance `W` the fits take.
+`W^{-1/2} H` and `W^{-1/2} y` ([`_whitening`](@ref)).
 """
-function independent_pair_variance(joint::SFO.StructureFunction2DSumsAndCounts)
-    nb = size(joint.sums, 1)
-    out = Vector{Float64}(undef, nb)
-    @inbounds for b in 1:nb
-        n = 0.0
-        s1 = 0.0
-        s2 = 0.0
-        for v in axes(joint.sums, 2)
-            c = float(joint.counts[b, v])
-            c > 0 || continue
-            m = joint.sums[b, v] / c
-            n += c
-            s1 += c * m
-            s2 += c * m * m
-        end
-        out[b] = n > 0 ? max(s2 / n - (s1 / n)^2, 0.0) / n : NaN
-    end
-    return out
+function _whitened(H::AbstractMatrix, y::AbstractVector, W)
+    _check_fit_data(H, y)
+    whiten = _whitening(W, length(y))
+    return whiten(H), whiten(y)
 end
+
+"""
+    independent_pair_variance(joint::StructureFunction2DSumsAndCounts) -> Array
+
+The variance of each distance bin's mean pair value, of shape `(n_distance, batch...)`, under the assumption that the
+pairs are independent: the variance of the pair values in the bin over the number of pairs in it. Pairs sharing a point
+are correlated, which this does not account for. Read from a value-binned joint histogram (`InvariantValueAxis`) of
+integer pair counts, each value cell contributing its own mean, so the spread inside a value cell is not seen and the
+result is a lower bound. A bin holding no pair is `NaN`. This is the data covariance `W` the fits take.
+"""
+function independent_pair_variance(
+    joint::SFO.StructureFunction2DSumsAndCounts{<:Any, <:Any, <:Any, <:Any, <:Any, <:AbstractArray{<:Integer},
+                                                <:InvariantValueAxis},
+)
+    c = float.(joint.counts)
+    s = joint.sums
+    n = sum(c; dims = 2)
+    s1 = sum(s; dims = 2)
+    s2 = sum(ifelse.(c .> 0, s .^ 2 ./ c, zero(eltype(c))); dims = 2)
+    return dropdims(ifelse.(n .> 0, max.(s2 ./ n .- (s1 ./ n) .^ 2, 0) ./ n, NaN); dims = 2)
+end
+
+independent_pair_variance(
+    ::SFO.StructureFunction2DSumsAndCounts{<:Any, <:Any, <:Any, <:Any, <:Any, <:Any, <:SeparationAngleAxis},
+) = throw(ArgumentError(
+    "independent_pair_variance reads the spread of the pair values in each distance bin from the value cells of a " *
+    "joint histogram; this histogram bins the angle of the separation, whose cells carry no value. Bin the operator " *
+    "value (second_axis = InvariantValueAxis()).",
+))
+
+independent_pair_variance(
+    ::SFO.StructureFunction2DSumsAndCounts{<:Any, <:Any, <:Any, <:Any, <:Any, <:AbstractArray{<:AbstractFloat},
+                                           <:InvariantValueAxis},
+) = throw(ArgumentError(
+    "independent_pair_variance divides by the number of independent pairs; floating-point counts hold a weighted or " *
+    "split pair mass, which is not a number of pairs. An unweighted histogram with an integer count type gives it.",
+))
 
 # ---------------------------------------------------------------------------------------------------
 # Inversions
@@ -361,27 +371,9 @@ smaller model. A dense covariance can lose its smallest eigenvalues to rounding
 when the fitted system is poorly conditioned.
 """
 function solve(m::RegularizedLeastSquares, H::AbstractMatrix, y::AbstractVector, W)
-    W === nothing && throw(ArgumentError(
-        "regularised least squares weighs the data by their covariance, which was not given; pass " *
-        "`W`, the variance of each structure-function value — `independent_pair_variance` reads one " *
-        "from a value-binned joint histogram — or a full covariance matrix",
-    ))
+    _require_covariance(m, W)
     Hw, yw = _whitened(H, y, W)
-    n = size(H, 2)
-    penalty = _prior_rows(m.prior, n)
-    A = vcat(Hw, penalty)
-    rhs = vcat(yw, zeros(size(penalty, 1)))
-    size(A, 1) >= n || throw(ArgumentError("fit is underdetermined; supply a positive definite prior"))
-    factor = LA.qr(A, LA.ColumnNorm())
-    R = factor.R
-    threshold = maximum(abs, LA.diag(R)) * max(size(A)...) * eps(Float64)
-    minimum(abs, LA.diag(R)) > threshold ||
-        throw(ArgumentError("fit is numerically rank deficient; supply a positive definite prior or reduce the model"))
-    x = factor \ rhs
-    inverse_R = LA.UpperTriangular(R) \ Matrix{Float64}(LA.I, n, n)
-    C = Matrix{Float64}(undef, n, n)
-    C[factor.p, factor.p] = inverse_R * inverse_R'
-    return x, LA.Symmetric(C)
+    return _solve_prepared(m, _prepared(m, Hw), yw)
 end
 
 function solve(::NonNegativeLeastSquares, H::AbstractMatrix, y::AbstractVector, W;
@@ -392,6 +384,43 @@ function solve(::NonNegativeLeastSquares, H::AbstractMatrix, y::AbstractVector, 
     info.converged || error("NNLS did not converge in $(info.iterations) iterations (KKT residual $(info.kkt_residual))")
     return info.x, nothing
 end
+
+_require_covariance(::AbstractFitMethod, W) = nothing
+_require_covariance(::RegularizedLeastSquares, ::Nothing) = throw(ArgumentError(
+    "regularised least squares weighs the data by their covariance, which was not given; pass " *
+    "`W`, the variance of each structure-function value — `independent_pair_variance` reads one " *
+    "from a value-binned joint histogram — or a full covariance matrix",
+))
+
+"""
+    _prepared(method, Hw) -> prepared
+
+What `method` keeps of the whitened system `Hw` for any number of whitened right-hand sides: for regularised least
+squares the pivoted QR factorization of `Hw` augmented by the prior's rows, checked for rank, and the posterior
+covariance it implies; for non-negative least squares the system itself.
+"""
+function _prepared(m::RegularizedLeastSquares, Hw::AbstractMatrix)
+    n = size(Hw, 2)
+    penalty = _prior_rows(m.prior, n)
+    A = vcat(Hw, penalty)
+    size(A, 1) >= n || throw(ArgumentError("fit is underdetermined; supply a positive definite prior"))
+    factor = LA.qr(A, LA.ColumnNorm())
+    R = factor.R
+    threshold = maximum(abs, LA.diag(R)) * max(size(A)...) * eps(Float64)
+    minimum(abs, LA.diag(R)) > threshold ||
+        throw(ArgumentError("fit is numerically rank deficient; supply a positive definite prior or reduce the model"))
+    inverse_R = LA.UpperTriangular(R) \ Matrix{Float64}(LA.I, n, n)
+    C = Matrix{Float64}(undef, n, n)
+    C[factor.p, factor.p] = inverse_R * inverse_R'
+    return (; factor, n_prior = size(penalty, 1), covariance = LA.Symmetric(C))
+end
+
+_prepared(::NonNegativeLeastSquares, Hw::AbstractMatrix) = Hw
+
+"""The fit `(x, covariance)` of the whitened values `yw` through what [`_prepared`](@ref) kept."""
+_solve_prepared(::RegularizedLeastSquares, p, yw::AbstractVector) =
+    (p.factor \ vcat(yw, zeros(p.n_prior)), p.covariance)
+_solve_prepared(::NonNegativeLeastSquares, Hw, yw::AbstractVector) = (_nnls(Hw, yw), nothing)
 
 """
     _nnls(A, b; maxiter=10size(A, 2), return_info=false) -> x
@@ -537,7 +566,7 @@ end
 function _fit_samples(sf::SFO.AbstractStructureFunction)
     r, vals, keep = _binned(sf)
     isempty(keep) && throw(ArgumentError("no structure function value to fit"))
-    return r[keep], vals[keep], keep
+    return r[keep], Array(_take(vals, keep)), keep
 end
 
 """The data covariance over the bins holding a value, from one given over those bins or over all `n_all` bins."""
@@ -558,6 +587,129 @@ function _keep_variances(W::AbstractMatrix, keep, n_all)
     ))
 end
 
+"""The values of a result on its distance bins, one column per slice of its batch axes, `NaN` where a bin holds no pair."""
+_value_columns(sf::SFO.StructureFunction) = reshape(Float64.(collect(sf.values)), size(sf.values, 1), :)
+function _value_columns(sf::SFO.StructureFunctionSumsAndCounts)
+    s, c = collect(sf.sums), collect(sf.counts)
+    return reshape(ifelse.(c .> 0, Float64.(s) ./ Float64.(c), NaN), size(s, 1), :)
+end
+
+"""The batch axes of a result: the axes of its values after the distance axis."""
+_batch_axes(sf::SFO.StructureFunction) = size(sf.values)[2:end]
+_batch_axes(sf::SFO.StructureFunctionSumsAndCounts) = size(sf.sums)[2:end]
+
+"""One data covariance per slice of a batch: an array over the batch axes of variance vectors or covariance matrices."""
+const SliceCovariances = AbstractArray{<:AbstractVecOrMat}
+
+_slice_covariance(W::SliceCovariances, I) = W[I]
+_slice_covariance(W, I) = W
+
+_check_slice_covariances(W::SliceCovariances, bax) = size(W) == bax || throw(DimensionMismatch(
+    "one data covariance per slice is an array over the batch axes $bax; got $(size(W))",
+))
+_check_slice_covariances(W, bax) = nothing
+
+"""Fits of every slice as one fit for a result without batch axes, else the array of them over its batch axes."""
+_slice_result(fits, bax::Tuple{}) = only(fits)
+_slice_result(fits, bax::Tuple) = fits
+
+"""
+    _fit_slices(sf, W) -> slices
+
+The values of `sf` to fit, one entry per slice of its batch axes (one for a result without them): the separations `r`
+and values `y` of the bins holding a value, those bins `keep`, and the data covariance `W` over them. `W` is one data
+covariance for every slice (a vector of variances or a matrix, over the bins holding a value or over all bins, or
+`nothing`), or one per slice ([`SliceCovariances`](@ref)).
+"""
+function _fit_slices(sf::SFO.AbstractStructureFunction, W)
+    bax = _batch_axes(sf)
+    _check_slice_covariances(W, bax)
+    r_all = collect(midpoints(sf.distance))
+    Y = _value_columns(sf)
+    nb = size(Y, 1)
+    return map(CartesianIndices(bax)) do I
+        y = view(Y, :, LinearIndices(bax)[I])
+        keep = findall(isfinite, y)
+        isempty(keep) && throw(ArgumentError("no structure function value to fit"))
+        (; r = r_all[keep], y = y[keep], keep, W = _keep_variances(_slice_covariance(W, I), keep, nb))
+    end
+end
+
+"""
+    _paired_slices(L2, T2, W) -> slices
+
+As [`_fit_slices`](@ref) for two results on one set of bins and batch axes, the values of each slice stacked as
+`[L2; T2]` over the bins both hold, `W` covering the stacked values.
+"""
+function _paired_slices(L2::SFO.AbstractStructureFunction, T2::SFO.AbstractStructureFunction, W)
+    L2.distance == T2.distance || throw(ArgumentError("the two structure functions must share their distance bins"))
+    bax = _batch_axes(L2)
+    _batch_axes(T2) == bax || throw(DimensionMismatch("the two structure functions must share their batch axes"))
+    _check_slice_covariances(W, bax)
+    r_all = collect(midpoints(L2.distance))
+    A, B = _value_columns(L2), _value_columns(T2)
+    nb = size(A, 1)
+    return map(CartesianIndices(bax)) do I
+        j = LinearIndices(bax)[I]
+        a, b = view(A, :, j), view(B, :, j)
+        keep = intersect(findall(isfinite, a), findall(isfinite, b))
+        isempty(keep) && throw(ArgumentError("no bin holds a value in both structure functions"))
+        (; r = r_all[keep], y = vcat(a[keep], b[keep]), keep, W = _stacked_variances(_slice_covariance(W, I), keep, nb))
+    end
+end
+
+_stacked_variances(::Nothing, keep, nb) = nothing
+function _stacked_variances(W::AbstractVector, keep, nb)
+    n = length(keep)
+    length(W) == 2n && return Vector{Float64}(W)
+    length(W) == 2nb || throw(DimensionMismatch(
+        "the data covariance must cover the $(2n) stacked values the two results share, or the $(2nb) of every bin",
+    ))
+    return vcat(Float64.(W[keep]), Float64.(W[nb .+ keep]))
+end
+_stacked_variances(W::AbstractMatrix, keep, nb) = (size(W, 1) == 2length(keep) || throw(DimensionMismatch(
+    "a full data covariance must cover the $(2length(keep)) stacked values the two results share",
+)); Matrix{Float64}(W))
+
+"""
+    _linear_fits(model_for, method, slices, W) -> fits
+
+`(; model, x, covariance)` for each of `slices` ([`_fit_slices`](@ref)), fitted by `method` through the forward model
+`model_for(r)` of its kept bins: one model per distinct set of kept bins, and with one data covariance `W` for every
+slice, one whitened system and one [`_prepared`](@ref) solve per model.
+"""
+function _linear_fits(model_for, method::AbstractFitMethod, slices, W)
+    _require_covariance(method, W)
+    models = _slice_models(model_for, slices)
+    prepared = Dict(map(unique(s.keep for s in slices)) do keep
+        s = slices[findfirst(t -> t.keep == keep, slices)]
+        whiten = _whitening(s.W, length(s.y))
+        keep => (whiten, _prepared(method, whiten(forward_matrix(models[keep]))))
+    end)
+    return map(slices) do s
+        model = models[s.keep]
+        _check_fit_data(forward_matrix(model), s.y)
+        whiten, p = prepared[s.keep]
+        x, C = _solve_prepared(method, p, whiten(s.y))
+        (; model, x, covariance = C)
+    end
+end
+
+function _linear_fits(model_for, method::AbstractFitMethod, slices, W::SliceCovariances)
+    models = _slice_models(model_for, slices)
+    return map(slices) do s
+        _require_covariance(method, s.W)
+        model = models[s.keep]
+        Hw, yw = _whitened(forward_matrix(model), s.y, s.W)
+        x, C = _solve_prepared(method, _prepared(method, Hw), yw)
+        (; model, x, covariance = C)
+    end
+end
+
+"""The forward model `model_for(r)` of each distinct set of kept bins among `slices`."""
+_slice_models(model_for, slices) =
+    Dict(keep => model_for(slices[findfirst(t -> t.keep == keep, slices)].r) for keep in unique(s.keep for s in slices))
+
 """
     fit_spectrum(sf, k_edges, method, ::Val{D}; W = nothing) -> (k, E, covariance, …)
 
@@ -567,19 +719,24 @@ of each bin's value (a vector over the bins holding a value, or over all bins), 
 Returns the bin centres `k`, the fitted `E` on the bins and the posterior `covariance` (`nothing` for
 a method that gives none). A [`SegmentedPowerLaw`](@ref) returns `E` evaluated at `k`, and in
 addition the fitted `parameters`, their `covariance`, the segment `breakpoints` and `converged`.
+
+A result with batch axes is fitted slice by slice, returning an array of these over its batch axes; `W` is then one
+data covariance for every slice, or an array over the batch axes of one per slice ([`SliceCovariances`](@ref)). Slices
+holding values in the same bins share one forward model, and with one data covariance, one factorization.
 """
 function fit_spectrum(sf::SFO.AbstractStructureFunction, k_edges::AbstractVector, method::AbstractFitMethod,
                       ::Val{D}; W = nothing) where {D}
     assert_invertible(sf.operator)
-    r, y, keep = _fit_samples(sf)
-    return _fit_spectrum(method, Val(D), r, y, k_edges, _keep_variances(W, keep, _value_count(sf)))
+    return _slice_result(_fit_spectra(method, Val(D), _fit_slices(sf, W), k_edges, W), _batch_axes(sf))
 end
 
-function _fit_spectrum(method::AbstractFitMethod, ::Val{D}, r, y, k_edges, W) where {D}
-    model = SpectrumForwardModel(Val(D), r, k_edges)
-    x, C = solve(method, model.H, y, W)
-    return (k = _bin_centres(k_edges), E = x, covariance = C)
+function _fit_spectra(method::AbstractFitMethod, ::Val{D}, slices, k_edges, W) where {D}
+    fits = _linear_fits(r -> SpectrumForwardModel(Val(D), r, k_edges), method, slices, W)
+    return map(f -> (k = _bin_centres(k_edges), E = f.x, covariance = f.covariance), fits)
 end
+
+_fit_spectra(method::SegmentedPowerLaw, ::Val{D}, slices, k_edges, W) where {D} =
+    map(s -> _fit_spectrum(method, Val(D), s.r, s.y, k_edges, s.W), slices)
 
 function _fit_spectrum(method::SegmentedPowerLaw, ::Val{D}, r, y, k_edges, W) where {D}
     _check_wavenumber_edges(k_edges)
@@ -596,37 +753,17 @@ The gradient (`E`) and curl (`B`) shell spectra on the bins `k_edges` that repro
 and transverse second-order structure functions of a two-dimensional field through
 [`HelmholtzForwardModel`](@ref). `L2` and `T2` share their bins; `W` covers the stacked values
 `[D_LL; D_TT]` over the bins both hold (or over all bins of each). The `covariance` is over the
-stacked `[E; B]`.
+stacked `[E; B]`. Results with batch axes are fitted slice by slice, as [`fit_spectrum`](@ref) fits them.
 """
 function fit_helmholtz_spectra(L2::SFO.AbstractStructureFunction, T2::SFO.AbstractStructureFunction,
                                k_edges::AbstractVector, method::AbstractFitMethod; W = nothing)
     _assert_projection(L2.operator, 2, 0, "longitudinal")
     _assert_projection(T2.operator, 0, 2, "transverse")
-    r, dll, dtt = _paired_bins(L2, T2)
-    model = HelmholtzForwardModel(r, k_edges)
-    y = vcat(dll, dtt)
-    Wk = _stacked_variances(W, L2, T2, r)
-    x, C = solve(method, model.H, y, Wk)
     nk = length(k_edges) - 1
-    return (k = _bin_centres(k_edges), E = x[1:nk], B = x[(nk + 1):end], covariance = C)
+    fits = _linear_fits(r -> HelmholtzForwardModel(r, k_edges), method, _paired_slices(L2, T2, W), W)
+    return _slice_result(map(f -> (k = _bin_centres(k_edges), E = f.x[1:nk], B = f.x[(nk + 1):end],
+                                   covariance = f.covariance), fits), _batch_axes(L2))
 end
-
-_stacked_variances(::Nothing, L2, T2, r) = nothing
-function _stacked_variances(W::AbstractVector, L2, T2, r)
-    n = length(r)
-    length(W) == 2n && return Vector{Float64}(W)
-    _, _, ka = _binned(L2)
-    _, _, kb = _binned(T2)
-    keep = intersect(ka, kb)
-    nb = _value_count(L2)
-    length(W) == 2nb || throw(DimensionMismatch(
-        "the data covariance must cover the $(2n) stacked values the two results share, or the $(2nb) of every bin",
-    ))
-    return vcat(Float64.(W[keep]), Float64.(W[nb .+ keep]))
-end
-_stacked_variances(W::AbstractMatrix, L2, T2, r) = (size(W, 1) == 2length(r) || throw(DimensionMismatch(
-    "a full data covariance must cover the $(2length(r)) stacked values the two results share",
-)); Matrix{Float64}(W))
 
 _value_count(sf::SFO.StructureFunction) = length(sf.values)
 _value_count(sf::SFO.StructureFunctionSumsAndCounts) = length(sf.sums)
@@ -638,19 +775,20 @@ The piecewise-constant spectral energy flux that reproduces the third-order stru
 `sf = ⟨δu_L ‖δu‖²⟩` (`S3SFType`) of a two-dimensional isotropic flow through [`FluxForwardModel`](@ref).
 `F` is the flux at the bin centres `k` (positive towards small scales), `ξ` the injection density on
 the bins and `ε` the flux towards large scales below the first bin; `covariance` is over `(ε, ξ…)`
-and `flux_covariance = G C Gᵀ` over `F`.
+and `flux_covariance = G C Gᵀ` over `F`. A result with batch axes is fitted slice by slice, as
+[`fit_spectrum`](@ref) fits it.
 """
 function fit_flux(sf::SFO.AbstractStructureFunction, k_edges::AbstractVector, method::AbstractFitMethod;
                   W = nothing)
     sf.operator isa SFT.S3SFType || throw(ArgumentError(
         "the flux is fitted to ⟨δu_L ‖δu‖²⟩ (S3SFType); got $(nameof(typeof(sf.operator)))",
     ))
-    r, y, keep = _fit_samples(sf)
-    model = FluxForwardModel(r, k_edges)
-    x, C = solve(method, model.H, y, _keep_variances(W, keep, _value_count(sf)))
-    F = model.G * x
-    CF = C === nothing ? nothing : LA.Symmetric(model.G * C * model.G')
-    return (k = _bin_centres(k_edges), F = F, ξ = x[2:end], ε = x[1], covariance = C, flux_covariance = CF)
+    fits = _linear_fits(r -> FluxForwardModel(r, k_edges), method, _fit_slices(sf, W), W)
+    return _slice_result(map(fits) do f
+        G, x, C = f.model.G, f.x, f.covariance
+        CF = C === nothing ? nothing : LA.Symmetric(G * C * G')
+        (k = _bin_centres(k_edges), F = G * x, ξ = x[2:end], ε = x[1], covariance = C, flux_covariance = CF)
+    end, _batch_axes(sf))
 end
 
 """
@@ -664,12 +802,13 @@ choose from; nothing is chosen.
 function tradeoff_curve(model::AbstractForwardModel, y::AbstractVector, W, priors::AbstractVector)
     H = forward_matrix(model)
     n = size(H, 2)
+    _require_covariance(RegularizedLeastSquares(nothing), W)
     Hw, yw = _whitened(H, y, W)
     misfit = Vector{Float64}(undef, length(priors))
     norm = Vector{Float64}(undef, length(priors))
     for (i, p) in enumerate(priors)
-        prior = p isa AbstractVector ? p : fill(Float64(p), n)
-        x, _ = solve(RegularizedLeastSquares(prior), H, y, W)
+        method = RegularizedLeastSquares(p isa AbstractVector ? p : fill(Float64(p), n))
+        x, _ = _solve_prepared(method, _prepared(method, Hw), yw)
         misfit[i] = sum(abs2, Hw * x - yw)
         norm[i] = LA.norm(x)
     end

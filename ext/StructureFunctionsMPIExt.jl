@@ -141,7 +141,7 @@ function SFC._dispatch_execution_backend(
         SFC._bl_run_joint2d!(sums, counts, structure_function_type, x, u, distance_bins, value_bins, geometry,
             _mpi_bl_exec(comm, _inner_exec(b)); weights, culling, second_axis)
         return SFO.StructureFunction2DSumsAndCounts(
-            structure_function_type, distance_bins, value_bins, sums, counts)
+            structure_function_type, distance_bins, value_bins, sums, counts, second_axis)
     end
 
     x_vecs, u_vecs = SFC._prepared_tuples(geometry, x, u)
@@ -151,7 +151,7 @@ function SFC._dispatch_execution_backend(
     )
     sums, counts = _allreduce_pair!(comm, s, c)
     return SFO.StructureFunction2DSumsAndCounts(
-        structure_function_type, distance_bins, value_bins, sums, counts)
+        structure_function_type, distance_bins, value_bins, sums, counts, second_axis)
 end
 
 # --- Single pass 1D ---

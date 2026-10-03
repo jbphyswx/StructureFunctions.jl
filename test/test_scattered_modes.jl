@@ -237,7 +237,7 @@ Test.@testset "a workspace keeps the plan set to the schedule's points ($(_provi
     SFC.calculate_structure_function_batch!(ref_s, ref_c, SFT.L2SFType(), s, u, bins, tag; backend = SERIAL)
     ws = SFC.TransformWorkspace()
     kind = tag isa SFC.NonuniformFFTsSpectralBackend ? :nonuniformffts : :finufft
-    plans() = [last(e) for e in ws.pool if first(first(e)) === kind]
+    plans() = [last(e[2]) for e in ws.pool if e[1] === kind]
     run!() = begin
         gs, gc = zeros(nb, nt), zeros(nb, nt)
         SFC.calculate_structure_function_batch!(gs, gc, SFT.L2SFType(), s, u, bins, tag; backend = SERIAL,

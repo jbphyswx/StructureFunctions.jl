@@ -316,7 +316,7 @@ function _threaded_scalar_2d_run(sf, geom, distance_bins, value_bins, val_be, ::
                             (a, _, chunk) -> SFC._pf_2d_scalar_pairs!(a[1], a[2], geom, sf, xc, uc, dist_be, val_be,
                                                                       SFC.pair_blocks(N, chunk; grid), wc, second_axis),
                             _outer_chunks(grid, SFC._share_indices(grid, N - 1, share)))
-    return SFO.StructureFunction2DSumsAndCounts(sf, distance_bins, value_bins, ls, lc)
+    return SFO.StructureFunction2DSumsAndCounts(sf, distance_bins, value_bins, ls, lc, second_axis)
 end
 
 # Threaded 2D-joint point-field SIMD over the outer indices `share` selects (every one when `nothing`): contiguous
@@ -382,6 +382,7 @@ function SFC.threaded_calculate_structure_function(
     distance_bins::AbstractVector,
     value_bins::AbstractVector,
     ::Type{CT};
+    second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
@@ -399,6 +400,7 @@ function SFC.threaded_calculate_structure_function(
         u_arr,
         distance_bins,
         value_bins;
+        second_axis,
         kwargs...,
     )
 
@@ -408,6 +410,7 @@ function SFC.threaded_calculate_structure_function(
         value_bins,
         sums_2d,
         counts_2d,
+        second_axis,
     )
 end
 
@@ -737,6 +740,7 @@ function SFC.threaded_calculate_structure_function(
     distance_bins::AbstractVector,
     value_bins::AbstractVector,
     ::Type{CT};
+    second_axis::SFC.AbstractSecondAxisSource = SFC.InvariantValueAxis(),
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, CT}
     OT = promote_type(float(FT1), float(FT2))
@@ -745,8 +749,10 @@ function SFC.threaded_calculate_structure_function(
     bdims = size(u_arr)[3:end]
     sums = zeros(OT, n_dist, n_val, bdims...)
     counts = zeros(CT, n_dist, n_val, bdims...)
-    SFC.auxiliary_joint2d_threaded!(sums, counts, structure_function_type, x_arr, u_arr, distance_bins, value_bins; kwargs...)
-    return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts)
+    SFC.auxiliary_joint2d_threaded!(sums, counts, structure_function_type, x_arr, u_arr, distance_bins, value_bins;
+                                    second_axis, kwargs...)
+    return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts,
+                                                second_axis)
 end
 
 # A worker's share `(w, k)` of the outer indices threaded (distributed or MPI over threads).

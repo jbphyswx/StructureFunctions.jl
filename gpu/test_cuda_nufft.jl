@@ -49,7 +49,7 @@ for tag in (SFC.NonuniformFFTsSpectralBackend(), SFC.FINUFFTSpectralBackend())
         gs, gc
     end
     gs, gc = batch()
-    plans = [last(e) for e in ws.pool if first(first(e)) in (:nonuniformffts, :finufft)]
+    plans = [last(e[2]) for e in ws.pool if e[1] in (:nonuniformffts, :finufft)]
     println("$name device plan: ", isempty(plans) ? "none" : typeof(first(plans).plan))
     check("$name batch on the device with one kept plan",
           length(plans) == 1 && rel(gs, rs) < 1e-9 && rel(gc, rc) < 1e-9,

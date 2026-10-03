@@ -128,14 +128,17 @@ end
 
 The non-uniform FFT tag that names NonuniformFFTs.jl as the provider, on the CPU or on the device the
 points live on; `using NonuniformFFTs` supplies it. `tolerance` is the relative accuracy asked of the
-transforms; the provider's kernel half-support follows from it by [`nufft_half_support`](@ref), and is
-also the least number of modes a direction of the schedule may have.
+transforms; the provider's kernel half-support `M` follows from it ([`nufft_half_support`](@ref)), is the
+tag's type parameter, as it is the provider plan's, and is also the least number of modes a direction of
+the schedule may have.
 """
-struct NonuniformFFTsSpectralBackend <: SB.AbstractNonUniformFastFourierTransformSpectralBackend
+struct NonuniformFFTsSpectralBackend{M} <: SB.AbstractNonUniformFastFourierTransformSpectralBackend
     tolerance::Float64
+    function NonuniformFFTsSpectralBackend(; tolerance::Real = 1e-12)
+        ε = _nufft_tolerance(tolerance)
+        return new{_nufft_half_support(ε)}(ε)
+    end
 end
-
-NonuniformFFTsSpectralBackend(; tolerance::Real = 1e-12) = NonuniformFFTsSpectralBackend(_nufft_tolerance(tolerance))
 
 """
     FINUFFTSpectralBackend(; tolerance = 1e-12)
@@ -165,12 +168,14 @@ tolerance: its aliasing error is `ε = exp(−π M √((2 − 1/σ)² − 1/σ²
 The tolerance is floored at `eps(Float64)`, below which nothing is left to resolve, and `M` at 2.
 `1e-7` gives 4, `1e-12` gives 7, `1e-15` gives 8.
 """
-function nufft_half_support(tag::NonuniformFFTsSpectralBackend)
-    ε = max(tag.tolerance, eps(Float64))
+nufft_half_support(::NonuniformFFTsSpectralBackend{M}) where {M} = M
+
+function _nufft_half_support(tolerance::Float64)
+    ε = max(tolerance, eps(Float64))
     return max(ceil(Int, -log(ε) / (2π * sqrt(1 - 1 / 2))), 2)
 end
 
-_nufft_package(::Type{NonuniformFFTsSpectralBackend}) = "NonuniformFFTs"
+_nufft_package(::Type{<:NonuniformFFTsSpectralBackend}) = "NonuniformFFTs"
 _nufft_package(::Type{FINUFFTSpectralBackend}) = "FINUFFT"
 
 """
@@ -279,12 +284,13 @@ function calculate_structure_function(
     raw = _with_packed(u) do data, vD, vV, vK
         N = n_cells(s)
         size(data, 2) == N || throw(DimensionMismatch("u covers $(size(data, 2)) points, the schedule $N"))
-        valid = field_validity(data)
         nb = n_histogram_bins(distance_bins)
         sums = _result_zeros(backend, float(eltype(data)), nb)
         counts = _result_zeros(backend, CT, nb)
-        gridded_sweep!(sums, counts, sf, data, s, distance_bins, vD, vV, vK, spectral_backend; valid, weights, backend,
-                       _workspace_kw(workspace)...)
+        _with_valid(field_validity(data)) do valid
+            gridded_sweep!(sums, counts, sf, data, s, distance_bins, vD, vV, vK, spectral_backend; valid, weights,
+                           backend, _workspace_kw(workspace)...)
+        end
         SFO.StructureFunctionSumsAndCounts(sf, ModeBinEdges(distance_bins, s), sums, counts)
     end
     return _finalize(raw, OT)
@@ -332,12 +338,13 @@ function calculate_structure_function_batch!(
     ))
     nt = size(u)[end]
     N = n_cells(s)
-    valid = batch_validity(u)
     _by_width(size(u, 1)) do vD
         data = reshape(u, _val_int(vD), :, nt)
         size(data, 2) == N || throw(DimensionMismatch("each slice covers $(size(data, 2)) points, the schedule $N"))
-        gridded_sweep_batch!(sums, counts, sf, data, s, distance_bins, vD, Val(1), Val(0), spectral_backend;
-                             valid, weights, backend, _workspace_kw(workspace)...)
+        _with_valid(batch_validity(u)) do valid
+            gridded_sweep_batch!(sums, counts, sf, data, s, distance_bins, vD, Val(1), Val(0), spectral_backend;
+                                 valid, weights, backend, _workspace_kw(workspace)...)
+        end
     end
     return nothing
 end

@@ -107,6 +107,7 @@ function calculate_structure_function(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing,
+    second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
     kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
@@ -115,7 +116,7 @@ function calculate_structure_function(
     _assert_count_type(CT, size(x, 2), w)
     raw = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
         _dispatch_execution_backend(backend, shape, structure_function_type, x, u, distance_bins, value_bins, CT;
-                                    geometry, weights = w, kwargs...)
+                                    geometry, weights = w, second_axis, kwargs...)
     end
     return _finalize(raw, OT)
 end

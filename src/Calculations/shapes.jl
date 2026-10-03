@@ -86,14 +86,16 @@ constant-folds.
     _by_width(g, D)
 
 `g(Val(D))` for a velocity width `D` of at least 1: widths 1 to 3 by explicit branches, any other through
-[`_at_width`](@ref).
+[`_at_width`](@ref). The type of `g`'s result does not depend on the width: past the explicit branches it is asserted
+to be a type the explicit branches return.
 """
 @inline function _by_width(g, D::Int)
     _validate_spatial_dimension(D)
     D == 1 && return g(Val(1))
     D == 2 && return g(Val(2))
     D == 3 && return g(Val(3))
-    return _at_width(g, Val(D))
+    T = Union{Base.promote_op(g, Val{1}), Base.promote_op(g, Val{2}), Base.promote_op(g, Val{3})}
+    return _at_width(g, Val(D))::T
 end
 
 """`g(vD)` at a width read from array sizes past the explicit branches of [`_by_width`](@ref): the one dynamic

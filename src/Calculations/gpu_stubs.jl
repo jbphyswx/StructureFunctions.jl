@@ -39,11 +39,12 @@ gpu_native_2d_plan(backend, XT, UT, OT, CT, weights, geom, moments, n_dist, n_va
 
 """
     gpu_native_launch_2d!(plan, out, cnt, x, u, wts, moments, dist_dig, val_plan, N, n_dist, n_val, B,
-                          fixed_x, geom, second_axis, cull)
+                          fixed_x, geom, second_axis, cull, portable!)
 
 Launch the native distance × value kernel `plan` describes into `out`/`cnt` of shape
 `(NMOM, n_dist, n_val, B)`; `second_axis` is what the value axis bins; the rest as for
-[`gpu_native_launch_1d!`](@ref).
+[`gpu_native_launch_1d!`](@ref). `portable!(out, cnt)` launches the same call on the portable kernels into buffers of
+that shape, a candidate the plan may time beside its own.
 """
 function gpu_native_launch_2d! end
 

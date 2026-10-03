@@ -148,9 +148,9 @@ const _Tag = SB.AbstractSpectralBackend
                         ::Type{OT}) where {OT} =
     SFC._finalize(SFO.StructureFunctionSumsAndCounts(sf_type, distance_bins, sums, counts), OT)
 
-@inline _gridded_result(sf_type, distance_bins, axis_bins, sums::AbstractMatrix, counts::AbstractMatrix,
+@inline _gridded_result(sf_type, distance_bins, axis_bins, sums::AbstractMatrix, counts::AbstractMatrix, second_axis,
                         ::Type{OT}) where {OT} =
-    SFC._finalize(SFO.StructureFunction2DSumsAndCounts(sf_type, distance_bins, axis_bins, sums, counts),
+    SFC._finalize(SFO.StructureFunction2DSumsAndCounts(sf_type, distance_bins, axis_bins, sums, counts, second_axis),
                   OT)
 
 """
@@ -249,7 +249,7 @@ function SFC.calculate_structure_function(
         counts = SFC._result_zeros(backend, CT, nb, na)
         SFC.gridded_sweep!(sums, counts, sf_type, data, sched, distance_bins, axis_bins, vD, vV, vK,
                            spectral_backend; valid, weights, backend, second_axis, SFC._workspace_kw(workspace)...)
-        _gridded_result(sf_type, distance_bins, axis_bins, sums, counts, OT)
+        _gridded_result(sf_type, distance_bins, axis_bins, sums, counts, second_axis, OT)
     end
 end
 
@@ -552,10 +552,12 @@ function SFC.calculate_structure_function(
         "u must cover the grid's $N cells; got $(size(data, 2))",
     ))
     cm = FG.Grids.mask(grid)
-    valid = SFC.field_validity(data, cm isa FG.Grids.AllActive ? nothing : copyto!(similar(data, Bool, N), vec(cm)))
     weights = SFC.cell_measure(grid)
-    return SFC.calculate_structure_function(sf_type, x, u, nodes, spectral_backend, CT, OT;
-        distance_metric = _grid_metric(grid), weights, valid, backend)
+    return SFC._with_valid(SFC.field_validity(data, cm isa FG.Grids.AllActive ? nothing :
+                                                    copyto!(similar(data, Bool, N), vec(cm)))) do valid
+        SFC.calculate_structure_function(sf_type, x, u, nodes, spectral_backend, CT, OT;
+                                         distance_metric = _grid_metric(grid), weights, valid, backend)
+    end
 end
 
 """The `(components, cells)` matrix of a gridded field."""

@@ -124,6 +124,45 @@ Test.@testset "round trips through the inversions" begin
     Test.@test f1r.E ≈ E rtol = 1e-7
 end
 
+Test.@testset "a batch is fitted slice by slice, sharing models and factorizations" begin
+    Random.seed!(4370)
+    k_edges = _logedges(0.2, 20.0, 10)
+    edges = collect(range(0.0, 15.0; length = 61))
+    mids = collect(SF.midpoints(edges))
+    H = SFC.SpectrumForwardModel(Val(2), mids, k_edges).H
+    E = 0.5 .+ rand(10, 3)
+    vals = H * E
+    vals[7, 3] = NaN                                     # one slice lacks a bin: a second set of kept bins
+    batch = SF.StructureFunction(SFT.S2SFType(), edges, vals)
+    slice(j) = SF.StructureFunction(SFT.S2SFType(), edges, vals[:, j])
+    method = SFC.RegularizedLeastSquares(fill(10.0, 10))
+    W = fill(1e-6, 60)
+    fits = SFC.fit_spectrum(batch, k_edges, method, Val(2); W)
+    Test.@test size(fits) == (3,)
+    for j in 1:3
+        one = SFC.fit_spectrum(slice(j), k_edges, method, Val(2); W)
+        Test.@test fits[j].E ≈ one.E rtol = 1e-12
+        Test.@test Matrix(fits[j].covariance) ≈ Matrix(one.covariance) rtol = 1e-12
+    end
+    # slices holding values in the same bins share one factorization; the third has its own
+    Test.@test fits[1].covariance === fits[2].covariance
+    Test.@test fits[3].covariance !== fits[1].covariance
+    # one data covariance per slice whitens each slice by its own
+    Ws = [fill(1e-6, 60), fill(4e-6, 60), fill(9e-6, 60)]
+    fits_w = SFC.fit_spectrum(batch, k_edges, method, Val(2); W = Ws)
+    for j in 1:3
+        Test.@test fits_w[j].E ≈ SFC.fit_spectrum(slice(j), k_edges, method, Val(2); W = Ws[j]).E rtol = 1e-12
+    end
+    Test.@test_throws DimensionMismatch SFC.fit_spectrum(batch, k_edges, method, Val(2); W = Ws[1:2])
+    # the flux and the non-negative fit take a batch the same way
+    nn = SFC.fit_spectrum(batch, k_edges, SFC.NonNegativeLeastSquares(), Val(2))
+    Test.@test nn[2].E ≈ SFC.fit_spectrum(slice(2), k_edges, SFC.NonNegativeLeastSquares(), Val(2)).E rtol = 1e-12
+    F = SFC.forward_matrix(SFC.FluxForwardModel(mids, k_edges)) * randn(11, 2)
+    flux = SFC.RegularizedLeastSquares(fill(10.0, 11))
+    fb = SFC.fit_flux(SF.StructureFunction(SFT.S3SFType(), edges, F), k_edges, flux; W)
+    Test.@test fb[2].F ≈ SFC.fit_flux(SF.StructureFunction(SFT.S3SFType(), edges, F[:, 2]), k_edges, flux; W).F rtol = 1e-12
+end
+
 Test.@testset "the Helmholtz fit separates gradient from curl" begin
     ℓ = 1.0
     r = collect(range(0.05, 6.0; length = 80))
@@ -282,6 +321,19 @@ Test.@testset "the data covariance from a value-binned joint histogram" begin
     estc = SFC.independent_pair_variance(jc)
     Test.@test all(estc .<= truth .* (1 + 1e-12))
     Test.@test all(estc .> 0)
+    # each slice of a batch gives its own variance: doubling the field scales L2 by 4 and its variance by 16
+    fine4 = collect(range(-1e-9, 4 * vmax * (1 + 1e-9); length = 16001))
+    jb = SFC.calculate_structure_function(SFT.L2SFType(), x, cat(u, 2 .* u; dims = 3), bins, fine4;
+                                          backend = CB.SerialBackend())
+    Test.@test size(SFC.independent_pair_variance(jb)) == (nb, 2)
+    Test.@test SFC.independent_pair_variance(jb) ≈ hcat(truth, 16 .* truth) rtol = 2e-3
+    # angle cells carry no value, and a weighted count is a pair mass rather than a number of pairs
+    ja = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, collect(range(prevfloat(0.0), π; length = 5));
+                                          backend = CB.SerialBackend(), second_axis = SFC.SeparationAngleAxis([1.0, 0.0]))
+    Test.@test_throws ArgumentError SFC.independent_pair_variance(ja)
+    jw = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, fine, Float64; backend = CB.SerialBackend(),
+                                          weights = rand(N))
+    Test.@test_throws ArgumentError SFC.independent_pair_variance(jw)
 end
 
 Test.@testset "the fits refuse what they cannot mean" begin

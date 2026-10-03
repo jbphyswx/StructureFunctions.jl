@@ -36,7 +36,7 @@ end
 
 """Column-major strides of a transform of size `P`."""
 @inline _lag_strides(P::NTuple{Dg, Int}) where {Dg} =
-    ntuple(d -> prod(ntuple(k -> P[k], d - 1); init = 1), Val(Dg))
+    ntuple(d -> prod(k -> P[k], 1:(d - 1); init = 1), Val(Dg))
 
 """The lag at position `lin` of a box starting at `lo`, of extent `len` and strides `strides`."""
 @inline _decode_lag(lin::Int, lo::NTuple{Dg, Int}, len::NTuple{Dg, Int},
@@ -138,12 +138,9 @@ end
 
 
 """Every sorted multi-index of degree `0:P` over `W` components, zero-padded to `P`: the monomials a degree-`P` moment reads."""
-function _monomial_keys(::Val{W}, ::Val{P}) where {W, P}
-    keys = NTuple{P, Int}[]
-    for d in 0:P, k in SFT.symmetric_indices(Val(W), Val(d))
-        push!(keys, _padded_key(Val(P), k))
-    end
-    return keys
+@generated function _monomial_keys(::Val{W}, ::Val{P}) where {W, P}
+    keys = NTuple{P, Int}[_padded_key(Val(P), k) for d in 0:P for k in SFT.symmetric_indices(Val(W), Val(d))]
+    return :(copy($keys))
 end
 
 # Raw cross-moments under frame transport: for k = 0..P, every sorted multi-index over the first slab
@@ -159,8 +156,8 @@ end
 _n_raw(W::Int, P::Int) = sum(binomial(W + P - k - 1, P - k) * binomial(W + k - 1, k) for k in 0:P)
 
 # Each inverse column as the signed products `sign · conj(F_I[keyI]) · F_J[keyJ]` it sums; keys are
-# positions in the monomial key list.
-function _columns(::IdentityTransport, ::Val{W}, ::Val{P}, key_index::Dict) where {W, P}
+# positions in the monomial key list. Evaluated when `_columns` is generated.
+function _column_terms(::Type{IdentityTransport}, ::Val{W}, ::Val{P}, key_index::Dict) where {W, P}
     cols = Vector{Vector{NTuple{3, Int}}}()
     for j in SFT.symmetric_indices(Val(W), Val(P))
         terms = NTuple{3, Int}[]
@@ -175,38 +172,50 @@ function _columns(::IdentityTransport, ::Val{W}, ::Val{P}, key_index::Dict) wher
     return cols
 end
 
-_columns(::FrameTransport, ::Val{W}, ::Val{P}, key_index::Dict) where {W, P} =
+_column_terms(::Type{FrameTransport}, ::Val{W}, ::Val{P}, key_index::Dict) where {W, P} =
     [[(1, key_index[_padded_key(Val(P), cI)], key_index[_padded_key(Val(P), cJ)])]
      for (cI, cJ) in _raw_columns(Val(W), Val(P))]
+
+"""
+    _columns(transport, Val(W), Val(P), Val(Pm)) -> Vector{Vector{NTuple{3, Int}}}
+
+The inverse columns of the degree-`P` moments under `transport`, each the signed products `(sign, a, b)` it sums,
+`a` and `b` positions in `_monomial_keys(Val(W), Val(Pm))`.
+"""
+@generated function _columns(::T, ::Val{W}, ::Val{P}, ::Val{Pm}) where {T <: AbstractLagTransport, W, P, Pm}
+    key_index = Dict(k[1:P] => i for (i, k) in enumerate(_monomial_keys(Val(W), Val(Pm))) if all(iszero, k[(P + 1):end]))
+    cols = _column_terms(T, Val(W), Val(P), key_index)
+    return :(Vector{NTuple{3, Int}}[copy(c) for c in $cols])
+end
 
 _inverse_count(::IdentityTransport, W::Int, P::Int) = binomial(W + P - 1, P)
 _inverse_count(::FrameTransport, W::Int, P::Int) = _n_raw(W, P)
 
-"""
-    _sf_columns(sf, transport, ::Val{W}, keys) -> (columns, Val(N))
+"""The number of inverse columns of the degree-`P` moments under `transport`, as a `Val`."""
+@generated _column_count(::T, ::Val{W}, ::Val{P}) where {T <: AbstractLagTransport, W, P} =
+    :(Val($(_inverse_count(T(), W, P))))
 
-The inverse columns of the moments `sf` reads, over the monomial `keys` of degree up to `order(sf)`, and
-their count: the degree-`order(sf)` moments, or for the single-pass invariants the degree-2 columns then
-the degree-3 ones, `N = (N2, N3)`.
 """
-function _sf_columns(sf, tr::AbstractLagTransport, ::Val{W}, keys) where {W}
-    p = SFT.order(sf)
-    return _columns(tr, Val(W), Val(p), _degree_index(keys, p)), Val(_inverse_count(tr, W, p))
+    _sf_columns(sf, transport, ::Val{W}, ::Val{Pm}) -> (columns, Val(N))
+
+The inverse columns of the moments `sf` reads, over the monomials `_monomial_keys(Val(W), Val(Pm))`, and their
+count: the degree-`order(sf)` moments, or for the single-pass invariants the degree-2 columns then the degree-3
+ones, `N = (N2, N3)`.
+"""
+function _sf_columns(sf, tr::AbstractLagTransport, vW::Val, vPm::Val)
+    vp = Val(SFT.order(sf))
+    return _columns(tr, vW, vp, vPm), _column_count(tr, vW, vp)
 end
 
-function _sf_columns(::SFT.SinglePassInvariants, tr::AbstractLagTransport, ::Val{W}, keys) where {W}
-    columns = vcat(_columns(tr, Val(W), Val(2), _degree_index(keys, 2)),
-                   _columns(tr, Val(W), Val(3), _degree_index(keys, 3)))
-    return columns, Val((_inverse_count(tr, W, 2), _inverse_count(tr, W, 3)))
+function _sf_columns(::SFT.SinglePassInvariants, tr::AbstractLagTransport, vW::Val, vPm::Val)
+    columns = vcat(_columns(tr, vW, Val(2), vPm), _columns(tr, vW, Val(3), vPm))
+    return columns, Val((_val_int(_column_count(tr, vW, Val(2))), _val_int(_column_count(tr, vW, Val(3)))))
 end
 
 """Inverse columns per slab pair of the moments `sf` reads."""
 _sf_inverse_count(sf, tr::AbstractLagTransport, W::Int) = _inverse_count(tr, W, SFT.order(sf))
 _sf_inverse_count(::SFT.SinglePassInvariants, tr::AbstractLagTransport, W::Int) =
     _inverse_count(tr, W, 2) + _inverse_count(tr, W, 3)
-
-"""Position of each monomial key of degree at most `P` in `keys`, keyed by its first `P` entries."""
-_degree_index(keys, P::Int) = Dict(k[1:P] => i for (i, k) in enumerate(keys) if all(iszero, k[(P + 1):end]))
 
 """
     _frame_moments(A, B, raw, scale, Val(W), Val(P)) -> SymmetricMoments{W, P}

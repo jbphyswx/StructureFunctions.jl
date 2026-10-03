@@ -73,20 +73,11 @@ Valid only if the field is **second-order stationary**. A field that is merely *
 stationary has a variogram but need not have a finite variance, and then no covariance exists to
 compute; supplying a number anyway produces a curve with no referent.
 """
-function covariance(sf::SFO.StructureFunction, variance::Real)
+function covariance(sf::Union{SFO.StructureFunction, SFO.StructureFunctionSumsAndCounts}, variance::Real)
     assert_variogram(sf.operator)
-    r = midpoints(sf.distance)
-    keep = findall(isfinite, sf.values)
-    isempty(keep) && throw(ArgumentError("no finite structure function value"))
-    return collect(r)[keep], [variance - sf.values[i] / 2 for i in keep]
-end
-
-function covariance(sf::SFO.StructureFunctionSumsAndCounts, variance::Real)
-    assert_variogram(sf.operator)
-    r = midpoints(sf.distance)
-    keep = findall(>(0), sf.counts)
-    isempty(keep) && throw(ArgumentError("every bin is empty"))
-    return collect(r)[keep], [variance - sf.sums[i] / sf.counts[i] / 2 for i in keep]
+    r, vals, keep = _binned(sf)
+    isempty(keep) && throw(ArgumentError("no bin holds a structure function value"))
+    return r[keep], variance .- _take(vals, keep) ./ 2
 end
 
 """
@@ -209,17 +200,30 @@ function _assert_projection(op, NL::Int, NT::Int, name::String)
     ))
 end
 
-"""Abscissa and values of a result, restricted to bins that hold a value."""
+"""
+    _binned(sf) -> (r, values, keep)
+
+The bin abscissae of a result on the host, its values in the result's own array family (`NaN` in a bin holding no
+pair), and the bins holding a value, on the host.
+"""
 function _binned(sf::SFO.StructureFunction)
-    keep = findall(isfinite, sf.values)
-    return collect(midpoints(sf.distance)), collect(sf.values), keep
+    return collect(midpoints(sf.distance)), sf.values, Array(findall(isfinite, sf.values))
 end
 
 function _binned(sf::SFO.StructureFunctionSumsAndCounts)
-    keep = findall(>(0), sf.counts)
-    vals = [c > 0 ? s / c : oftype(float(s), NaN) for (s, c) in zip(sf.sums, sf.counts)]
-    return collect(midpoints(sf.distance)), vals, keep
+    vals = ifelse.(sf.counts .> 0, sf.sums ./ sf.counts, oftype(float(zero(eltype(sf.sums))), NaN))
+    return collect(midpoints(sf.distance)), vals, Array(findall(>(0), sf.counts))
 end
+
+"""The entries `keep` (host indices) of `v`, in `v`'s array family."""
+_take(v::Array, keep) = v[keep]
+_take(v::AbstractArray, keep) = v[_on(v, Int, keep)]
+
+"""`x` with element type `T` in the array family of `like`."""
+_on(like::AbstractArray, ::Type{T}, x::AbstractArray) where {T} = copyto!(similar(like, T, size(x)), x)
+
+"""The last `n` entries of `v`, on the host."""
+_tail(v::AbstractVector, n::Int) = Array(view(v, (lastindex(v) - n + 1):lastindex(v)))
 
 # Two results on one set of edges, reduced to the bins both hold.
 function _paired_bins(a::SFO.AbstractStructureFunction, b::SFO.AbstractStructureFunction)
@@ -230,28 +234,36 @@ function _paired_bins(a::SFO.AbstractStructureFunction, b::SFO.AbstractStructure
     _, vb, kb = _binned(b)
     keep = intersect(ka, kb)
     isempty(keep) && throw(ArgumentError("no bin holds a value in both structure functions"))
-    return r[keep], va[keep], vb[keep]
+    return r[keep], _take(va, keep), _take(vb, keep)
+end
+
+"""Quadrature widths of the samples `r`, as [`_quad_width`](@ref) gives each."""
+_quad_widths(r::AbstractVector) = [_quad_width(r, i) for i in eachindex(r)]
+
+"""
+    _kernel_transform(kernel, separations, weights, values, wavenumbers, FT)
+
+`Σ_i kernel(k, r_i) w_i values_i` at each wavenumber `k`, for the quadrature weights `w` of the separations `r`: the
+matrix `kernel(k_j, r_i) w_i` built on the host, applied in the array family of `values`.
+"""
+function _kernel_transform(kernel, separations::AbstractVector, weights::AbstractVector, values::AbstractVector,
+                           wavenumbers::AbstractVector, ::Type{FT}) where {FT}
+    r, w, k = FT.(collect(separations)), FT.(weights), FT.(collect(wavenumbers))
+    K = [FT(kernel(kj, ri)) * wi for kj in k, (ri, wi) in zip(r, w)]
+    return _on(values, FT, K) * FT.(values)
 end
 
 """`∫₀^∞ f(r) J_N(kr) r dr` at each wavenumber, by the same quadrature as [`isotropic_spectrum`](@ref)."""
 function _hankel(::Val{N}, separations::AbstractVector, values::AbstractVector, wavenumbers::AbstractVector) where {N}
     FT = float(promote_type(eltype(separations), eltype(values), eltype(wavenumbers)))
-    out = Vector{FT}(undef, length(wavenumbers))
-    @inbounds for (j, k) in pairs(wavenumbers)
-        acc = zero(FT)
-        for i in eachindex(separations)
-            r = FT(separations[i])
-            acc += FT(values[i]) * bessel_kernel(Val(N), k * r) * r * _quad_width(separations, i)
-        end
-        out[j] = acc
-    end
-    return out
+    return _kernel_transform((k, r) -> bessel_kernel(Val(N), k * r) * r, separations,
+                             _quad_widths(collect(separations)), values, wavenumbers, FT)
 end
 
 function _component_spectrum(op, r, sums, counts, wavenumbers, asymptote)
-    keep = findall(>(0), counts)
+    keep = Array(findall(>(0), counts))
     isempty(keep) && throw(ArgumentError("every bin of the $(nameof(typeof(op))) component is empty"))
-    values = [sums[i] / counts[i] for i in keep]
+    values = _take(sums, keep) ./ _take(counts, keep)
     asym = asymptote === nothing ? maximum(values) : asymptote
     return isotropic_spectrum(op, r[keep], values, wavenumbers, Val(2); asymptote = asym)
 end
@@ -348,21 +360,14 @@ function isotropic_spectrum(
         "the k = 0 mode is not recoverable from a structure function, which is blind to the mean " *
         "and to the variance; request nonzero wavenumbers only.",
     ))
-    issorted(separations) || throw(ArgumentError("separations must be sorted"))
+    r = collect(separations)
+    issorted(r) || throw(ArgumentError("separations must be sorted"))
 
     FT = float(promote_type(eltype(separations), eltype(values), eltype(wavenumbers)))
-    decaying = FT[v - asymptote for v in values]
-    Ω = solid_angle(Val(D))
-    out = Vector{FT}(undef, length(wavenumbers))
-    @inbounds for (j, k) in pairs(wavenumbers)
-        acc = zero(FT)
-        for i in eachindex(separations)
-            r = FT(separations[i])
-            acc += decaying[i] * isotropic_kernel(Val(D), k * r) * r^(D - 1) * _quad_width(separations, i)
-        end
-        out[j] = -Ω * acc / (2 * (2 * FT(π))^D)
-    end
-    return out
+    decaying = FT.(values) .- FT(asymptote)
+    acc = _kernel_transform((k, ri) -> isotropic_kernel(Val(D), k * ri) * ri^(D - 1), r, _quad_widths(r), decaying,
+                            wavenumbers, FT)
+    return acc .* (-solid_angle(Val(D)) / (2 * (2 * FT(π))^D))
 end
 
 """
@@ -378,22 +383,11 @@ The transform averages over the directions of the separation, so it assumes the 
 bin sample direction uniformly. Scattered points do; a rectilinear grid does **not**, and on gridded
 data the separations available at a given `r` are biased toward the lattice axes.
 """
-function isotropic_spectrum(sf::SFO.StructureFunction, wavenumbers::AbstractVector, ::Val{D};
-                            kwargs...) where {D}
-    r = midpoints(sf.distance)
-    keep = findall(isfinite, sf.values)
-    isempty(keep) && throw(ArgumentError("no finite structure function value to transform"))
-    return isotropic_spectrum(sf.operator, collect(r)[keep], collect(sf.values)[keep],
-                              wavenumbers, Val(D); kwargs...)
-end
-
-function isotropic_spectrum(sf::SFO.StructureFunctionSumsAndCounts, wavenumbers::AbstractVector,
-                            ::Val{D}; kwargs...) where {D}
-    r = midpoints(sf.distance)
-    keep = findall(>(0), sf.counts)
-    isempty(keep) && throw(ArgumentError("every bin is empty; nothing to transform"))
-    values = [sf.sums[i] / sf.counts[i] for i in keep]
-    return isotropic_spectrum(sf.operator, collect(r)[keep], values, wavenumbers, Val(D); kwargs...)
+function isotropic_spectrum(sf::Union{SFO.StructureFunction, SFO.StructureFunctionSumsAndCounts},
+                            wavenumbers::AbstractVector, ::Val{D}; kwargs...) where {D}
+    r, vals, keep = _binned(sf)
+    isempty(keep) && throw(ArgumentError("no bin holds a structure function value to transform"))
+    return isotropic_spectrum(sf.operator, r[keep], _take(vals, keep), wavenumbers, Val(D); kwargs...)
 end
 
 """
@@ -418,8 +412,8 @@ Every bin must hold a value: the integral runs over the whole sphere. A kernel-b
 function isotropic_spectrum(sf::SFO.AbstractStructureFunction, g::SFH.SphericalGeometry, lmax::Integer)
     assert_invertible(sf.operator)
     D, Q = _legendre_quadrature(sf, sf.distance, g, lmax)   # values, and ∫ P_l sin σ dσ over each value's support, l = 0:lmax
-    C = [-π * sum(D[i] * Q[i, l + 1] for i in eachindex(D)) for l in 1:lmax]
-    return (l = 1:lmax, C = C)
+    FT = promote_type(Float64, eltype(D))
+    return (l = 1:lmax, C = (transpose(_on(D, FT, Q[:, 2:end])) * FT.(D)) .* -FT(π))
 end
 
 """
@@ -452,15 +446,10 @@ function helmholtz_spectra(
     ))
     DLL, Gp, Gm = _wigner_quadrature(L2, L2.distance, g, lmax)   # values, ∫ d^l_{11} sin σ dσ and ∫ d^l_{1,-1} sin σ dσ, l = 1:lmax
     DTT, _, _ = _wigner_quadrature(T2, T2.distance, g, lmax)
-    E = Vector{Float64}(undef, lmax)
-    B = Vector{Float64}(undef, lmax)
-    for l in 1:lmax
-        diff = π * sum((DLL[i] - DTT[i]) * Gm[i, l] for i in eachindex(DLL))
-        total = 2π * sum((variance - (DLL[i] + DTT[i]) / 2) * Gp[i, l] for i in eachindex(DLL))
-        E[l] = (total + diff) / 2
-        B[l] = (total - diff) / 2
-    end
-    return (l = 1:lmax, E = E, B = B)
+    FT = promote_type(Float64, eltype(DLL), eltype(DTT))
+    diff = (transpose(_on(DLL, FT, Gm)) * FT.(DLL .- DTT)) .* FT(π)
+    total = (transpose(_on(DLL, FT, Gp)) * (FT(variance) .- FT.(DLL .+ DTT) ./ 2)) .* (2 * FT(π))
+    return (l = 1:lmax, E = (total .+ diff) ./ 2, B = (total .- diff) ./ 2)
 end
 
 # Bin values and edges in central angle, every bin holding a value.
@@ -587,7 +576,7 @@ Shell-integrated spectrum `E(k) = Ω_D k^(D-1) P(k)` from a power spectral densi
 the inertial-range scaling laws are stated in.
 """
 shell_spectrum(P::AbstractVector, wavenumbers::AbstractVector, ::Val{D}) where {D} =
-    [solid_angle(Val(D)) * k^(D - 1) * p for (k, p) in zip(wavenumbers, P)]
+    solid_angle(Val(D)) .* _on(P, float(eltype(wavenumbers)), wavenumbers) .^ (D - 1) .* P
 
 """
     assert_advective(operator)
@@ -649,25 +638,14 @@ function spectral_flux(
 )
     assert_advective(operator)
     FT = _flux_samples(separations, values)
-    return [begin
-        K = FT(K0)
-        -K * _flux_quadrature(r -> bessel_kernel(Val(1), K * r), separations, values, FT) / 2
-    end for K0 in wavenumbers]
+    integral = _flux_integrals((K, r) -> bessel_kernel(Val(1), K * r), separations, values, wavenumbers, FT)
+    return _on(integral, FT, wavenumbers) .* integral ./ -2
 end
 
-function spectral_flux(sf::SFO.StructureFunction, wavenumbers::AbstractVector)
-    r = midpoints(sf.distance)
-    keep = findall(isfinite, sf.values)
-    isempty(keep) && throw(ArgumentError("no finite structure function value to transform"))
-    return spectral_flux(sf.operator, collect(r)[keep], collect(sf.values)[keep], wavenumbers)
-end
-
-function spectral_flux(sf::SFO.StructureFunctionSumsAndCounts, wavenumbers::AbstractVector)
-    r = midpoints(sf.distance)
-    keep = findall(>(0), sf.counts)
-    isempty(keep) && throw(ArgumentError("every bin is empty; nothing to transform"))
-    return spectral_flux(sf.operator, collect(r)[keep], [sf.sums[i] / sf.counts[i] for i in keep],
-                         wavenumbers)
+function spectral_flux(sf::Union{SFO.StructureFunction, SFO.StructureFunctionSumsAndCounts}, wavenumbers::AbstractVector)
+    r, vals, keep = _binned(sf)
+    isempty(keep) && throw(ArgumentError("no bin holds a structure function value to transform"))
+    return spectral_flux(sf.operator, r[keep], _take(vals, keep), wavenumbers)
 end
 
 # One sorted abscissa with every series sampled on it; returns the common float type.
@@ -677,35 +655,34 @@ function _flux_samples(separations::AbstractVector, series::AbstractVector...)
             "separations and values must agree in length; got $(length(separations)) and $(length(v))",
         ))
     end
-    issorted(separations) || throw(ArgumentError("separations must be sorted"))
+    issorted(collect(separations)) || throw(ArgumentError("separations must be sorted"))
     isempty(separations) && throw(ArgumentError("no separation to integrate over"))
     return float(promote_type(eltype(separations), map(eltype, series)...))
 end
 
-# ∫₀^R values(r) g(r) dr by the trapezoid rule over the samples from the origin, where every flux
-# integrand vanishes; `g` is the kernel with its powers of r.
-function _flux_quadrature(g, separations::AbstractVector, values::AbstractVector, ::Type{FT}) where {FT}
-    acc = zero(FT)
-    r0 = zero(FT)
-    f0 = zero(FT)
-    @inbounds for i in eachindex(separations)
-        r = FT(separations[i])
-        f = FT(values[i]) * g(r)
-        acc += (f0 + f) * (r - r0) / 2
-        r0, f0 = r, f
-    end
-    return acc
+"""Weights of the trapezoid rule over the sorted samples `r` from the origin, where every flux integrand vanishes:
+`∫₀^R f dr ≈ Σ_i t_i f(r_i)`."""
+function _trapezoid_weights(r::AbstractVector)
+    n = length(r)
+    return [((i == n ? r[n] : r[i + 1]) - (i == 1 ? zero(eltype(r)) : r[i - 1])) / 2 for i in 1:n]
+end
+
+"""`∫₀^R values(r) g(K, r) dr` at each wavenumber `K` by the trapezoid rule from the origin, in the array family of
+`values`; `g` is the kernel with its powers of `r`."""
+function _flux_integrals(g, separations::AbstractVector, values::AbstractVector, wavenumbers::AbstractVector,
+                         ::Type{FT}) where {FT}
+    r = FT.(collect(separations))
+    return _kernel_transform(g, r, _trapezoid_weights(r), values, wavenumbers, FT)
 end
 
 # Π_K = −(K²/4) ∫₀^R S(r) J₂(Kr) dr − (K/4) S(R) J₁(KR), for S = ⟨δu_L ‖δu‖²⟩ or ⟨δu_L (δθ)²⟩.
 function _j2_flux(separations::AbstractVector, S::AbstractVector, wavenumbers::AbstractVector)
     FT = _flux_samples(separations, S)
-    R, SR = FT(last(separations)), FT(last(S))
-    return [begin
-        K = FT(K0)
-        integral = _flux_quadrature(r -> bessel_kernel(Val(2), K * r), separations, S, FT)
-        -K^2 * integral / 4 - K * SR * bessel_kernel(Val(1), K * R) / 4
-    end for K0 in wavenumbers]
+    R, SR = FT(last(collect(separations))), FT(only(_tail(S, 1)))
+    integral = _flux_integrals((K, r) -> bessel_kernel(Val(2), K * r), separations, S, wavenumbers, FT)
+    K = _on(integral, FT, wavenumbers)
+    boundary = _on(integral, FT, [FT(K0) * SR * bessel_kernel(Val(1), FT(K0) * R) / 4 for K0 in wavenumbers])
+    return .-K .^ 2 .* integral ./ 4 .- boundary
 end
 
 """
@@ -756,13 +733,14 @@ isotropic incompressible two-dimensional flow. Both boundary terms are kept. `J�
 function spectral_flux(::SFT.L3SFType, separations::AbstractVector, L3::AbstractVector, S3::AbstractVector,
                        wavenumbers::AbstractVector)
     FT = _flux_samples(separations, L3, S3)
-    R, LR, SR = FT(last(separations)), FT(last(L3)), FT(last(S3))
-    return [begin
-        K = FT(K0)
-        integral = _flux_quadrature(r -> bessel_kernel(Val(3), K * r) * r, separations, L3, FT)
-        -K^3 * integral / 12 -
-        K^2 * (R * LR * bessel_kernel(Val(2), K * R) + 3 * SR * bessel_kernel(Val(1), K * R) / K) / 12
-    end for K0 in wavenumbers]
+    R, LR, SR = FT(last(collect(separations))), FT(only(_tail(L3, 1))), FT(only(_tail(S3, 1)))
+    integral = _flux_integrals((K, r) -> bessel_kernel(Val(3), K * r) * r, separations, L3, wavenumbers, FT)
+    K = _on(integral, FT, wavenumbers)
+    boundary = _on(integral, FT, [begin
+        k = FT(K0)
+        k^2 * (R * LR * bessel_kernel(Val(2), k * R) + 3 * SR * bessel_kernel(Val(1), k * R) / k) / 12
+    end for K0 in wavenumbers])
+    return .-K .^ 3 .* integral ./ 12 .- boundary
 end
 
 """
@@ -805,20 +783,24 @@ function enstrophy_flux(op::SFT.VectorDotStructureFunctionType, separations::Abs
     length(separations) >= 2 || throw(ArgumentError(
         "the boundary term needs the slope of SF_Au at the last separation; give at least two",
     ))
-    R, AR = FT(last(separations)), FT(last(SF_Au))
-    dA = (FT(SF_Au[end]) - FT(SF_Au[end - 1])) / (R - FT(separations[end - 1]))
-    return [begin
-        K = FT(K0)
-        integral = _flux_quadrature(r -> (bessel_kernel(Val(3), K * r) - bessel_kernel(Val(1), K * r)) / 2,
-                                    separations, SF_Au, FT)
-        K^3 * integral / 2 + K^2 * (AR * bessel_kernel(Val(2), K * R) + dA * bessel_kernel(Val(1), K * R) / K) / 2
-    end for K0 in wavenumbers]
+    rs = collect(separations)
+    last_two = FT.(_tail(SF_Au, 2))
+    R, AR = FT(rs[end]), last_two[2]
+    dA = (last_two[2] - last_two[1]) / (R - FT(rs[end - 1]))
+    integral = _flux_integrals((K, r) -> (bessel_kernel(Val(3), K * r) - bessel_kernel(Val(1), K * r)) / 2,
+                               separations, SF_Au, wavenumbers, FT)
+    K = _on(integral, FT, wavenumbers)
+    boundary = _on(integral, FT, [begin
+        k = FT(K0)
+        k^2 * (AR * bessel_kernel(Val(2), k * R) + dA * bessel_kernel(Val(1), k * R) / k) / 2
+    end for K0 in wavenumbers])
+    return K .^ 3 .* integral ./ 2 .+ boundary
 end
 
 function enstrophy_flux(sf::SFO.AbstractStructureFunction, wavenumbers::AbstractVector)
     r, vals, keep = _binned(sf)
-    isempty(keep) && throw(ArgumentError("no finite structure function value to transform"))
-    return enstrophy_flux(sf.operator, r[keep], vals[keep], wavenumbers)
+    isempty(keep) && throw(ArgumentError("no bin holds a structure function value to transform"))
+    return enstrophy_flux(sf.operator, r[keep], _take(vals, keep), wavenumbers)
 end
 
 """

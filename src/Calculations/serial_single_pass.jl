@@ -1251,12 +1251,12 @@ function _single_pass_collection_2d(
     sums::AbstractArray, counts::AbstractArray, distance_bins, value_bins, ::Type{OT},
 ) where {OT}
     return (
-        S2   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.S2, distance_bins, _sp_valuebins(value_bins, 1), _sp_rowview(sums, 1), _sp_rowview(counts, 1)), OT),
-        L2   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.L2, distance_bins, _sp_valuebins(value_bins, 2), _sp_rowview(sums, 2), _sp_rowview(counts, 2)), OT),
-        T2   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.T2, distance_bins, _sp_valuebins(value_bins, 3), _sp_rowview(sums, 3), _sp_rowview(counts, 3)), OT),
-        S3   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.S3, distance_bins, _sp_valuebins(value_bins, 4), _sp_rowview(sums, 4), _sp_rowview(counts, 4)), OT),
-        L3   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.L3, distance_bins, _sp_valuebins(value_bins, 5), _sp_rowview(sums, 5), _sp_rowview(counts, 5)), OT),
-        L1T2 = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.L1T2, distance_bins, _sp_valuebins(value_bins, 6), _sp_rowview(sums, 6), _sp_rowview(counts, 6)), OT),
+        S2   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.S2, distance_bins, _sp_valuebins(value_bins, 1), _sp_rowview(sums, 1), _sp_rowview(counts, 1), InvariantValueAxis()), OT),
+        L2   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.L2, distance_bins, _sp_valuebins(value_bins, 2), _sp_rowview(sums, 2), _sp_rowview(counts, 2), InvariantValueAxis()), OT),
+        T2   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.T2, distance_bins, _sp_valuebins(value_bins, 3), _sp_rowview(sums, 3), _sp_rowview(counts, 3), InvariantValueAxis()), OT),
+        S3   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.S3, distance_bins, _sp_valuebins(value_bins, 4), _sp_rowview(sums, 4), _sp_rowview(counts, 4), InvariantValueAxis()), OT),
+        L3   = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.L3, distance_bins, _sp_valuebins(value_bins, 5), _sp_rowview(sums, 5), _sp_rowview(counts, 5), InvariantValueAxis()), OT),
+        L1T2 = _finalize(SFO.StructureFunction2DSumsAndCounts(SINGLE_PASS_OPERATORS.L1T2, distance_bins, _sp_valuebins(value_bins, 6), _sp_rowview(sums, 6), _sp_rowview(counts, 6), InvariantValueAxis()), OT),
     )
 end
 

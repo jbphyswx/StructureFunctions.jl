@@ -7,6 +7,8 @@ using SpectralBackends: SpectralBackends as SB
 using LinearAlgebra: LinearAlgebra
 using Random: Random
 using Test: Test
+using JLArrays: JLArrays, JLArray
+using GPUArraysCore: GPUArraysCore
 
 # A periodic field of a few random modes, with its mean removed.
 function _modal_field(dims, dx, D; seed = 90, nmodes = 6)
@@ -543,3 +545,43 @@ Test.@testset "the shell spectrum carries the dimensional weight" begin
     # in one dimension the weight is the two directions along the line
     Test.@test SFC.shell_spectrum(P, kq, Val(1)) ≈ 2 .* P
 end
+
+# A device result (decision 4) is post-processed in its own array family: no element is read one at a time, and the
+# spectra and fluxes come back in that family, equal to the host's.
+Test.@testset "post-processing a result held in a device array family stays in it" begin
+    GPUArraysCore.allowscalar(false)
+    Random.seed!(4400)
+    edges = collect(range(0.0, 10.0; length = 41))
+    mids = collect(SF.midpoints(edges))
+    counts = UInt32.(rand(5:40, 40))
+    counts[7] = 0
+    Ks = [0.3, 0.8, 1.7, 3.1]
+    on_device(r) = SF.StructureFunctionSumsAndCounts(r.operator, r.distance, JLArray(r.sums), JLArray(r.counts))
+    host_s2 = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), edges, (2 .- exp.(-mids ./ 2)) .* counts, counts)
+    dev_s2 = on_device(host_s2)
+    for (f, args) in ((SFC.isotropic_spectrum, (Ks, Val(2))), (SFC.covariance, (2.0,)))
+        h, d = f(host_s2, args...), f(dev_s2, args...)
+        hv, dv = h isa Tuple ? last(h) : h, d isa Tuple ? last(d) : d
+        Test.@test dv isa JLArray
+        Test.@test Array(dv) ≈ hv rtol = 1e-12
+    end
+    Test.@test SFC.shell_spectrum(JLArray([3.0, 2.0, 1.0, 0.5]), Ks, Val(2)) isa JLArray
+    host_s3 = SF.StructureFunctionSumsAndCounts(SFT.S3SFType(), edges, -0.1 .* mids .* counts, counts)
+    host_l3 = SF.StructureFunctionSumsAndCounts(SFT.L3SFType(), edges, -0.04 .* mids .* counts, counts)
+    host_adv = SF.StructureFunctionSumsAndCounts(SFT.VectorDotSFType(1, 2), edges, sin.(mids) .* counts, counts)
+    for (h, d) in ((SFC.spectral_flux(host_s3, Ks), SFC.spectral_flux(on_device(host_s3), Ks)),
+                   (SFC.spectral_flux(host_l3, host_s3, Ks), SFC.spectral_flux(on_device(host_l3), on_device(host_s3), Ks)),
+                   (SFC.spectral_flux(host_adv, Ks), SFC.spectral_flux(on_device(host_adv), Ks)),
+                   (SFC.enstrophy_flux(host_adv, Ks), SFC.enstrophy_flux(on_device(host_adv), Ks)))
+        Test.@test d isa JLArray
+        Test.@test Array(d) ≈ h rtol = 1e-12
+    end
+    host_l2 = SF.StructureFunctionSumsAndCounts(SFT.L2SFType(), edges, (1 .- exp.(-mids)) .* counts, counts)
+    host_t2 = SF.StructureFunctionSumsAndCounts(SFT.T2SFType(), edges, (1 .- exp.(-mids ./ 3)) .* counts, counts)
+    h = SFC.helmholtz_spectra(host_l2, host_t2, Ks)
+    d = SFC.helmholtz_spectra(on_device(host_l2), on_device(host_t2), Ks)
+    Test.@test d.rotational isa JLArray
+    Test.@test Array(d.rotational) ≈ h.rotational rtol = 1e-12
+    Test.@test Array(d.divergent) ≈ h.divergent rtol = 1e-12
+end
+

@@ -615,8 +615,8 @@ KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel!(
 end
 
 """Launch one joint distance × value histogram `(n_dist, n_val)` with device digitizers `ddig` and
-`vdig`: the native kernel with its plan for the call ([`SFC.gpu_native_2d_plan`](@ref)), or
-[`_launch_joint_2d_portable!`](@ref) when there is none."""
+`vdig`: the backend's native plan for the call ([`SFC.gpu_native_2d_plan`](@ref)), handed the portable launch as a
+candidate, or [`_launch_joint_2d_portable!`](@ref) when there is none."""
 function _launch_joint_2d_kernel!(
     backend::KA.Backend,
     workgroup_size::Int,
@@ -640,14 +640,16 @@ function _launch_joint_2d_kernel!(
     n_val = n_val_edges - 1
     plan = SFC.gpu_native_2d_plan(backend, eltype(x_dev), eltype(u_dev), eltype(out_sums_dev),
                                   eltype(out_cnts_dev), weights, geom, sf_type, n_dist, n_val, vdig)
+    portable!(o, c) = _launch_joint_2d_portable!(backend, workgroup_size, reshape(o, n_dist, n_val),
+                                                 reshape(c, n_dist, n_val), x_dev, u_dev, sf_type, ddig, vdig,
+                                                 N_points, n_dist_edges, n_val_edges, geom;
+                                                 workspace, cull, weights, second_axis)
     if plan === nothing
-        _launch_joint_2d_portable!(backend, workgroup_size, out_sums_dev, out_cnts_dev, x_dev, u_dev,
-                                   sf_type, ddig, vdig, N_points, n_dist_edges, n_val_edges, geom;
-                                   workspace, cull, weights, second_axis)
+        portable!(out_sums_dev, out_cnts_dev)
     else
         SFC.gpu_native_launch_2d!(plan, reshape(out_sums_dev, 1, n_dist, n_val, 1),
                                   reshape(out_cnts_dev, 1, n_dist, n_val, 1), x_dev, u_dev, weights, sf_type,
-                                  ddig, vdig, N_points, n_dist, n_val, 1, true, geom, second_axis, cull)
+                                  ddig, vdig, N_points, n_dist, n_val, 1, true, geom, second_axis, cull, portable!)
     end
     return nothing
 end
@@ -803,7 +805,7 @@ function _gpu_calculate_structure_function_2d_snapshot(
         workgroup_size, workspace, geometry, culling, weights, second_axis,
     )
     counts = _result_counts(out_cnts_dev, CT)
-    return SF.StructureFunction2DSumsAndCounts(sf_type, distance_bins, value_bins, out_sums_dev, counts)
+    return SF.StructureFunction2DSumsAndCounts(sf_type, distance_bins, value_bins, out_sums_dev, counts, second_axis)
 end
 
 function SFC.gpu_calculate_structure_function_2d!(sums, counts, sf, backend::KA.Backend,

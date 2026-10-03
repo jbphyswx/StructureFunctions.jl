@@ -323,6 +323,7 @@ function serial_calculate_structure_function(
     distance_bins::AbstractVector,
     value_bins::AbstractVector,
     ::Type{CT};
+    second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
     kwargs...,
 ) where {FT1 <: Number, FT2 <: Number, CT}
     FT = promote_type(float(FT1), float(FT2))
@@ -332,14 +333,17 @@ function serial_calculate_structure_function(
         bdims = batch_dims(u_arr)
         sums = zeros(FT, n_dist, n_val, bdims...)
         counts = zeros(CT, n_dist, n_val, bdims...)
-        auxiliary_joint2d!(sums, counts, structure_function_type, x_arr, u_arr, distance_bins, value_bins; kwargs...)
-        return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts)
+        auxiliary_joint2d!(sums, counts, structure_function_type, x_arr, u_arr, distance_bins, value_bins;
+                           second_axis, kwargs...)
+        return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums, counts,
+                                                    second_axis)
     end
     sums_2d = zeros(FT, n_dist, n_val)
     counts_2d = zeros(CT, n_dist, n_val)
     serial_calculate_structure_function!(sums_2d, counts_2d, structure_function_type, x_arr, u_arr, distance_bins,
-                                         value_bins; kwargs...)
-    return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums_2d, counts_2d)
+                                         value_bins; second_axis, kwargs...)
+    return SFO.StructureFunction2DSumsAndCounts(structure_function_type, distance_bins, value_bins, sums_2d, counts_2d,
+                                                second_axis)
 end
 
 """

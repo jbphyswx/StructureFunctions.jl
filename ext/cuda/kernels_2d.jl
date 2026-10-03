@@ -244,6 +244,9 @@ end
 tiles."""
 struct CUDA2DGlobalPlan{W, F, NMOM, TILE} end
 
+"""The call's launch on the portable kernels, a candidate the native 2-D choice times beside its own plans."""
+struct CUDAPortablePlan end
+
 """The tile of a native 2-D plan."""
 _cuda_tile(::CUDA2DPlan{W, F, NMOM, TILE}) where {W, F, NMOM, TILE} = TILE
 _cuda_tile(::CUDA2DGlobalPlan{W, F, NMOM, TILE}) where {W, F, NMOM, TILE} = TILE
@@ -287,8 +290,8 @@ of `UT` at width `F`, sums of `FT`, shared counts of `CST`, `NMOM` moments and a
 on the device `caps` describes: the shared-histogram kernel at the largest tile of 512 and 256 whose tile pairs reach
 4 blocks per multiprocessor, at the largest of 1024, 512 and 256 whose tile pairs reach one block per multiprocessor
 (else 128 for either), and at 256 and 128, holding every plane per launch below [`CU_2D_PLANE_SHARE`](@ref) and two or one
-above; then the global-atomic kernel at tile 128 (256 for 10⁸ evaluations or more at a share of at least 0.02). Each
-plan steps down until it fits."""
+above; then the global-atomic kernel at tile 128 (256 for 10⁸ evaluations or more at a share of at least 0.02); then
+the portable kernels ([`CUDAPortablePlan`](@ref)). Each native plan steps down until it fits."""
 function _cuda_2d_candidates(caps::SFC.GPUDeviceCaps, ::Type{XT}, ::Type{UT}, ::Type{FT}, ::Type{CST}, W::Int,
                              F::Int, NMOM::Int, n_dist::Int, n_val::Int) where {XT, UT, FT, CST}
     fit(spec) = _cuda_2d_fit(caps, XT, UT, FT, CST, W, F, NMOM, n_dist, n_val, spec)
@@ -297,7 +300,7 @@ function _cuda_2d_candidates(caps::SFC.GPUDeviceCaps, ::Type{XT}, ::Type{UT}, ::
         planes = share < CU_2D_PLANE_SHARE ? (NMOM,) : NMOM == 1 ? (1,) : (2, 1)
         shared = (fit((t, np)) for np in planes for t in tiles)
         glob = fit((evaluations >= 1e8 && share >= 0.02 ? 256 : 128, 0))
-        return unique(filter(!isnothing, Any[shared..., glob]))
+        return unique(filter(!isnothing, Any[shared..., glob, CUDAPortablePlan()]))
     end
 end
 
@@ -315,11 +318,12 @@ function _cuda_2d_plan(caps::SFC.GPUDeviceCaps, ::Type{XT}, ::Type{UT}, ::Type{O
                       CU_2D_CHOOSE_FROM[NMOM == 1 ? 1 : 2])
 end
 
-"""Launch the plan of `choice` for this call ([`_cuda_plan`](@ref))."""
+"""Launch the plan of `choice` for this call ([`_cuda_plan`](@ref)); `portable!` launches the call on the portable
+kernels."""
 function _cuda_launch_2d!(choice::CUDAChoice, out, cnt, x, u, wts, sf_type, ddig, vplan, N::Int, n_dist::Int,
-                          n_val::Int, B::Int, fixed_x::Bool, geom, second_axis, cull)
+                          n_val::Int, B::Int, fixed_x::Bool, geom, second_axis, cull, portable!)
     launch!(plan, s, c) = _cuda_launch_2d!(plan, s, c, x, u, wts, sf_type, ddig, vplan, N, n_dist, n_val, B, fixed_x,
-                                           geom, second_axis, cull)
+                                           geom, second_axis, cull, portable!)
     return launch!(_cuda_plan(launch!, choice, out, cnt, x, ddig, n_dist, N, B, fixed_x && B > 1, geom, cull), out,
                    cnt)
 end
@@ -328,7 +332,7 @@ end
 `(W,N,B)` varying or `(W,N)`/`(W,N,1)` fixed, `u` is `(F,N,B)`."""
 function _cuda_launch_2d!(plan::CUDA2DPlan{W, F, NMOM, TILE, CST, NP}, out, cnt, x, u, wts, sf_type, ddig, vplan,
                           N::Int, n_dist::Int, n_val::Int, B::Int, fixed_x::Bool, geom, second_axis,
-                          cull) where {W, F, NMOM, TILE, CST, NP}
+                          cull, _) where {W, F, NMOM, TILE, CST, NP}
     n_dist * _cuda_val_stride(n_val) == plan.hcells || throw(ArgumentError(
         "an $n_dist × $n_val histogram is not the $(plan.hcells)-cell histogram the plan holds"))
     xv = fixed_x ? reshape(x, W, N, 1) : reshape(x, W, N, B)
@@ -354,7 +358,7 @@ end
 [`_cuda_launch_2d!`](@ref) launches its shared-histogram sibling."""
 function _cuda_launch_2d!(::CUDA2DGlobalPlan{W, F, NMOM, TILE}, out, cnt, x, u, wts, sf_type, ddig, vplan,
                           N::Int, n_dist::Int, n_val::Int, B::Int, fixed_x::Bool, geom, second_axis,
-                          cull) where {W, F, NMOM, TILE}
+                          cull, _) where {W, F, NMOM, TILE}
     xv = fixed_x ? reshape(x, W, N, 1) : reshape(x, W, N, B)
     uv = reshape(u, F, N, B)
     sched = SFC.schedule_for(cull, N, TILE)
@@ -365,3 +369,7 @@ function _cuda_launch_2d!(::CUDA2DGlobalPlan{W, F, NMOM, TILE}, out, cnt, x, u, 
         Val(TILE), geom, second_axis)
     return nothing
 end
+
+"""Launch the call on the portable kernels through `portable!`."""
+_cuda_launch_2d!(::CUDAPortablePlan, out, cnt, x, u, wts, sf_type, ddig, vplan, N::Int, n_dist::Int, n_val::Int, B::Int,
+                 fixed_x::Bool, geom, second_axis, cull, portable!) = (portable!(out, cnt); nothing)

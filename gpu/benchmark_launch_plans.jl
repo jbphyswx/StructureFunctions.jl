@@ -11,7 +11,6 @@ using Printf: Printf
 using Random: Random
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
-using StructureFunctions: LinearBinEdges
 
 const GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
 const CE = Base.get_extension(SF, :StructureFunctionsCUDAExt)
@@ -343,7 +342,7 @@ function native2d(io; points = (20_000,), batches = ((5_000, 16),),
                 plan = NP == 0 ? CE.CUDA2DGlobalPlan{W, W, NMOM, TILE}() :
                        CE.CUDA2DPlan{W, W, NMOM, TILE, UInt32, NP}(hcells, dynb)
                 run = () -> SFC.gpu_native_launch_2d!(plan, out, cnt, x, u, SFC.NoWeights(), M, ddig, vplan, N, nd,
-                                                      nv, B, fixed, geom, SFC.InvariantValueAxis(), nothing)
+                                                      nv, B, fixed, geom, SFC.InvariantValueAxis(), nothing, nothing)
                 fill!(out, 0); fill!(cnt, 0)
                 run()
                 got = Array(cnt)

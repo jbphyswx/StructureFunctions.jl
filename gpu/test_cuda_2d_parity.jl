@@ -5,15 +5,14 @@
 # for NMOM ∈ {1 (joint), 6 (single-pass)} × fixed/varying × bin sizes.
 #   julia --project=gpu gpu/test_cuda_2d_parity.jl
 # =============================================================================
-using StructureFunctions
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH
 import KernelAbstractions as KA
-using CUDA, StaticArrays, Printf
-using Statistics: median
+using CUDA: CUDA
+using StaticArrays: StaticArrays
+using Printf: Printf
+using Statistics: Statistics
 using Random: Random
-const SF = StructureFunctions
-const SFC = SF.Calculations
 const GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-const SFT = SF.StructureFunctionTypes
 const FT = Float32
 
 const N = parse(Int, get(ENV, "SF_T_N", "3000"))
@@ -39,8 +38,8 @@ function cuda_2d(xd, ud, ddig, vplan, N, n_dist, n_val, B, NMOM, fixed_x)
     plan = SFC.gpu_native_2d_plan(CUDA.CUDABackend(), FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, moments(NMOM),
                                   n_dist, n_val, vplan)
     handled = plan !== nothing
-    handled && SFC.gpu_native_launch_2d!(plan, out, cnt, xd, ud, SFC.NoWeights(), moments(NMOM), ddig, vplan,
-                                         N, n_dist, n_val, B, fixed_x, GEOM, SFC.InvariantValueAxis(), nothing)
+    handled && GE._sf_launch_2d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, moments(NMOM), ddig, vplan,
+                                       N, n_dist, n_val, B, fixed_x, GEOM, SFC.InvariantValueAxis())
     CUDA.synchronize()
     return out, cnt, handled
 end
@@ -62,8 +61,8 @@ for NMOM in (1, 6)
             vplan_cpu = GE._gpu_digitizer(KA.CPU(), vb, Val(:value))
             ddig = GE._gpu_digitizer(CUDA.CUDABackend(), dist_bins, kind)
             vplan = GE._gpu_digitizer(CUDA.CUDABackend(), vb, Val(:value))
-            xd = fixed_x ? CuArray(x_h) : CuArray(x_h)
-            ud = CuArray(u_h)
+            xd = CUDA.CuArray(x_h)
+            ud = CUDA.CuArray(u_h)
 
             o_ref, c_ref = ka_cpu_2d(x_h, u_h, ddig_cpu, vplan_cpu, N, n_dist, n_val, B, NMOM, fixed_x)
             o_cu, c_cu, handled = cuda_2d(xd, ud, ddig, vplan, N, n_dist, n_val, B, NMOM, fixed_x)
@@ -75,7 +74,7 @@ for NMOM in (1, 6)
             # share of the total.
             moved = sum(abs.(Int.(cc) .- Int.(c_ref))) ÷ 2
             total = sum(Int.(c_ref)) ÷ max(NMOM, 1)
-            @printf("| %d | %s | %dx%d | %s | %.2e | %d / %d = %.1e | %s |\n",
+            Printf.@printf("| %d | %s | %dx%d | %s | %.2e | %d / %d = %.1e | %s |\n",
                     NMOM, fixed_x, n_dist, n_val, handled, rel, moved, total, moved / max(total, 1), handled)
         end
     end
@@ -89,14 +88,14 @@ let n_dist = 50, n_val = 50, NMOM = 6, fixed_x = true
     vb = collect(FT, range(-5.0f0, 5.0f0, length = n_val + 1))
     ddig = GE._gpu_digitizer(CUDA.CUDABackend(), dist_bins, Val(:single_pass_2d))
     vplan = GE._gpu_digitizer(CUDA.CUDABackend(), vb, Val(:value))
-    xd = CuArray(x_h); ud = CuArray(u_h)
+    xd = CUDA.CuArray(x_h); ud = CUDA.CuArray(u_h)
     out = CUDA.zeros(FT, NMOM, n_dist, n_val, B); cnt = CUDA.zeros(UInt32, NMOM, n_dist, n_val, B)
     f() = (CUDA.fill!(out, 0f0); CUDA.fill!(cnt, UInt32(0));
            GE._sf_launch_2d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, SFT.SinglePassInvariants(), ddig, vplan,
                                    N, n_dist, n_val, B, true, GEOM, SFC.InvariantValueAxis());
            CUDA.synchronize())
     f(); f(); ts = Float64[]; for _ in 1:5; t = time_ns(); f(); push!(ts, (time_ns()-t)/1e9); end
-    t = median(ts); bapps = (N*(N-1)/2)*B/t/1e9
-    @printf("  N=%d B=%d: %.3f s  (%.2f bapps)  → B=8064 ≈ %.1f s\n", N, B, t, bapps, t*8064/B)
+    t = Statistics.median(ts); bapps = (N*(N-1)/2)*B/t/1e9
+    Printf.@printf("  N=%d B=%d: %.3f s  (%.2f bapps)  → B=8064 ≈ %.1f s\n", N, B, t, bapps, t*8064/B)
 end
 println("\nDONE_PARITY")
