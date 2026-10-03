@@ -268,7 +268,7 @@ end
 Block pairs for the `i` values in `irange`: the culled schedule when a [`CellGrid`](@ref) is given,
 the full tiled upper triangle otherwise. Every `j`-block holds at most `tile` points.
 """
-@inline pair_blocks(n_points::Int, irange; grid = nothing, tile::Int = SF_CPU_PAIR_TILE) =
+@inline pair_blocks(n_points::Int, irange; grid::Union{Nothing, CellGrid} = nothing, tile::Int = SF_CPU_PAIR_TILE) =
     BlocksForI(_schedule_blocks(grid, n_points, tile, irange), irange)
 
 @inline _schedule_blocks(::Nothing, n_points::Int, tile::Int, irange) = block_pairs(TiledUpperTriangle(n_points, tile))

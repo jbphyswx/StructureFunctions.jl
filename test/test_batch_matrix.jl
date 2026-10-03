@@ -4,7 +4,7 @@ using Test: Test
 using Random: Random
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH,
     LinearBinEdges,
     batch_histograms_equal, batch_max_abs_diff, pair_from_linear
 using StructureFunctions.Calculations:
@@ -14,6 +14,7 @@ using StructureFunctions.Calculations:
 Random.seed!(2025)
 
 const SF_TYPE = SFT.L2SFType()
+const FLAT2 = SFH.FlatGeometry{2}()
 const CPU_BE = CB.SerialBackend()
 const GPU_BE = CB.GPUBackend(KA.CPU())
 
@@ -51,7 +52,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         NB = length(lbe) - 1
         cpu_s = zeros(Float32, NB, B)
         cpu_c = zeros(UInt32, NB, B)
-        auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
+        auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe; geometry = FLAT2)
 
         gpu_out = SFC.calculate_structure_function(
             SF_TYPE, x, u, lbe, SF.StructureFunctionSumsAndCounts;
@@ -66,7 +67,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         NB = length(lbe) - 1
         cpu_s = zeros(Float32, NB, Bb)
         cpu_c = zeros(UInt32, NB, Bb)
-        auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
+        auxiliary_shared_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe; geometry = FLAT2)
         gpu_out = SFC.calculate_structure_function(
             SF_TYPE, x, u, lbe, SF.StructureFunctionSumsAndCounts;
             backend = GPU_BE,
@@ -80,7 +81,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         NB = length(lbe) - 1
         cpu_s = zeros(Float32, NB, B)
         cpu_c = zeros(UInt32, NB, B)
-        auxiliary_varying_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe)
+        auxiliary_varying_positions!(cpu_s, cpu_c, x, u, SF_TYPE, lbe; geometry = FLAT2)
 
         gpu_s = zeros(Float32, NB, B)
         gpu_c = zeros(UInt32, NB, B)
@@ -96,7 +97,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             NB = length(lbe) - 1
             cpu_s = zeros(Float32, NB, B)
             cpu_c = zeros(UInt32, NB, B)
-            auxiliary_shared_positions!(cpu_s, cpu_c, x, u, sft, lbe)
+            auxiliary_shared_positions!(cpu_s, cpu_c, x, u, sft, lbe; geometry = FLAT2)
             gpu_out = SFC.calculate_structure_function(
                 sft, x, u, lbe, SF.StructureFunctionSumsAndCounts;
                 backend = GPU_BE,
@@ -108,7 +109,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             NBv = length(lbev) - 1
             cpu_sv = zeros(Float32, NBv, B)
             cpu_cv = zeros(UInt32, NBv, B)
-            auxiliary_varying_positions!(cpu_sv, cpu_cv, xv, uv, sft, lbev)
+            auxiliary_varying_positions!(cpu_sv, cpu_cv, xv, uv, sft, lbev; geometry = FLAT2)
             gpu_sv = zeros(Float32, NBv, B)
             gpu_cv = zeros(UInt32, NBv, B)
             SFC.calculate_structure_function_batch!(gpu_sv, gpu_cv, sft, xv, uv, lbev; backend = GPU_BE)
@@ -130,7 +131,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         end
         cpu_s = zeros(Float32, 6, n_bins, B)
         cpu_c = zeros(UInt32, 6, n_bins, B)
-        serial_calculate_structure_functions_single_pass!(cpu_s, cpu_c, x, u, lbe)
+        serial_calculate_structure_functions_single_pass!(cpu_s, cpu_c, x, u, lbe; geometry = FLAT2)
         Test.@test batch_histograms_equal(cpu_s, cpu_c, ref_s, ref_c)
 
         inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
@@ -149,7 +150,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         n_bins = length(lbe) - 1
         cpu_s = zeros(Float32, 6, n_bins, B)
         cpu_c = zeros(UInt32, 6, n_bins, B)
-        serial_calculate_structure_functions_single_pass!(cpu_s, cpu_c, x, u, lbe)
+        serial_calculate_structure_functions_single_pass!(cpu_s, cpu_c, x, u, lbe; geometry = FLAT2)
 
         gpu_s = zeros(Float32, 6, n_bins, B)
         gpu_c = zeros(UInt32, 6, n_bins, B)
@@ -166,7 +167,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         n_val = length(val_edges) - 1
         cpu_s = zeros(Float32, 6, n_bins, n_val, B)
         cpu_c = zeros(UInt32, 6, n_bins, n_val, B)
-        serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges)
+        serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges; geometry = FLAT2)
 
         inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         gpu_sp = SFC.calculate_structure_functions_single_pass_2d(
@@ -186,7 +187,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         n_val = length(val_edges) - 1
         cpu_s = zeros(Float32, 6, n_bins, n_val, B)
         cpu_c = zeros(UInt32, 6, n_bins, n_val, B)
-        serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges)
+        serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges; geometry = FLAT2)
 
         gpu_s = zeros(Float32, 6, n_bins, n_val, B)
         gpu_c = zeros(UInt32, 6, n_bins, n_val, B)
@@ -203,7 +204,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         n_val = length(val_edges) - 1
         cpu_s = zeros(Float32, n_bins, n_val, B)
         cpu_c = zeros(UInt32, n_bins, n_val, B)
-        auxiliary_joint2d!(cpu_s, cpu_c, SF_TYPE, x, u, lbe, val_edges)
+        auxiliary_joint2d!(cpu_s, cpu_c, SF_TYPE, x, u, lbe, val_edges; geometry = FLAT2)
 
         gpu_out = SFC.calculate_structure_function(
             SF_TYPE, x, u, lbe, val_edges; backend = GPU_BE,
@@ -219,7 +220,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         n_val = length(val_edges) - 1
         cpu_s = zeros(Float32, 6, n_bins, n_val, Bp)
         cpu_c = zeros(UInt32, 6, n_bins, n_val, Bp)
-        serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges)
+        serial_calculate_structure_functions_single_pass_2d!(cpu_s, cpu_c, x, u, lbe, val_edges; geometry = FLAT2)
 
         inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         gpu_sp = SFC.calculate_structure_functions_single_pass_2d(

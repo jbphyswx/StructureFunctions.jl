@@ -6,7 +6,8 @@
 #   julia --project=gpu gpu/test_slices_e2e.jl
 # =============================================================================
 using ComputationalBackends: ComputationalBackends as CB
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    HelperFunctions as SFH
 import KernelAbstractions as KA
 using CUDA: CUDA
 using Printf: Printf
@@ -36,13 +37,13 @@ let N = 1500, T = 4
     NB = 16
     # 1D individual slices
     cs = zeros(FT, NB, T); cc = zeros(UInt32, NB, T)
-    auxiliary_varying_positions!(cs, cc, x, u, sf2, lbe)
+    auxiliary_varying_positions!(cs, cc, x, u, sf2, lbe; geometry = SFH.FlatGeometry{2}())
     gs = CUDA.zeros(FT, NB, T); gc = CUDA.zeros(UInt32, NB, T)
     SFC.calculate_structure_function_batch!(gs, gc, sf2, x, u, lbe; backend = GPU_BE)
     row("ind slices", "NB=$NB", scaled(gs, cs), moved(gc, cc), Int(sum(Int64, cc)))
     # SP1D slices
     cs1 = zeros(FT, 6, NB, T); cc1 = zeros(UInt32, 6, NB, T)
-    serial_calculate_structure_functions_single_pass!(cs1, cc1, x, u, lbe)
+    serial_calculate_structure_functions_single_pass!(cs1, cc1, x, u, lbe; geometry = SFH.FlatGeometry{2}())
     gs1 = CUDA.zeros(FT, 6, NB, T); gc1 = CUDA.zeros(UInt32, 6, NB, T)
     SFC.calculate_structure_functions_single_pass_batch!(gs1, gc1, x, u, lbe; backend = GPU_BE)
     row("SP1D slices", "NB=$NB", scaled(gs1, cs1), moved(gc1, cc1), Int(sum(Int64, cc1)))
@@ -51,7 +52,8 @@ let N = 1500, T = 4
     nd = 16; nv = 20
     cs2 = zeros(FT, nd, nv, T); cc2 = zeros(UInt32, nd, nv, T)
     for b in 1:T
-        @views auxiliary_joint2d!(cs2[:, :, b], cc2[:, :, b], sf2, x[:, :, b], u[:, :, b], lbe, ve)
+        @views auxiliary_joint2d!(cs2[:, :, b], cc2[:, :, b], sf2, x[:, :, b], u[:, :, b], lbe, ve;
+                                  geometry = SFH.FlatGeometry{2}())
     end
     gs2 = CUDA.zeros(FT, nd, nv, T); gc2 = CUDA.zeros(UInt32, nd, nv, T)
     SFC.calculate_structure_function_2d_batch!(gs2, gc2, sf2, x, u, lbe, ve; backend = GPU_BE)
@@ -59,7 +61,7 @@ let N = 1500, T = 4
     # SP2D slices
     nd2 = 16; nv2 = 20
     cs3 = zeros(FT, 6, nd2, nv2, T); cc3 = zeros(UInt32, 6, nd2, nv2, T)
-    serial_calculate_structure_functions_single_pass_2d!(cs3, cc3, x, u, lbe, ve)
+    serial_calculate_structure_functions_single_pass_2d!(cs3, cc3, x, u, lbe, ve; geometry = SFH.FlatGeometry{2}())
     gs3 = CUDA.zeros(FT, 6, nd2, nv2, T); gc3 = CUDA.zeros(UInt32, 6, nd2, nv2, T)
     SFC.calculate_structure_functions_single_pass_2d_batch!(gs3, gc3, x, u, lbe, ve; backend = GPU_BE)
     row("SP2D slices", "$(nd2)x$(nv2)", scaled(gs3, cs3), moved(gc3, cc3), Int(sum(Int64, cc3)))

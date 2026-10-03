@@ -1,7 +1,7 @@
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionObjects as SFO,
-    StructureFunctionTypes as SFT, InfPaddedBinEdges, LinearBinEdges, LogBinEdges
+    StructureFunctionTypes as SFT, HelperFunctions as SFH, InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 using OhMyThreads: OhMyThreads  # load extension for ThreadedBackend / AutoBackend when nthreads() > 1
 using KernelAbstractions: KernelAbstractions as KA
 using Test: Test
@@ -228,7 +228,8 @@ Test.@testset "Single-Pass 2D heterogeneous value-bin tuple" begin
     # 10_620 * 6 scatters, so per-op boxing would cost megabytes; the unrolled form costs ~nothing.
     sums = zeros(FT, 6, nd, nv)
     counts = zeros(UInt32, 6, nd, nv)
-    f() = SFC.serial_calculate_structure_functions_single_pass_2d!(sums, counts, x, u, db, het)
+    f() = SFC.serial_calculate_structure_functions_single_pass_2d!(sums, counts, x, u, db, het;
+                                                                   geometry = SFH.FlatGeometry{2}())
     f()
     Test.@test (@allocated f()) < 100_000
 end

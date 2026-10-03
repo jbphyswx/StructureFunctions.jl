@@ -1,5 +1,6 @@
 using Test: Test
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    HelperFunctions as SFH
 using ComputationalBackends: ComputationalBackends as CB
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
@@ -10,7 +11,7 @@ const SF2 = SFT.L2SFType()
 
 function _joint(sf, x, u, dist_bins, ax_bins, source)
     return SFC.serial_calculate_structure_function(
-        sf, x, u, dist_bins, ax_bins, UInt32; second_axis = source)
+        sf, x, u, dist_bins, ax_bins, UInt32; geometry = SFH.FlatGeometry{size(u, 1)}(), second_axis = source)
 end
 
 Test.@testset "the angle axis folds a pair and its reverse together" begin
@@ -112,7 +113,8 @@ Test.@testset "binning the operator value is unchanged" begin
     dist_bins = collect(range(0.0, 1.0; length = 6))
     val_bins = collect(range(0.0, 4.0; length = 9))
     with_source = _joint(SF2, x, u, dist_bins, val_bins, SFC.InvariantValueAxis())
-    plain = SFC.serial_calculate_structure_function(SF2, x, u, dist_bins, val_bins, UInt32)
+    plain = SFC.serial_calculate_structure_function(SF2, x, u, dist_bins, val_bins, UInt32;
+                                                    geometry = SFH.FlatGeometry{2}())
     Test.@test with_source.counts == plain.counts
     Test.@test with_source.sums == plain.sums
     Test.@test sum(plain.counts) > 0
@@ -223,6 +225,6 @@ Test.@testset "an angle axis is refused where the direction is not shared" begin
     u = randn(2, 3)
     Test.@test_throws ArgumentError SFC.serial_calculate_structure_function(
         SF2, x, u, collect(range(0.0, 2.0; length = 4)), collect(range(0.0, π; length = 4)), UInt32;
-        distance_metric = SFC.DI.SphericalAngle(),
+        geometry = SFH.pair_geometry_for(SFC.DI.SphericalAngle(), Val(2)),
         second_axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0)))
 end

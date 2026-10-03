@@ -1,7 +1,7 @@
 using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
-    StructureFunctionTypes as SFT, MultiFields as MF
+    StructureFunctionTypes as SFT, MultiFields as MF, HelperFunctions as SFH
 using StructureFunctions.StructureFunctionTypes: MixedSFType, ScalarSFType, VectorDotSFType, ScalarDotSFType,
     MixedStructureFunctionType
 using StaticArrays: StaticArrays as SA
@@ -300,9 +300,9 @@ Test.@testset "the threaded backend gives the serial answer" begin
                     (MF.Fields(vectors = (u,), scalars = (th,)), SFT.ScalarSFType{2}()),
                     (MF.Fields(vectors = (u,)), SFT.L2SFType()))
         ser_s = zeros(nb); ser_c = zeros(Int, nb)
-        SFC.serial_calculate_structure_function!(ser_s, ser_c, op, x, f, bins)
+        SFC.serial_calculate_structure_function!(ser_s, ser_c, op, x, f, bins; geometry = SFH.FlatGeometry{2}())
         thr_s = zeros(nb); thr_c = zeros(Int, nb)
-        SFC.threaded_calculate_structure_function!(thr_s, thr_c, op, x, f, bins)
+        SFC.threaded_calculate_structure_function!(thr_s, thr_c, op, x, f, bins; geometry = SFH.FlatGeometry{2}())
         Test.@test thr_c == ser_c
         Test.@test isapprox(thr_s, ser_s; rtol = 1e-10, atol = 1e-12)
         Test.@test sum(thr_c) == N * (N - 1) ÷ 2

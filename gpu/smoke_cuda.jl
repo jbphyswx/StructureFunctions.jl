@@ -12,7 +12,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH,
     LinearBinEdges
 using Random: Random
 
@@ -39,7 +39,7 @@ function main()
     sft = SFT.L2SFType()
 
     res = SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x, u, bin_edges, UInt32
+        sft, CUDA.CUDABackend(), x, u, bin_edges, UInt32; geometry = SFH.FlatGeometry{2}()
     )
     CUDA.synchronize()
 

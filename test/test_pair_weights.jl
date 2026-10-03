@@ -2,7 +2,7 @@ using Test: Test
 using Random: Random
 using LinearAlgebra: LinearAlgebra
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
-    StructureFunctionTypes as SFT, StructureFunctionObjects as SFO, MultiFields as MF
+    StructureFunctionTypes as SFT, StructureFunctionObjects as SFO, MultiFields as MF, HelperFunctions as SFH
 using ComputationalBackends: ComputationalBackends as CB
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
@@ -146,10 +146,11 @@ Test.@testset "pair weights reach every route that accepts them" begin
         # same way the CPU applies it, over both the shared-histogram and the value-column routes.
         for D in (2, 3)
             xd = rand(D, np); ud = rand(D, np)
+            g_D = SFH.FlatGeometry{D}()
             r = SFC._dispatch_single_pass_2d(CB.SerialBackend(), SFC.PointField{D}(), xd, ud,
-                bins, value_bins, Float64; weights = w)
+                bins, value_bins, Float64; geometry = g_D, weights = w)
             g = SFC._dispatch_single_pass_2d(device, SFC.PointField{D}(), xd, ud,
-                bins, value_bins, Float64; weights = w)
+                bins, value_bins, Float64; geometry = g_D, weights = w)
             Test.@test isapprox(collect(g[1]), collect(r[1]); rtol = 1e-9)
             Test.@test isapprox(collect(g[2]), collect(r[2]); rtol = 1e-9)
         end

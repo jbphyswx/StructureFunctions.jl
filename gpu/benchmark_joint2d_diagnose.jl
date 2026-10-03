@@ -20,6 +20,7 @@ using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 using StructureFunctions.Calculations: joint2d_smem_max
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
+using StructureFunctions.HelperFunctions: HelperFunctions as SFH
 
 const _GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
 _GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded")
@@ -39,14 +40,14 @@ end
 
 function _kernel_only_launch!(sft, backend, x, u, dist, value_bins, ws)
     _GPUExt._launch_gpu_joint2d!(sft, backend, x, u, dist, value_bins, eltype(x), UInt32, nothing, nothing;
-                                 workspace = ws)
+                                 workspace = ws, geometry = SFH.FlatGeometry{2}())
     KA.synchronize(backend)
     return nothing
 end
 
 function _e2e_launch!(sft, backend, x, u, dist, value_bins, ws)
     SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, value_bins, UInt32; workspace = ws,
+        sft, backend, x, u, dist, value_bins, UInt32; workspace = ws, geometry = SFH.FlatGeometry{2}(),
     )
     return nothing
 end

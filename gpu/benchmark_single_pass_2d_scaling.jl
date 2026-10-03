@@ -22,6 +22,7 @@ using StructureFunctions: StructureFunctions as SF
 using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
+using StructureFunctions.HelperFunctions: HelperFunctions as SFH
 
 function _synthetic_value_bins_ntuple(n_bins::Int, ::Type{FT}) where {FT <: AbstractFloat}
     template = InfPaddedBinEdges(LinearBinEdges(range(FT(-1), FT(2); length = n_bins + 1)))
@@ -86,7 +87,7 @@ function main()
     sft = SFT.L2SFType()
     ws_l2 = SFC.GPUSFWorkspace(ka_backend, bins_1d)
     l2_run = () -> SFC.gpu_calculate_structure_function(
-        sft, ka_backend, x2, u1, bins_1d, UInt32; workspace = ws_l2,
+        sft, ka_backend, x2, u1, bins_1d, UInt32; workspace = ws_l2, geometry = SFH.FlatGeometry{2}(),
     )
     t_l2 = _bench(l2_run, warmup, repeat_)
     @Printf.@printf("[ref]   1D L2SF tiled kernel        %8.4f s   (%8.2f ms)\n", t_l2, t_l2 * 1000)

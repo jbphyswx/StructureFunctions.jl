@@ -140,10 +140,10 @@ Test.@testset "GPU in-place !() parity — linear 2D" begin
     n_bins = length(bin_edges) - 1
     sums = zeros(FT, n_bins)
     counts = zeros(UInt32, n_bins)
-    SFC.gpu_calculate_structure_function!(sums, counts, sft, KA.CPU(), x, u, bin_edges)
+    SFC.gpu_calculate_structure_function!(sums, counts, sft, KA.CPU(), x, u, bin_edges; geometry = SFH.FlatGeometry{2}())
     Test.@test counts == ref.counts
     Test.@test sums ≈ ref.sums atol = 1e-10
-    SFC.gpu_calculate_structure_function!(sums, counts, sft, KA.CPU(), x, u, bin_edges)
+    SFC.gpu_calculate_structure_function!(sums, counts, sft, KA.CPU(), x, u, bin_edges; geometry = SFH.FlatGeometry{2}())
     Test.@test counts == ref.counts .* 2
     Test.@test sums ≈ ref.sums .* 2 atol = 1e-10
 end

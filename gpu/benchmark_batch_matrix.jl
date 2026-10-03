@@ -20,7 +20,7 @@ using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using Random: Random
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH,
     LinearBinEdges
 
 include(joinpath(@__DIR__, "benchmark_scaling_helpers.jl"))
@@ -130,7 +130,7 @@ function _bench_explicit_gpu_shared_loop(
         () -> begin
             @views for b in sample_indices
                 SFC.gpu_calculate_structure_function(
-                    sf, ka_backend, xd, ud[:, :, b], edges, UInt32
+                    sf, ka_backend, xd, ud[:, :, b], edges, UInt32; geometry = SFH.FlatGeometry{2}()
                 )
             end
         end,
@@ -186,7 +186,7 @@ function _bench_explicit_gpu_varying_sf_loop(
         () -> begin
             @views for b in sample_indices
                 SFC.gpu_calculate_structure_function(
-                    sf, ka_backend, xd[:, :, b], ud[:, :, b], edges, UInt32
+                    sf, ka_backend, xd[:, :, b], ud[:, :, b], edges, UInt32; geometry = SFH.FlatGeometry{2}()
                 )
             end
         end,

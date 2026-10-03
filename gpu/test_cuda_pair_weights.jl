@@ -8,6 +8,7 @@ using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
 using StructureFunctions.StructureFunctionObjects: StructureFunctionObjects as SFO
 using StructureFunctions.MultiFields: MultiFields as MF
+using StructureFunctions.HelperFunctions: HelperFunctions as SFH
 using ComputationalBackends: ComputationalBackends as CB
 
 const DEV = CB.GPUBackend(CUDA.CUDABackend())
@@ -51,8 +52,10 @@ for D in (2, 3, 5, 6, 7)
         backend = DEV, weights = w)
     compare("joint 2D point weighted D=$D", gj.sums, gj.counts, rj.sums, rj.counts)
 
-    rs = SFC._dispatch_single_pass(SER, SFC.PointField{D}(), x, u, bins, Float64; weights = w)
-    gs = SFC._dispatch_single_pass(DEV, SFC.PointField{D}(), x, u, bins, Float64; weights = w)
+    rs = SFC._dispatch_single_pass(SER, SFC.PointField{D}(), x, u, bins, Float64; weights = w,
+        geometry = SFH.FlatGeometry{D}())
+    gs = SFC._dispatch_single_pass(DEV, SFC.PointField{D}(), x, u, bins, Float64; weights = w,
+        geometry = SFH.FlatGeometry{D}())
     compare("single-pass 1D point weighted D=$D", gs.sums, gs.counts, rs.sums, rs.counts)
 
     # auxiliary-axis batches, fixed and varying positions
@@ -129,7 +132,8 @@ let D = 2
     mixed = SFT.MixedSFType{1, 0, 2}()
     nb = length(bins) - 1
     rs = zeros(Float64, nb); rc = zeros(Float64, nb)
-    SFC.serial_calculate_structure_function!(rs, rc, mixed, x, fields, bins; weights = w)
+    SFC.serial_calculate_structure_function!(rs, rc, mixed, x, fields, bins; weights = w,
+        geometry = SFH.FlatGeometry{D}())
     gs = CUDA.zeros(Float64, nb); gc = CUDA.zeros(Float64, nb)
     SFC.calculate_structure_function!(gs, gc, mixed, x, fields, bins; backend = DEV, weights = w)
     compare("multi-field weighted", gs, gc, rs, rc)

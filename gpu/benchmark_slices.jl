@@ -6,7 +6,7 @@
 
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH
 using Random: Random
 
 include(joinpath(@__DIR__, "benchmark_scaling_helpers.jl"))
@@ -25,7 +25,7 @@ function bench_manual_loop!(
     for t in 1:T
         res = SFC.gpu_calculate_structure_function(
             sft, backend, view(x_batch, :, :, t), view(u_batch, :, :, t), bins, UInt32;
-            workspace = ws,
+            workspace = ws, geometry = SFH.FlatGeometry{2}(),
         )
         sums[:, t] .= Array(res.sums)
         counts[:, t] .= Array(res.counts)

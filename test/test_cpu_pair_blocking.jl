@@ -250,8 +250,8 @@ Test.@testset "2D kernels are invariant to the block schedule" begin
         vb = ntuple(_ -> val, SFC.SINGLE_PASS_N)
         sp2d(pol) = begin
             s = zeros(FT, SFC.SINGLE_PASS_N, n_dist, n_val); c = zeros(UInt32, SFC.SINGLE_PASS_N, n_dist, n_val)
-            SFC._sp2d_accumulate_range!(s, c, x, u, dist, SFC.digitize_plan(vb), DI.Euclidean(), n_dist, n_val,
-                                        nothing, pol)
+            SFC._sp2d_accumulate_range!(s, c, x, u, dist, SFC.digitize_plan(vb), SFH.FlatGeometry{D}(), n_dist,
+                                        n_val, nothing, pol)
             (s, c)
         end
         s_ref, c_ref = sp2d(SFC.NoCulling())
@@ -341,19 +341,18 @@ Test.@testset "culling on a sphere does not change the answer" begin
         u = randn(FT, 2, N)
         bins = collect(FT, range(1.0e4, r_max; length = 9))
         metric = DI.Haversine(R)
+        geom = SFH.pair_geometry_for(metric, Val(2))
         nb = SFC.n_histogram_bins(bins)
 
         run(pol) = begin
             s = zeros(FT, SFC.SINGLE_PASS_N, nb); c = zeros(UInt32, SFC.SINGLE_PASS_N, nb)
-            SFC._accumulate_single_pass_1d!(s, c, x, u, bins;
-                distance_metric = metric, culling = pol)
+            SFC._accumulate_single_pass_1d!(s, c, x, u, bins; geometry = geom, culling = pol)
             (s, c)
         end
         s_ref, c_ref = run(SFC.NoCulling())
         s_cull, c_cull = run(SFC.AutoCulling())
 
         # confirm the grid really engages, else this proves nothing
-        geom = SFH.pair_geometry_for(metric, Val(2))
         xk, _ = SFH.prepare_pair_inputs(geom, x, u)
         g, _, _ = SFC.cull_sorted_matrices(xk, u, geom, SFC.BinEdges(bins), SFC.AutoCulling())
         Test.@test g !== nothing

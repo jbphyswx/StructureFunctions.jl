@@ -32,6 +32,7 @@ using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 using StructureFunctions.Calculations: joint2d_smem_max
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
+using StructureFunctions.HelperFunctions: HelperFunctions as SFH
 
 function _bench(f, warmup::Int, repeat_::Int)
     for _ in 1:warmup
@@ -106,7 +107,7 @@ function main()
     println("=" ^ 72)
 
     j_exact_run = () -> SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, value_bins, UInt32; workspace = ws_j_exact,
+        sft, backend, x, u, dist, value_bins, UInt32; workspace = ws_j_exact, geometry = SFH.FlatGeometry{2}(),
     )
     t_joint_exact = _bench(j_exact_run, warmup, repeat_)
     compile_exact = ws_j_exact.joint2d_compile_cells
@@ -121,7 +122,7 @@ function main()
         kind = :joint2d, joint2d_compile_cells = joint2d_smem_max(backend, 2, 2, FT, FT, UInt32),
     )
     j_max_run = () -> SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, value_bins, UInt32; workspace = ws_j_max,
+        sft, backend, x, u, dist, value_bins, UInt32; workspace = ws_j_max, geometry = SFH.FlatGeometry{2}(),
     )
     t_joint_max = _bench(j_max_run, warmup, repeat_)
     compile_max = ws_j_max.joint2d_compile_cells
@@ -150,7 +151,7 @@ function main()
     sums = CUDA.zeros(FT, 6, n_dist, n_val)
     counts = CUDA.zeros(UInt32, 6, n_dist, n_val)
     sp_run = () -> SFC.gpu_calculate_structure_functions_single_pass_2d!(
-        sums, counts, backend, x, u, dist, value_bins; workspace = ws_sp,
+        sums, counts, backend, x, u, dist, value_bins; workspace = ws_sp, geometry = SFH.FlatGeometry{2}(),
     )
     t_sp2d = _bench(sp_run, warmup, repeat_)
 

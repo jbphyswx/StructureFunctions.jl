@@ -8,7 +8,7 @@ Expects `CUDA` to be loaded by the including script when using `CUDA.CUDABackend
 """
 
 using ComputationalBackends: ComputationalBackends as CB
-using StructureFunctions: Calculations as SFC
+using StructureFunctions: Calculations as SFC, HelperFunctions as SFH
 using StructureFunctions: StructureFunctionSumsAndCounts
 using Statistics: Statistics
 
@@ -72,7 +72,7 @@ function bench_gpu_sf_with_workspace(
     for _ in 1:warmup
         SFC.gpu_calculate_structure_function(
             sft, backend, x_dev, u_dev, bins, UInt32;
-            workspace = ws,
+            workspace = ws, geometry = SFH.FlatGeometry{size(u_dev, 1)}(),
         )
     end
     gpu_sync!(backend)
@@ -80,7 +80,7 @@ function bench_gpu_sf_with_workspace(
     for _ in 1:repeat
         t = @elapsed SFC.gpu_calculate_structure_function(
             sft, backend, x_dev, u_dev, bins, UInt32;
-            workspace = ws,
+            workspace = ws, geometry = SFH.FlatGeometry{size(u_dev, 1)}(),
         )
         gpu_sync!(backend)
         push!(times, t)
@@ -96,12 +96,12 @@ Time one GPU call without workspace (fresh device histogram alloc each call).
 function bench_gpu_sf_fresh(backend, x_dev, u_dev, bins, sft; warmup::Int = 1)
     for _ in 1:warmup
         SFC.gpu_calculate_structure_function(
-            sft, backend, x_dev, u_dev, bins, UInt32
+            sft, backend, x_dev, u_dev, bins, UInt32; geometry = SFH.FlatGeometry{size(u_dev, 1)}()
         )
     end
     gpu_sync!(backend)
     t = @elapsed SFC.gpu_calculate_structure_function(
-        sft, backend, x_dev, u_dev, bins, UInt32
+        sft, backend, x_dev, u_dev, bins, UInt32; geometry = SFH.FlatGeometry{size(u_dev, 1)}()
     )
     gpu_sync!(backend)
     return t
@@ -118,7 +118,7 @@ function bench_naive_slice_loop!(
     function run!()
         for t in 1:T
             res = SFC.gpu_calculate_structure_function(
-                sft, backend, x_host[:, :, t], u_host[:, :, t], bins, UInt32
+                sft, backend, x_host[:, :, t], u_host[:, :, t], bins, UInt32; geometry = SFH.FlatGeometry{size(u_host, 1)}()
             )
             sums[:, t] .= Array(res.sums)
             counts[:, t] .= Array(res.counts)
@@ -140,7 +140,7 @@ function bench_slice_driver!(
         fill!(sums, 0)
         fill!(counts, 0)
         SFC.gpu_calculate_structure_function_batch!(
-            sums, counts, sft, backend, x_batch, u_batch, bins; workspace = ws,
+            sums, counts, sft, backend, x_batch, u_batch, bins; workspace = ws, geometry = SFH.FlatGeometry{size(u_batch, 1)}(),
         )
     end
     return run_timed_gpu(run!, backend; warmup = warmup)

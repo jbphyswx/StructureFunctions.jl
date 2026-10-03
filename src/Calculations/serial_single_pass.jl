@@ -786,15 +786,13 @@ function _sp2d_accumulate_range!(
 end
 
 """
-Fill the interleaved accumulator from pairs whose outer index is in `ilist`. Euclidean `D ∈ {2,3}`
-takes the SIMD compute/scatter split; other metrics or dimensions take the scalar loop. The `Val{D}`
-branch is a function barrier: `D` must be a type parameter inside the loop, or `SVector{D}` builds
-its type per point.
+Fill the interleaved accumulator from pairs whose outer index is in `ilist`: a flat geometry of width 2 or 3 takes the
+SIMD compute/scatter split, every other geometry the scalar loop.
 """
 function _sp2d_fill!(
     h::AbstractArray{SumCount{OT, CT}, 3},
     x::AbstractMatrix, u::AbstractMatrix, distance_bins, value_bins, geometry,
-    n_bins::Int, n_val::Int, ilist, grid = nothing, weights = NoWeights(),
+    n_bins::Int, n_val::Int, ilist, grid::Union{Nothing, CellGrid} = nothing, weights = NoWeights(),
 ) where {OT, CT}
     N = size(x, 2)
     vD = _simd_width(geometry)

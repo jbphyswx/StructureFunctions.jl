@@ -8,6 +8,7 @@ using StructureFunctions
 using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
 using StructureFunctions.StructureFunctionObjects: StructureFunctionObjects as SFO
+using StructureFunctions.HelperFunctions: HelperFunctions as SFH
 using ComputationalBackends: ComputationalBackends as CB
 using Distances: Distances as DI
 
@@ -47,7 +48,8 @@ for D in (2, 3)
     for (bname, bins) in (("LinearBinEdges", StructureFunctions.LinearBinEdges(
                                range(0.0, 1.0; length = NB + 1))),
                           ("raw vector", collect(range(0.0, 1.0; length = NB + 1))))
-        g = SFC.gpu_calculate_structure_function_batch(OP, CUDA.CUDABackend(), x, u, bins, UInt32)
+        g = SFC.gpu_calculate_structure_function_batch(OP, CUDA.CUDABackend(), x, u, bins, UInt32;
+                                                       geometry = SFH.FlatGeometry{D}())
         compare("fixed-x batch D=$D $bname", reshape(collect(g.sums), NB, T),
                 reshape(collect(g.counts), NB, T), ref_s, ref_c)
     end
@@ -93,7 +95,8 @@ let
                 backend = SER)
             ref_s[:, t] .= r.sums; ref_c[:, t] .= r.counts
         end
-        g = SFC.gpu_calculate_structure_function_batch(OP, CUDA.CUDABackend(), x, u3, bins, UInt32)
+        g = SFC.gpu_calculate_structure_function_batch(OP, CUDA.CUDABackend(), x, u3, bins, UInt32;
+                                                       geometry = SFH.FlatGeometry{2}())
         compare("fixed-x batch histogram nb=$nb", reshape(collect(g.sums), nb, T),
                 reshape(collect(g.counts), nb, T), ref_s, ref_c)
     end

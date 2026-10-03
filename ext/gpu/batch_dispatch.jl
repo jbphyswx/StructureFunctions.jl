@@ -48,7 +48,7 @@ function _gpu_1d_unified_device(
 ) where {OT, CT}
     kind = _sf_workspace_kind(moments, Val(1))
     _validate_batch_workspace!(workspace, backend, kind, distance_bins)
-    W, F = SFC._val_int(SFH.coordinate_width(geom)), SFC._val_int(SFH.field_width(geom))
+    W, F = SFC._val_int(SFH.coordinate_width(geom)), SFC._val_int(_sf_field_width(moments, geom))
     N = size(x, 2)
     dig = _dist_digitizer(workspace, backend, distance_bins, Val(kind))
     CNT = _sf_count_type(_sf_weights_to_device(backend, weights), CT, _sf_worst_case_pairs(N))
@@ -207,7 +207,7 @@ function _gpu_2d_unified_device(
 ) where {OT, CT}
     kind = _sf_workspace_kind(moments, Val(2))
     _validate_batch_workspace!(workspace, backend, kind, distance_bins; value_bins)
-    W, F = SFC._val_int(SFH.coordinate_width(geom)), SFC._val_int(SFH.field_width(geom))
+    W, F = SFC._val_int(SFH.coordinate_width(geom)), SFC._val_int(_sf_field_width(moments, geom))
     N = size(x, 2)
     ddig = _dist_digitizer(workspace, backend, distance_bins, Val(kind))
     vplan = _value_digitizer(workspace, backend, value_bins)

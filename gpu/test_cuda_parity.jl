@@ -13,7 +13,7 @@ using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO, LinearBinEdges, LogBinEdges
+    StructureFunctionObjects as SFO, HelperFunctions as SFH, LinearBinEdges, LogBinEdges
 using Random: Random
 
 Random.seed!(42)
@@ -37,7 +37,7 @@ Test.@testset "CUDA structure-function parity" begin
 
     # The GPU 1D entry returns sums and counts unconditionally.
     res_cuda = SF.to_host(SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32,
+        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32; geometry = SFH.FlatGeometry{2}(),
     ))
 
     Test.@test res_cuda.counts ≈ res_ref.counts atol = 0.0
@@ -67,7 +67,7 @@ Test.@testset "CUDA log-spaced bin parity" begin
     )
 
     res_cuda = SF.to_host(SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32,
+        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32; geometry = SFH.FlatGeometry{2}(),
     ))
 
     Test.@test res_cuda.counts ≈ res_ref.counts atol = 0.0

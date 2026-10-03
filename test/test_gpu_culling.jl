@@ -1,5 +1,6 @@
 using Test: Test
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    HelperFunctions as SFH
 using KernelAbstractions: KernelAbstractions as KA
 using ComputationalBackends: ComputationalBackends as CB
 using Distances: Distances as DI
@@ -10,11 +11,12 @@ const SF1D = SFT.L2SFType()
 const TIGHT = collect(range(0.0, 0.06; length = 9))          # AutoCulling engages on the unit square
 const WIDE = collect(range(0.0, 1.5; length = 9))            # same bin count, no culling
 const NB = length(TIGHT) - 1
+const FLAT2 = SFH.FlatGeometry{2}()
 
 function run1d(x, u, bins, pol, ws)
     s = zeros(NB)
     c = zeros(UInt32, NB)
-    SFC.gpu_calculate_structure_function!(s, c, SF1D, BE, x, u, bins; workspace = ws, culling = pol)
+    SFC.gpu_calculate_structure_function!(s, c, SF1D, BE, x, u, bins; geometry = FLAT2, workspace = ws, culling = pol)
     return s, c
 end
 
@@ -61,10 +63,10 @@ Test.@testset "GPU culling, with and without a workspace" begin
     val = collect(range(-4.0, 4.0; length = 9))
     wj_ref = SFC.GPUSFWorkspace(BE, TIGHT, val; kind = :joint2d)
     ref2 = SFC.gpu_calculate_structure_function_2d(SF1D, BE, x, u, TIGHT, val, UInt32;
-        workspace = wj_ref, culling = SFC.NoCulling())
+        geometry = FLAT2, workspace = wj_ref, culling = SFC.NoCulling())
     wj = SFC.GPUSFWorkspace(BE, TIGHT, val; kind = :joint2d)
     got2 = SFC.gpu_calculate_structure_function_2d(SF1D, BE, x, u, TIGHT, val, UInt32;
-        workspace = wj, culling = SFC.AutoCulling())
+        geometry = FLAT2, workspace = wj, culling = SFC.AutoCulling())
     Test.@test wj.lazy.cull isa SFC.GPUCullMemo && length(wj.lazy.cull.schedules) == 1
     Test.@test got2.counts == ref2.counts
     Test.@test isapprox(got2.sums, ref2.sums; rtol = 1e-10, atol = 1e-12)
@@ -75,7 +77,7 @@ Test.@testset "GPU culling, with and without a workspace" begin
     runsp(pol, w) = begin
         s = zeros(SFC.SINGLE_PASS_N, NB, n_val); c = zeros(UInt32, SFC.SINGLE_PASS_N, NB, n_val)
         SFC.gpu_calculate_structure_functions_single_pass_2d!(s, c, BE, x, u, TIGHT, vb;
-            workspace = w, culling = pol)
+            geometry = FLAT2, workspace = w, culling = pol)
         (s, c)
     end
     wsp_ref = SFC.GPUSFWorkspace(BE, TIGHT, vb; kind = :single_pass_2d)

@@ -1,6 +1,6 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    MultiFields as MF
+    MultiFields as MF, HelperFunctions as SFH
 using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using StaticArrays: StaticArrays as SA
@@ -283,7 +283,7 @@ Test.@testset "what the sorted route does not take stays on the pair loop, and i
         Test.@test backend === SERIAL ? always.sums == none.sums : isapprox(always.sums, none.sums; rtol = 1e-12)
     end
     # the serial entry on a one-dimensional list returns a result
-    direct = SFC.serial_calculate_structure_function(SFT.L2SFType(), x1, u, bins, UInt32)
+    direct = SFC.serial_calculate_structure_function(SFT.L2SFType(), x1, u, bins, UInt32; geometry = SFH.FlatGeometry{1}())
     ref_s, ref_c = _line_pair_loop(SFT.L2SFType(), x, u, bins, ones_w, Val(1), Val(1), Val(0))
     Test.@test direct isa RAW
     Test.@test direct.counts == UInt32.(ref_c)

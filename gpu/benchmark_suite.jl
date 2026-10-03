@@ -26,7 +26,7 @@ using JSON: JSON
 using KernelAbstractions: KernelAbstractions as KA
 using Random: Random
 using Statistics: Statistics
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, LinearBinEdges
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH, LinearBinEdges
 
 include(joinpath(@__DIR__, "benchmark_scaling_helpers.jl"))
 
@@ -84,7 +84,7 @@ end
 function _explicit_aux_loop_shared_positions(sft, backend, x, u, distance_bins)
     @views for b in axes(u, 3)
         SFC.gpu_calculate_structure_function(
-            sft, backend, x, u[:, :, b], distance_bins, UInt32)
+            sft, backend, x, u[:, :, b], distance_bins, UInt32; geometry = SFH.FlatGeometry{2}())
     end
     return nothing
 end
@@ -92,7 +92,7 @@ end
 function _explicit_aux_loop_varying_positions(sft, backend, x, u, distance_bins)
     @views for b in axes(u, 3)
         SFC.gpu_calculate_structure_function(
-            sft, backend, x[:, :, b], u[:, :, b], distance_bins, UInt32)
+            sft, backend, x[:, :, b], u[:, :, b], distance_bins, UInt32; geometry = SFH.FlatGeometry{2}())
     end
     return nothing
 end
@@ -125,27 +125,27 @@ function main()
 
     ws1d = SFC.GPUSFWorkspace(backend, dist_bins)
     push!(rows, _timed("sf1d_fresh", backend, () -> begin
-        SFC.gpu_calculate_structure_function(sft, backend, xd, ud, dist_bins, UInt32)
+        SFC.gpu_calculate_structure_function(sft, backend, xd, ud, dist_bins, UInt32; geometry = SFH.FlatGeometry{2}())
     end; warmup = warmup, repeat = repeat))
     push!(rows, _timed("sf1d_workspace", backend, () -> begin
         SFC.gpu_calculate_structure_function(
-            sft, backend, xd, ud, dist_bins, UInt32; workspace = ws1d,
+            sft, backend, xd, ud, dist_bins, UInt32; workspace = ws1d, geometry = SFH.FlatGeometry{2}(),
         )
     end; warmup = warmup, repeat = repeat))
     push!(rows, _timed("sf1d_3d_workspace", backend, () -> begin
         SFC.gpu_calculate_structure_function(
-            sft, backend, xd3, ud3, dist_bins, UInt32; workspace = ws1d,
+            sft, backend, xd3, ud3, dist_bins, UInt32; workspace = ws1d, geometry = SFH.FlatGeometry{3}(),
         )
     end; warmup = warmup, repeat = repeat))
 
     ws_joint = SFC.GPUSFWorkspace(backend, dist_bins, value_bins; kind = :joint2d)
     push!(rows, _timed("joint2d_workspace", backend, () -> begin
-        SFC.gpu_calculate_structure_function_2d(sft, backend, xd, ud, dist_bins, value_bins, UInt32; workspace = ws_joint)
+        SFC.gpu_calculate_structure_function_2d(sft, backend, xd, ud, dist_bins, value_bins, UInt32; workspace = ws_joint, geometry = SFH.FlatGeometry{2}())
     end; warmup = warmup, repeat = repeat))
 
     ws_sp2d = SFC.GPUSFWorkspace(backend, dist_bins, value_bins; kind = :single_pass_2d)
     push!(rows, _timed("sp2d_workspace", backend, () -> begin
-        SFC.gpu_calculate_structure_functions_single_pass_2d(backend, xd, ud, dist_bins, value_bins, UInt32; workspace = ws_sp2d)
+        SFC.gpu_calculate_structure_functions_single_pass_2d(backend, xd, ud, dist_bins, value_bins, UInt32; workspace = ws_sp2d, geometry = SFH.FlatGeometry{2}())
     end; warmup = warmup, repeat = repeat))
 
     u_shared = rand(FT, 2, N, B)

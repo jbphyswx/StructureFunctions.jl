@@ -5,7 +5,7 @@ using Test: Test
 using Random: Random
 using OhMyThreads: OhMyThreads
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
-    StructureFunctionObjects as SFO, StructureFunctionTypes as SFT
+    StructureFunctionObjects as SFO, StructureFunctionTypes as SFT, HelperFunctions as SFH
 
 Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
     # Generate synthetic test dataset
@@ -23,6 +23,7 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
     n_dist = length(distance_bins) - 1
     value_bins = range(-1.0, 1.0, length = 11)
     n_vals = length(value_bins) - 1
+    G2 = SFH.FlatGeometry{2}()
 
     # 1. 1D Serial mutating Array tests
     Test.@testset "1D Serial Mutating Array Correctness & Accumulation" begin
@@ -36,12 +37,12 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
         counts = zeros(UInt32, n_dist)
 
         # Mutate
-        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins)
+        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
         Test.@test sums == bas.sums
         Test.@test counts == bas.counts
 
         # Accumulation (calling twice should double the values)
-        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins)
+        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
         Test.@test sums ≈ bas.sums .* 2
         Test.@test counts == bas.counts .* 2
     end
@@ -56,11 +57,11 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
         sums = zeros(Float64, n_dist)
         counts = zeros(UInt32, n_dist)
 
-        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins)
+        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
         Test.@test sums == bas.sums
         Test.@test counts == bas.counts
 
-        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins)
+        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
         Test.@test sums ≈ bas.sums .* 2
         Test.@test counts == bas.counts .* 2
     end
@@ -76,19 +77,19 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
         counts_arr = zeros(UInt32, n_dist, n_vals)
 
         # Mutate Array
-        SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
+        SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
         Test.@test sums_arr == bas_arr.sums
         Test.@test counts_arr == bas_arr.counts
 
         # Accumulation
-        SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
+        SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
         Test.@test sums_arr ≈ bas_arr.sums .* 2
         Test.@test counts_arr == bas_arr.counts .* 2
 
         # Mutate Array
         sums_arr = zeros(Float64, n_dist, n_vals)
         counts_arr = zeros(UInt32, n_dist, n_vals)
-        SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
+        SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
         Test.@test sums_arr == bas_arr.sums
         Test.@test counts_arr == bas_arr.counts
     end
@@ -98,11 +99,11 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
         # 1D Array Threaded
         sums_ser = zeros(Float64, n_dist)
         counts_ser = zeros(UInt32, n_dist)
-        SFC.serial_calculate_structure_function!(sums_ser, counts_ser, SFT.L2SF, x_mat, u_mat, distance_bins)
+        SFC.serial_calculate_structure_function!(sums_ser, counts_ser, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
 
         sums_thr = zeros(Float64, n_dist)
         counts_thr = zeros(UInt32, n_dist)
-        SFC.threaded_calculate_structure_function!(sums_thr, counts_thr, SFT.L2SF, x_mat, u_mat, distance_bins)
+        SFC.threaded_calculate_structure_function!(sums_thr, counts_thr, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
 
         Test.@test sums_ser ≈ sums_thr
         Test.@test counts_ser == counts_thr
@@ -110,25 +111,25 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
         # 1D Array Threaded
         sums_thr_arr = zeros(Float64, n_dist)
         counts_thr_arr = zeros(UInt32, n_dist)
-        SFC.threaded_calculate_structure_function!(sums_thr_arr, counts_thr_arr, SFT.L2SF, x_mat, u_mat, distance_bins)
+        SFC.threaded_calculate_structure_function!(sums_thr_arr, counts_thr_arr, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
         Test.@test sums_ser ≈ sums_thr_arr
         Test.@test counts_ser == counts_thr_arr
 
         # 2D Array Threaded
         sums_2d_ser = zeros(Float64, n_dist, n_vals)
         counts_2d_ser = zeros(UInt32, n_dist, n_vals)
-        SFC.serial_calculate_structure_function!(sums_2d_ser, counts_2d_ser, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
+        SFC.serial_calculate_structure_function!(sums_2d_ser, counts_2d_ser, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
 
         sums_2d_thr = zeros(Float64, n_dist, n_vals)
         counts_2d_thr = zeros(UInt32, n_dist, n_vals)
-        SFC.threaded_calculate_structure_function!(sums_2d_thr, counts_2d_thr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
+        SFC.threaded_calculate_structure_function!(sums_2d_thr, counts_2d_thr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
 
         Test.@test sums_2d_ser ≈ sums_2d_thr
         Test.@test counts_2d_ser == counts_2d_thr
 
         # Allocation checks: chunked OhMyThreads must allocate O(n_threads) which is extremely lightweight
         # We check that it runs without errors or excessive allocation.
-        alloc1 = @allocated SFC.threaded_calculate_structure_function!(sums_thr, counts_thr, SFT.L2SF, x_mat, u_mat, distance_bins)
+        alloc1 = @allocated SFC.threaded_calculate_structure_function!(sums_thr, counts_thr, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
         @info "Threaded 1D Array Mutating call allocation: $alloc1 bytes"
         Test.@test alloc1 < 250_000 # extremely lightweight compared to O(N_points)
     end
@@ -142,7 +143,7 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
 
         sums_bas = zeros(Float64, n_dist)
         counts_bas = zeros(UInt32, n_dist)
-        SFC.serial_calculate_structure_function!(sums_bas, counts_bas, SFT.L2SF, x_mat, u_mat, distance_bins)
+        SFC.serial_calculate_structure_function!(sums_bas, counts_bas, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
 
         Test.@test sums_pub ≈ sums_bas
         Test.@test counts_pub == counts_bas
@@ -154,7 +155,7 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
 
         sums_2d_bas = zeros(Float64, n_dist, n_vals)
         counts_2d_bas = zeros(UInt32, n_dist, n_vals)
-        SFC.serial_calculate_structure_function!(sums_2d_bas, counts_2d_bas, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins)
+        SFC.serial_calculate_structure_function!(sums_2d_bas, counts_2d_bas, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
 
         Test.@test sums_2d_pub ≈ sums_2d_bas
         Test.@test counts_2d_pub == counts_2d_bas

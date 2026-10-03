@@ -21,7 +21,7 @@
 
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
-using StructureFunctions: Calculations as SFC
+using StructureFunctions: Calculations as SFC, HelperFunctions as SFH
 using JSON: JSON
 using Dates: Dates
 using Random: Random
@@ -56,7 +56,7 @@ function _warmup_gpu_session!(backend, warmup::Int)
         for _ in 1:warmup
             SFC.gpu_calculate_structure_function(
                 SCALING_SFT, backend, x_dev, u_dev, bins, UInt32;
-                workspace = ws,
+                workspace = ws, geometry = SFH.FlatGeometry{3}(),
             )
         end
         gpu_sync!(backend)

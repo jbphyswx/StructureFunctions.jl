@@ -17,7 +17,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, LinearBinEdges
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH, LinearBinEdges
 using Random: Random
 
 function main()
@@ -50,8 +50,8 @@ function main()
         sft, x_cpu, u_cpu, bin_edges;
         backend = threaded_backend,
     )
-    SFC.gpu_calculate_structure_function(sft, KA.CPU(), x_cpu, u_cpu, bin_edges, UInt32)
-    SFC.gpu_calculate_structure_function(sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32)
+    SFC.gpu_calculate_structure_function(sft, KA.CPU(), x_cpu, u_cpu, bin_edges, UInt32; geometry = SFH.FlatGeometry{2}())
+    SFC.gpu_calculate_structure_function(sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32; geometry = SFH.FlatGeometry{2}())
     CUDA.synchronize()
 
     t_threaded = @elapsed begin
@@ -62,11 +62,11 @@ function main()
     end
 
     t_ka_cpu = @elapsed begin
-        SFC.gpu_calculate_structure_function(sft, KA.CPU(), x_cpu, u_cpu, bin_edges, UInt32)
+        SFC.gpu_calculate_structure_function(sft, KA.CPU(), x_cpu, u_cpu, bin_edges, UInt32; geometry = SFH.FlatGeometry{2}())
     end
 
     t_cuda = @elapsed begin
-        SFC.gpu_calculate_structure_function(sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32)
+        SFC.gpu_calculate_structure_function(sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32; geometry = SFH.FlatGeometry{2}())
         CUDA.synchronize()
     end
 

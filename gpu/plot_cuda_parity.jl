@@ -13,7 +13,7 @@ using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO
+    StructureFunctionObjects as SFO, HelperFunctions as SFH
 using Random: Random
 
 function main()
@@ -33,7 +33,7 @@ function main()
         sft, x_cpu, u_cpu, bins, SFO.StructureFunctionSumsAndCounts,
     )
     gpu_res = SFC.gpu_calculate_structure_function(
-        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bins, UInt32,
+        sft, CUDA.CUDABackend(), x_gpu, u_gpu, bins, UInt32; geometry = SFH.FlatGeometry{2}(),
     )
     CUDA.synchronize()
 

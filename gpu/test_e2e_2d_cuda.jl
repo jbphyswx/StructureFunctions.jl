@@ -13,6 +13,7 @@ using Random: Random
 const SF = StructureFunctions
 const SFC = SF.Calculations
 const SFT = SF.StructureFunctionTypes
+const SFH = SF.HelperFunctions
 using StructureFunctions: LinearBinEdges
 using StructureFunctions.Calculations:
     serial_calculate_structure_functions_single_pass_2d!, auxiliary_joint2d!
@@ -45,7 +46,7 @@ let N = 1500, B = 4
         lbe = LinearBinEdges(0.0f0, 1.5f0, nd + 1)
         ve = LinearBinEdges(-1.0f0, 1.0f0, nv + 1)
         cs = zeros(FT, 6, nd, nv, B); cc = zeros(UInt32, 6, nd, nv, B)
-        serial_calculate_structure_functions_single_pass_2d!(cs, cc, x, u, lbe, ve)
+        serial_calculate_structure_functions_single_pass_2d!(cs, cc, x, u, lbe, ve; geometry = SFH.FlatGeometry{2}())
         g = SF.to_host(SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE))
         _sp2d_report("SP2D fixed", "$(nd)x$(nv)", g, cs, cc)
     end
@@ -57,7 +58,7 @@ let N = 1500, B = 4
         lbe = LinearBinEdges(0.0f0, 1.5f0, nd + 1)
         ve = LinearBinEdges(-1.0f0, 1.0f0, nv + 1)
         cs = zeros(FT, 6, nd, nv, B); cc = zeros(UInt32, 6, nd, nv, B)
-        serial_calculate_structure_functions_single_pass_2d!(cs, cc, x, u, lbe, ve)
+        serial_calculate_structure_functions_single_pass_2d!(cs, cc, x, u, lbe, ve; geometry = SFH.FlatGeometry{2}())
         g = SF.to_host(SFC.calculate_structure_functions_single_pass_2d(x, u, lbe, ve; backend = GPU_BE))
         _sp2d_report("SP2D varying", "$(nd)x$(nv)", g, cs, cc)
     end
@@ -68,13 +69,13 @@ let N = 1500, B = 4
     lbe = LinearBinEdges(0.0f0, 1.5f0, 21)
     ve = LinearBinEdges(-0.5f0, 1.5f0, 21)
     cs = zeros(FT, 20, 20, B); cc = zeros(UInt32, 20, 20, B)
-    auxiliary_joint2d!(cs, cc, SF_TYPE, x, u, lbe, ve)
+    auxiliary_joint2d!(cs, cc, SF_TYPE, x, u, lbe, ve; geometry = SFH.FlatGeometry{2}())
     g = SF.to_host(SFC.calculate_structure_function(SF_TYPE, x, u, lbe, ve; backend = GPU_BE))
     row("joint2d fixed", "20x20", scaled(g.sums, cs), moved(g.counts, cc), Int(sum(Int64, cc)))
 
     xv = rand(FT, 2, N, B)
     cs2 = zeros(FT, 20, 20, B); cc2 = zeros(UInt32, 20, 20, B)
-    auxiliary_joint2d!(cs2, cc2, SF_TYPE, xv, u, lbe, ve)
+    auxiliary_joint2d!(cs2, cc2, SF_TYPE, xv, u, lbe, ve; geometry = SFH.FlatGeometry{2}())
     g2 = SF.to_host(SFC.calculate_structure_function(SF_TYPE, xv, u, lbe, ve; backend = GPU_BE))
     row("joint2d varying", "20x20", scaled(g2.sums, cs2), moved(g2.counts, cc2), Int(sum(Int64, cc2)))
 end

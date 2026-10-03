@@ -14,7 +14,7 @@ using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO
+    StructureFunctionObjects as SFO, HelperFunctions as SFH
 using Random: Random
 
 Random.seed!(42)
@@ -39,7 +39,7 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     )
 
     res_fresh = SFC.gpu_calculate_structure_function(
-        sft, backend, x_gpu, u_gpu, bins, UInt32,
+        sft, backend, x_gpu, u_gpu, bins, UInt32; geometry = SFH.FlatGeometry{2}(),
     )
     CUDA.synchronize()
     Test.@test Array(res_fresh.counts) == ref.counts
@@ -49,7 +49,7 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
 
     ws = SFC.GPUSFWorkspace(backend, bins)
     res_ws = SFC.gpu_calculate_structure_function(
-        sft, backend, x_gpu, u_gpu, bins, UInt32; workspace = ws,
+        sft, backend, x_gpu, u_gpu, bins, UInt32; workspace = ws, geometry = SFH.FlatGeometry{2}(),
     )
     CUDA.synchronize()
     Test.@test Array(res_ws.counts) == ref.counts
@@ -61,7 +61,7 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     counts_acc = CUDA.zeros(UInt32, NB)
     for _ in 1:3
         SFC.gpu_calculate_structure_function!(
-            sums_acc, counts_acc, sft, backend, x_gpu, u_gpu, bins; workspace = ws,
+            sums_acc, counts_acc, sft, backend, x_gpu, u_gpu, bins; workspace = ws, geometry = SFH.FlatGeometry{2}(),
         )
     end
     CUDA.synchronize()
@@ -79,7 +79,7 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     counts_ref = zeros(UInt32, NB, T)
     for t in 1:T
         ref_t = SFC.gpu_calculate_structure_function(
-            sft, backend, x_batch_cpu[:, :, t], u_batch_cpu[:, :, t], bins, UInt32,
+            sft, backend, x_batch_cpu[:, :, t], u_batch_cpu[:, :, t], bins, UInt32; geometry = SFH.FlatGeometry{2}(),
         )
         CUDA.synchronize()
         sums_ref[:, t] .= Array(ref_t.sums)
@@ -91,7 +91,7 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     ws_slice = SFC.GPUSFWorkspace(backend, bins)
     SFC.gpu_calculate_structure_function_batch!(
         sums_drv, counts_drv, sft, backend, x_batch, u_batch, bins;
-        workspace = ws_slice,
+        workspace = ws_slice, geometry = SFH.FlatGeometry{2}(),
     )
     CUDA.synchronize()
     max_Δ_slice = maximum(abs, Array(sums_drv) .- sums_ref)

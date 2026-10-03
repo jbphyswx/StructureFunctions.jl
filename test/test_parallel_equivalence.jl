@@ -384,6 +384,7 @@ Test.@testset "the shares of every partial family add to the whole sweep, culled
     xv, uv = (x[1, :], x[2, :]), (u[1, :], u[2, :])
     vb = collect(range(-3.0, 3.0; length = 6))
     op = SFT.L2SFType()
+    g2 = SF.HelperFunctions.FlatGeometry{2}()
     family = (
         ("1d", (be, db, sh, kw) -> (r = SFC._partial_sums_counts(be, op, xv, uv, db, sh, UInt32; kw...);
                                     (r.sums, r.counts))),
@@ -395,11 +396,11 @@ Test.@testset "the shares of every partial family add to the whole sweep, culled
         ("multi-field", (be, db, sh, kw) -> SFC.field_partial(be, op, x, f, db, sh, UInt32; kw...)),
     )
     for (db, culls) in ((collect(range(0.0, 1.5; length = 7)), false), (collect(range(0.0, 0.1; length = 7)), true))
-        Test.@test (SFC.cull_grid_for((x[1, :], x[2, :]), SF.HelperFunctions.FlatGeometry{2}(), db,
+        Test.@test (SFC.cull_grid_for((x[1, :], x[2, :]), g2, db,
                                       SFC.AutoCulling()) !== nothing) == culls
         for (name, part) in family, be in (CB.SerialBackend(), CB.ThreadedBackend())
-            whole = part(CB.SerialBackend(), db, (1, 1), (; culling = SFC.NoCulling()))
-            shares = [part(be, db, (w, k), (; culling = SFC.AutoCulling())) for w in 1:k]
+            whole = part(CB.SerialBackend(), db, (1, 1), (; geometry = g2, culling = SFC.NoCulling()))
+            shares = [part(be, db, (w, k), (; geometry = g2, culling = SFC.AutoCulling())) for w in 1:k]
             Test.@test (name, culls, sum(s[2] for s in shares) == whole[2]) == (name, culls, true)
             Test.@test (name, culls, isapprox(sum(s[1] for s in shares), whole[1]; rtol = 1e-12)) ==
                        (name, culls, true)

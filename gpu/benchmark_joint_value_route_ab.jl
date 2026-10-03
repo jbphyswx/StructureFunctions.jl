@@ -26,6 +26,7 @@ using StructureFunctions: StructureFunctions as SF
 using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
+using StructureFunctions.HelperFunctions: HelperFunctions as SFH
 
 const _GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
 _GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded — use julia --project=gpu")
@@ -103,10 +104,10 @@ function main()
     ws_general = SFC.GPUSFWorkspace(backend, dist, val_general; kind = :joint2d)
 
     run_typed! = () -> SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, val_typed, UInt32; workspace = ws_typed,
+        sft, backend, x, u, dist, val_typed, UInt32; workspace = ws_typed, geometry = SFH.FlatGeometry{2}(),
     )
     run_general! = () -> SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, val_general, UInt32; workspace = ws_general,
+        sft, backend, x, u, dist, val_general, UInt32; workspace = ws_general, geometry = SFH.FlatGeometry{2}(),
     )
 
     t_typed = _bench(run_typed!, warmup, repeat_)
@@ -127,8 +128,8 @@ function main()
             sft, x, u, dist, val_typed;
             backend = CB.SerialBackend(),
         )
-        gpu_t = SFC.gpu_calculate_structure_function_2d(sft, backend, x, u, dist, val_typed, UInt32; workspace = ws_typed)
-        gpu_g = SFC.gpu_calculate_structure_function_2d(sft, backend, x, u, dist, val_general, UInt32; workspace = ws_general)
+        gpu_t = SFC.gpu_calculate_structure_function_2d(sft, backend, x, u, dist, val_typed, UInt32; workspace = ws_typed, geometry = SFH.FlatGeometry{2}())
+        gpu_g = SFC.gpu_calculate_structure_function_2d(sft, backend, x, u, dist, val_general, UInt32; workspace = ws_general, geometry = SFH.FlatGeometry{2}())
         @printf("parity typed vs CPU:   counts %s  sums max err %.3e\n",
             Array(gpu_t.counts) == ref.counts ? "OK" : "MISMATCH",
             maximum(abs.(Array(gpu_t.sums) .- ref.sums)),

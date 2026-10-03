@@ -34,6 +34,7 @@ using StructureFunctions: StructureFunctions as SF
 using StructureFunctions.Calculations: Calculations as SFC
 using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
+using StructureFunctions.HelperFunctions: HelperFunctions as SFH
 
 const _GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
 _GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded — use julia --project=gpu")
@@ -95,7 +96,7 @@ function _profile_one!(
     val_plan = ws.val_plan
     reported = nameof(typeof(val_plan))
     run! = () -> SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x, u, dist, value_bins, UInt32; workspace = ws,
+        sft, backend, x, u, dist, value_bins, UInt32; workspace = ws, geometry = SFH.FlatGeometry{2}(),
     )
     t = _bench(run!, warmup, repeat_)
 

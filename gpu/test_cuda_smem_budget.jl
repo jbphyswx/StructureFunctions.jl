@@ -238,7 +238,8 @@ for D in (2, 3)
         CUDA.synchronize()
         Raw(out, cnt)
     end
-    ref = () -> Raw(values(SFC._dispatch_single_pass(SER, SFC.PointField{D}(), x, u, bins, F64; weights = w))...)
+    ref = () -> Raw(values(SFC._dispatch_single_pass(SER, SFC.PointField{D}(), x, u, bins, F64; weights = w,
+                                                     geometry = geom(D)))...)
     tiled_row("single pass point D=$D", "_sf6_single_pass_kernel_tiled128", GE._sp1d_tiled_smem_bytes(F64, F64, D, D),
               run, ref)
 end

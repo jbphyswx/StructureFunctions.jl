@@ -24,6 +24,7 @@ using Printf: Printf
 using Random: Random
 using StructureFunctions: StructureFunctions as SF
 using StructureFunctions.Calculations: Calculations as SFC
+using StructureFunctions.HelperFunctions: HelperFunctions as SFH
 using StructureFunctions: InfPaddedBinEdges, LinearBinEdges, LogBinEdges
 
 function _bench(f, warmup::Int, repeat_::Int)
@@ -107,7 +108,7 @@ function main()
 
         run! = () -> SFC.gpu_calculate_structure_functions_single_pass_2d!(
             sums, counts, ka_backend, x, u, dist_vec, value_bins;
-            workspace = ws,
+            workspace = ws, geometry = SFH.FlatGeometry{2}(),
         )
         t = _bench(run!, warmup, repeat_)
         pairs = N * (N - 1) ÷ 2

@@ -2,7 +2,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH,
     InfPaddedBinEdges, LinearBinEdges, LogBinEdges, LogBinEdges_from_log_edges
 using Random: Random
 
@@ -168,7 +168,7 @@ Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
     cnts_gpu = zeros(UInt32, 6, NB, n_val)
     SFC.gpu_calculate_structure_functions_single_pass_2d!(
         sums_gpu, cnts_gpu, backend, x, u, linear_dist, value_bins_ntuple;
-        workspace = ws,
+        geometry = SFH.FlatGeometry{2}(), workspace = ws,
     )
     Test.@test sums_gpu ≈ sums_ref atol = 1e-11
     Test.@test cnts_gpu == cnts_ref
@@ -239,7 +239,7 @@ Test.@testset "GPU sp2d histogram no on-chip mode holds takes global atomics (KA
     cnts_gpu = zeros(UInt32, 6, NB, n_val)
     SFC.gpu_calculate_structure_functions_single_pass_2d!(
         sums_gpu, cnts_gpu, backend, x, u, linear_dist, value_bins_ntuple;
-        workspace = ws,
+        geometry = SFH.FlatGeometry{2}(), workspace = ws,
     )
     Test.@test sums_gpu ≈ sums_ref atol = 1e-11
     Test.@test cnts_gpu == cnts_ref
