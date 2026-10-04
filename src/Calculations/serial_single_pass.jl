@@ -149,7 +149,7 @@ function _accumulate_single_pass_1d!(
         throw(DimensionMismatch("sums must have shape ($SINGLE_PASS_N, n_bins); got $(size(sums))"))
     size(counts) == (SINGLE_PASS_N, n_bins) ||
         throw(DimensionMismatch("counts must have shape ($SINGLE_PASS_N, n_bins); got $(size(counts))"))
-    # Flat D ∈ (2,3): SIMD compute/scatter split.
+    # Flat D ∈ {2,3}: SIMD compute/scatter split.
     vD = _simd_width(geometry)
     if vD !== nothing
         _sp_simd_run!(sums, counts, x, u, distance_bins, vD, culling, weights)
@@ -621,7 +621,7 @@ function _single_pass_collection_1d(
         L3   = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.L3, distance_bins, _sp_rowview(sums, 5), cc), OT),
         L1T2 = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.L1T2, distance_bins, _sp_rowview(sums, 6), cc), OT),
     )
-    # Point-field input is a 2D stacked matrix; batched input has ndims ≥ 3. The branch is on `ndims`, so the return type is concrete.
+    # Point-field sums are a matrix, batched ones have ndims ≥ 3; branching on `ndims` keeps the return type concrete.
     if ndims(sums) == 2
         return merge(base, (; helmholtz = helmholtz_decompose_2d(distance_bins, sums, counts)))
     end

@@ -320,9 +320,9 @@ The soft-binned structure function of one set of scattered points sampled repeat
 `(n_distance, n_slices)`, the counts a kernel-weighted pair mass.
 
 The lags are enumerated once and every slice is summed against them, with one plan set to the
-points for every slice. Accumulates into the caller's arrays and returns nothing. A [`TransformWorkspace`](@ref) passed as
-`workspace` keeps the plan for later calls. See [`ScatteredModesSchedule`](@ref) for what is and is not
-exact.
+points for every slice. Accumulates into the caller's arrays and returns nothing. A
+[`TransformWorkspace`](@ref) passed as `workspace` keeps the plan for later calls. See
+[`ScatteredModesSchedule`](@ref) for what is and is not exact.
 """
 function calculate_structure_function_batch!(
     sums::AbstractMatrix, counts::AbstractMatrix, sf::SFT.AbstractPairwiseStructureFunctionType,

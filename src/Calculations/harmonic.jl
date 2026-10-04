@@ -62,8 +62,8 @@ wigner_d_column(m::Integer, n::Integer, β::Real, lmax::Integer) =
     pseudo_coefficients_direct(f, θ, φ, s, lmax; backend) -> ComplexF64 matrix
 
 `C[l + 1, m + lmax + 1] = Σ_i f_i conj(ₛY_lm(θ_i, φ_i))` with `ₛY_lm = √((2l+1)/4π) d^l_{m,−s}(θ) e^{imφ}`,
-by direct summation over the points: `O(N lmax²)`. `θ` is colatitude and `φ` longitude, both in radians. On a GPU `backend` the matrix is on its
-device.
+by direct summation over the points: `O(N lmax²)`. `θ` is colatitude and `φ` longitude, both in
+radians. On a GPU `backend` the matrix is on its device.
 """
 function pseudo_coefficients_direct(f::AbstractVector{<:Number}, θ::AbstractVector, φ::AbstractVector,
                                     s::Integer, lmax::Integer;
@@ -160,8 +160,8 @@ function _node_kernel(s::Integer, s′::Integer, nodes::HarmonicNodes, lf)
     return K
 end
 
-# An operator as a polynomial in the two ends' spin quantities. In the pair's geodesic frame `u_L + i u_T = Ū`, where `Ū = U e^{−iψ}` is the spin-1 quantity
-# `U = u_θ + i u_φ` rotated by the bearing `ψ` of the geodesic toward the other point. At the second
+# An operator as a polynomial in the two ends' spin quantities. In the pair's geodesic frame
+# `u_L + i u_T = Ū`, where `Ū = U e^{−iψ}` is the spin-1 quantity `U = u_θ + i u_φ` rotated by the bearing `ψ` of the geodesic toward the other point. At the second
 # point the frame continues the geodesic, so its tangent has bearing `ψ + π` and the frame components
 # there are `−Ū`. Hence `δu_L + i δu_T = −(Ū_i + Ū_j)`; a radial component and a scalar difference as
 # `w_j − w_i`, `θ_j − θ_i`. Every polynomial operator is a polynomial in these, and every monomial

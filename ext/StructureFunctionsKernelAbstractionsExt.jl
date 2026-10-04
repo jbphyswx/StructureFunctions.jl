@@ -20,7 +20,7 @@ pattern). A larger histogram takes the global-atomic kernel.
 ## Count types on GPU
 
 A device count histogram accumulates in `UInt32` while an unweighted sweep's worst-case pair count
-fits it, and in the requested count type `CT` otherwise; results carry `CT` and stay on the device.
+fits it, and in the requested count type `CT` when it does not; results carry `CT` and stay on the device.
 
 Kernels digitize with the host's `digitize_plan` of the bins, so every bin type bins on a device
 exactly as on the CPU.
@@ -324,8 +324,8 @@ end
                                     workspace, geometry, culling, weights) -> (sums_dev, counts_dev, direct)
 
 Launch the distance histogram of one point list with sums of `OT` and counts of `CT`, into the caller's
-`sums`/`counts` when [`_accumulation_buffers`](@ref) can take them (`direct`), into fresh device buffers
-otherwise. Asynchronous.
+`sums`/`counts` when [`_accumulation_buffers`](@ref) can take them (`direct`), and into fresh device buffers
+when it cannot. Asynchronous.
 """
 function _launch_gpu_structure_function!(
     sf_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -524,7 +524,7 @@ function _launch_single_pass_kernel!(
 end
 
 """Launch a point list's six single-pass invariant histograms on the portable kernels: the tiled
-kernel when its histogram fits, the global-atomic kernel otherwise."""
+kernel when its histogram fits, the global-atomic kernel when it does not."""
 function _launch_single_pass_portable!(
     backend::KA.Backend,
     workgroup_size::Int,
@@ -638,7 +638,7 @@ function _launch_joint_2d_kernel!(
 end
 
 """Launch one joint distance × value histogram on the portable kernels: the tiled kernel when its
-shared histogram at the compile width fits the device, the global-atomic kernel otherwise."""
+shared histogram at the compile width fits the device, the global-atomic kernel when it does not."""
 function _launch_joint_2d_portable!(
     backend::KA.Backend,
     workgroup_size::Int,
@@ -686,8 +686,8 @@ end
         -> (sums_dev, counts_dev, direct)
 
 Launch the joint histogram of one point list with sums of `OT` and counts of `CT`, into the caller's
-`sums`/`counts` when [`_accumulation_buffers`](@ref) can take them (`direct`), into fresh device buffers
-otherwise. Asynchronous.
+`sums`/`counts` when [`_accumulation_buffers`](@ref) can take them (`direct`), and into fresh device buffers
+when it cannot. Asynchronous.
 """
 function _launch_gpu_joint2d!(
     sf_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -742,7 +742,7 @@ Compute one 2D joint histogram (distance × SF value) for `sf_type` on `backend`
 Returns [`StructureFunction2DSumsAndCounts`](@ref) with the same flat edge vectors passed in.
 
 Uses tiled128 block-local histograms when the histogram fits the device's shared memory, and
-``(N_points, N_points)`` global-atomic pair kernels otherwise. The shared histogram is compiled
+``(N_points, N_points)`` global-atomic pair kernels when it does not. The shared histogram is compiled
 ``n_dist × n_val`` wide unless a [`SFC.GPUSFWorkspace`](@ref) sets `joint2d_compile_cells`
 (see [`joint2d_smem_max`](@ref), [`joint2d_smem_align256`](@ref)). Results stay on the selected
 backend in buffers of their own, with counts of type `CT`. Use `to_host` for host conversion.

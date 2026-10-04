@@ -161,7 +161,7 @@ function _launch_single_pass_2d!(
 end
 
 """Launch a point list's six single-pass invariant joint histograms on the portable kernels: the
-on-chip strategy kernel while one of its histograms fits, the global-atomic kernel otherwise."""
+on-chip strategy kernel while one of its histograms fits, the global-atomic kernel when none does."""
 function _launch_single_pass_2d_portable!(
     backend::KA.Backend,
     workgroup_size::Int,

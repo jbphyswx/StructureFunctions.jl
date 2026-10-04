@@ -105,7 +105,7 @@ end
 """Accumulator axes after the batch axis, as the workspace was built for."""
 @inline _ws_tail(ws::CPUSFWorkspace) = size(ws.result[1])[2:end]
 
-# The kernels write through `@inbounds`; the input shape is checked in `_bl_prepare`, the accumulator layout in the driver.
+# The kernels write through `@inbounds`: `_bl_prepare` checks the input shape, the driver the accumulator layout.
 
 """Throw unless `ws` was built for this input shape. Checked before the transpose buffers are used."""
 @inline _validate_ws_shape(::Nothing, ::Int, ::Int, ::Int, ::Int) = nothing
@@ -155,8 +155,6 @@ function _bl_result_accum(ws::CPUSFWorkspace, ::F, ::Int) where {F}
     _bl_zero_accum!(ws.result)
     return ws.result
 end
-
-# GPU device-resident workspace; its constructors are defined in StructureFunctionsKernelAbstractionsExt.
 
 """
     GPUSFWorkspace(backend, distance_bins; kind=:sf1d)

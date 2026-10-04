@@ -94,7 +94,6 @@ end
 
 One pair's increment across every field: each vector field already transported into the pair's
 common frame, each scalar field already differenced.
-
 """
 struct FieldIncrement{D, V, K, T}
     vectors::NTuple{V, SA.SVector{D, T}}

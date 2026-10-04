@@ -183,7 +183,7 @@ end
 
 The device buffers of size `dims` a call accumulates into: the caller's own `sums`/`counts` reshaped
 (`direct = true`) when they are unwrapped arrays of the accumulation types `OT`/`CNT` with that many
-elements, fresh zeroed ones otherwise (`sums` and `counts` are `nothing` for an allocating call).
+elements, and fresh zeroed ones when they are not (`sums` and `counts` are `nothing` for an allocating call).
 """
 function _accumulation_buffers(backend, ::Type{OT}, ::Type{CNT}, dims, sums, counts) where {OT, CNT}
     if sums !== nothing && eltype(sums) === OT && eltype(counts) === CNT && length(sums) == prod(dims) &&
