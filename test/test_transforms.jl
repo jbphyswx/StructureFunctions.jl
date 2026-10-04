@@ -585,3 +585,27 @@ Test.@testset "post-processing a result held in a device array family stays in i
     Test.@test Array(d.divergent) ≈ h.divergent rtol = 1e-12
 end
 
+# A power-law spectrum `A k^-β` has `S₂ = 2A I_D(β) r^(β-1)`, `I_D(β) = ∫₀^∞ (1 - T_D(x)) x^-β dx` with `T_D` the
+# angular average of `cos`; its Mellin transform gives `I_1` and `I_3` in closed form.
+Test.@testset "the equivalent spectrum of a power law, debiased, is the power law" begin
+    g = Bessels.gamma
+    I1(β) = π / (2 * g(β) * sin(π * (β - 1) / 2))
+    I3(β) = g(3 - β) * sin(π * β / 2) / (-β * (1 - β) * (2 - β))
+    r = exp.(range(log(1e-2), log(10.0); length = 400))
+    A = 0.7
+    for (D, I) in ((1, I1), (3, I3)), β in (5 / 3, 2.5)
+        S2 = 2A * I(β) .* r .^ (β - 1)
+        e = SFC.equivalent_spectrum(SFT.S2SFType(), r, S2, Val(D))
+        b = D == 1 ? 1.0 : 2.0
+        Test.@test e.wavenumber ≈ reverse(b ./ r)
+        inner = 3:(length(r) - 2)
+        Test.@test maximum(abs, e.debiased[inner] ./ (A .* e.wavenumber[inner] .^ -β) .- 1) < 1e-3
+    end
+    S2 = 2 * I3(2.5) .* r .^ 1.5
+    S2[200] = -1.0
+    e = SFC.equivalent_spectrum(SFT.S2SFType(), r, S2, Val(3))
+    Test.@test all(x -> isfinite(x) && x > 0, e.spectrum)
+    Test.@test_throws ArgumentError SFC.equivalent_spectrum(SFT.L2SFType(), r, S2, Val(3))
+    Test.@test_throws ArgumentError SFC.equivalent_spectrum(SFT.S2SFType(), reverse(r), S2, Val(3))
+end
+

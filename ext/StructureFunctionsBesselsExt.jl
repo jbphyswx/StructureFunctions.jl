@@ -11,4 +11,6 @@ using StructureFunctions: Calculations as SFC
 # The plane's isotropic kernel.
 @inline SFC.isotropic_kernel(::Val{2}, x) = SFC.bessel_kernel(Val(0), x)
 
+SFC.gamma(x) = Bessels.gamma(x)
+
 end # module

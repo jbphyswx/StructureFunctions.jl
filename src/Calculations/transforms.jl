@@ -376,6 +376,101 @@ function isotropic_spectrum(sf::Union{SFO.StructureFunction, SFO.StructureFuncti
 end
 
 """
+    gamma(x)
+
+The gamma function `Γ(x)`, available once `Bessels` is loaded.
+"""
+function gamma(x)
+    throw(ArgumentError("the gamma function is not available; run `using Bessels`."))
+end
+
+"""
+    equivalent_wavenumber_factor(::Val{D})
+
+The constant `b` of the equivalent wavenumber `k_e = b/r` in `D` measurement dimensions: `1` on a line, `√(2D − 2)`
+otherwise (Bishop et al. 2026, Eq. 27).
+"""
+equivalent_wavenumber_factor(::Val{1}) = 1.0
+equivalent_wavenumber_factor(::Val{D}) where {D} = sqrt(2.0 * D - 2)
+
+"""
+    equivalent_spectrum(operator, separations, values, ::Val{D}; b = equivalent_wavenumber_factor(Val(D)))
+        -> (; wavenumber, spectrum, debiased)
+
+The equivalent spectrum of a second-order structure function sampled at increasing `separations` in a
+`D`-dimensional measurement space (Bishop, Oughton, Parashar and Perrott 2026, Phys. Fluids 38, 025107), at the
+equivalent wavenumbers `k_e = b/r` in increasing order:
+
+- `spectrum`: `Ẽ(k_e) = r² S₂′(r) / 2b`, the derivative by second-order differences on the samples (first order at
+  the ends); samples that are not finite and positive are replaced by log-log interpolation of the others;
+- `debiased`: `Ẽ / B`, `B = (2/b)^(1−β) Γ(D/2) Γ((3−β)/2) / Γ((β+D−1)/2)` the bias of a power law of slope
+  `β = −d ln Ẽ / d ln k_e`, taken locally and clamped to `[1.01, 2.99]`.
+
+`Γ` needs `Bessels`.
+"""
+function equivalent_spectrum(operator, separations::AbstractVector, values::AbstractVector, ::Val{D};
+                             b::Real = equivalent_wavenumber_factor(Val(D))) where {D}
+    assert_invertible(operator)
+    n = length(separations)
+    n == length(values) || throw(DimensionMismatch(
+        "separations and values must agree in length; got $n and $(length(values))",
+    ))
+    n >= 3 || throw(ArgumentError("the equivalent spectrum needs at least three separations; got $n"))
+    FT = float(promote_type(eltype(separations), eltype(values)))
+    r, s = FT.(collect(separations)), FT.(Array(values))
+    (first(r) > 0 && all(>(0), diff(r))) || throw(ArgumentError("separations must be positive and increasing"))
+    bb = FT(b)
+    k = reverse(bb ./ r)
+    spectrum = reverse(r .^ 2 .* _gradient(s, r) ./ (2 * bb))
+    good = findall(e -> isfinite(e) && e > 0, spectrum)
+    length(good) >= 2 || throw(ArgumentError("fewer than two equivalent-spectrum samples are finite and positive"))
+    if length(good) < n
+        spectrum = exp.(_linear_interpolation(log.(k[good]), log.(spectrum[good]), log.(k)))
+    end
+    slope = _gradient(log.(spectrum), log.(k))
+    debiased = spectrum ./ _power_law_bias.(clamp.(-slope, FT(1.01), FT(2.99)), bb, Val(D))
+    return (; wavenumber = k, spectrum, debiased)
+end
+
+"""
+    equivalent_spectrum(result, ::Val{D}; b)
+
+[`equivalent_spectrum`](@ref) of a structure function result, at the bin representatives of the bins holding a
+value.
+"""
+function equivalent_spectrum(sf::Union{SFO.StructureFunction, SFO.StructureFunctionSumsAndCounts}, ::Val{D};
+                             kwargs...) where {D}
+    r, vals, keep = _binned(sf)
+    return equivalent_spectrum(sf.operator, r[keep], Array(vals)[keep], Val(D); kwargs...)
+end
+
+"""The bias `(2/b)^(1−β) Γ(D/2) Γ((3−β)/2) / Γ((β+D−1)/2)` of the equivalent spectrum of a power law of slope `β`."""
+function _power_law_bias(β, b, ::Val{D}) where {D}
+    return (2 / b)^(1 - β) * gamma(D / 2) * gamma((3 - β) / 2) / gamma((β + D - 1) / 2)
+end
+
+"""The derivative of samples `y` at increasing `x`: second-order differences inside, first order at the ends."""
+function _gradient(y::AbstractVector, x::AbstractVector)
+    n = length(x)
+    g = similar(y, float(eltype(y)))
+    g[1] = (y[2] - y[1]) / (x[2] - x[1])
+    g[n] = (y[n] - y[n - 1]) / (x[n] - x[n - 1])
+    for i in 2:(n - 1)
+        h0, h1 = x[i] - x[i - 1], x[i + 1] - x[i]
+        g[i] = (h0^2 * y[i + 1] - h1^2 * y[i - 1] + (h1^2 - h0^2) * y[i]) / (h0 * h1 * (h0 + h1))
+    end
+    return g
+end
+
+"""Piecewise-linear interpolation of the samples `(x, y)`, `x` increasing, at `xi`, extended linearly past the ends."""
+function _linear_interpolation(x::AbstractVector, y::AbstractVector, xi::AbstractVector)
+    return map(xi) do q
+        j = clamp(searchsortedlast(x, q), 1, length(x) - 1)
+        y[j] + (y[j + 1] - y[j]) * (q - x[j]) / (x[j + 1] - x[j])
+    end
+end
+
+"""
     isotropic_spectrum(result, geometry::SphericalGeometry, lmax) -> (l, C)
 
 Angular power spectrum `C_l`, `l = 1:lmax`, of a scalar or of the trace on a sphere, from a
