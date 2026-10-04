@@ -80,6 +80,11 @@ end
 MonomialTransforms(data::AbstractMatrix, s::SFC.UniformLagSchedule, P::Tuple, valid, weights = SFC.NoWeights()) =
     MonomialTransforms(data, valid, weights, s, P, AbstractFFTs.plan_rfft(_zeros_like(data, P)), Val(2))
 
+"""`AbstractFFTs.plan_rfft` and `plan_irfft` of a plan `threads` threads execute (`SFC._fft_plan_options`)."""
+_plan_rfft(x, region, threads::Int = 1) = AbstractFFTs.plan_rfft(x, region; SFC._fft_plan_options(x, threads)...)
+_plan_irfft(x, d::Int, region, threads::Int = 1) =
+    AbstractFFTs.plan_irfft(x, d, region; SFC._fft_plan_options(x, threads)...)
+
 """A zero array of shape `P` in `data`'s array family, in its float type."""
 _zeros_like(data::AbstractArray, P::Tuple) =
     fill!(similar(parent(data), float(eltype(data)), P), zero(float(eltype(data))))
@@ -139,13 +144,20 @@ moment_component(mt::MonomialTransforms, j::NTuple) = moment_component(mt, mt, j
 # Fill the columns for slab pair (I, J) from the two slabs' forward transforms and invert them all at
 # once; returns the `(lags, columns)` matrix of raw moments.
 function _pair_inverse!(scratch, fwdI::AbstractVector, fwdJ::AbstractVector, columns::AbstractVector)
-    specf = scratch.specf
+    _fill_columns!(scratch.specf, fwdI, fwdJ, columns, eachindex(columns))
+    LA.mul!(scratch.out, scratch.iplan, scratch.spec)
+    return scratch.outf
+end
+
+"""Columns `cols` of the spectrum products of slabs `I` and `J`: column `c` is `Σ sign · conj(F_I[ki]) F_J[kj]` over
+its terms."""
+function _fill_columns!(specf, fwdI::AbstractVector, fwdJ::AbstractVector, columns::AbstractVector, cols)
     n = size(specf, 1)
-    @inbounds for (c, terms) in enumerate(columns)
+    @inbounds for c in cols
         for lin in 1:n
             specf[lin, c] = 0
         end
-        for (sign, ki, kj) in terms
+        for (sign, ki, kj) in columns[c]
             FI = fwdI[ki]
             FJ = fwdJ[kj]
             @simd for lin in 1:n
@@ -153,8 +165,21 @@ function _pair_inverse!(scratch, fwdI::AbstractVector, fwdJ::AbstractVector, col
             end
         end
     end
-    LA.mul!(scratch.out, scratch.iplan, scratch.spec)
-    return scratch.outf
+    return nothing
+end
+
+"""The scratch of one slab pair's inverse shared by `k` tasks: [`_inverse_plan`](@ref)'s, its plan run by `k`
+threads, and the `ranges` of columns each task fills."""
+_split_inverse_plan(eng, ncols::Int, k::Int) =
+    () -> (; _inverse_plan(eng, ncols, k)()..., ranges = collect(Iterators.partition(1:ncols, cld(ncols, k))))
+
+"""Slab pair `(I, J)`'s `(lags, columns)` raw moments, the tasks of `backend` filling the column ranges and the
+plan's own threads inverting them."""
+function _pair_inverse_split!(sc, fwdI::AbstractVector, fwdJ::AbstractVector, columns::AbstractVector, backend)
+    SFC.sweep_foreach(backend, sc.ranges, Returns(nothing),
+                      (cols, _) -> _fill_columns!(sc.specf, fwdI, fwdJ, columns, cols))
+    LA.mul!(sc.out, sc.iplan, sc.spec)
+    return sc.outf
 end
 
 SFC.transform_engine(sf, data::AbstractMatrix, s::SFC.AbstractSeparableSchedule, dist_be, vD::Val, vV::Val, vK::Val,
@@ -163,16 +188,17 @@ SFC.transform_engine(sf, data::AbstractMatrix, s::SFC.AbstractSeparableSchedule,
                        forward = _kept_forward(workspace, slice...), workspace)
 
 """
-    _transform_prepare(sf, data, schedule, distance_bins, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag; to, forward, workspace)
+    _transform_prepare(sf, data, schedule, distance_bins, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag; to, forward, workspace, stage_backend)
 
-The engine's state for one field. `forward(dp, FT, P, layout, keys) -> (stage, spectra, all)` supplies the
-forward stage's scratch and the buffer the field's spectra are written into, `all` being the array `spectra`
-is a slice of; a non-uniform FFT borrows its plan from `workspace`. `layout` is the spectra's
-([`_forward_layout`](@ref)), `nothing` for a non-uniform FFT's.
+The engine's state for one field. `forward(dp, FT, layout) -> (spectra, all)` supplies the buffer the field's
+spectra are written into, `all` being the array `spectra` is a slice of; the forward transforms run on
+`stage_backend`, whose tasks each borrow a forward stage from `workspace`, and a non-uniform FFT borrows its plan
+there. `layout` is the spectra's ([`_forward_layout`](@ref)), `nothing` for a non-uniform FFT's.
 """
 function _transform_prepare(
     sf, data::AbstractMatrix, s::SFC.AbstractSeparableSchedule, dist_be, ::Val{D}, ::Val{V}, ::Val{K},
     valid, weights, tag; to = identity, forward = _kept_forward(nothing, 1, 1), workspace = nothing,
+    stage_backend::CB.AbstractExecutionBackend = CB.SerialBackend(),
 ) where {D, V, K}
     SFT.is_polynomial_operator(sf) || throw(ArgumentError(
         "$(typeof(sf)) is not a polynomial in the increment, so the transform cannot produce it. " *
@@ -189,7 +215,8 @@ function _transform_prepare(
     dp = to(dp0)
     vp = vp0 isa SFC.AllValid ? vp0 : to(Vector{Bool}(vp0))
     wp = wp0 isa SFC.NoWeights ? wp0 : to(wp0)
-    fwd, keys, spectra, layout = _slab_transforms(tag, s, dp, vp, wp, su, P, Val(W), Val(p); to, forward, workspace)
+    fwd, keys, spectra, layout = _slab_transforms(tag, s, dp, vp, wp, su, P, Val(W), Val(p); to, forward, workspace,
+                                                  stage_backend)
     transport = SFC.lag_transport(s)
     columns, vN = SFC._sf_columns(sf, transport, Val(W), Val(p))
     # the count column: the two masks' correlation, the weighted pair mass, or a soft-binned kernel mass
@@ -203,17 +230,13 @@ end
 """
     _kept_forward(workspace, t, nt)
 
-The `forward` source of slice `t` of `nt`: one forward stage, and the spectra of every slice as one
-`(blk, nchunks, ngroups, nt)` array, kept in `workspace` — allocated for this call without one.
+The `forward` source of slice `t` of `nt`: the spectra of every slice as one `(blk, nchunks, ngroups, nt)` array,
+kept in `workspace` — allocated for this call without one.
 """
-_kept_forward(workspace, t::Int, nt::Int) = (dp, FT, P, lay, keys) -> begin
-    family = _array_family(dp)
-    stage = SFC._kept!(workspace, :forward_stage, (family, FT, P, lay.chunk, lay.last_nb, lay.group, lay.last_ng,
-                                                   keys),
-                       () -> _forward_stage(dp, FT, P, lay, keys))
-    whole = SFC._kept!(workspace, :spectra, (family, FT, lay.blk, lay.nchunks, lay.ngroups, nt),
+_kept_forward(workspace, t::Int, nt::Int) = (dp, FT, lay) -> begin
+    whole = SFC._kept!(workspace, :spectra, (_array_family(dp), FT, lay.blk, lay.nchunks, lay.ngroups, nt),
                        () -> similar(parent(dp), Complex{FT}, lay.blk, lay.nchunks, lay.ngroups, nt))
-    (stage, view(whole, :, :, :, t), whole)
+    (view(whole, :, :, :, t), whole)
 end
 
 """The kind of array `similar(parent(dp), …)` builds, whatever wraps `dp`."""
@@ -241,13 +264,12 @@ SFC._release_plan!(p::AbstractFFTs.Plan) = finalize(p)
 """
     _lent_forward(workspace, lent)
 
-The `forward` source of an executor sweeping one slice at a time: a stage and one slice's spectra borrowed
-from `workspace`'s pool, recorded in `lent[]` for [`_return_forward!`](@ref).
+The `forward` source of an executor sweeping one slice at a time: one slice's spectra borrowed from `workspace`'s
+pool, recorded in `lent[]` for [`_return_forward!`](@ref).
 """
-_lent_forward(workspace, lent::Base.RefValue) = (dp, FT, P, lay, keys) -> begin
-    sizes = (:forward, _array_family(dp), FT, P, lay.chunk, lay.last_nb, lay.group, lay.last_ng, keys, lay.blk,
-             lay.nchunks, lay.ngroups)
-    set = SFC._borrow!(workspace, sizes, () -> _kept_forward(nothing, 1, 1)(dp, FT, P, lay, keys))
+_lent_forward(workspace, lent::Base.RefValue) = (dp, FT, lay) -> begin
+    sizes = (:forward, _array_family(dp), FT, lay.blk, lay.nchunks, lay.ngroups)
+    set = SFC._borrow!(workspace, sizes, () -> _kept_forward(nothing, 1, 1)(dp, FT, lay))
     lent[] = sizes => set
     set
 end
@@ -259,18 +281,19 @@ _return_forward!(workspace, lent::Base.RefValue) =
 const SPECTRA_ALIGNMENT = 64
 
 """
-    _forward_layout(P, nslabs, nkeys, FT) -> (; half, L, chunk, nchunks, last_nb, group, ngroups, last_ng, blk)
+    _forward_layout(P, nslabs, nkeys, FT, tasks) -> (; half, L, chunk, nchunks, last_nb, group, ngroups, last_ng, blk)
 
 The shape of a field's forward spectra: `nslabs` slabs of half-spectra `half` (`L` entries) for each of `nkeys`
 monomials, in blocks of `blk` entries each holding a chunk of `chunk` slabs (the last of `nchunks` holding
 `last_nb`) for each of a group of `group` monomials (the last of `ngroups` holding `last_ng`), slab fastest.
-A block holds as many (slab, monomial) transforms as `FORWARD_BATCH_BYTES` admits: every monomial of a chunk of
-slabs, or one slab's monomials in groups when a slab's transforms do not fit together.
+A block holds as many (slab, monomial) transforms as `FORWARD_BATCH_BYTES` admits and as leave a block for each of
+`tasks` tasks: every monomial of a chunk of slabs, or one slab's monomials in groups when fewer fit together.
 """
-function _forward_layout(P::NTuple, nslabs::Int, nkeys::Int, ::Type{FT}) where {FT}
+function _forward_layout(P::NTuple, nslabs::Int, nkeys::Int, ::Type{FT}, tasks::Int) where {FT}
     half = (P[1] ÷ 2 + 1, Base.tail(P)...)
     L = prod(half)
-    units = clamp(FORWARD_BATCH_BYTES[] ÷ max(prod(P) * sizeof(FT) + L * sizeof(Complex{FT}), 1), 1, nslabs * nkeys)
+    fit = FORWARD_BATCH_BYTES[] ÷ max(prod(P) * sizeof(FT) + L * sizeof(Complex{FT}), 1)
+    units = clamp(min(fit, cld(nslabs * nkeys, tasks)), 1, nslabs * nkeys)
     chunk, group = units >= nkeys ? (min(nslabs, units ÷ nkeys), nkeys) : (1, units)
     nchunks, ngroups = cld(nslabs, chunk), cld(nkeys, group)
     blk = cld(chunk * group * L * sizeof(Complex{FT}), SPECTRA_ALIGNMENT) * SPECTRA_ALIGNMENT ÷ sizeof(Complex{FT})
@@ -287,24 +310,32 @@ function _forward_stage(dp, ::Type{FT}, P::NTuple{Dg}, lay, keys) where {FT, Dg}
     held = similar(parent(dp), FT, P..., n)
     full = view(held, colons..., 1:n)
     last = view(held, colons..., 1:n_last)
-    plan = AbstractFFTs.plan_rfft(full, 1:Dg)
-    plan_last = n_last == n ? plan : AbstractFFTs.plan_rfft(last, 1:Dg)
+    plan = _plan_rfft(full, 1:Dg)
+    plan_last = n_last == n ? plan : _plan_rfft(last, 1:Dg)
     return (; held, full, last, plan, plan_last, keys = copyto!(similar(parent(dp), eltype(keys), length(keys)), keys))
 end
 
 # Every monomial of degree ≤ Pm of every slab, transformed; the first key is the mask. Each block of the
-# spectra is built in one broadcast and transformed in one batch straight into its place. A scattered
-# schedule's single slab is transformed by the non-uniform FFT provider.
+# spectra is built in one broadcast and transformed in one batch straight into its place, the blocks shared out
+# over the tasks of `stage_backend`. A scattered schedule's single slab is transformed by the non-uniform FFT
+# provider.
 function _slab_transforms(
     ::SB.AbstractFastFourierTransformSpectralBackend, s::SFC.AbstractSeparableSchedule, dp, vp, wp, su, P,
-    ::Val{W}, ::Val{Pm}; to, forward, workspace,
+    ::Val{W}, ::Val{Pm}; to, forward, workspace, stage_backend,
 ) where {W, Pm}
     keys = SFC._monomial_keys(Val(W), Val(Pm))
     FT = float(eltype(dp))
     nslabs = SFC.n_slabs(s)
-    lay = _forward_layout(P, nslabs, length(keys), FT)
-    stage, spectra, whole = forward(dp, FT, P, lay, keys)
-    _fill_spectra!(spectra, stage, dp, vp, wp, su, P, lay)
+    lay = _forward_layout(P, nslabs, length(keys), FT, SFC.sweep_tasks(stage_backend))
+    spectra, whole = forward(dp, FT, lay)
+    make_stage, done = SFC._executor_scratch(workspace, (:forward_stage, _array_family(dp), FT, P, lay.chunk,
+                                                         lay.last_nb, lay.group, lay.last_ng, keys),
+                                             () -> _forward_stage(dp, FT, P, lay, keys))
+    try
+        _fill_spectra!(spectra, make_stage, dp, vp, wp, su, P, lay, stage_backend)
+    finally
+        done()
+    end
     fwd = [[_slab_spectrum(spectra, lay, I, k) for k in eachindex(keys)] for I in 1:nslabs]
     return fwd, keys, whole, lay
 end
@@ -335,34 +366,39 @@ NaN), and zero in the padding.
     return wp isa SFC.NoWeights ? v : v * @inbounds(wp[col])
 end
 
-function _fill_spectra!(spectra, stage, dp, vp, wp, su, P, lay)
+function _fill_spectra!(spectra, make_stage, dp, vp, wp, su, P, lay, backend)
+    blocks = vec([(c, g) for c in 1:lay.nchunks, g in 1:lay.ngroups])
+    SFC.sweep_foreach(backend, blocks, make_stage,
+                      (cg, stage) -> _fill_block!(spectra, stage, dp, vp, wp, su, P, lay, cg[1], cg[2]))
+    return nothing
+end
+
+"""Block `(c, g)` of the forward spectra: chunk `c` of slabs for group `g` of monomials, built in `stage`."""
+function _fill_block!(spectra, stage, dp, vp, wp, su, P, lay, c::Int, g::Int)
     FT = eltype(stage.held)
-    flat = vec(stage.held)
-    for g in 1:lay.ngroups, c in 1:lay.nchunks
-        nb = c == lay.nchunks ? lay.last_nb : lay.chunk
-        ng = g == lay.ngroups ? lay.last_ng : lay.group
-        n = nb * ng
-        held = reshape(view(flat, 1:(n * prod(P))), P..., nb, ng)
-        held .= _block_monomial.(CartesianIndices(held), Ref(dp), Ref(vp), Ref(wp), Ref(stage.keys), Ref(su.dims),
-                                 (c - 1) * lay.chunk + 1, (g - 1) * lay.group + 1, FT)
-        block = reshape(view(spectra, 1:(n * lay.L), c, g), lay.half..., n)
-        n == lay.chunk * lay.group ? LA.mul!(block, stage.plan, stage.full) : LA.mul!(block, stage.plan_last, stage.last)
-    end
+    nb = c == lay.nchunks ? lay.last_nb : lay.chunk
+    ng = g == lay.ngroups ? lay.last_ng : lay.group
+    n = nb * ng
+    held = reshape(view(vec(stage.held), 1:(n * prod(P))), P..., nb, ng)
+    held .= _block_monomial.(CartesianIndices(held), Ref(dp), Ref(vp), Ref(wp), Ref(stage.keys), Ref(su.dims),
+                             (c - 1) * lay.chunk + 1, (g - 1) * lay.group + 1, FT)
+    block = reshape(view(spectra, 1:(n * lay.L), c, g), lay.half..., n)
+    n == lay.chunk * lay.group ? LA.mul!(block, stage.plan, stage.full) : LA.mul!(block, stage.plan_last, stage.last)
     return nothing
 end
 
 function _slab_transforms(
     tag::SB.AbstractNonUniformFastFourierTransformSpectralBackend, s::SFC.ScatteredModesSchedule, dp, vp, wp, su, P,
-    ::Val{W}, ::Val{Pm}; to, forward, workspace,
+    ::Val{W}, ::Val{Pm}; to, forward, workspace, stage_backend,
 ) where {W, Pm}
     keys = SFC._monomial_keys(Val(W), Val(Pm))
     return [SFC.nufft_monomial_transforms(tag, s, dp, vp, wp, keys, Val(Pm); to, workspace)], keys, nothing, nothing
 end
 
 # The per-executor scratch for `ncols` columns, in the transforms' array family: the buffers and the
-# batched inverse plan that fills them. An FFTW plan holds a pointer into the process that created
-# it, so it is built here, by whichever process runs the work, and never sent to another one.
-function _inverse_plan(eng, ncols::Int)
+# batched inverse plan, run by `threads` threads, that fills them. An FFTW plan holds a pointer into the process
+# that created it, so it is built here, by whichever process runs the work, and never sent to another one.
+function _inverse_plan(eng, ncols::Int, threads::Int = 1)
     F1 = eng.fwd[1][1]
     CT = eltype(F1)
     FT = real(CT)
@@ -373,7 +409,7 @@ function _inverse_plan(eng, ncols::Int)
     return () -> begin
         spec = similar(F1, Ph..., ncols)
         out = similar(F1, FT, P..., ncols)
-        iplan = AbstractFFTs.plan_irfft(spec, P[1], 1:length(P))
+        iplan = _plan_irfft(spec, P[1], 1:length(P), threads)
         (iplan = iplan, spec = spec, specf = reshape(spec, :, ncols),
          out = out, outf = reshape(out, :, ncols))
     end
@@ -621,7 +657,7 @@ function _inverse_plan_batch(eng, ncols::Int, nt::Int)
         spec = similar(F1, Ph..., ncols * nt)
         out = similar(F1, FT, P..., ncols * nt)
         out3 = reshape(out, :, ncols, nt)
-        (iplan = AbstractFFTs.plan_irfft(spec, P[1], 1:length(P)),
+        (iplan = _plan_irfft(spec, P[1], 1:length(P)),
          spec = spec, specf = reshape(spec, :, ncols, nt), out = out,
          outs = [view(out3, :, :, t) for t in 1:nt])
     end
@@ -734,11 +770,16 @@ end
 # only in the field the forward transforms are taken of; their spectra are the slices of one array kept in
 # `workspace`.
 function _slice_engines(sf, data::AbstractArray{<:Any, 3}, s, dist_be, vD::Val, vV::Val, vK::Val, valid, weights, tag,
-                        workspace)
+                        workspace, stage_backend)
     nt = size(data, 3)
     return [_transform_prepare(sf, view(data, :, :, t), s, dist_be, vD, vV, vK, SFC._valid_slice(valid, t), weights,
-                               tag; forward = _kept_forward(workspace, t, nt), workspace) for t in 1:nt]
+                               tag; forward = _kept_forward(workspace, t, nt), workspace, stage_backend)
+            for t in 1:nt]
 end
+
+"""The backend of this process that runs the engine's forward transforms and single-pair inverses."""
+_stage_backend(b::CB.AbstractExecutionBackend) = b
+_stage_backend(b::Union{CB.AbstractDistributedBackend, CB.AbstractMPIBackend}) = CB.local_backend(b)
 
 function _transform_sweep_batch!(
     sums, counts, backend::CB.AbstractExecutionBackend, sf, data, s, dist_be, plan, nb, vD::Val, vV::Val,
@@ -755,7 +796,8 @@ function _transform_sweep_fused!(
     sums, counts, backend::CB.AbstractExecutionBackend, sf, data, s, dist_be, plan, nb, ::Val{D}, ::Val{V},
     ::Val{K}, valid, weights, tag, axis, workspace,
 ) where {D, V, K}
-    engs = _slice_engines(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag, workspace)
+    engs = _slice_engines(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag, workspace,
+                          _stage_backend(backend))
     eng = engs[1]
     make_scratch, done = _inverse_scratch_batch(eng, length(eng.columns), length(engs), workspace, backend)
     try
@@ -771,24 +813,33 @@ end
 # One slice per work item, each with the engine and inverse scratch of a single slice: the
 # arrangement a schedule whose lag geometry is a displacement and a bin takes. Slices are
 # independent and write disjoint output columns, so any backend can execute them, and each item
-# borrows its buffers for the length of its slice. FFTW serialises plan creation behind its own lock.
+# borrows its buffers for the length of its slice. With fewer slices than tasks, the slices run one
+# after another, each on every task.
 function _transform_sweep_slices!(
     sums, counts, backend::CB.AbstractExecutionBackend, sf, data, s, dist_be, plan, nb, vD::Val, vV::Val,
     vK::Val, valid, weights, tag, axis, workspace,
 )
     ws = SFC._local_workspace(workspace, backend)
+    nt = size(data, 3)
+    if nt < SFC.sweep_tasks(backend)
+        for t in 1:nt
+            _slice_sweep!(_slice_out(sums, t), _slice_out(counts, t), sf, view(data, :, :, t), s, dist_be, plan, nb,
+                          vD, vV, vK, SFC._valid_slice(valid, t), weights, tag, axis, ws, backend)
+        end
+        return nothing
+    end
     body! = (ls, lc, t, _) -> _slice_sweep!(_slice_out(ls, t), _slice_out(lc, t), sf, view(data, :, :, t), s,
                                             dist_be, plan, nb, vD, vV, vK, SFC._valid_slice(valid, t), weights,
-                                            tag, axis, ws)
-    SFC.sweep_reduce!(sums, counts, backend, 1:size(data, 3), () -> nothing, body!)
+                                            tag, axis, ws, CB.SerialBackend())
+    SFC.sweep_reduce!(sums, counts, backend, 1:nt, () -> nothing, body!)
     return nothing
 end
 
 function _slice_sweep!(sums, counts, sf, data, s, dist_be, plan, nb, vD, vV, vK, valid, weights, tag, axis,
-                       workspace)
+                       workspace, backend)
     lent = Ref{Any}(nothing)
     try
-        _transform_sweep!(sums, counts, CB.SerialBackend(), sf, data, s, dist_be, plan, nb, vD, vV, vK, valid,
+        _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, vD, vV, vK, valid,
                           weights, tag, axis, workspace; forward = _lent_forward(workspace, lent))
     finally
         _return_forward!(workspace, lent)
@@ -934,23 +985,26 @@ function _tensor_run!(sums, counts, ::Val{P}, data, s, dist_be, plan, nb, axis, 
                       backend::CB.AbstractExecutionBackend, workspace) where {P, D}
     sf = SFT.MomentTensorOperator{P}()
     eng = _transform_prepare(sf, data, s, dist_be, Val(D), Val(1), Val(0), valid, w, tag;
-                             forward = _kept_forward(workspace, 1, 1), workspace)
+                             forward = _kept_forward(workspace, 1, 1), workspace,
+                             stage_backend = _stage_backend(backend))
     make_scratch, done = _inverse_scratch(eng, length(eng.columns), workspace, backend)
     try
-        _tensor_pairs!(sums, counts, sf, eng, plan, nb, axis, Val(D), Val(P), backend, make_scratch)
+        _tensor_pairs!(sums, counts, sf, eng, plan, nb, axis, Val(D), Val(P), backend, make_scratch, workspace)
     finally
         done()
     end
     return nothing
 end
 
-function _tensor_pairs!(sums, counts, sf, eng, plan, nb, axis, ::Val{D}, ::Val{P}, backend, make_scratch) where {D, P}
+function _tensor_pairs!(sums, counts, sf, eng, plan, nb, axis, ::Val{D}, ::Val{P}, backend, make_scratch,
+                        workspace) where {D, P}
     vNs = Val(length(SFT.symmetric_indices(Val(D), Val(P))))
-    items = SFC.sweep_items(eng.s, eng.r_max, SFC.sweep_tasks(backend), false)
     sym = zeros(eltype(sums), SFC._val_int(vNs), size(counts)...)
-    body! = (ls, lc, it, scratch) -> _transform_tensor_item!(ls, lc, sf, eng, it, scratch, plan, nb, axis, Val(D),
+    item! = (ls, lc, it, scratch) -> _transform_tensor_item!(ls, lc, sf, eng, it, scratch, plan, nb, axis, Val(D),
                                                              eng.vW, eng.vP, eng.vN, vNs)
-    SFC.sweep_reduce!(sym, counts, backend, items, make_scratch, body!)
+    lags = out -> (ls, lc, it, _) -> _transform_tensor_lags!(ls, lc, sf, eng, out, it, plan, nb, axis, Val(D),
+                                                             eng.vW, eng.vP, eng.vN, vNs)
+    _sweep_pairs!(sym, counts, backend, eng, make_scratch, workspace, item!, lags)
     SFC._expand_symmetric!(sums, sym, Val(D), Val(P))
     return nothing
 end
@@ -1010,17 +1064,26 @@ function SFC.gridded_tensor_sweep!(
 end
 
 function _transform_tensor_item!(
-    sym::AbstractMatrix{OT}, counts::AbstractVector{CT}, sf, eng, item::NTuple{4, Int}, scratch, plan, nb,
+    sym::AbstractArray, counts::AbstractArray, sf, eng, item::NTuple{4, Int}, scratch, plan, nb, axis, vD::Val,
+    vW::Val, vPo::Val, vN::Val, vNs::Val,
+)
+    out = _pair_inverse!(scratch, eng.fwd[item[1]], eng.fwd[item[2]], eng.columns)
+    return _transform_tensor_lags!(sym, counts, sf, eng, out, item, plan, nb, axis, vD, vW, vPo, vN, vNs)
+end
+
+# The tensor lag loop over a whole pair or the `part`-th share of its lags, as `_transform_lags!`.
+function _transform_tensor_lags!(
+    sym::AbstractMatrix{OT}, counts::AbstractVector{CT}, sf, eng, out, item::NTuple{4, Int}, plan, nb,
     ::Nothing, ::Val{D}, ::Val{W}, ::Val{Po}, ::Val{N}, ::Val{Ns},
 ) where {OT, CT, D, W, Po, N, Ns}
-    I, J = item[1], item[2]
-    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns)
+    I, J, part, n_parts = item
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
     strides = SFC._lag_strides(P)
     tr = eng.transport
-    @inbounds for H in SFC._pair_lags(s, su, I, J, eng.r_max)
-        h = Tuple(H)
+    lags = SFC._pair_lags(s, su, I, J, eng.r_max)
+    @inbounds for li in part:n_parts:length(lags)
+        h = Tuple(lags[li])
         v = SFC._lag_visit(sf, s, su, I, J, h, plan, nb, Val(D), Val(1), Val(0))
         v === nothing && continue
         b, r2, factor, geometry, self_reverse = v
@@ -1037,19 +1100,19 @@ function _transform_tensor_item!(
     return nothing
 end
 
-function _transform_tensor_item!(
-    sym::AbstractArray{OT, 3}, counts::AbstractMatrix{CT}, sf, eng, item::NTuple{4, Int}, scratch, plan, nb,
+function _transform_tensor_lags!(
+    sym::AbstractArray{OT, 3}, counts::AbstractMatrix{CT}, sf, eng, out, item::NTuple{4, Int}, plan, nb,
     axis::Tuple, ::Val{D}, ::Val{W}, ::Val{Po}, ::Val{N}, ::Val{Ns},
 ) where {OT, CT, D, W, Po, N, Ns}
     axis_edges, na, second_axis = axis
-    I, J = item[1], item[2]
-    out = _pair_inverse!(scratch, eng.fwd[I], eng.fwd[J], eng.columns)
+    I, J, part, n_parts = item
     s, su, P = eng.s, eng.su, eng.P
     T = eltype(su.spacing)
     strides = SFC._lag_strides(P)
     tr = eng.transport
-    @inbounds for H in SFC._pair_lags(s, su, I, J, eng.r_max)
-        h = Tuple(H)
+    lags = SFC._pair_lags(s, su, I, J, eng.r_max)
+    @inbounds for li in part:n_parts:length(lags)
+        h = Tuple(lags[li])
         v = SFC._lag_visit(sf, s, su, I, J, h, plan, nb, Val(D), Val(1), Val(0))
         v === nothing && continue
         b, r2, factor, geometry, self_reverse = v
@@ -1079,35 +1142,49 @@ function _transform_sweep!(
     sums, counts, backend::CB.AbstractExecutionBackend, sf, data, s, dist_be, plan, nb, ::Val{D}, ::Val{V},
     ::Val{K}, valid, weights, tag, axis, workspace; forward = _kept_forward(workspace, 1, 1),
 ) where {D, V, K}
-    eng = _transform_prepare(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag; forward, workspace)
+    eng = _transform_prepare(sf, data, s, dist_be, Val(D), Val(V), Val(K), valid, weights, tag; forward, workspace,
+                             stage_backend = _stage_backend(backend))
     make_scratch, done = _inverse_scratch(eng, length(eng.columns), workspace, backend)
     try
-        _transform_pairs!(sums, counts, backend, sf, eng, plan, nb, axis, make_scratch, Val(D), Val(V), Val(K))
+        _transform_pairs!(sums, counts, backend, sf, eng, plan, nb, axis, make_scratch, workspace, Val(D), Val(V),
+                          Val(K))
     finally
         done()
     end
     return nothing
 end
 
-function _transform_pairs!(sums, counts, backend, sf, eng, plan, nb, axis, make_scratch, ::Val{D}, ::Val{V},
-                           ::Val{K}) where {D, V, K}
-    s = eng.s
+function _transform_pairs!(sums, counts, backend, sf, eng, plan, nb, axis, make_scratch, workspace, ::Val{D},
+                           ::Val{V}, ::Val{K}) where {D, V, K}
+    item! = _item_body(sf, eng, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
+    lags = out -> _lag_body(sf, eng, out, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
+    _sweep_pairs!(sums, counts, backend, eng, make_scratch, workspace, item!, lags)
+    return nothing
+end
+
+"""
+    _sweep_pairs!(sums, counts, backend, engine, make_scratch, workspace, item!, lags)
+
+Every slab pair of `engine` on `backend`. With at least as many pairs as tasks, a task takes whole pairs
+(`item!`, its inverse scratch from `make_scratch()`). With fewer, a pair's lags cannot be read until its inverse
+is done: the tasks fill the pair's columns, one plan on as many threads inverts them, and the tasks share the
+pair's lags (`lags(out)`).
+"""
+function _sweep_pairs!(sums, counts, backend, eng, make_scratch, workspace, item!, lags)
     n_tasks = SFC.sweep_tasks(backend)
-    pairs = SFC.sweep_items(s, eng.r_max, 1, false)
+    pairs = SFC.sweep_items(eng.s, eng.r_max, 1, false)
     if length(pairs) >= n_tasks
-        body! = _item_body(sf, eng, plan, nb, axis, Val(D), Val(V), Val(K), eng.vW, eng.vP, eng.vN)
-        SFC.sweep_reduce!(sums, counts, backend, pairs, make_scratch, body!)
+        SFC.sweep_reduce!(sums, counts, backend, pairs, make_scratch, item!)
         return nothing
     end
-    # Fewer slab pairs than tasks: a pair's lags cannot be read until its inverse is done, so the
-    # inverse runs once here and the tasks split that pair's lags over the columns it produced.
-    scratch = make_scratch()
+    ncols = length(eng.columns)
+    F1 = eng.fwd[1][1]
+    split = SFC._kept!(workspace, :inverse_split, (typeof(F1), size(F1), eng.P, ncols, n_tasks),
+                       _split_inverse_plan(eng, ncols, n_tasks))
     for it in pairs
-        out = _pair_inverse!(scratch, eng.fwd[it[1]], eng.fwd[it[2]], eng.columns)
-        shares = [(it[1], it[2], p, n_tasks) for p in 1:n_tasks]
-        share! = _lag_body(sf, eng, out, plan, nb, axis, Val(D), Val(V), Val(K),
-                           eng.vW, eng.vP, eng.vN)
-        SFC.sweep_reduce!(sums, counts, backend, shares, () -> nothing, share!)
+        out = _pair_inverse_split!(split, eng.fwd[it[1]], eng.fwd[it[2]], eng.columns, backend)
+        SFC.sweep_reduce!(sums, counts, backend, [(it[1], it[2], p, n_tasks) for p in 1:n_tasks], () -> nothing,
+                          lags(out))
     end
     return nothing
 end

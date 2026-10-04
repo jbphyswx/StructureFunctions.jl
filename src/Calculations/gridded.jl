@@ -701,6 +701,29 @@ sweep_reduce!(sums, counts, backend::CB.AbstractExecutionBackend, items, make_sc
 function threaded_sweep_reduce! end
 
 """
+    sweep_foreach(backend, items, make_scratch, body!)
+
+Run `body!(item, scratch)` over every item on a backend of this process; a threaded backend gives each task its own
+`make_scratch()` and deals the items out on demand.
+"""
+function sweep_foreach(::CB.AbstractSerialBackend, items, make_scratch, body!)
+    scratch = make_scratch()
+    foreach(it -> body!(it, scratch), items)
+    return nothing
+end
+
+sweep_foreach(::CB.AbstractThreadedBackend, items, make_scratch, body!) =
+    threaded_sweep_foreach(items, make_scratch, body!)
+
+function sweep_foreach(::CB.AbstractAutoBackend, items, make_scratch, body!)
+    _gridded_threads() > 1 && return threaded_sweep_foreach(items, make_scratch, body!)
+    return sweep_foreach(CB.SerialBackend(), items, make_scratch, body!)
+end
+
+"""Threaded [`sweep_foreach`](@ref); the OhMyThreads extension supplies the method."""
+function threaded_sweep_foreach end
+
+"""
     transform_engine(sf, data, schedule, distance_bins, ::Val{D}, ::Val{V}, ::Val{K}, valid, weights, tag; to = identity, workspace = nothing, slice = (1, 1))
 
 The transform engine's prepared state for a field: the forward transforms of every masked, weighted
@@ -804,6 +827,15 @@ tuple of buffers releases each member. The transform extensions add methods for 
 """
 _release_plan!(x::Union{Tuple, NamedTuple}) = foreach(_release_plan!, x)
 _release_plan!(_) = nothing
+
+"""
+    _fft_plan_options(x, threads) -> NamedTuple
+
+The keywords the transform engine plans an FFT of arrays like `x` with, for a plan `threads` threads execute. The
+engine runs its transforms on the backend's tasks itself, so an FFT provider's extension sets the plan's thread count
+here.
+"""
+_fft_plan_options(_, ::Int) = (;)
 
 """Release every plan `ws` holds and drop what it keeps; `ws` is not used again."""
 function _release_plans!(ws::TransformWorkspace)

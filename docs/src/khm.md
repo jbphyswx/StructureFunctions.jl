@@ -6,9 +6,8 @@ CurrentModule = StructureFunctions
 
 The Kármán–Howarth–Monin exact laws relate a third-order structure function in the inertial range to
 a dissipation or flux. `StructureFunctions.KHM` inverts them on already-binned results and reports
-the residual of each law. Every law is stated for one specific moment, and the laws are not
-interchangeable: applying the four-fifths law to `S3SF` returns a number that is wrong by exactly
-`5/3` and looks entirely reasonable.
+the residual of each law. Each law is stated for one moment: the four-fifths law applied to `S3SF`
+returns `5/3` times the dissipation.
 
 | law | moment | operator | relation | inversion |
 |---|---|---|---|---|
@@ -30,6 +29,8 @@ This analytic fixture checks the normalization of the diagnostic. For measured
 data, pass the longitudinal third-order moment at each positive separation.
 A constant estimate over a chosen interval must be assessed against the flow's
 physical assumptions and sampling uncertainty.
+
+![Each law inverting the moment it is stated for, and the sign of the third-order moment for two fields](assets/sf_exact_laws.png)
 
 
 The residual of the planar isotropy relation between the longitudinal and transverse second-order

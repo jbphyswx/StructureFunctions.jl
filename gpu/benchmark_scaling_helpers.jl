@@ -1,21 +1,18 @@
 """
     benchmark_scaling_helpers.jl
 
-Reusable timing helpers for GPU workspace, slice-batch, and scaling collectors.
-Included by `benchmark_slices.jl`, `benchmark_workspace.jl`, and `collect_benchmark_assets.jl`.
-
-Expects `CUDA` to be loaded by the including script when using `CUDA.CUDABackend()`.
+Timing helpers of `benchmark_slices.jl`, `benchmark_workspace.jl` and `collect_benchmark_assets.jl`, which load
+`CUDA` before including this file.
 """
 
 using ComputationalBackends: ComputationalBackends as CB
-using StructureFunctions: Calculations as SFC, HelperFunctions as SFH
+using StructureFunctions: Calculations as SFC
 using StructureFunctions: StructureFunctionSumsAndCounts
-using Statistics: Statistics
 
 """
     gpu_sync!(backend)
 
-Synchronize after GPU kernel launches when using CUDA.
+Wait for the work queued on a CUDA `backend`.
 """
 function gpu_sync!(backend)
     if backend isa CUDA.CUDABackend
@@ -25,157 +22,111 @@ function gpu_sync!(backend)
 end
 
 """
-    run_timed_gpu(f, backend; warmup=1) -> Float64
+    run_timed_gpu(f, backend; repeat=5) -> Float64
 
-Warm up `warmup` times, then time one call; synchronize CUDA when applicable.
+Seconds of the fastest of `repeat` synchronized calls of `f`, after one untimed call and half a second of calls that
+bring the device to its working clock.
 """
-function run_timed_gpu(f, backend; warmup::Int = 1)
-    for _ in 1:warmup
-        f()
-    end
+function run_timed_gpu(f, backend; repeat::Int = 5)
+    f()
     gpu_sync!(backend)
-    t = @elapsed begin
+    t0 = time()
+    while time() - t0 < 0.5
         f()
         gpu_sync!(backend)
     end
-    return t
-end
-
-"""
-    bench_cpu_serial_sf(x_arr, u_arr, bins, sft; warmup=1) -> Float64
-
-Time one **serial** CPU structure-function call (GPU doc assets — always 1 logical CPU worker).
-Thread scaling is measured separately in `benchmark/benchmark_scaling.jl`.
-"""
-function bench_cpu_serial_sf(x_arr, u_arr, bins, sft; warmup::Int = 1)
-    for _ in 1:warmup
-        SFC.calculate_structure_function(
-            sft, x_arr, u_arr, bins;
-            backend = CB.SerialBackend(),
-        )
-    end
-    return @elapsed SFC.calculate_structure_function(
-        sft, x_arr, u_arr, bins;
-        backend = CB.SerialBackend(),
-    )
-end
-
-"""
-    bench_gpu_sf_with_workspace(backend, x_dev, u_dev, bins, sft, ws; warmup=2, repeat=3) -> Float64
-
-Time GPU calls reusing `GPUSFWorkspace`. Runs `warmup` untimed launches, then `repeat`
-timed launches; returns the **median** (sub-ms GPU times are noisy with `repeat=1`).
-"""
-function bench_gpu_sf_with_workspace(
-    backend, x_dev, u_dev, bins, sft, ws; warmup::Int = 2, repeat::Int = 3,
-)
-    for _ in 1:warmup
-        SFC.gpu_calculate_structure_function(
-            sft, backend, x_dev, u_dev, bins, UInt32;
-            workspace = ws, geometry = SFH.FlatGeometry{size(u_dev, 1)}(),
-        )
-    end
-    gpu_sync!(backend)
-    times = Float64[]
-    for _ in 1:repeat
-        t = @elapsed SFC.gpu_calculate_structure_function(
-            sft, backend, x_dev, u_dev, bins, UInt32;
-            workspace = ws, geometry = SFH.FlatGeometry{size(u_dev, 1)}(),
-        )
+    return minimum(1:repeat) do _
+        t = time_ns()
+        f()
         gpu_sync!(backend)
-        push!(times, t)
+        (time_ns() - t) / 1e9
     end
-    return Statistics.median(times)
 end
 
 """
-    bench_gpu_sf_fresh(backend, x_dev, u_dev, bins, sft; warmup=1) -> Float64
+    bench_cpu_serial_sf(x_arr, u_arr, bins, sft; repeat=7) -> Float64
 
-Time one GPU call without workspace (fresh device histogram alloc each call).
+Seconds of the fastest of `repeat` serial CPU calls, after one untimed call.
 """
-function bench_gpu_sf_fresh(backend, x_dev, u_dev, bins, sft; warmup::Int = 1)
-    for _ in 1:warmup
-        SFC.gpu_calculate_structure_function(
-            sft, backend, x_dev, u_dev, bins, UInt32; geometry = SFH.FlatGeometry{size(u_dev, 1)}()
-        )
-    end
-    gpu_sync!(backend)
-    t = @elapsed SFC.gpu_calculate_structure_function(
-        sft, backend, x_dev, u_dev, bins, UInt32; geometry = SFH.FlatGeometry{size(u_dev, 1)}()
-    )
-    gpu_sync!(backend)
-    return t
+function bench_cpu_serial_sf(x_arr, u_arr, bins, sft; repeat::Int = 7)
+    f() = SFC.calculate_structure_function(sft, x_arr, u_arr, bins, UInt32, StructureFunctionSumsAndCounts;
+                                           backend = CB.SerialBackend())
+    f()
+    return minimum(_ -> @elapsed(f()), 1:repeat)
 end
 
 """
-    bench_naive_slice_loop!(backend, x_host, u_host, bins, sft, sums, counts; T, warmup=1)
+    bench_gpu_sf_with_workspace(backend, x_dev, u_dev, bins, sft, ws) -> Float64
 
-Per-slice host upload + fresh GPU alloc each time step.
+Seconds per public GPU call reusing the `GPUSFWorkspace` `ws` ([`run_timed_gpu`](@ref)).
 """
-function bench_naive_slice_loop!(
-    backend, x_host, u_host, bins, sft, sums, counts; T::Int, warmup::Int = 1,
-)
+bench_gpu_sf_with_workspace(backend, x_dev, u_dev, bins, sft, ws) =
+    run_timed_gpu(() -> SFC.calculate_structure_function(sft, x_dev, u_dev, bins, UInt32, StructureFunctionSumsAndCounts;
+                                                         backend = CB.GPUBackend(backend), workspace = ws), backend)
+
+"""
+    bench_gpu_sf_fresh(backend, x_dev, u_dev, bins, sft) -> Float64
+
+Seconds per public GPU call without a workspace ([`run_timed_gpu`](@ref)).
+"""
+bench_gpu_sf_fresh(backend, x_dev, u_dev, bins, sft) =
+    run_timed_gpu(() -> SFC.calculate_structure_function(sft, x_dev, u_dev, bins, UInt32, StructureFunctionSumsAndCounts;
+                                                         backend = CB.GPUBackend(backend)), backend)
+
+"""
+    bench_naive_slice_loop!(backend, x_host, u_host, bins, sft, sums, counts; T)
+
+Seconds for one public GPU call per time step, each uploading its slice and copying its result back.
+"""
+function bench_naive_slice_loop!(backend, x_host, u_host, bins, sft, sums, counts; T::Int)
     function run!()
         for t in 1:T
-            res = SFC.gpu_calculate_structure_function(
-                sft, backend, x_host[:, :, t], u_host[:, :, t], bins, UInt32; geometry = SFH.FlatGeometry{size(u_host, 1)}()
-            )
+            res = SFC.calculate_structure_function(sft, x_host[:, :, t], u_host[:, :, t], bins, UInt32,
+                                                   StructureFunctionSumsAndCounts; backend = CB.GPUBackend(backend))
             sums[:, t] .= Array(res.sums)
             counts[:, t] .= Array(res.counts)
         end
     end
-    return run_timed_gpu(run!, backend; warmup = warmup)
+    return run_timed_gpu(run!, backend)
 end
 
 """
-    bench_slice_driver!(backend, x_batch, u_batch, bins, sft, sums, counts, ws; warmup=1)
+    bench_slice_driver!(backend, x_batch, u_batch, bins, sft, sums, counts, ws)
 
-Batch slice driver API (`gpu_calculate_structure_function_batch!`) into device buffers `sums`,
-`counts`, which hold one call's histogram afterwards.
+Seconds for one public batch call (`calculate_structure_function_batch!`) into the device buffers `sums`, `counts`,
+which hold one call's histogram afterwards.
 """
-function bench_slice_driver!(
-    backend, x_batch, u_batch, bins, sft, sums, counts, ws; warmup::Int = 1,
-)
+function bench_slice_driver!(backend, x_batch, u_batch, bins, sft, sums, counts, ws)
     function run!()
         fill!(sums, 0)
         fill!(counts, 0)
-        SFC.gpu_calculate_structure_function_batch!(
-            sums, counts, sft, backend, x_batch, u_batch, bins; workspace = ws, geometry = SFH.FlatGeometry{size(u_batch, 1)}(),
-        )
+        SFC.calculate_structure_function_batch!(sums, counts, sft, x_batch, u_batch, bins;
+                                                backend = CB.GPUBackend(backend), workspace = ws)
     end
-    return run_timed_gpu(run!, backend; warmup = warmup)
+    return run_timed_gpu(run!, backend)
 end
 
 """
-    bench_cpu_serial_slice_loop!(x_batch, u_batch, bins, sft, sums, counts; T, warmup=1)
+    bench_cpu_serial_batch!(x_batch, u_batch, bins, sft, sums, counts; repeat=7) -> Float64
 
-Serial CPU per-slice loop (same 1-worker policy as [`bench_cpu_serial_sf`](@ref)).
+Seconds of the fastest of `repeat` serial CPU batch calls (`calculate_structure_function_batch!`) into `sums`,
+`counts`, after one untimed call; the buffers hold one call's histogram afterwards.
 """
-function bench_cpu_serial_slice_loop!(x_batch, u_batch, bins, sft, sums, counts; T::Int, warmup::Int = 1)
+function bench_cpu_serial_batch!(x_batch, u_batch, bins, sft, sums, counts; repeat::Int = 7)
     function run!()
-        for t in 1:T
-            res = SFC.calculate_structure_function(
-                sft, @view(x_batch[:, :, t]), @view(u_batch[:, :, t]), bins, StructureFunctionSumsAndCounts;
-                backend = CB.SerialBackend(),
-            )
-            sums[:, t] .= res.sums
-            counts[:, t] .= res.counts
-        end
+        fill!(sums, 0)
+        fill!(counts, 0)
+        SFC.calculate_structure_function_batch!(sums, counts, sft, x_batch, u_batch, bins;
+                                                backend = CB.SerialBackend())
     end
-    for _ in 1:warmup
-        run!()
-    end
-    return @elapsed run!()
+    run!()
+    return minimum(_ -> @elapsed(run!()), 1:repeat)
 end
 
 """
     stage_device_arrays(backend, x_host, u_host, ::Type{FT})
 
-Upload host `(3, N)` CPU arrays to device when `backend` is CUDA.
-
-Use `CUDA.CuArray{FT}(...)` — not `CUDA.cu(...)` — so Float64 host data stays
-Float64 on device (on many setups `CUDA.cu` silently promotes to the device default,
-often Float32).
+The `(3, N)` host arrays on the device of a CUDA `backend`, in precision `FT`; other backends take them as they are.
 """
 function stage_device_arrays(backend, x_host, u_host, ::Type{FT}) where {FT}
     size(x_host, 1) == 3 || throw(ArgumentError("x must have shape (3, N); got $(size(x_host))"))
@@ -194,7 +145,7 @@ end
 """
     stage_device_batch(backend, x_host, u_host, ::Type{FT})
 
-Upload host `(3, N, T)` batch to device when using CUDA (same `CuArray{FT}` rule).
+The `(3, N, T)` host batch on the device of a CUDA `backend`, in precision `FT`; other backends take it as it is.
 """
 function stage_device_batch(backend, x_host, u_host, ::Type{FT}) where {FT}
     size(x_host, 1) == 3 || throw(ArgumentError("x batch must have shape (3, N, T); got $(size(x_host))"))

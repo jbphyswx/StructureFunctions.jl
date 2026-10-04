@@ -247,3 +247,50 @@ Test.@testset "a call's own workspace finalizes its plans on return" begin
         Test.@test (backend, gc == rc, isapprox(gs, rs; rtol = 1e-10, atol = 1e-12)) == (backend, true, true)
     end
 end
+
+# A single grid has one slab pair: the backend's tasks share its forward blocks, its columns and its lags, and the
+# plans they execute stay single-threaded whatever FFTW's own thread count is.
+Test.@testset "the transform shares one grid's work over the backend's tasks, under any FFTW thread count" begin
+    tag = SB.FastFourierTransformSpectralBackend()
+    Random.seed!(17)
+    close(a, b) = isapprox(a, b; rtol = 1e-10, atol = 1e-10 * maximum(abs, b; init = 0.0))
+    before = FFTW.get_num_threads()
+    try
+        grids = (((64, 48), (true, true)), ((40, 30), (false, true)))
+        for fftw in unique((1, Threads.nthreads())), (dims, periodic) in grids
+            FFTW.set_num_threads(fftw)
+            s = SFC.UniformLagSchedule(dims, 1 ./ dims, periodic)
+            bins = collect(range(0.0, 0.3; length = 9))
+            nb = length(bins) - 1
+            u = randn(2, prod(dims))
+            for sf in (SFT.L2SFType(), SFT.S3SFType())
+                ref = (zeros(nb), zeros(Int, nb))
+                SFC.gridded_lag_sweep!(ref..., sf, u, s, bins, Val(2))
+                for backend in (CB.SerialBackend(), CB.ThreadedBackend()), ws in (nothing, SFC.TransformWorkspace())
+                    got = (zeros(nb), zeros(Int, nb))
+                    SFC.gridded_sweep!(got..., sf, u, s, bins, Val(2), tag; backend, workspace = ws)
+                    Test.@test got[2] == ref[2]
+                    Test.@test close(got[1], ref[1])
+                end
+            end
+            for nt in (2, 2 * Threads.nthreads() + 1)
+                ub = randn(2, prod(dims), nt)
+                ref = (zeros(nb, nt), zeros(Int, nb, nt))
+                SFC.gridded_lag_sweep_batch!(ref..., SFT.L2SFType(), ub, s, bins, Val(2), Val(1), Val(0))
+                got = (zeros(nb, nt), zeros(Int, nb, nt))
+                SFC.gridded_sweep_batch!(got..., SFT.L2SFType(), ub, s, bins, Val(2), Val(1), Val(0), tag;
+                                         backend = CB.ThreadedBackend())
+                Test.@test got[2] == ref[2]
+                Test.@test close(got[1], ref[1])
+            end
+            serial = (zeros(2, 2, nb), zeros(Int, nb))
+            SFC.gridded_tensor_sweep!(serial..., Val(2), u, s, bins, Val(2), tag; backend = CB.SerialBackend())
+            threaded = (zeros(2, 2, nb), zeros(Int, nb))
+            SFC.gridded_tensor_sweep!(threaded..., Val(2), u, s, bins, Val(2), tag; backend = CB.ThreadedBackend())
+            Test.@test threaded[2] == serial[2]
+            Test.@test close(threaded[1], serial[1])
+        end
+    finally
+        FFTW.set_num_threads(before)
+    end
+end

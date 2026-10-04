@@ -1,35 +1,83 @@
 # Spectra, fluxes, and fitting
 
-A structure-function transform requires a stated relationship between the sampled statistic and the target spectrum or flux. Dimensionality, isotropy, finite separation coverage, and normalization affect that relationship.
+A transform of a structure function assumes a relationship between the sampled statistic and the target spectrum or
+flux: the dimension, isotropy, the separations covered and the normalization all enter it. Each function below states
+its assumptions in its reference entry.
 
-## Spectrum calculations
+## Spectra
 
-`isotropic_spectrum(result, k, Val(D))` transforms an isotropic second-order trace in dimension `D`. The two-dimensional kernels require `Bessels`. `shell_spectrum` converts a spectral density into a shell-integrated representation; the integration measure must match the chosen dimension and wavenumber convention.
+`isotropic_spectrum(result, k, Val(D); asymptote)` transforms the second-order trace `S2SF` into the spectral density
+of an isotropic field in `D = 1, 2, 3` dimensions, normalized so that `shell_spectrum` integrates over `k` to the
+variance. `asymptote` is the large-separation limit of the structure function (by default its largest value). The
+integral runs from zero separation, where the structure function vanishes, by the trapezoid rule. The two-dimensional
+kernel needs `Bessels`.
 
-`gridded_spectrum` uses correlations resolved over grid lags. Boundary conditions and tapering affect the available correlations. Mask normalization recovers a mean over observed pairs, whose relation to an unobserved field depends on the sampling process.
+```@example spectra
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
+σ2, ℓ = 1.7, 0.8
+r = collect(range(0.0, 16.0; length = 4000))
+s2 = @. 2σ2 * (1 - exp(-r^2 / (2ℓ^2)))          # S₂ of a Gaussian correlation
+k = collect(range(0.1, 6.0; length = 60))
+P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, k, Val(3); asymptote = 2σ2)
+exact = @. σ2 * ℓ^3 * exp(-k^2 * ℓ^2 / 2) / (2π)^(3 / 2)
+maximum(abs, P .- exact) / maximum(exact)
+```
 
-`helmholtz_spectra` separates rotational and divergent contributions using longitudinal and transverse second-order functions. Spherical harmonic calculations instead use degree-indexed coefficients and the corresponding spherical kernels.
+On a grid, `gridded_spectrum(u, schedule, Val(D), tag)` gives the spectrum through the lag-space correlation of the
+grid's own pairs, and `shell_average` reduces it to shells in `|k|`. With cells missing it is an estimate from the
+pairs that remain.
 
-## Flux calculations
+![A k^(-5/3) spectrum recovered from S₂ on a grid, and the isotropic transform against a closed form](assets/sf_spectra.png)
 
-`spectral_flux` supports the package's implemented advective and third-order relations. `S3SFType()` computes `δu_L‖δu‖²`; `L3SFType()` computes `δu_L³`. Select the relation appropriate to the input operator. `enstrophy_flux` uses the corresponding vorticity statistic.
+![The spectrum with 10, 30 and 50 % of the cells missing, and the error of a zero-filled FFT](assets/sf_missing_data.png)
 
-Finite integration limits and boundary terms are part of these estimators. They must be included when interpreting a fitted or transformed flux. The API reference states each convention.
+## The Helmholtz split
 
-## Fit a forward model
+In two dimensions the longitudinal and transverse second-order functions separate the rotational and divergent
+parts of the field: `D_rot = D_TT + I` and `D_div = D_LL − I`, with `I(r) = ∫₀^r (D_TT − D_LL)/s ds`.
+`helmholtz_decompose_2d` evaluates the integral from zero separation by the trapezoid rule over the bin midpoints; the
+single-pass calculation returns it for point fields. `helmholtz_spectra(L2, T2, k)` transforms both parts to
+spectra.
 
-The fitting interfaces compare measured structure functions with a forward model on chosen wavenumber bins:
+![The Helmholtz split of a solenoidal field, and the rotational and divergent spectra](assets/sf_helmholtz_spectra.png)
 
-- `SpectrumForwardModel` models a trace spectrum.
-- `HelmholtzForwardModel` models rotational and divergent spectra jointly.
-- `FluxForwardModel` models transfer and integrated flux.
+## Covariance
 
-`fit_spectrum`, `fit_helmholtz_spectra`, and `fit_flux` select the appropriate model. `RegularizedLeastSquares` uses supplied data covariance and a prior covariance. `NonNegativeLeastSquares` constrains fitted coefficients. `SegmentedPowerLaw` fits a continuous piecewise power law through the optional `LsqFit` extension.
+For a second-order stationary field `C(r) = C(0) − D(r)/2`. `covariance(result, variance)` returns `C(r)` given the
+variance, which the structure function does not contain. `covariance_matrix(points, separations, C)` evaluates the
+covariance at every pair of points and checks the matrix for positive semi-definiteness; a covariance function
+sampled too coarsely fails the check.
 
-Supply covariance estimates consistent with the estimator and sampling process. Pairs that share observations are generally dependent. A variance inferred from a value histogram also depends on the resolution of its value bins; it is not a replacement for a sampling model.
+![C(r) recovered from D(r), and the most negative eigenvalue of the covariance matrix by sampling](assets/sf_covariance.png)
 
-`tradeoff_curve` reports fit residuals and solution norms across prior strengths. `select_segments` selects the smallest observed residual among the requested segment counts; it does not apply a complexity penalty.
+## Spectral fluxes
 
-## Validation and production examples
+`spectral_flux(result, K)` evaluates the scale-to-scale flux from the advective structure function
+`⟨δu · δ𝓐ᵤ⟩` (`VectorDotSFType(1, 2)` on `Fields(vectors = (u, 𝓐u))`) through
+`Π(K) = −(K/2)∫₀^R ⟨δu · δ𝓐ᵤ⟩ J₁(Kr) dr`, and from the third-order functions `S3SFType`, `L3SFType` and
+`MixedSFType{1,0,2}` with the boundary term each relation leaves at the last separation. `enstrophy_flux` gives the
+enstrophy flux of a two-dimensional flow from the same advective structure function. The integrals run from zero
+separation by the trapezoid rule and need `Bessels`.
 
-Small analytic checks belong in the test suite. Full synthetic-field experiments, fitting sweeps, and figure generation run separately from the documentation build. See [Validation](validation.md) for the available checks and their assumptions.
+![The advective structure function, its flux, and the flux of a constant against its closed form](assets/sf_advective_flux.png)
+
+## Fitting
+
+A fit compares the measured structure function with a forward model of a spectrum or a flux on chosen wavenumber
+bins:
+
+- `SpectrumForwardModel` maps a shell spectrum to `S2`, `HelmholtzForwardModel` the gradient and curl spectra to
+  `D_LL` and `D_TT`, and `FluxForwardModel` a piecewise-constant flux to `S3`.
+- `fit_spectrum`, `fit_helmholtz_spectra` and `fit_flux` build the model and solve it with
+  `RegularizedLeastSquares(prior)` (with a data covariance `W`, returning the posterior covariance),
+  `NonNegativeLeastSquares()`, or a `SegmentedPowerLaw` (with `LsqFit`).
+- `tradeoff_curve` reports the residual and the solution norm across prior strengths; `select_segments` picks the
+  segment count with the smallest residual.
+- `independent_pair_variance(joint)` estimates the variance of each bin's mean from a value-binned joint histogram
+  with integer counts, assuming independent pairs. Pairs sharing a point are correlated, which it does not account
+  for, and the spread inside a value cell is unseen, so the result is a lower bound.
+- A result with batch axes is fitted slice by slice; `W` is one covariance for all slices or a `SliceCovariances`.
+
+![A spectrum fitted to S₂ by a segmented power law, and a flux fitted to S₃ with and without a prior](assets/sf_fits.png)
+
+[Validation](validation.md) lists the analytic checks behind each of these functions.

@@ -9,12 +9,13 @@ The batch-axis chunks and the number of outer-index chunks each is split into.
     return bchunks, max(1, n_tasks ÷ n_bchunks)
 end
 
-"""Accumulator axes after the leading batch axis, per workspace kind."""
+"""Accumulator axes after the leading batch axis, per workspace kind; a value axis has a column below and above its
+edges."""
 @inline _bl_accum_tail(::Val{:sf1d}, n_bins::Int, ::Int) = (n_bins,)
-@inline _bl_accum_tail(::Val{:joint2d}, n_bins::Int, n_val::Int) = (n_bins, n_val)
+@inline _bl_accum_tail(::Val{:joint2d}, n_bins::Int, n_val::Int) = (n_bins, n_val + 2)
 @inline _bl_accum_tail(::Val{:single_pass}, n_bins::Int, ::Int) = (SINGLE_PASS_N, n_bins)
 @inline _bl_accum_tail(::Val{:single_pass_2d}, n_bins::Int, n_val::Int) =
-    (SINGLE_PASS_N, n_bins, n_val)
+    (SINGLE_PASS_N, n_bins, n_val + 2)
 
 """
     CPUSFWorkspace{kind}(x, u, distance_bins[, value_bins][, CT]; backend = SerialBackend())

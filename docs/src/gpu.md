@@ -213,9 +213,9 @@ those is invisible to it.
 
 ## Benchmarks and figures
 
-The figures below show problem-size scaling — one device against the serial CPU, sweeping
-`N`, and one device sweeping the slice count `T` — not strong or weak scaling. They are regenerated on a
-CUDA device with `gpu/collect_benchmark_assets.jl` followed by
+The first figure times one device against one CPU core over the number of points; the second times `T`
+snapshots as one batch call on one CPU core, as one device call per snapshot, and as one device batch call. Every
+call is a public entry. They are regenerated on a CUDA device with `gpu/collect_benchmark_assets.jl` followed by
 `docs/generate_assets/generate_gpu_figures.jl`; the parity figure (`KA.CPU()` against serial) with
 `docs/generate_assets/generate_assets.jl`. CPU thread scaling is in `benchmark/benchmark_scaling.jl`.
 

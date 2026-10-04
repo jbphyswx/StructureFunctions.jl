@@ -193,7 +193,7 @@ function generate_helmholtz_spectra_figure()
     edges = collect(10 .^ range(-2, log10(8.0); length = n_bins + 1))
     mids = SF.midpoints(edges)
     counts = ones(UInt32, n_bins)
-    kq = collect(range(1.0, 60.0; length = 250))
+    kq = collect(range(0.05, 6.0; length = 250))
 
     # a Gaussian-correlated 2-D solenoidal field: D_TT = d(r D_LL)/dr, so D_div ≡ 0
     D_LL = @. 2 * (1 - exp(-mids^2 / 2))

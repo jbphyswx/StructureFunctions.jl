@@ -827,6 +827,12 @@ function SFC.threaded_sweep_reduce!(
     return nothing
 end
 
+function SFC.threaded_sweep_foreach(items::AbstractVector, make_scratch, body!)
+    isempty(items) && return nothing
+    _greedy_reduce((a, _) -> a, () -> (nothing, make_scratch()), (_, scratch, it) -> body!(it, scratch), items)
+    return nothing
+end
+
 # --- Tensor structure functions ---
 
 # Each task accumulates the round-robin chunks of the outer index it takes into its own buffers; the partials add

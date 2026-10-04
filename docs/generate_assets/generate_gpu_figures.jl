@@ -1,19 +1,17 @@
 """
     generate_gpu_figures.jl
 
-Plot GPU benchmark JSON into docs/src/assets (no GPU required).
+Plot `gpu/benchmark_results/assets_latest.json` into `docs/src/assets`; needs no GPU.
 
-Run from repo root:
-    julia --project=docs/generate_assets docs/generate_assets/generate_gpu_figures.jl
+      pkg> activate gpu 
+    julia> include("gpu/collect_benchmark_assets.jl")                          # on a GPU allocation
+      pkg> activate docs/generate_assets 
+    julia> include("docs/generate_assets/generate_gpu_figures.jl")
 
-Requires `gpu/benchmark_results/assets_latest.json` from:
-    julia --project=gpu gpu/collect_benchmark_assets.jl
-
-Figures produced (honest names — not HPC strong/weak GPU scaling):
-  • gpu_problem_size_scaling.png  — 1 GPU vs serial CPU, sweep N
-  • gpu_slice_batch_scaling.png   — slice-batch API, sweep T at fixed N_SLICE
-
-True GPU strong/weak scaling (multi-GPU) is not generated; see gpu/collect_multi_gpu_scaling.jl.
+Figures:
+  • gpu_problem_size_scaling.png — one GPU against one CPU core, over the number of points
+  • gpu_slice_batch_scaling.png  — T snapshots: the batch entry on one CPU core and on the GPU, and one GPU call per
+    host snapshot
 """
 
 using JSON: JSON
@@ -28,176 +26,79 @@ function load_payload()
     return JSON.parsefile(JSON_PATH)
 end
 
-"""Read JSON section; accept alternate keys from older collector runs."""
-function _section(payload, key::String, alternate_keys...)
-    haskey(payload, key) && return payload[key]
-    for lk in alternate_keys
-        haskey(payload, lk) && return payload[lk]
-    end
-    return []
-end
-
-function _speedup(row)
-    return get(row, "speedup_cpu_over_gpu", get(row, "speedup", NaN))
-end
-
-function _rows_by_dtype(rows, dtype::String)
-    return sort(filter(r -> r["dtype"] == dtype, rows), by = r -> r["N"])
-end
-
-function _sorted_by_key(rows, key::String)
-    return sort(rows, by = r -> r[key])
-end
+_rows(rows, dtype::String, key::String) = sort(filter(r -> r["dtype"] == dtype, rows), by = r -> r[key])
+_col(rows, key::String) = Float64[r[key] for r in rows]
 
 function _log_ylim(vals...)
-    flat = filter(x -> x > 0, vcat(collect.(vals)...))
-    isempty(flat) && return nothing
-    lo, hi = extrema(flat)
+    lo, hi = extrema(filter(x -> x > 0, vcat(collect.(vals)...)))
     return (lo * 0.7, hi * 1.4)
 end
 
-"""Linear x-axis with ticks only at measured abscissae (integer labels, no 10^n)."""
-function _axis_data_ticks!(ax, xs; pad::Float64 = 0.06)
+"""Logarithmic x-axis with ticks at the measured abscissae."""
+function _log_ticks!(ax, xs)
     u = sort(unique(Float64.(xs)))
-    length(u) == 1 && (u = [u[1] * 0.9, u[1], u[1] * 1.1])
-    lo, hi = extrema(u)
-    span = max(hi - lo, lo * 0.05)
-    CM.xlims!(ax, lo - span * pad, hi + span * pad)
+    CM.xlims!(ax, first(u) / 1.15, last(u) * 1.15)
     ax.xticks = (u, string.(Int.(u)))
-    return u
-end
-
-"""Warn when Float32 GPU time looks like first-call JIT (>> Float64 at same N)."""
-function _warn_gpu_jit_outliers!(f32, f64)
-    f64_by_n = Dict(r["N"] => r["gpu_elapsed_s"] for r in f64)
-    for r in f32
-        n = r["N"]
-        t32 = r["gpu_elapsed_s"]
-        t64 = get(f64_by_n, n, nothing)
-        isnothing(t64) && continue
-        if t32 > 5 * t64 && t32 > 0.01
-            @warn "GPU Float32 at N=$n looks like JIT/outlier" gpu_f32_s=t32 gpu_f64_s=t64 hint="Re-run collect_benchmark_assets.jl (session warmup + median timing)."
-        end
-    end
     return nothing
 end
 
-function _config_note(payload)
-    dev = get(get(payload, "device", Dict()), "device", "GPU")
-    return "1× $dev vs serial CPU — thread scaling: see CPU strong/weak figures"
-end
+_device(payload) = payload["device"]["device"]
 
-"""Place title (+ optional subtitle) in a nested header row; return first axis row index."""
-function _figure_header!(fig, title::String, subtitle::String = "")
-    if isempty(subtitle)
-        CM.Label(fig[0, 1:2], title; fontsize = 15, font = :bold, halign = :left)
-        CM.rowsize!(fig.layout, 0, CM.Fixed(38))
-        return 1
-    end
+"""Title and subtitle in a header row above the axes."""
+function _figure_header!(fig, title::String, subtitle::String)
     header = CM.GridLayout()
     fig[0, 1:2] = header
     CM.Label(header[1, 1], title; fontsize = 15, font = :bold, halign = :left, tellwidth = false)
     CM.Label(header[2, 1], subtitle; fontsize = 10, halign = :left, tellwidth = false)
     CM.rowgap!(header, 10)
     CM.rowsize!(fig.layout, 0, CM.Auto())
-    return 1
+    return nothing
 end
 
 function plot_problem_size_scaling!(payload)
-    rows = _section(payload, "problem_size_scaling", "strong_scaling")
-    isempty(rows) && return
-
-    n_unique = length(unique(r["N"] for r in rows))
-    if n_unique < 6
-        @warn "Problem-size scaling has only $n_unique N value(s)" n_list=get(get(payload, "config", Dict()), "N_list", nothing) hint="Re-run collect_benchmark_assets.jl (default N: 4000,6000,8000,12000,16000,20000)."
-    end
-
-    f32 = _rows_by_dtype(rows, "Float32")
-    f64 = _rows_by_dtype(rows, "Float64")
-    isempty(f32) && isempty(f64) && return
-    _warn_gpu_jit_outliers!(f32, f64)
-
-    N_all = sort(unique(vcat([r["N"] for r in f32], [r["N"] for r in f64])))
-    N_f32 = Float64[r["N"] for r in f32]
-    N_f64 = Float64[r["N"] for r in f64]
-    cpu_f32 = Float64[r["cpu_elapsed_s"] for r in f32]
-    gpu_f32 = Float64[r["gpu_elapsed_s"] for r in f32]
-    cpu_f64 = Float64[r["cpu_elapsed_s"] for r in f64]
-    gpu_f64 = Float64[r["gpu_elapsed_s"] for r in f64]
-    sp_f32 = Float64[_speedup(r) for r in f32]
-    sp_f64 = Float64[_speedup(r) for r in f64]
+    rows = payload["problem_size_scaling"]
+    f32, f64 = _rows(rows, "Float32", "N"), _rows(rows, "Float64", "N")
+    N32, N64 = _col(f32, "N"), _col(f64, "N")
+    cpu32, gpu32 = _col(f32, "cpu_elapsed_s"), _col(f32, "gpu_elapsed_s")
+    cpu64, gpu64 = _col(f64, "cpu_elapsed_s"), _col(f64, "gpu_elapsed_s")
 
     fig = CM.Figure(size = (980, 800), fontsize = 13)
-    r0 = _figure_header!(
-        fig,
-        "Problem-size scaling (single GPU, 3D longitudinal 2nd-order SF)",
-        _config_note(payload),
-    )
+    _figure_header!(fig, "One GPU and one CPU core over the number of points",
+                    "$(_device(payload)); 3-D longitudinal S₂, 20 distance bins; the GPU calls reuse a workspace")
 
-    ax_t = CM.Axis(fig[r0, 1:2],
-        xlabel = "N (points)",
-        ylabel = "Elapsed time (s)",
-        yscale = CM.log10,
-        title = "Wall time vs N",
-    )
-    ylims_t = _log_ylim(cpu_f32, gpu_f32, cpu_f64, gpu_f64)
-    ylims_t !== nothing && CM.ylims!(ax_t, ylims_t...)
+    ax_t = CM.Axis(fig[1, 1:2], xlabel = "N (points)", ylabel = "seconds per call", xscale = CM.log10,
+                   yscale = CM.log10, title = "Time per call")
+    CM.ylims!(ax_t, _log_ylim(cpu32, gpu32, cpu64, gpu64)...)
+    ms, lw = 9, 2.25
+    l1 = CM.scatterlines!(ax_t, N32, cpu32; color = :steelblue, linewidth = lw, markersize = ms)
+    l2 = CM.scatterlines!(ax_t, N32, gpu32; color = :darkorange, linewidth = lw, markersize = ms, marker = :rect)
+    l3 = CM.scatterlines!(ax_t, N64, cpu64; color = (:steelblue, 0.55), linewidth = lw, markersize = ms,
+                          linestyle = :dash)
+    l4 = CM.scatterlines!(ax_t, N64, gpu64; color = (:darkorange, 0.55), linewidth = lw, markersize = ms,
+                          marker = :rect, linestyle = :dash)
+    CM.Legend(fig[1, 3], [l1, l2, l3, l4],
+              ["CPU, one core (Float32)", "GPU (Float32)", "CPU, one core (Float64)", "GPU (Float64)"]; fontsize = 11)
 
-    ms = 9
-    lw = 2.25
-    l_cpu_f32 = CM.lines!(ax_t, N_f32, cpu_f32; color = (:steelblue, 0.95), linewidth = lw)
-    CM.scatter!(ax_t, N_f32, cpu_f32; color = :steelblue, markersize = ms, marker = :circle)
-    l_gpu_f32 = CM.lines!(ax_t, N_f32, gpu_f32; color = (:darkorange, 0.95), linewidth = lw)
-    CM.scatter!(ax_t, N_f32, gpu_f32; color = :darkorange, markersize = ms, marker = :rect)
-    l_cpu_f64 = CM.lines!(ax_t, N_f64, cpu_f64; color = (:steelblue, 0.55), linewidth = lw, linestyle = :dash)
-    CM.scatter!(ax_t, N_f64, cpu_f64; color = (:steelblue, 0.55), markersize = ms, marker = :circle)
-    l_gpu_f64 = CM.lines!(ax_t, N_f64, gpu_f64; color = (:darkorange, 0.55), linewidth = lw, linestyle = :dash)
-    CM.scatter!(ax_t, N_f64, gpu_f64; color = (:darkorange, 0.55), markersize = ms, marker = :rect)
+    ax_sp = CM.Axis(fig[2, 1], xlabel = "N (points)", ylabel = "CPU time / GPU time", xscale = CM.log10,
+                    title = "CPU time over GPU time")
+    sp32, sp64 = cpu32 ./ gpu32, cpu64 ./ gpu64
+    CM.ylims!(ax_sp, 0.0, maximum(vcat(sp32, sp64)) * 1.08)
+    s1 = CM.scatterlines!(ax_sp, N32, sp32; color = :seagreen, linewidth = lw, markersize = ms)
+    s2 = CM.scatterlines!(ax_sp, N64, sp64; color = (:purple, 0.75), linewidth = lw, markersize = ms,
+                          marker = :diamond, linestyle = :dash)
+    CM.Legend(fig[2, 3], [s1, s2], ["Float32", "Float64"]; fontsize = 11)
 
-    CM.Legend(fig[r0, 3],
-        [l_cpu_f32, l_gpu_f32, l_cpu_f64, l_gpu_f64],
-        ["CPU serial (Float32)", "1 GPU + workspace (Float32)",
-         "CPU serial (Float64)", "1 GPU + workspace (Float64)"],
-        fontsize = 11,
-    )
+    gpu64_at = Dict(zip(N64, gpu64))
+    N_both = filter(n -> haskey(gpu64_at, n), N32)
+    ratio = Float64[gpu64_at[n] / gpu32[findfirst(==(n), N32)] for n in N_both]
+    ax_r = CM.Axis(fig[2, 2], xlabel = "N (points)", ylabel = "GPU Float64 / Float32 time", xscale = CM.log10,
+                   title = "GPU time in Float64 over Float32")
+    CM.hlines!(ax_r, [1.0]; color = (:gray, 0.45), linestyle = :dot, linewidth = 1)
+    CM.scatterlines!(ax_r, N_both, ratio; color = :purple, linewidth = lw, markersize = ms)
+    CM.ylims!(ax_r, min(0.9, minimum(ratio) * 0.92), maximum(ratio) * 1.08)
 
-    ax_sp = CM.Axis(fig[2, 1],
-        xlabel = "N (points)",
-        ylabel = "CPU time / GPU time",
-        title = "Crossover (not parallel efficiency)",
-    )
-    sp_all = vcat(sp_f32, sp_f64)
-    !isempty(sp_all) && CM.ylims!(ax_sp, 0.0, maximum(sp_all) * 1.08)
-
-    l_sp_f32 = CM.lines!(ax_sp, N_f32, sp_f32; color = :seagreen, linewidth = lw)
-    CM.scatter!(ax_sp, N_f32, sp_f32; color = :seagreen, markersize = ms)
-    l_sp_f64 = CM.lines!(ax_sp, N_f64, sp_f64; color = (:purple, 0.75), linewidth = lw, linestyle = :dash)
-    CM.scatter!(ax_sp, N_f64, sp_f64; color = (:purple, 0.75), markersize = ms, marker = :diamond)
-    CM.hlines!(ax_sp, [1.0]; color = (:gray, 0.45), linestyle = :dot, linewidth = 1)
-    CM.Legend(fig[2, 3], [l_sp_f32, l_sp_f64], ["Float32", "Float64"]; fontsize = 11)
-
-    f32_map = Dict(r["N"] => r["gpu_elapsed_s"] for r in f32)
-    f64_map = Dict(r["N"] => r["gpu_elapsed_s"] for r in f64)
-    N_common = sort(collect(intersect(keys(f32_map), keys(f64_map))))
-
-    ax_r = CM.Axis(fig[2, 2],
-        xlabel = "N (points)",
-        ylabel = "GPU Float64 / Float32 time",
-        title = "Float64 penalty (1 GPU)",
-    )
-    if !isempty(N_common)
-        ratio = Float64[f64_map[n] / f32_map[n] for n in N_common]
-        CM.hlines!(ax_r, [1.0]; color = (:gray, 0.45), linestyle = :dot, linewidth = 1)
-        CM.lines!(ax_r, Float64.(N_common), ratio; color = :purple, linewidth = lw)
-        CM.scatter!(ax_r, Float64.(N_common), ratio; color = :purple, markersize = ms)
-        r_lo, r_hi = extrema(ratio)
-        CM.ylims!(ax_r, max(0.85, r_lo * 0.92), r_hi * 1.08)
-    end
-
-    _axis_data_ticks!(ax_t, N_all)
-    _axis_data_ticks!(ax_sp, N_all)
-    !isempty(N_common) && _axis_data_ticks!(ax_r, N_common)
-
+    foreach(ax -> _log_ticks!(ax, vcat(N32, N64)), (ax_t, ax_sp))
+    _log_ticks!(ax_r, N_both)
     CM.rowsize!(fig.layout, 1, CM.Fixed(280))
     CM.rowsize!(fig.layout, 2, CM.Fixed(240))
     CM.colsize!(fig.layout, 3, CM.Fixed(210))
@@ -208,83 +109,51 @@ function plot_problem_size_scaling!(payload)
 end
 
 function plot_slice_batch_scaling!(payload)
-    rows = _section(payload, "slice_batch_scaling", "weak_slice_scaling")
-    isempty(rows) && return
-
-    N_slice = get(get(payload, "config", Dict()), "N_slice", "?")
-
-    f32 = _sorted_by_key(filter(r -> r["dtype"] == "Float32", rows), "T")
-    f64 = _sorted_by_key(filter(r -> r["dtype"] == "Float64", rows), "T")
-    isempty(f32) && isempty(f64) && return
-
-    T_f32 = Float64[r["T"] for r in f32]
-    cpu_f32 = Float64[r["cpu_loop_elapsed_s"] for r in f32]
-    naive_f32 = Float64[r["gpu_naive_elapsed_s"] for r in f32]
-    slice_f32 = Float64[r["gpu_slice_elapsed_s"] for r in f32]
-    T_f64 = Float64[r["T"] for r in f64]
-    cpu_f64 = Float64[r["cpu_loop_elapsed_s"] for r in f64]
-    slice_f64 = Float64[r["gpu_slice_elapsed_s"] for r in f64]
-    sp_f32 = Float64[r["speedup_slice_vs_cpu"] for r in f32]
-    sp_f64 = Float64[r["speedup_slice_vs_cpu"] for r in f64]
-
-    T_all = sort(unique(vcat(T_f32, T_f64)))
+    rows = payload["slice_batch_scaling"]
+    N_slice = payload["config"]["N_slice"]
+    f32, f64 = _rows(rows, "Float32", "T"), _rows(rows, "Float64", "T")
+    T32, T64 = _col(f32, "T"), _col(f64, "T")
+    cpu32, naive32, batch32 = _col(f32, "cpu_batch_elapsed_s"), _col(f32, "gpu_naive_elapsed_s"),
+                              _col(f32, "gpu_batch_elapsed_s")
+    cpu64, naive64, batch64 = _col(f64, "cpu_batch_elapsed_s"), _col(f64, "gpu_naive_elapsed_s"),
+                              _col(f64, "gpu_batch_elapsed_s")
 
     fig = CM.Figure(size = (980, 700), fontsize = 13)
-    r0 = _figure_header!(
-        fig,
-        "Slice-batch scaling (fixed N = $N_slice, vary T)",
-        "1 GPU — not HPC weak scaling; CPU serial per-slice loop vs GPU batch driver",
-    )
+    _figure_header!(fig, "T snapshots of N = $N_slice points",
+                    "$(_device(payload)); the batch entry on one CPU core and on the GPU, and one GPU call per host " *
+                    "snapshot")
 
-    ax_t = CM.Axis(fig[r0, 1:2],
-        xlabel = "T (time slices)",
-        ylabel = "Total elapsed (s)",
-        yscale = CM.log10,
-        title = "CPU loop vs GPU paths (1 GPU, shared y-axis)",
-    )
-    ylims_t = _log_ylim(cpu_f32, naive_f32, slice_f32, cpu_f64, slice_f64)
-    ylims_t !== nothing && CM.ylims!(ax_t, ylims_t...)
+    ax_t = CM.Axis(fig[1, 1:2], xlabel = "T (snapshots)", ylabel = "seconds", xscale = CM.log2, yscale = CM.log10,
+                   title = "Time for all T snapshots")
+    CM.ylims!(ax_t, _log_ylim(cpu32, naive32, batch32, cpu64, naive64, batch64)...)
+    lw, ms = 2.25, 8
+    l1 = CM.scatterlines!(ax_t, T32, cpu32; color = :steelblue, linewidth = lw, markersize = ms)
+    l2 = CM.scatterlines!(ax_t, T32, naive32; color = :crimson, linewidth = lw, markersize = ms, marker = :rect)
+    l3 = CM.scatterlines!(ax_t, T32, batch32; color = :darkorange, linewidth = lw, markersize = ms, marker = :diamond)
+    l4 = CM.scatterlines!(ax_t, T64, cpu64; color = (:steelblue, 0.5), linewidth = lw, markersize = ms,
+                          linestyle = :dash)
+    l5 = CM.scatterlines!(ax_t, T64, naive64; color = (:crimson, 0.5), linewidth = lw, markersize = ms,
+                          marker = :rect, linestyle = :dash)
+    l6 = CM.scatterlines!(ax_t, T64, batch64; color = (:darkorange, 0.5), linewidth = lw, markersize = ms,
+                          marker = :diamond, linestyle = :dash)
+    CM.Legend(fig[1, 3], [l1, l2, l3, l4, l5, l6],
+              ["CPU batch, one core (Float32)", "GPU call per snapshot (Float32)", "GPU batch (Float32)",
+               "CPU batch, one core (Float64)", "GPU call per snapshot (Float64)", "GPU batch (Float64)"];
+              fontsize = 10)
 
-    lw = 2.25
-    ms = 8
-    l1 = CM.lines!(ax_t, T_f32, cpu_f32; color = (:steelblue, 0.9), linewidth = lw)
-    CM.scatter!(ax_t, T_f32, cpu_f32; color = :steelblue, markersize = ms)
-    l2 = CM.lines!(ax_t, T_f32, naive_f32; color = (:crimson, 0.7), linewidth = lw, linestyle = :dash)
-    CM.scatter!(ax_t, T_f32, naive_f32; color = (:crimson, 0.7), markersize = ms, marker = :rect)
-    l3 = CM.lines!(ax_t, T_f32, slice_f32; color = :darkorange, linewidth = lw)
-    CM.scatter!(ax_t, T_f32, slice_f32; color = :darkorange, markersize = ms, marker = :diamond)
-    l4 = CM.lines!(ax_t, T_f64, cpu_f64; color = (:steelblue, 0.45), linewidth = lw, linestyle = :dashdot)
-    CM.scatter!(ax_t, T_f64, cpu_f64; color = (:steelblue, 0.45), markersize = ms)
-    l5 = CM.lines!(ax_t, T_f64, slice_f64; color = (:darkorange, 0.45), linewidth = lw, linestyle = :dashdot)
-    CM.scatter!(ax_t, T_f64, slice_f64; color = (:darkorange, 0.45), markersize = ms, marker = :diamond)
+    ax_sp = CM.Axis(fig[2, 1:2], xlabel = "T (snapshots)", ylabel = "CPU batch time / GPU batch time",
+                    xscale = CM.log2, title = "CPU batch time over GPU batch time")
+    sp32, sp64 = cpu32 ./ batch32, cpu64 ./ batch64
+    CM.ylims!(ax_sp, 0.0, maximum(vcat(sp32, sp64)) * 1.06)
+    s1 = CM.scatterlines!(ax_sp, T32, sp32; color = :seagreen, linewidth = lw, markersize = ms)
+    s2 = CM.scatterlines!(ax_sp, T64, sp64; color = (:purple, 0.7), linewidth = lw, markersize = ms,
+                          marker = :diamond, linestyle = :dash)
+    CM.Legend(fig[2, 3], [s1, s2], ["Float32", "Float64"]; fontsize = 11)
 
-    CM.Legend(fig[r0, 3],
-        [l1, l2, l3, l4, l5],
-        ["CPU loop (f32)", "GPU naive loop (f32)", "GPU slice driver (f32)",
-         "CPU loop (f64)", "GPU slice driver (f64)"],
-        fontsize = 10,
-    )
-
-    ax_sp = CM.Axis(fig[2, 1:2],
-        xlabel = "T (time slices)",
-        ylabel = "CPU loop / GPU slice driver",
-        title = "Batch driver vs CPU loop",
-    )
-    sp_all = vcat(sp_f32, sp_f64)
-    !isempty(sp_all) && CM.ylims!(ax_sp, 0.0, maximum(sp_all) * 1.06)
-    l_sp1 = CM.lines!(ax_sp, T_f32, sp_f32; color = :seagreen, linewidth = lw)
-    CM.scatter!(ax_sp, T_f32, sp_f32; color = :seagreen, markersize = ms)
-    l_sp2 = CM.lines!(ax_sp, T_f64, sp_f64; color = (:purple, 0.7), linewidth = lw, linestyle = :dash)
-    CM.scatter!(ax_sp, T_f64, sp_f64; color = (:purple, 0.7), markersize = ms, marker = :diamond)
-    CM.hlines!(ax_sp, [1.0]; color = (:gray, 0.45), linestyle = :dot)
-    CM.Legend(fig[2, 3], [l_sp1, l_sp2], ["Float32", "Float64"]; fontsize = 11)
-
-    _axis_data_ticks!(ax_t, T_all)
-    _axis_data_ticks!(ax_sp, T_all)
-
+    foreach(ax -> _log_ticks!(ax, vcat(T32, T64)), (ax_t, ax_sp))
     CM.rowsize!(fig.layout, 1, CM.Fixed(280))
     CM.rowsize!(fig.layout, 2, CM.Fixed(220))
-    CM.colsize!(fig.layout, 3, CM.Fixed(210))
+    CM.colsize!(fig.layout, 3, CM.Fixed(250))
 
     out = joinpath(ASSETS_DIR, "gpu_slice_batch_scaling.png")
     CM.save(out, fig, px_per_unit = 2)
@@ -296,7 +165,6 @@ function main()
     payload = load_payload()
     plot_problem_size_scaling!(payload)
     plot_slice_batch_scaling!(payload)
-    println("Done.")
 end
 
 main()

@@ -26,12 +26,11 @@ General user documentation lives in [`docs/src/gpu.md`](../docs/src/gpu.md).
 | `benchmark_2d_grid_scaling.jl` | SP2D vs repeated joint2D gate for selected `(n_dist, n_val)`. |
 | `benchmark_single_pass_2d_scaling.jl` | Single-pass 2D scaling sweep. |
 | `benchmark_value_axis_dispatch.jl` | SP2D value-bin digitize route comparison. |
-| `benchmark_workspace.jl` | Workspace reuse timing. |
-| `benchmark_slices.jl` | Slice-batch driver timing. |
+| `benchmark_workspace.jl` | One public 1-D call with and without a workspace. |
+| `benchmark_slices.jl` | T slices: one call per host slice, one call per device slice, one batch call. |
 | `benchmark_batch_matrix.jl` | Current auxiliary-axis batch matrix benchmark. |
-| `benchmark_scaling_helpers.jl` | Shared timing helpers for maintained benchmark and asset scripts. |
-| `collect_benchmark_assets.jl` | Generates `gpu/benchmark_results/assets_latest.json` for docs/README figures. |
-| `collect_multi_gpu_scaling.jl` | Stub that raises an error; multi-GPU scaling is not implemented. |
+| `benchmark_scaling_helpers.jl` | Timing helpers of the three scripts above. |
+| `collect_benchmark_assets.jl` | Writes `gpu/benchmark_results/assets_latest.json`, the data of the docs' GPU figures. |
 | `plot_cuda_parity.jl` | Optional docs parity figure; needs a CUDA device. |
 
 ### Profiling Helpers

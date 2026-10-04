@@ -20,6 +20,10 @@ result = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins;
 
 Each value averages `(δu ⋅ r̂)²` over pairs whose separation lies in `(left, right]`. Empty bins contain `NaN`. The output's separation units match `x`; values have the squared units of `u`.
 
+`T2SFType()` averages the transverse part `‖δu‖² − (δu ⋅ r̂)²` the same way. On a synthetic two-dimensional field:
+
+![Longitudinal and transverse second-order structure functions of one field](assets/sf_long_vs_trans.png)
+
 ## Raw sums and counts
 
 Request raw accumulators to combine measurements before averaging: pass the count type and the result type positionally after the bins.

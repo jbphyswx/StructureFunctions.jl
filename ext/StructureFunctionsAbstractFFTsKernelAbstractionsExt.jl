@@ -207,7 +207,8 @@ function _batch_buffers(F1, P, ncols::Int, Bb::Int, nt::Int)
     CF = eltype(F1)
     spec = fill!(similar(F1, size(F1)..., ncols * Bb * nt), zero(CF))
     out = fill!(similar(F1, real(CF), P..., ncols * Bb * nt), zero(real(CF)))
-    return (spec = spec, out = out, iplan = AbstractFFTs.plan_irfft(spec, P[1], 1:length(P)))
+    return (spec = spec, out = out,
+            iplan = AbstractFFTs.plan_irfft(spec, P[1], 1:length(P); SFC._fft_plan_options(spec, 1)...))
 end
 
 # A non-uniform FFT provider's spectra of every slice, gathered into the kernel's layout at one slab and every

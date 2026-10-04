@@ -1,36 +1,25 @@
-# Slice-batch benchmark: naive sequential GPU calls vs optimized manual vs slice driver
+# T time slices on one GPU: one call per host slice, one call per device slice with a workspace, and one batch call.
 #
-# Run on a GPU node (SLURM):
-#   julia --project=gpu gpu/benchmark_slices.jl
-#   T=8000 N=20000 julia --project=gpu gpu/benchmark_slices.jl
+# Run on a GPU allocation:
+#   ] activate gpu 
+#   > include("gpu/benchmark_slices.jl")
+#   > main(; T=8000, N=20000)
 
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 using Random: Random
 
 include(joinpath(@__DIR__, "benchmark_scaling_helpers.jl"))
 
-function bench_manual_loop!(
-    backend,
-    x_batch,
-    u_batch,
-    bins,
-    sft,
-    sums,
-    counts,
-    ws;
-    T::Int,
-)
+function bench_manual_loop!(backend, x_batch, u_batch, bins, sft, sums, counts, ws; T::Int)
     for t in 1:T
-        res = SFC.gpu_calculate_structure_function(
-            sft, backend, view(x_batch, :, :, t), view(u_batch, :, :, t), bins, UInt32;
-            workspace = ws, geometry = SFH.FlatGeometry{2}(),
-        )
+        res = SFC.calculate_structure_function(sft, view(x_batch, :, :, t), view(u_batch, :, :, t), bins, UInt32,
+                                               StructureFunctionSumsAndCounts; backend = CB.GPUBackend(backend),
+                                               workspace = ws)
         sums[:, t] .= Array(res.sums)
         counts[:, t] .= Array(res.counts)
     end
-    gpu_sync!(backend)
     return nothing
 end
 
@@ -42,7 +31,6 @@ function main()
     Random.seed!(42)
     N = parse(Int, get(ENV, "N", "20000"))
     T = parse(Int, get(ENV, "T", "8000"))
-    warmup = parse(Int, get(ENV, "WARMUP", "1"))
     FT = Float32
 
     if !CUDA.functional()
@@ -53,7 +41,7 @@ function main()
     if hasproperty(CUDA, :name)
         println("device: ", CUDA.name(CUDA.device()))
     end
-    println("N_points=$N  T=$T  warmup=$warmup")
+    println("N_points=$N  T=$T")
 
     bins = collect(FT, range(FT(0), FT(1.5), length = 65))
     NB = length(bins) - 1
@@ -82,17 +70,16 @@ function main()
     counts_c = KA.zeros(backend, UInt32, NB, T)
 
     println()
-    println("--- naive_loop: host slice each t, fresh device alloc every call ---")
-    t_naive = bench_naive_slice_loop!(backend, x_host, u_host, bins, sft, sums_a, counts_a; T = T, warmup = warmup)
+    println("--- naive_loop: one call per host slice ---")
+    t_naive = bench_naive_slice_loop!(backend, x_host, u_host, bins, sft, sums_a, counts_a; T = T)
 
-    println("--- manual_loop_ws: CuArray batch + views + GPUSFWorkspace (expert setup) ---")
+    println("--- manual_loop_ws: one call per device slice, with a GPUSFWorkspace ---")
     t_manual = run_timed_gpu(
-        () -> bench_manual_loop!(backend, x_batch, u_batch, bins, sft, sums_b, counts_b, ws; T = T),
-        backend; warmup = warmup,
+        () -> bench_manual_loop!(backend, x_batch, u_batch, bins, sft, sums_b, counts_b, ws; T = T), backend,
     )
 
     println("--- slice_driver: calculate_structure_function_batch! ---")
-    t_slice = bench_slice_driver!(backend, x_batch, u_batch, bins, sft, sums_c, counts_c, ws; warmup = warmup)
+    t_slice = bench_slice_driver!(backend, x_batch, u_batch, bins, sft, sums_c, counts_c, ws)
 
     sums_c_host, counts_c_host = Array(sums_c), Array(counts_c)
     maxΔ_manual = maximum(abs.(sums_b .- sums_c_host))

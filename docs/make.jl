@@ -1,7 +1,7 @@
 using Documenter: Documenter
 using StructureFunctions: StructureFunctions
 
-DocMeta.setdocmeta!(
+Documenter.DocMeta.setdocmeta!(
     StructureFunctions,
     :DocTestSetup,
     :(using StructureFunctions);
@@ -35,7 +35,7 @@ Documenter.makedocs(;
         "Mathematical definitions" => "theory.md",
         "Data and geometry" => "data.md",
         "Execution backends" => "backends.md",
-        "Recipes" => "examples.md",
+        "Calculations" => "examples.md",
         "Scientific analysis" => ["spectra.md", "khm.md"],
         "Validation and performance" => "validation.md",
         "API reference" => ["api/operators.md", "api/calculations.md", "api/results.md", "api/helpers.md", "api/internals.md"],
