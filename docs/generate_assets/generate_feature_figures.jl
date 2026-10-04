@@ -79,13 +79,11 @@ function generate_spectra_figure()
               label = "prescribed k^(-5/3)")
     CM.axislegend(ax1; position = :lb)
 
-    # Reporting the error directly, rather than overlaying two curves that would sit on top of one
-    # another: it states the accuracy, and it shows honestly where quadrature noise takes over.
     ax2 = CM.Axis(fig[1, 2]; yscale = log10, xlabel = "wavenumber k",
                   ylabel = "|P − P_exact| / max(P_exact)",
                   title = "Isotropic transform vs a closed form (Gaussian correlation)")
     for (D, col) in ((1, :dodgerblue), (2, :seagreen), (3, :crimson))
-        P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(D); asymptote = 2σ2)
+        P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(D); variance = σ2)
         exact = @. σ2 * ℓ^D * exp(-kq^2 * ℓ^2 / 2) / (2π)^(D / 2)
         rel = abs.(P .- exact) ./ maximum(exact)
         keep = rel .> 0
@@ -104,7 +102,6 @@ function generate_missing_data_figure()
     n = 64
     dx = 2π / n
     u = spectral_grid_field(n; kmin = 2, kmax = 24, seed = 11)
-    scal = u[1, :, :]
     sched = SFC.UniformLagSchedule((n, n), (dx, dx), (true, true))
     kaxes, full = SFC.gridded_spectrum(u, sched, Val(2),
                                        SB.FastFourierTransformSpectralBackend())
@@ -131,9 +128,12 @@ function generate_missing_data_figure()
         CM.lines!(ax1, mids[okm], Em[okm]; linewidth = 2, label = "$(round(Int, 100frac))% missing")
         push!(sf_err, maximum(abs, masked .- full) / maximum(full))
 
-        naive = copy(scal)
-        naive[.!reshape(valid, n, n)] .= 0.0
-        nspec = abs2.(FFTW.fft(naive)) ./ (n * n)^2
+        gaps = .!reshape(valid, n, n)
+        nspec = sum(1:2) do c
+            filled = u[c, :, :]
+            filled[gaps] .= 0.0
+            abs2.(FFTW.fft(filled))
+        end ./ (n * n)^2
         nspec[1, 1] = 0.0
         push!(naive_err, maximum(abs, nspec .- full .* dk) / maximum(full .* dk))
     end
@@ -144,6 +144,7 @@ function generate_missing_data_figure()
     CM.barplot!(ax2, (1:3) .- 0.18, sf_err; width = 0.34, label = "via the structure function")
     CM.barplot!(ax2, (1:3) .+ 0.18, naive_err; width = 0.34, label = "zero-fill the gaps and FFT")
     ax2.xticks = (1:3, ["10%", "30%", "50%"])
+    CM.ylims!(ax2, 0, 1.4 * maximum(vcat(sf_err, naive_err)))
     CM.axislegend(ax2; position = :lt)
 
     out = joinpath(ASSETS_DIR, "sf_missing_data.png")
@@ -212,8 +213,8 @@ function generate_helmholtz_spectra_figure()
               color = :crimson)
     CM.axislegend(ax1; position = :lt)
 
-    sr = SFC.helmholtz_spectra(h_rot, kq)
-    sd = SFC.helmholtz_spectra(h_div, kq)
+    sr = SFC.helmholtz_spectra(h_rot, kq; variance = 2.0)
+    sd = SFC.helmholtz_spectra(h_div, kq; variance = 2.0)
     ax2 = CM.Axis(fig[1, 2]; xlabel = "wavenumber k", ylabel = "spectral density",
                   title = "Rotational and divergent spectra")
     CM.lines!(ax2, kq, sr.rotational; linewidth = 3, label = "E_rot, solenoidal field")
@@ -309,13 +310,14 @@ function generate_gridded_algorithms_figure()
                                                         backend = CB.SerialBackend(), workspace = ws)))
     end
 
-    fig = CM.Figure(size = (1100, 430))
+    fig = CM.Figure(size = (1100, 470))
     ax1 = CM.Axis(fig[1, 1]; yscale = log10, xlabel = "separation r",
                   ylabel = "relative difference",
                   title = "Transform and lag sweep on one 96² grid")
-    CM.lines!(ax1, collect(mids0)[ok], max.(rel, 1e-17); linewidth = 3)
-    CM.hlines!(ax1, [1e-16]; color = :black, linestyle = :dash)
-    CM.text!(ax1, collect(mids0)[ok][3], 3e-16; text = "double-precision round-off")
+    nz = rel .> 0
+    CM.scatter!(ax1, collect(mids0)[ok][nz], rel[nz]; markersize = 9, label = "bins that differ")
+    CM.hlines!(ax1, [eps(Float64)]; color = :black, linestyle = :dash, label = "eps(Float64)")
+    CM.Legend(fig[2, 1], ax1; orientation = :horizontal, framevisible = false, tellwidth = false)
 
     ax2 = CM.Axis(fig[1, 2]; xscale = log10, yscale = log10, xlabel = "grid side n (n² cells)",
                   ylabel = "seconds per call, one thread", title = "Cost of each algorithm")
@@ -499,13 +501,14 @@ function generate_spherical_figure()
     o2, r2 = ratio(flat)
 
     fig = CM.Figure(size = (1100, 430))
-    ax1 = CM.Axis(fig[1, 1]; yscale = log10, xlabel = "separation (fraction of the range)",
+    ax1 = CM.Axis(fig[1, 1]; xlabel = "separation (fraction of the range)",
                   ylabel = "⟨δu_L²⟩ / ⟨‖δu‖²⟩",
                   title = "Solid-body rotation has no longitudinal increment")
-    CM.lines!(ax1, range(0, 1; length = count(o1)), max.(r1, 1e-30); linewidth = 3,
+    CM.lines!(ax1, range(0, 1; length = count(o1)), r1; linewidth = 3,
               label = "transported (geodesic frame)")
-    CM.lines!(ax1, range(0, 1; length = count(o2)), max.(r2, 1e-30); linewidth = 3,
+    CM.lines!(ax1, range(0, 1; length = count(o2)), r2; linewidth = 3,
               color = :crimson, label = "untransported (lon/lat as a plane)")
+    CM.ylims!(ax1, -0.05, 1.05)
     CM.axislegend(ax1; position = :rc)
 
     # zonal lat-lon fast path vs the unstructured pair loop, on the same grid
@@ -558,7 +561,8 @@ function generate_culling_figure()
     u = randn(2, N)
     fracs = [0.5, 0.2, 0.1, 0.05, 0.03]
     speed = Float64[]
-    exact = Bool[]
+    n_full = Float64[]
+    n_culled = Float64[]
     for f in fracs
         bins = collect(range(0.0, f; length = 16))
         full() = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
@@ -567,7 +571,8 @@ function generate_culling_figure()
                                                     culling = SFC.AlwaysCulling(), backend = CB.SerialBackend())
         a, b = full(), culled()
         push!(speed, best_time(full) / best_time(culled))
-        push!(exact, a.counts == b.counts)
+        push!(n_full, sum(a.counts))
+        push!(n_culled, sum(b.counts))
     end
 
     fig = CM.Figure(size = (1100, 430))
@@ -577,15 +582,17 @@ function generate_culling_figure()
     CM.scatterlines!(ax1, fracs, speed; linewidth = 3, markersize = 14)
     CM.hlines!(ax1, [1.0]; color = :black, linestyle = :dash)
 
-    ax2 = CM.Axis(fig[1, 2]; xlabel = "r_max / domain size", ylabel = "pair counts equal (1) or not (0)",
-                  title = "Pair counts with and without culling")
-    CM.barplot!(ax2, 1:length(fracs), Float64.(exact); color = :seagreen)
-    ax2.xticks = (1:length(fracs), string.(fracs))
-    CM.ylims!(ax2, 0, 1.3)
+    ax2 = CM.Axis(fig[1, 2]; xscale = log10, yscale = log10, xlabel = "r_max / domain size",
+                  ylabel = "pairs counted", title = "Pairs counted with and without culling")
+    CM.scatterlines!(ax2, fracs, n_full; linewidth = 6, markersize = 16, color = (:seagreen, 0.4),
+                     label = "full pair sweep")
+    CM.scatterlines!(ax2, fracs, n_culled; linewidth = 2, markersize = 8, color = :black, linestyle = :dash,
+                     label = "culled")
+    CM.axislegend(ax2; position = :lt)
 
     out = joinpath(ASSETS_DIR, "sf_culling.png")
     CM.save(out, fig)
-    println("  wrote $out  (speedups: $(round.(speed; digits=1)), all exact: $(all(exact)))")
+    println("  wrote $out  (speedups: $(round.(speed; digits=1)), counts equal: $(n_full == n_culled))")
 end
 
 # ─── Figure: covariance from a structure function ──────────────────────────
@@ -606,8 +613,8 @@ function generate_covariance_figure()
     CM.lines!(ax1, r, [σ2 * exp(-q^2 / (2ℓ^2)) for q in r]; linewidth = 2, color = :black,
               linestyle = :dash, label = "true covariance")
     CM.hlines!(ax1, [σ2]; color = :gray, linestyle = :dot)
-    CM.text!(ax1, 1.9, σ2 * 1.02; text = "variance C(0), supplied", color = :gray)
-    CM.axislegend(ax1; position = :rc)
+    CM.text!(ax1, 2.2, σ2 + 0.05; text = "variance C(0), supplied", color = :gray)
+    CM.axislegend(ax1; position = (1.0, 0.3))
 
     # interpolating a positive-definite kernel does not preserve positive-definiteness
     Random.seed!(31)
@@ -767,7 +774,7 @@ function generate_tensor_figure()
     CM.axislegend(ax1; position = :lt)
 
     ax2 = CM.Axis(fig[1, 2]; xlabel = "separation r", ylabel = "trace",
-                  title = "its trace is the scalar second-order entry")
+                  title = "Its trace and the scalar ⟨‖δu‖²⟩")
     CM.lines!(ax2, mids, T.values[1, 1, :] .+ T.values[2, 2, :]; linewidth = 6,
               color = (:seagreen, 0.35), label = "T₁₁ + T₂₂")
     CM.lines!(ax2, mids, s2.values; linewidth = 2, color = :black, linestyle = :dash,
@@ -922,14 +929,14 @@ function generate_slice_batch_figure()
     SFC.gridded_sweep_batch!(got, gotc, SFT.L2SFType(), u, sphere, bins_sphere, Val(2), Val(1), Val(0), tag)
     mids = SF.midpoints(bins_sphere)
 
-    fig = CM.Figure(size = (1150, 430))
+    fig = CM.Figure(size = (1150, 520))
     ax1 = CM.Axis(fig[1, 1]; xlabel = "snapshots T", ylabel = "seconds, one thread",
                   title = "T snapshots of one lat-lon grid")
     CM.scatterlines!(ax1, Float64.(Ts), [p[1] for p in t_sphere]; linewidth = 3, markersize = 11,
                      label = "lat-lon 120×60, one call per snapshot")
     CM.scatterlines!(ax1, Float64.(Ts), [p[2] for p in t_sphere]; linewidth = 3, markersize = 11,
                      label = "lat-lon 120×60, batch")
-    CM.axislegend(ax1; position = :lt)
+    CM.Legend(fig[2, 1], ax1; framevisible = false, tellwidth = false)
 
     gains = [p[1] / p[2] for p in t_sphere]
     gflat = [p[1] / p[2] for p in t_flat]
@@ -938,7 +945,7 @@ function generate_slice_batch_figure()
     CM.scatterlines!(ax2, Float64.(Ts), gains; linewidth = 3, markersize = 11, label = "lat-lon (frames per lag)")
     CM.scatterlines!(ax2, Float64.(Ts), gflat; linewidth = 3, markersize = 11, label = "uniform (a displacement and a bin)")
     CM.hlines!(ax2, [1.0]; color = :gray, linestyle = :dash)
-    CM.axislegend(ax2; position = :lt)
+    CM.Legend(fig[2, 2], ax2; framevisible = false, tellwidth = false)
 
     ax3 = CM.Axis(fig[1, 3]; xlabel = "separation (radians)", ylabel = "⟨δu_L²⟩",
                   title = "Each batch slice and its single-slice call")
@@ -946,10 +953,9 @@ function generate_slice_batch_figure()
         CM.lines!(ax3, mids, ref[:, t] ./ refc[:, t]; linewidth = 6, color = (:steelblue, 0.35))
         CM.lines!(ax3, mids, got[:, t] ./ gotc[:, t]; linewidth = 2, color = :black, linestyle = :dash)
     end
-    CM.text!(ax3, 0.04, 0.06;
-             text = "counts equal: $(gotc == refc), max |Δsum| / max |sum| = " *
-                    string(round(maximum(abs, got .- ref) / maximum(abs, ref); sigdigits = 1)),
-             space = :relative, fontsize = 13)
+    CM.Label(fig[2, 3], "counts equal: $(gotc == refc), max |Δsum| / max |sum| = " *
+                        string(round(maximum(abs, got .- ref) / maximum(abs, ref); sigdigits = 1));
+             fontsize = 13, tellwidth = false)
 
     out = joinpath(ASSETS_DIR, "sf_slice_batch.png")
     CM.save(out, fig)

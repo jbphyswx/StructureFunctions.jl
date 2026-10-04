@@ -179,8 +179,7 @@ function generate_parity_figure()
     sf_s = res_serial.values
     sf_t = res_thread.values
     rd   = SF.midpoints(res_serial.distance)
-    diff = abs.(sf_s .- sf_t)
-    rel  = diff ./ (abs.(sf_s) .+ 1e-300)
+    rel  = abs.(sf_s .- sf_t) ./ abs.(sf_s)
 
     fig = CM.Figure(size=(1100, 480), fontsize=14)
     CM.Label(fig[0, 1:2],
@@ -189,21 +188,19 @@ function generate_parity_figure()
 
     ax1 = CM.Axis(fig[1, 1],
         xlabel="Separation r", ylabel="S₂(r)",
-        xscale=CM.log10, yscale=CM.log10,
+        xscale=CM.log10,
         title="S₂(r) — Serial and Threaded (overlapping)")
     CM.lines!(ax1, rd, sf_s, label="Serial",   color=:steelblue, linewidth=2)
     CM.lines!(ax1, rd, sf_t, label="Threaded", color=:crimson,
         linewidth=1.5, linestyle=:dash)
-    CM.axislegend(ax1, position=:lt)
+    CM.axislegend(ax1, position=:rb)
 
     ax2 = CM.Axis(fig[1, 2],
         xlabel="Separation r", ylabel="|Serial − Threaded| / |Serial|",
         xscale=CM.log10,
         title="Relative difference per bin")
-    v = sf_s .> 0
-    CM.scatterlines!(ax2, rd[v], rel[v],
+    CM.scatterlines!(ax2, rd, rel,
         color=:darkorange, markersize=6, linewidth=1)
-    CM.hlines!(ax2, [1e-14]; color=:black, linewidth=0.8, linestyle=:dot)
 
     outpath = joinpath(ASSETS_DIR, "sf_backend_parity.png")
     CM.save(outpath, fig)
@@ -230,10 +227,10 @@ function generate_gpu_parity_figure()
         backend = CB.GPUBackend(KA.CPU()),
     )
 
-    rd = [(bin_edges[i] + bin_edges[i + 1]) / 2 for i in 1:(length(bin_edges) - 1)]
-    sf_s = res_serial.sums ./ max.(res_serial.counts, 1)
-    sf_g = res_gpu.sums ./ max.(res_gpu.counts, 1)
-    rel = abs.(sf_s .- sf_g) ./ (abs.(sf_s) .+ 1e-300)
+    rd = SF.midpoints(bin_edges)
+    sf_s = res_serial.sums ./ res_serial.counts
+    sf_g = res_gpu.sums ./ res_gpu.counts
+    rel = abs.(sf_s .- sf_g) ./ abs.(sf_s)
 
     fig = CM.Figure(size = (1100, 480), fontsize = 14)
     CM.Label(fig[0, 1:2],
@@ -241,25 +238,22 @@ function generate_gpu_parity_figure()
         fontsize = 16, font = :bold)
 
     ax1 = CM.Axis(fig[1, 1],
-        xlabel = "Bin center", ylabel = "Mean SF sample",
+        xlabel = "separation r", ylabel = "⟨δu_L²⟩",
         title = "Per-bin means (overlapping)")
     CM.lines!(ax1, rd, sf_s, label = "Serial CPU", color = :steelblue, linewidth = 2)
     CM.lines!(ax1, rd, sf_g, label = "KA.CPU GPU kernel", color = :crimson,
         linewidth = 1.5, linestyle = :dash)
-    CM.axislegend(ax1, position = :lt)
+    CM.axislegend(ax1, position = :lb)
 
     ax2 = CM.Axis(fig[1, 2],
-        xlabel = "Bin center", ylabel = "|Serial − KA.CPU| / |Serial|",
+        xlabel = "separation r", ylabel = "|Serial − KA.CPU| / |Serial|",
         title = "Relative difference per bin")
     CM.scatterlines!(ax2, rd, rel, color = :darkorange, markersize = 6, linewidth = 1)
-    CM.hlines!(ax2, [1e-12]; color = :black, linewidth = 0.8, linestyle = :dot)
 
     outpath = joinpath(ASSETS_DIR, "sf_gpu_parity.png")
     CM.save(outpath, fig)
     println("Saved: $outpath")
 end
-
-# ─── Execute ──────────────────────────────────────────────────────────────
 
 # ─── Figure 5: Single-pass invariants + Helmholtz ─────────────────────────
 
@@ -284,12 +278,12 @@ function generate_single_pass_figure()
         title="Six isotropic invariants + rotational/divergent — one pass")
 
     for k in (:S2, :L2, :T2, :S3, :L3, :L1T2)
-        v = abs.(getproperty(res, k).values) .+ 1e-12
+        v = abs.(getproperty(res, k).values)
         CM.scatterlines!(ax, rdist, v; label=string(k), markersize=5, linewidth=1.3)
     end
     h = res.helmholtz
-    rot = abs.(h.rotational_sums ./ max.(h.rotational_counts, 1)) .+ 1e-12
-    div = abs.(h.divergent_sums ./ max.(h.divergent_counts, 1)) .+ 1e-12
+    rot = abs.(h.rotational_sums ./ h.rotational_counts)
+    div = abs.(h.divergent_sums ./ h.divergent_counts)
     CM.lines!(ax, rdist, rot; label="Rotational", color=:black, linestyle=:dash, linewidth=2)
     CM.lines!(ax, rdist, div; label="Divergent", color=:gray, linestyle=:dashdot, linewidth=2)
     CM.axislegend(ax, position=:rb, nbanks=2)

@@ -3,6 +3,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using Random: Random
 using KernelAbstractions: KernelAbstractions as KA
+using OhMyThreads: OhMyThreads
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH,
     LinearBinEdges,
@@ -240,6 +241,62 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
             Test.@test batch_histograms_equal(
                 gpu_sp[k].sums, gpu_sp[k].counts, cpu_s[t, :, :, :], cpu_c[t, :, :, :]; atol = 1f-4,
             )
+        end
+    end
+end
+
+# A CPU batch is the single-slice entry run once per slice: every family, shared positions on both sides of the
+# slices-innermost threshold and positions varying per slice, weighted and culled, serial and threaded.
+Test.@testset "a CPU batch equals one call per slice in every family" begin
+    sft = SFT.L2SFType()
+    for FT in (Float64, Float32), D in (2, 3), shared in (true, false), B in (1, 3, SFC.BL_SLICE_LANES_MIN + 1),
+        weighted in (false, true), backend in (CB.SerialBackend(), CB.ThreadedBackend())
+        Random.seed!(hash((FT, D, shared, B, weighted)))
+        N = 200
+        db = collect(FT, range(0, 0.4; length = 9))
+        vb = collect(FT, range(0, 0.6; length = 7))
+        nd, nv = length(db) - 1, length(vb) - 1
+        x = shared ? rand(FT, D, N) : rand(FT, D, N, B)
+        u = rand(FT, D, N, B)
+        w = weighted ? rand(FT, N) .+ FT(0.5) : nothing
+        CT = weighted ? FT : UInt32
+        xs(t) = shared ? x : view(x, :, :, t)
+        tol = FT == Float32 ? 1e-4 : 1e-10
+        same(a, b) = isapprox(a, b; rtol = tol, atol = tol * maximum(abs, b; init = 0.0))
+        kw = (; backend, culling = SFC.AlwaysCulling(), weights = w)
+        one = (; backend = CB.SerialBackend(), weights = w)
+        got, ref = (zeros(FT, nd, B), zeros(CT, nd, B)), (zeros(FT, nd, B), zeros(CT, nd, B))
+        SFC.calculate_structure_function_batch!(got..., sft, x, u, db; kw...)
+        for t in 1:B
+            SFC.calculate_structure_function!(view(ref[1], :, t), view(ref[2], :, t), sft, xs(t), view(u, :, :, t), db;
+                                              one...)
+        end
+        Test.@test same(got[1], ref[1]) && same(got[2], ref[2])
+        for axis in (SFC.InvariantValueAxis(), SFC.SeparationAngleAxis(ones(FT, D)))
+            ab = axis isa SFC.InvariantValueAxis ? vb : collect(FT, range(-0.01, π / 2 + 0.01; length = 7))
+            got, ref = (zeros(FT, nd, nv, B), zeros(CT, nd, nv, B)), (zeros(FT, nd, nv, B), zeros(CT, nd, nv, B))
+            SFC.calculate_structure_function_2d_batch!(got..., sft, x, u, db, ab; second_axis = axis, kw...)
+            for t in 1:B
+                SFC.calculate_structure_function!(view(ref[1], :, :, t), view(ref[2], :, :, t), sft, xs(t),
+                                                  view(u, :, :, t), db, ab; second_axis = axis, one...)
+            end
+            Test.@test same(got[1], ref[1]) && same(got[2], ref[2])
+        end
+        got, ref = (zeros(FT, 6, nd, B), zeros(CT, 6, nd, B)), (zeros(FT, 6, nd, B), zeros(CT, 6, nd, B))
+        SFC.calculate_structure_functions_single_pass_batch!(got..., x, u, db; kw...)
+        for t in 1:B
+            SFC.calculate_structure_functions_single_pass!(view(ref[1], :, :, t), view(ref[2], :, :, t), xs(t),
+                                                           view(u, :, :, t), db; one...)
+        end
+        Test.@test same(got[1], ref[1]) && same(got[2], ref[2])
+        for vbs in (vb, ntuple(k -> collect(FT, range(-0.3 * k, 0.6; length = 7)), 6))
+            got, ref = (zeros(FT, 6, nd, nv, B), zeros(CT, 6, nd, nv, B)), (zeros(FT, 6, nd, nv, B), zeros(CT, 6, nd, nv, B))
+            SFC.calculate_structure_functions_single_pass_2d_batch!(got..., x, u, db, vbs; kw...)
+            for t in 1:B
+                SFC.calculate_structure_functions_single_pass_2d!(view(ref[1], :, :, :, t), view(ref[2], :, :, :, t),
+                                                                  xs(t), view(u, :, :, t), db, vbs; one...)
+            end
+            Test.@test same(got[1], ref[1]) && same(got[2], ref[2])
         end
     end
 end

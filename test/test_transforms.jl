@@ -79,12 +79,12 @@ Test.@testset "the transform recovers prescribed spectral lines" begin
     # with weight proportional to A².
     ks = (3.0, 7.0, 12.0)
     As = (1.0, 0.6, 0.3)
-    asym = sum(a^2 for a in As)
+    variance = sum(a^2 for a in As) / 2
     r = collect(range(0.0, 60.0; length = 6000))
     s2 = [sum(As[m]^2 * (1 - cos(ks[m] * rr)) for m in eachindex(ks)) for rr in r]
     kq = collect(range(0.5, 20.0; length = 400))
 
-    P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(1); asymptote = asym)
+    P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(1); variance)
     Test.@test length(P) == length(kq)
     Test.@test all(isfinite, P)
 
@@ -99,9 +99,8 @@ Test.@testset "the transform recovers prescribed spectral lines" begin
     expected = [a^2 for a in As]
     Test.@test peaks ./ peaks[1] ≈ expected ./ expected[1] rtol = 0.15
 
-    # the asymptote sets the k = 0 content, which the transform cannot report anyway, so getting it
-    # wrong may rescale the lines but must not move them
-    P_off = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(1); asymptote = 1.4 * asym)
+    # a wrong variance rings in k from the last separation, which may rescale the lines but must not move them
+    P_off = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(1); variance = 1.4 * variance)
     Test.@test P_off != P
     for k in ks
         window = abs.(kq .- k) .< 0.4
@@ -120,7 +119,7 @@ Test.@testset "the transform reproduces an analytic spectrum" begin
         s2 = @. 2σ2 * (1 - exp(-r^2 / (2ℓ^2)))
         kq = collect(range(1e-4, 40 / ℓ; length = 800))
 
-        P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(D); asymptote = 2σ2)
+        P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(D); variance = σ2)
         exact = @. σ2 * ℓ^D * exp(-kq^2 * ℓ^2 / 2) / (2π)^(D / 2)
         Test.@test maximum(abs, P .- exact) / maximum(exact) < 1e-5
         Test.@test all(>(-1e-3 * maximum(exact)), P)          # a density is non-negative
@@ -132,7 +131,7 @@ Test.@testset "the transform reproduces an analytic spectrum" begin
         # bin midpoints starting past zero: the integral still runs from the origin, where S₂ vanishes
         rl = SF.midpoints(SF.LogBinEdges(1e-3, 20ℓ, 2001))
         sl = @. 2σ2 * (1 - exp(-rl^2 / (2ℓ^2)))
-        Pl = SFC.isotropic_spectrum(SFT.S2SFType(), rl, sl, kq, Val(D); asymptote = 2σ2)
+        Pl = SFC.isotropic_spectrum(SFT.S2SFType(), rl, sl, kq, Val(D); variance = σ2)
         Test.@test maximum(abs, Pl .- exact) / maximum(exact) < 2e-5
     end
 
@@ -142,7 +141,7 @@ Test.@testset "the transform reproduces an analytic spectrum" begin
     widths = Float64[]
     for ℓ in (0.5, 1.0, 2.0)
         s2 = @. 2 * (1 - exp(-r^2 / (2ℓ^2)))
-        P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(3); asymptote = 2.0)
+        P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(3); variance = 1.0)
         half = findlast(>(maximum(P) / 2), P)
         push!(widths, kq[half])
     end
@@ -154,13 +153,14 @@ Test.@testset "the transform refuses what it cannot answer" begin
     r = collect(range(0.0, 10.0; length = 100))
     s2 = @. 1 - cos(2.0 * r)
     Test.@test_throws ArgumentError SFC.isotropic_spectrum(
-        SFT.S2SFType(), r, s2, [0.0, 1.0], Val(1))
+        SFT.S2SFType(), r, s2, [0.0, 1.0], Val(1); variance = 0.5)
     Test.@test_throws DimensionMismatch SFC.isotropic_spectrum(
-        SFT.S2SFType(), r, s2[1:end-1], [1.0], Val(1))
+        SFT.S2SFType(), r, s2[1:end-1], [1.0], Val(1); variance = 0.5)
     Test.@test_throws ArgumentError SFC.isotropic_spectrum(
-        SFT.S2SFType(), reverse(r), s2, [1.0], Val(1))
+        SFT.S2SFType(), reverse(r), s2, [1.0], Val(1); variance = 0.5)
     Test.@test_throws ArgumentError SFC.isotropic_spectrum(
-        SFT.L2SFType(), r, s2, [1.0], Val(1))
+        SFT.L2SFType(), r, s2, [1.0], Val(1); variance = 0.5)
+    Test.@test_throws UndefKeywordError SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, [1.0], Val(1))
 end
 
 Test.@testset "a result object transforms back to the wavenumber it was built from" begin
@@ -181,14 +181,14 @@ Test.@testset "a result object transforms back to the wavenumber it was built fr
 
         raw = SFC.calculate_structure_function(
             SFT.S2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
-        P = SFC.isotropic_spectrum(raw, kq, Val(D); asymptote = A^2)
+        P = SFC.isotropic_spectrum(raw, kq, Val(D); variance = A^2 / 2)
         Test.@test all(isfinite, P)
         Test.@test kq[argmax(P)] ≈ k0 rtol = 0.05
 
         # the averaged object carries the same information, so it must give the same answer
         avg = SFC.calculate_structure_function(
             SFT.S2SFType(), x, u, bins; backend = CB.SerialBackend())
-        Test.@test SFC.isotropic_spectrum(avg, kq, Val(D); asymptote = A^2) ≈ P
+        Test.@test SFC.isotropic_spectrum(avg, kq, Val(D); variance = A^2 / 2) ≈ P
     end
 end
 
@@ -204,7 +204,7 @@ Test.@testset "empty bins are dropped, not carried as NaN" begin
     sums[11] = 0.0
     raw = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), edges, sums, counts)
     kq = collect(range(0.5, 5.0; length = 50))
-    P = SFC.isotropic_spectrum(raw, kq, Val(3); asymptote = 20.0)
+    P = SFC.isotropic_spectrum(raw, kq, Val(3); variance = 10.0)
     Test.@test all(isfinite, P)
 
     allempty = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), edges, zeros(20),
@@ -501,37 +501,34 @@ Test.@testset "a covariance matrix is checked, not assumed, positive semi-defini
 end
 
 Test.@testset "the Helmholtz components transform to rotational and divergent spectra" begin
-    n_bins = 60
-    edges = collect(10 .^ range(-2, 0.5; length = n_bins + 1))
+    # a solenoidal field with C_LL = exp(-r²/2), C_TT = (1 - r²) exp(-r²/2): its D_TT overshoots its
+    # limit, and its whole spectrum is rotational, k² exp(-k²/2) / 2π
+    edges = collect(10 .^ range(-2, log10(8.0); length = 241))
     mids = SF.midpoints(edges)
-    counts = ones(UInt32, n_bins)
+    counts = ones(UInt32, length(mids))
+    D_LL = @. 2 * (1 - exp(-mids^2 / 2))
+    D_TT = @. 2 * (1 - (1 - mids^2) * exp(-mids^2 / 2))
+    kq = collect(range(0.05, 6.0; length = 250))
+    exact = @. kq^2 * exp(-kq^2 / 2) / (2π)
 
-    # a purely rotational 2-D field: D_TT = (5/3) D_LL for D_LL ∝ r^(2/3), so D_div ≡ 0
-    D_LL = [r^(2 / 3) for r in mids]
-    D_TT = (5 / 3) .* D_LL
     h = SFC.helmholtz_decompose_2d(edges, D_LL, counts, D_TT, counts)
+    spec = SFC.helmholtz_spectra(h, kq; variance = 2.0)
+    Test.@test maximum(abs, spec.rotational .- exact) < 1e-3 * maximum(exact)
+    Test.@test maximum(abs, spec.divergent) < 1e-6 * maximum(exact)
 
-    kq = collect(range(0.5, 40.0; length = 300))
-    rot_asym = maximum(h.rotational_sums)
-    div_asym = maximum(h.divergent_sums)
-    spec = SFC.helmholtz_spectra(h, kq; rotational_asymptote = rot_asym,
-                                 divergent_asymptote = div_asym)
-    Test.@test haskey(spec, :rotational) && haskey(spec, :divergent)
-    Test.@test all(isfinite, spec.rotational) && all(isfinite, spec.divergent)
+    L2 = SF.StructureFunction(SFT.L2SFType(), edges, D_LL)
+    T2 = SF.StructureFunction(SFT.T2SFType(), edges, D_TT)
+    pair = SFC.helmholtz_spectra(L2, T2, kq; variance = 2.0)
+    Test.@test pair.rotational ≈ spec.rotational rtol = 1e-12
+    Test.@test pair.divergent ≈ spec.divergent atol = 1e-12 * maximum(exact)
 
-    # D_rot + D_div = D_LL + D_TT exactly, and the transform is linear, so the two spectra must sum
-    # to the trace's — an identity that holds whatever the field is
-    trace = SFC.isotropic_spectrum(SFT.S2SFType(), collect(mids), D_LL .+ D_TT, kq, Val(2);
-                                   asymptote = rot_asym + div_asym)
-    Test.@test spec.rotational .+ spec.divergent ≈ trace rtol = 1e-10
-
-    # the field has no divergent part, so its divergent spectrum is small beside the rotational one
-    Test.@test maximum(abs, spec.divergent) < 0.1 * maximum(abs, spec.rotational)
-
-    # the mirror case: swapping the roles makes the field irrotational
+    # swapping the roles makes the field irrotational
     h2 = SFC.helmholtz_decompose_2d(edges, D_TT, counts, D_LL, counts)
-    spec2 = SFC.helmholtz_spectra(h2, kq)
-    Test.@test maximum(abs, spec2.rotational) < 0.1 * maximum(abs, spec2.divergent)
+    spec2 = SFC.helmholtz_spectra(h2, kq; variance = 2.0)
+    Test.@test maximum(abs, spec2.divergent .- exact) < 1e-3 * maximum(exact)
+    Test.@test maximum(abs, spec2.rotational) < 1e-6 * maximum(exact)
+
+    Test.@test_throws UndefKeywordError SFC.helmholtz_spectra(h, kq)
 
     # and each component is accepted by the invertibility gate on its own
     Test.@test SFC.assert_invertible(SFT.RotationalSecondOrderStructureFunctionType()) === nothing
@@ -562,8 +559,8 @@ Test.@testset "post-processing a result held in a device array family stays in i
     on_device(r) = SF.StructureFunctionSumsAndCounts(r.operator, r.distance, JLArray(r.sums), JLArray(r.counts))
     host_s2 = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), edges, (2 .- exp.(-mids ./ 2)) .* counts, counts)
     dev_s2 = on_device(host_s2)
-    for (f, args) in ((SFC.isotropic_spectrum, (Ks, Val(2))), (SFC.covariance, (2.0,)))
-        h, d = f(host_s2, args...), f(dev_s2, args...)
+    for f in (r -> SFC.isotropic_spectrum(r, Ks, Val(2); variance = 1.0), r -> SFC.covariance(r, 1.0))
+        h, d = f(host_s2), f(dev_s2)
         hv, dv = h isa Tuple ? last(h) : h, d isa Tuple ? last(d) : d
         Test.@test dv isa JLArray
         Test.@test Array(dv) ≈ hv rtol = 1e-12
@@ -581,8 +578,8 @@ Test.@testset "post-processing a result held in a device array family stays in i
     end
     host_l2 = SF.StructureFunctionSumsAndCounts(SFT.L2SFType(), edges, (1 .- exp.(-mids)) .* counts, counts)
     host_t2 = SF.StructureFunctionSumsAndCounts(SFT.T2SFType(), edges, (1 .- exp.(-mids ./ 3)) .* counts, counts)
-    h = SFC.helmholtz_spectra(host_l2, host_t2, Ks)
-    d = SFC.helmholtz_spectra(on_device(host_l2), on_device(host_t2), Ks)
+    h = SFC.helmholtz_spectra(host_l2, host_t2, Ks; variance = 1.0)
+    d = SFC.helmholtz_spectra(on_device(host_l2), on_device(host_t2), Ks; variance = 1.0)
     Test.@test d.rotational isa JLArray
     Test.@test Array(d.rotational) ≈ h.rotational rtol = 1e-12
     Test.@test Array(d.divergent) ≈ h.divergent rtol = 1e-12

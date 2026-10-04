@@ -6,11 +6,12 @@ its assumptions in its reference entry.
 
 ## Spectra
 
-`isotropic_spectrum(result, k, Val(D); asymptote)` transforms the second-order trace `S2SF` into the spectral density
+`isotropic_spectrum(result, k, Val(D); variance)` transforms the second-order trace `S2SF` into the spectral density
 of an isotropic field in `D = 1, 2, 3` dimensions, normalized so that `shell_spectrum` integrates over `k` to the
-variance. `asymptote` is the large-separation limit of the structure function (by default its largest value). The
-integral runs from zero separation, where the structure function vanishes, by the trapezoid rule. The two-dimensional
-kernel needs `Bessels`.
+variance. `variance` is the field's variance, summed over the components of a vector field: twice it is the limit the
+structure function approaches at large separation, which the transform subtracts before the integral stops at the
+last separation. The integral runs from zero separation, where the structure function vanishes, by the trapezoid
+rule. The two-dimensional kernel needs `Bessels`.
 
 ```@example spectra
 using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
@@ -18,7 +19,7 @@ using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 r = collect(range(0.0, 16.0; length = 4000))
 s2 = @. 2σ2 * (1 - exp(-r^2 / (2ℓ^2)))          # S₂ of a Gaussian correlation
 k = collect(range(0.1, 6.0; length = 60))
-P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, k, Val(3); asymptote = 2σ2)
+P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, k, Val(3); variance = σ2)
 exact = @. σ2 * ℓ^3 * exp(-k^2 * ℓ^2 / 2) / (2π)^(3 / 2)
 maximum(abs, P .- exact) / maximum(exact)
 ```
@@ -36,8 +37,9 @@ pairs that remain.
 In two dimensions the longitudinal and transverse second-order functions separate the rotational and divergent
 parts of the field: `D_rot = D_TT + I` and `D_div = D_LL − I`, with `I(r) = ∫₀^r (D_TT − D_LL)/s ds`.
 `helmholtz_decompose_2d` evaluates the integral from zero separation by the trapezoid rule over the bin midpoints; the
-single-pass calculation returns it for point fields. `helmholtz_spectra(L2, T2, k)` transforms both parts to
-spectra.
+single-pass calculation returns it for point fields. `helmholtz_spectra(L2, T2, k; variance)` and
+`helmholtz_spectra(h, k; variance)` transform both parts to spectra: the trace by `J₀` with the field's variance, and
+`D_LL − D_TT`, which decays on its own, by `J₂`.
 
 ![The Helmholtz split of a solenoidal field, and the rotational and divergent spectra](assets/sf_helmholtz_spectra.png)
 

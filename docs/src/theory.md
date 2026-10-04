@@ -32,12 +32,10 @@ polynomials. With ``\hat r = \vec r / |\vec r|`` the unit separation:
 perpendicular to it — in any dimension.
 
 The two readings of ``NT`` in the table differ only for ``D ≥ 3``, where the transverse plane has
-more than one direction; in two dimensions ``‖δu_T‖² = (δu·\hat n)²``. They cannot be made uniform:
-``‖δu_T‖^{NT}`` is a polynomial in ``δu`` only for even ``NT``, because ``‖δu_T‖²`` is one and an odd
-power needs its square root, so an odd ``NT`` admits the component reading alone. ``NT = 2`` is the
-energy because that is the quantity the second-order relations below are written in — the Helmholtz
-split and the ``D_{LL}``/``D_{TT}`` isotropy relations all take it. The per-component form has its own
-operator, `T2ComponentSFType`.
+more than one direction; in two dimensions ``‖δu_T‖² = (δu·\hat n)²``. ``‖δu_T‖^{NT}`` is a polynomial in
+``δu`` only for even ``NT``, so an odd ``NT`` reads the signed component. ``NT = 2`` is the transverse
+energy, the quantity of the Helmholtz split and of the ``D_{LL}``/``D_{TT}`` isotropy relations below; the
+per-component form is `T2ComponentSFType`.
 
 The signed transverse component ``δu · \hat n`` that the
 odd transverse operators read needs a direction ``\hat n`` perpendicular to ``\hat r``, which is a
@@ -79,7 +77,8 @@ S_2(r) = 2 ∫_0^∞ E(k) \left[1 - \mathrm{kernel}_D(kr)\right] dk, \qquad
 the kernel being the angular average of ``\cos(\vec k · \vec r)``. The package inverts this in
 `isotropic_spectrum` for the density ``P(k)`` over ``d^D k`` (``E = Ω_D k^{D-1} P``, `shell_spectrum`),
 and the ``k = 0`` mode is not recoverable: a structure function is blind to the mean and the
-variance. On a grid the same information is available **exactly** through the lag space
+variance. The variance enters as an input, since ``S_2`` approaches twice it at large separation and
+the integral stops at the last separation sampled. On a grid the same information is available **exactly** through the lag space
 (`gridded_spectrum`): the transform of the unbiased autocovariance ``C(h) = σ̂² - D(h)/2`` over every
 lag, with no direction averaged and no separation binned. With cells missing that is still the
 exact transform of the exact structure function, equal to the complete field's spectrum in
@@ -94,7 +93,7 @@ D_{LL} + D_{TT} = 2 ∫ (E_E + E_B)\,[1 - J_0(kr)]\,dk, \qquad
 D_{LL} - D_{TT} = 2 ∫ (E_E - E_B)\, J_2(kr)\,dk,
 ```
 
-inverted by `helmholtz_spectra(L2, T2, k)`. On a sphere the counterparts are Legendre and Wigner
+inverted by `helmholtz_spectra(L2, T2, k; variance)`. On a sphere the counterparts are Legendre and Wigner
 series: ``C_l = -π ∫_0^π D(σ) P_l(\cos σ) \sin σ\, dσ`` for a scalar or the trace, and
 ``C^E_l ∓ C^B_l`` from ``D_{LL} ∓ D_{TT}`` through ``d^l_{1,-1}`` and ``d^l_{11}``.
 
@@ -165,7 +164,7 @@ and the route returns the continuous rotation average exactly.
 
 For one-dimensional coordinates every bin of every point is one index range once the points are
 sorted, so the polynomial moments are prefix-sum differences of the monomials: exact, in
-``O(N \log N + N\, n_{\mathrm{bins}})`` rather than ``O(N^2)``. The CPU backends take this route for
+``O(N \log N + N\, n_{\mathrm{bins}})``. The CPU backends take this route for
 every polynomial operator.
 
 ### Scattered points by non-uniform FFT — soft bins
@@ -176,12 +175,11 @@ are pair sums with the periodic Dirichlet kernel of the mode set in place of a d
 **soft bin** of width about one cell of the mode grid, with sidelobes a `GaussianTaper` trades for
 width. This route (`ScatteredModesSchedule`, `ModeBinEdges`) is **not exact**; it converges to the
 hard-binned pair sum as the mode count grows. Its results carry `ModeBinEdges` and its counts are a
-kernel-weighted pair mass, not pair counts. It is selected only by passing the tag.
+kernel-weighted pair mass. It is selected only by passing the tag.
 
-## Fitting instead of inverting
+## Fitting spectra and fluxes
 
-The relations above invert a structure function directly. On sparse or noisy data an estimator with
-a stated prior is the alternative: a forward model from values on wavenumber bins to the structure
+For sparse or noisy data the package fits an estimator with a stated prior: a forward model from values on wavenumber bins to the structure
 function at the measured separations — `SpectrumForwardModel` for ``E(k)`` from ``S_2``,
 `HelmholtzForwardModel` for ``(E_E, E_B)`` from ``(D_{LL}, D_{TT})``, `FluxForwardModel` for a
 piecewise-constant flux ``F(k) = -ε + \sum_j ξ_j Δk_j H(k - k_j)`` from ``S_3``, exact for that
@@ -224,7 +222,7 @@ isometry, so the frame carried from ``A`` arrives at ``B`` rotated by exactly th
 azimuths. In this frame the components of an increment are the same whichever end the pair is read
 from, so the odd-rank tensor takes no reading sign on a sphere.
 
-### Why a flat frame is wrong, and by how much
+### The error of a flat frame
 
 Using one flat direction for both endpoints ignores the meridian convergence, the angle
 ``ψ ≈ (r/R)\tan φ`` between the two local frames: 0.9° at 100 km and 45° latitude, 9° at 1000 km,
@@ -246,7 +244,7 @@ gives ``D_{LL} = 0`` to round-off while a flat lon/lat frame puts a finite share
 - **Angle units follow the metric.** `Distances.Haversine` is degrees, `Distances.SphericalAngle` and
   `SphericalDistance` radians. Mixing them rescales every separation by about 57.
 - **Degenerate pairs are excluded.** Coincident points have no direction, and antipodal points are
-  joined by infinitely many great circles. Both are skipped rather than given a `NaN`.
+  joined by infinitely many great circles. Both are skipped.
 - **Precision.** Sub-metre separations on Earth need `Float64` input: at 45°, one `Float32` ulp of
   latitude is already about 4 m on the ground.
 - **Isotropy relations are planar.** The relation ``D_{TT} = \mathrm d(r D_{LL})/\mathrm dr``
@@ -259,7 +257,7 @@ theory predicts ``S_2(r) ∼ ε^{2/3} r^{2/3}`` and, more generally, ``S_n(r) �
 ``ζ_n = n/3``. Real turbulence is intermittent: the measured exponents deviate,
 ``ζ_n = n/3 + δ_n``, increasingly so for ``n > 3``, which is what the higher-order operators measure.
 A prescribed shell spectrum ``E(k) ∼ k^{-(ζ+1)}`` implies ``S_2 ∼ r^{ζ}`` — the two are one statement
-about a field, and the [Recipes](examples.md) shows both on the same data.
+about a field, and the [Calculations](examples.md) page shows both on the same data.
 
 ## References
 

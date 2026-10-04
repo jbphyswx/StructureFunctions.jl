@@ -1,10 +1,7 @@
 # Validation
 
-Each calculation is cross-checked against an independent reference. This page lists those oracles,
-strongest first, with what each one can and cannot catch.
-
-The ordering matters. An oracle that is exact to round-off catches a defect that a
-percent-level physical check never notices, such as a plausible number that is wrong by a constant
+Each calculation is cross-checked against an independent reference. The oracles below are listed from the
+tightest agreement to the loosest: an oracle exact to round-off also catches a result that is off by a constant
 factor.
 
 ## The oracles
@@ -15,10 +12,10 @@ factor.
 | 2 | Transform vs direct sweep | round-off | the two gridded algorithms against each other | `test/test_gridded_fft.jl` |
 | 3 | Gridded vs unstructured pair loop | exact counts | the whole gridded path against the reference loop | `test/test_gridded.jl` |
 | 3b | Separable transform vs sweep vs pair loop | exact counts, round-off | lat-lon and stretched grids on both algorithms and every backend | `test/test_gridded_separable.jl` |
-| 4 | Culled vs uncalled | exact counts | culling changes cost, never results | `test/test_cpu_pair_blocking.jl` |
+| 4 | Culled vs unculled | exact counts | culling changes cost, never results | `test/test_cpu_pair_blocking.jl` |
 | 5 | Backend agreement | round-off | serial, threaded, distributed and the distributed+threaded hybrid | `test/test_parallel_equivalence.jl` |
 | 5b | MPI agreement across ranks | round-off | every entry family on two ranks, with a serial and a threaded inner backend | `test/test_mpi.jl` |
-| 6 | Unit invariance | round-off | quantities that may not depend on a choice of unit | `test/test_known_truth.jl` |
+| 6 | Unit invariance | round-off | quantities independent of the unit of length | `test/test_known_truth.jl` |
 | 7 | Frame invariance | round-off | the tensor trace against the second-order SF | `test/test_known_truth.jl` |
 | 8 | Analytic zeros | machine zero | solid-body rotation, angular folding | `test/test_spherical_geometry.jl` |
 | 9 | Exact-law inversion | round-off | the inertial-range laws recover a prescribed constant | `test/test_known_truth.jl` |
@@ -58,7 +55,7 @@ D_{ab}(r) = A^2\, \hat{e}_a \hat{e}_b \left[1 - \cos(k\cdot r)\right],
 
 and every odd-order moment vanishes identically. On a periodic grid whose cell count is a multiple
 of the mode's period the average over cells *is* the average over a full period, so this holds to
-round-off rather than to a sampling tolerance.
+round-off.
 
 Distinct grid harmonics are orthogonal over the cells, so a superposition's cross terms cancel
 exactly and the single-mode form simply adds. Giving each mode two orthonormal polarisations
@@ -67,11 +64,9 @@ transverse projector, so ``\sum_p (\hat{e}_p\cdot\hat{r})^2 = 1 - (\hat{k}\cdot\
 makes a *prescribed spectrum* recoverable mode by mode, and the package reproduces it to a relative
 `1e-12`.
 
-One subtlety is worth stating, because it is easy to get wrong when building such a test field: the
-two polarisations of a single mode share a wavevector, so they are **not** orthogonal over the
-cells. Their cross term is traceless — it leaves the trace exact — but it does project onto
-``\hat{r}``, so it corrupts the longitudinal component. Offsetting their phases by a quarter turn
-removes it exactly.
+The two polarisations of one mode share its wavevector and are correlated over the cells. Their cross
+term is traceless, so the trace stays exact, but it projects onto ``\hat{r}``; a quarter-turn offset
+between their phases removes it from the longitudinal component.
 
 ### 2. Transform against direct sweep
 
@@ -80,24 +75,18 @@ because the binomial expansion turns the increment moment into a sum of cross-co
 correlation theorem evaluates all lags at once. That gives two independent algorithms for one
 definition, and they must agree to round-off on the same data.
 
-They are genuinely independent: the sweep visits each lag and reduces over cells, while the
-transform never forms a lag at all until after the inverse transform. A defect in either shows up
-immediately as disagreement.
+The sweep visits each lag and reduces over cells; the transform forms the lags only in its inverse.
 
-Bounded directions are zero-padded to at least ``2n-1`` so that the circular correlation equals the
-linear one; periodic directions are not padded, because there the circular correlation is exactly
-the sum wanted.
+A bounded direction is zero-padded to at least ``n + h_{max}``, ``h_{max}`` the largest lag read within the last
+distance edge, so the circular correlation equals the linear one at every lag read; a periodic direction keeps its
+length, its circular correlation being the sum wanted.
 
 Counts come from integer arithmetic on a complete, unweighted field: the pairs a lag names between
 two slabs are a product of the slabs' overlaps, computed as integers
 (`Calculations._lag_pair_count`). On a masked field the count is the two masks' cross-correlation,
 which the engine reads off the inverse transform and rounds to the nearest integer; with weights it
-is a pair mass and stays floating point. The mask correlation is a sum of `0`/`1` products, so its
-exact value is an integer that `Float64` represents exactly up to ``2^{53}``, and the transform's
-round-off is many orders below half a count at any grid size the engine can hold — but it is a
-rounded transform, not integer arithmetic, and what pins it is a test rather than the arithmetic:
-`test/test_gridded_masked.jl` requires the masked transform's counts to equal the masked lag sweep's
-**exactly**, on bounded, periodic and mixed topologies.
+is a pair mass and stays floating point. `test/test_gridded_masked.jl` requires the masked transform's counts to
+equal the masked lag sweep's exactly, on bounded, periodic and mixed topologies.
 
 ### 3. Gridded against the unstructured pair loop
 
@@ -105,22 +94,16 @@ The pair loop is the reference implementation: it enumerates pairs, computes eac
 bins it. On a bounded grid the separations are plain Euclidean, so the pair loop over the same
 points must give **exactly equal counts** and matching sums.
 
-There is one systematic difference worth knowing about, and the gridded path has the better
-behaviour. All pairs sharing a lag have one exact separation, so the sweep bins them identically,
-while the pair loop recomputes each pair's coordinate difference and those differ by an ulp. When a
-bin edge falls *on* an achievable separation the two disagree about the whole shell. The tests place
-edges between achievable separations so the comparison is unambiguous.
+All pairs sharing a lag have one separation in the sweep, while the pair loop forms each pair's coordinate
+difference, which can differ by an ulp; at a bin edge on an achievable separation the two place the whole shell
+differently. The tests place edges between achievable separations.
 
 ### 6. Unit invariance
 
-A physical quantity may not change when the unit of length changes. This is a sharper test than it
-sounds: a Helmholtz decomposition that multiplied a cumulative integral by ``r`` would still satisfy
-the energy identity ``D_{rot} + D_{div} = D_{LL} + D_{TT}``, because the spurious terms cancel in that
-sum, while producing a divergent signal on a field with no divergent component that changes with the
-unit of length.
-
-A conservation identity that a defect preserves is not a gate. Assert the invariance the defect
-actually breaks.
+A physical quantity is independent of the unit of length. A Helmholtz decomposition that multiplied a cumulative
+integral by ``r`` would still satisfy ``D_{rot} + D_{div} = D_{LL} + D_{TT}``, the spurious terms cancelling in the
+sum, while giving a field with no divergent part a divergent signal that changes with the unit; the test asserts
+the invariance.
 
 ### 7. Frame invariance
 
@@ -144,15 +127,13 @@ truncation-limited and the comparison is pointwise in one, two and three dimensi
 a wrong solid angle, a wrong `(2π)^D` or a wrong sign would each break that, so one comparison covers
 all four.
 
-A discrete spectral line does not serve for this. Its correlation does not decay, so the truncated
-transform is a sinc whose sidelobes fall off like `1/k` and are cut off by any finite range, and
-refining the wavenumber grid does not remove the difference. Lines are used only to check that peaks
-land on the right wavenumbers.
+A discrete spectral line has a correlation that never decays, so its truncated transform is a sinc with `1/k`
+sidelobes; lines check only that peaks land on the right wavenumbers.
 
 **The gridded transform against the field's own spectrum.** Over the whole lag space nothing is
 angularly averaged and nothing is radially binned, so this must agree with transforming the field
-directly, to round-off. The isotropic route cannot meet that standard on a grid, where the lattice's
-separations are biased toward its axes.
+directly, to round-off. On a grid the isotropic route's separations favour the lattice axes; its oracle is
+the analytic spectrum above.
 
 **The flux relation against a closed-form integral.** ``\int_0^R J_1(Kr)dr = (1 - J_0(KR))/K``, so a
 constant advective structure function `c` must give ``Π_K = -(c/2)(1 - J_0(KR))`` exactly. That pins
@@ -169,8 +150,7 @@ three routes agree to `10⁻⁶`. The enstrophy routes are gated the same way th
 
 **The Helmholtz split by linearity.** ``D_{rot} + D_{div} = D_{LL} + D_{TT}`` exactly and the
 transform is linear, so the rotational and divergent spectra must sum to the spectrum of the trace,
-whatever the field is. This is an identity rather than a physical expectation, which is what makes it
-a gate.
+whatever the field is. It is an identity, which makes it a gate.
 
 ### A note on positive-definiteness
 
@@ -187,8 +167,7 @@ reporting that the representation cannot support a valid matrix.
 
 **Weights.** The weighted statistic is ``\sum w_i w_j v_{ij} / \sum w_i w_j``. The gate is a pair loop
 written in the test with the same weights: the sweep matches it bit for bit, the transform to
-`1e-12`, and weights of one reproduce the unweighted results exactly, so the weighted code path
-cannot have drifted from the unweighted one.
+`1e-12`, and weights of one reproduce the unweighted results exactly.
 
 **The non-uniform FFT route.** Points placed exactly on the mode grid make the soft-binned route the
 periodic gridded transform, which is exact, and the two agree to `1e-9` in one, two and three
@@ -227,9 +206,9 @@ by round-off only. "Round-off" is stated as a relative bound on the largest sum,
 | CPU vs device, flat lattice | `1e-10`, counts exact | squared separations of rational spacings are exact on both, so bins agree bit for bit; sums differ by fused-multiply-add and reduction order |
 | CPU vs device, sphere | `1e-10`, counts exact **off the lattice's edges** | the device's `sin`/`cos`/`acos` round differently from the host's; a pair whose separation lies exactly on a bin edge can change bins, so the parity tests place edges between the lattice's own separations |
 | transform vs sweep | `1e-10` (`1e-9` at third order and above) | the transform's inverse FFT accumulates `O(n log n)` operations |
-| weighted counts | `1e-12` relative | a weighted count is a floating sum, not an integer |
+| weighted counts | `1e-12` relative | a weighted count is a floating sum |
 | soft-binned NUFFT route, CPU vs device | `1e-9` | the non-uniform FFT's own accuracy, once its kernel is evaluated in double precision |
-| `Float32` joint histogram over a value axis, CPU vs device | `3e-5` of pairs in a different value bin | the second axis bins on the pair's own value, so a value within an ulp of a value-bin edge falls either side of it under the two devices' rounding. The count of one bin is therefore not an invariant of the pair set and equality of counts is not the criterion; what is invariant is that every pair is placed, so the measure is the misplaced share of the total |
+| `Float32` joint histogram over a value axis, CPU vs device | `3e-5` of pairs in a different value bin | the second axis bins the pair's own value, and a value within an ulp of an edge falls on either side under the two devices' rounding; the measure is the share of pairs in a different value bin |
 
 A test that needs a looser bound than these is testing something other than parity, and says what.
 
@@ -252,7 +231,7 @@ enstrophy flux ``∼ u^3/L^3`` requires `(1/K)(dSF_Au/dr) J₁`. The consistent 
 close on the power-law family and make the three energy routes and the three enstrophy routes agree
 to `1e-6` on analytic isotropic families; they are what the package ships.
 
-## What is checked statistically, and why it is not a gate
+## Relations checked statistically
 
 The isotropic relation
 
@@ -265,24 +244,16 @@ holds for a three-dimensional isotropic field. The kernel itself is confirmed nu
 transverse-projector direction average equals ``\tfrac{1}{2} f(k_0 r)`` at every ``r`` and every
 shell radius, to within the spherical quadrature's own error.
 
-The relation is nonetheless **not** used as a test assertion, because neither available construction
-makes it tight:
-
-- A field built from cubic-grid harmonics in a thin shell is anisotropic, and that does not improve
-  with shell radius.
-- A field built from spherical-quadrature directions evaluated on scattered points converges only as
-  the sampling error allows.
-
-In both cases the residual is a property of the mode set and the sampling, not of this package, so
-an assertion at that tolerance would mostly be testing the test. The exact multi-mode oracle in
-section 1 covers the same code path to round-off and is used instead.
+A field built from cubic-grid harmonics in a thin shell is anisotropic at every shell radius, and one built from
+spherical-quadrature directions on scattered points converges only as its sampling error allows, so the relation
+holds to the mode set's own residual. The exact multi-mode oracle of section 1 covers the same code path to
+round-off and is the assertion.
 
 The same reasoning applies to the inertial-range laws. A synthetic Gaussian field carries no energy
 flux, so its third-order moments are consistent with zero and the four-fifths law has nothing to
 recover. What *is* tested is the inversion itself: given a moment that obeys a law exactly, the
-corresponding routine returns the prescribed constant, and the routines are not interchangeable —
-applying the four-fifths law to the scalar moment is off by exactly 5/3, which is asserted so that
-the two cannot be confused.
+corresponding routine returns the prescribed constant; applying the four-fifths law to `S3` gives exactly 5/3
+of it, which is asserted.
 
 ## Reproducing
 

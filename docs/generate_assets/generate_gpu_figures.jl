@@ -34,11 +34,12 @@ function _log_ylim(vals...)
     return (lo * 0.7, hi * 1.4)
 end
 
-"""Logarithmic x-axis with ticks at the measured abscissae."""
-function _log_ticks!(ax, xs)
+"""Logarithmic x-axis with ticks at every `step`-th measured abscissa."""
+function _log_ticks!(ax, xs; step::Int = 1)
     u = sort(unique(Float64.(xs)))
     CM.xlims!(ax, first(u) / 1.15, last(u) * 1.15)
-    ax.xticks = (u, string.(Int.(u)))
+    t = u[1:step:end]
+    ax.xticks = (t, string.(Int.(t)))
     return nothing
 end
 
@@ -97,8 +98,9 @@ function plot_problem_size_scaling!(payload)
     CM.scatterlines!(ax_r, N_both, ratio; color = :purple, linewidth = lw, markersize = ms)
     CM.ylims!(ax_r, min(0.9, minimum(ratio) * 0.92), maximum(ratio) * 1.08)
 
-    foreach(ax -> _log_ticks!(ax, vcat(N32, N64)), (ax_t, ax_sp))
-    _log_ticks!(ax_r, N_both)
+    _log_ticks!(ax_t, vcat(N32, N64))
+    _log_ticks!(ax_sp, vcat(N32, N64); step = 2)
+    _log_ticks!(ax_r, N_both; step = 2)
     CM.rowsize!(fig.layout, 1, CM.Fixed(280))
     CM.rowsize!(fig.layout, 2, CM.Fixed(240))
     CM.colsize!(fig.layout, 3, CM.Fixed(210))

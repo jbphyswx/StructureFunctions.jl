@@ -26,6 +26,9 @@ All notable changes to this project will be documented in this file.
 - `independent_pair_variance` raises for a histogram over the separation angle and for floating-point (weighted or
   split) counts, where the counts are not a number of independent pairs.
 - Fitting a result with batch axes returns an array of the per-slice fits over those axes.
+- `isotropic_spectrum` and `helmholtz_spectra` take the field's `variance` as a required keyword, in place of an
+  `asymptote` that defaulted to the largest value of the structure function; `helmholtz_spectra(h, k; variance)`
+  replaces `rotational_asymptote` and `divergent_asymptote`.
 
 ### New
 
@@ -63,6 +66,11 @@ All notable changes to this project will be documented in this file.
 - The native CUDA plan of a call class is chosen by timing every candidate after all have compiled, and a candidate
   leaves the timing only from its second round. A candidate's first timed launch held host time, so the plan the
   class's first call had run could be kept over a faster one.
+- The spectra of a structure function that overshoots its large-separation limit, such as the transverse function
+  of a solenoidal field, rang and went negative: the transforms subtracted the function's largest value, so the
+  integrand did not decay before the last separation. They subtract twice the variance.
+- `helmholtz_spectra(h, k)` transformed the rotational and divergent functions separately, each with a limit of its
+  own; it transforms the trace and `D_LL − D_TT`, as the form taking `L2` and `T2` does.
 
 ## [0.4.0] - 2026-09-11
 

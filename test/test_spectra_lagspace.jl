@@ -32,23 +32,23 @@ Test.@testset "the two-line Helmholtz inversion recovers gradient and curl spect
     kq = collect(range(0.3, 6.0; length = 60))
     exact = PE.(kq)
     scale = maximum(exact)
-    asym = 4 / ℓ^2
+    variance = 2 / ℓ^2
 
     L2 = SF.StructureFunction(SFT.L2SFType(), edges, DLL.(mids))
     T2 = SF.StructureFunction(SFT.T2SFType(), edges, DTT.(mids))
-    spec = SFC.helmholtz_spectra(L2, T2, kq; asymptote = asym)
+    spec = SFC.helmholtz_spectra(L2, T2, kq; variance)
     Test.@test maximum(abs, spec.divergent .- exact) < 2e-3 * scale
     Test.@test maximum(abs, spec.rotational) < 2e-3 * scale
 
     # the curl of the same potential swaps the two projections and the two spectra
     L2c = SF.StructureFunction(SFT.L2SFType(), edges, DTT.(mids))
     T2c = SF.StructureFunction(SFT.T2SFType(), edges, DLL.(mids))
-    specc = SFC.helmholtz_spectra(L2c, T2c, kq; asymptote = asym)
+    specc = SFC.helmholtz_spectra(L2c, T2c, kq; variance)
     Test.@test maximum(abs, specc.rotational .- exact) < 2e-3 * scale
     Test.@test maximum(abs, specc.divergent) < 2e-3 * scale
 
     # the sum of the two is the trace's spectrum, by construction of the first line
-    trace = SFC.isotropic_spectrum(SFT.S2SFType(), mids, DLL.(mids) .+ DTT.(mids), kq, Val(2); asymptote = asym)
+    trace = SFC.isotropic_spectrum(SFT.S2SFType(), mids, DLL.(mids) .+ DTT.(mids), kq, Val(2); variance)
     Test.@test spec.rotational .+ spec.divergent ≈ trace rtol = 1e-12
 
     # sums-and-counts inputs give the same answer, and empty bins are dropped from both
@@ -56,15 +56,16 @@ Test.@testset "the two-line Helmholtz inversion recovers gradient and curl spect
     counts[7] = 0
     rawL = SF.StructureFunctionSumsAndCounts(SFT.L2SFType(), edges, DLL.(mids) .* counts, counts)
     rawT = SF.StructureFunctionSumsAndCounts(SFT.T2SFType(), edges, DTT.(mids) .* counts, counts)
-    spec2 = SFC.helmholtz_spectra(rawL, rawT, kq; asymptote = asym)
+    spec2 = SFC.helmholtz_spectra(rawL, rawT, kq; variance)
     Test.@test maximum(abs, spec2.divergent .- exact) < 2e-3 * scale
 
-    # the arguments are the two projections, in that order, on one set of bins
-    Test.@test_throws ArgumentError SFC.helmholtz_spectra(T2, L2, kq)
+    # the arguments are the two projections, in that order, on one set of bins, and the variance
+    Test.@test_throws ArgumentError SFC.helmholtz_spectra(T2, L2, kq; variance)
     Test.@test_throws ArgumentError SFC.helmholtz_spectra(
-        L2, SF.StructureFunction(SFT.T2SFType(), 2 .* edges, DTT.(mids)), kq)
+        L2, SF.StructureFunction(SFT.T2SFType(), 2 .* edges, DTT.(mids)), kq; variance)
     Test.@test_throws ArgumentError SFC.helmholtz_spectra(
-        SF.StructureFunction(SFT.S2SFType(), edges, DLL.(mids)), T2, kq)
+        SF.StructureFunction(SFT.S2SFType(), edges, DLL.(mids)), T2, kq; variance)
+    Test.@test_throws UndefKeywordError SFC.helmholtz_spectra(L2, T2, kq)
 end
 
 # The Blackman–Tukey estimator written out: the unbiased autocovariance from the pairs a lag names on

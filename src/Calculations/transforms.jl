@@ -129,33 +129,22 @@ end
 end
 
 """
-    helmholtz_spectra(h, wavenumbers; rotational_asymptote, divergent_asymptote)
+    helmholtz_spectra(h, wavenumbers; variance)
 
-Rotational and divergent kinetic-energy spectra from a two-dimensional Helmholtz decomposition.
-
-Each component of the decomposition is the share of the second-order trace carried by one of the two
-fields, so each transforms to a spectrum by the same route the trace does — in two dimensions, with
-the `J₀` kernel, hence `Bessels`. Returns a `NamedTuple` of the two densities, on the convention
-[`isotropic_spectrum`](@ref) documents.
-
-Bins holding no pair are dropped. The asymptotes default to each component's own largest value.
+Rotational and divergent spectral densities from a two-dimensional Helmholtz decomposition, by the
+transforms of its longitudinal and transverse functions that `helmholtz_spectra(L2, T2, wavenumbers;
+variance)` documents. Bins holding no pair in either function are dropped.
 """
-function helmholtz_spectra(
-    h::SFO.HelmholtzDecomposition2D, wavenumbers::AbstractVector;
-    rotational_asymptote = nothing, divergent_asymptote = nothing,
-)
-    r = collect(midpoints(h.distance_bins))
-    rot = _component_spectrum(SFT.RotationalSecondOrderStructureFunctionType(), r,
-                              h.rotational_sums, h.rotational_counts, wavenumbers,
-                              rotational_asymptote)
-    div = _component_spectrum(SFT.DivergentSecondOrderStructureFunctionType(), r,
-                              h.divergent_sums, h.divergent_counts, wavenumbers,
-                              divergent_asymptote)
-    return (rotational = rot, divergent = div)
+function helmholtz_spectra(h::SFO.HelmholtzDecomposition2D, wavenumbers::AbstractVector; variance::Real)
+    keep = findall((Array(h.divergent_counts) .> 0) .& (Array(h.rotational_counts) .> 0))
+    isempty(keep) && throw(ArgumentError("no bin holds a value in both the longitudinal and the transverse function"))
+    r = collect(midpoints(h.distance_bins))[keep]
+    return _helmholtz_spectra(r, _take(h.longitudinal_values, keep), _take(h.transverse_values, keep), wavenumbers,
+                              variance)
 end
 
 """
-    helmholtz_spectra(L2, T2, wavenumbers; asymptote)
+    helmholtz_spectra(L2, T2, wavenumbers; variance)
 
 Rotational and divergent spectral densities of a two-dimensional field from its longitudinal and
 transverse second-order structure functions, binned on the same edges.
@@ -169,20 +158,24 @@ P_E - P_B = \\frac{1}{4π} ∫_0^∞ (D_{LL} - D_{TT})\\, J_2(kr)\\, r\\, dr,
 
 with `E` the divergent (gradient) part and `B` the rotational (curl) part, on the convention that a
 density integrates over `d²k` to the variance. The first line is [`isotropic_spectrum`](@ref) of the
-trace and needs the trace's large-separation limit `a`, which defaults to its largest value; the
-second needs none, since `D_LL − D_TT` decays on its own. Both kernels need `Bessels`.
+trace, whose large-separation limit `a` is twice `variance`, the field's variance summed over its two
+components; the second needs no constant, since `D_LL − D_TT` decays on its own. Both kernels need
+`Bessels`.
 
 Its error is the truncation of the Hankel integrals at the last separation.
 """
 function helmholtz_spectra(
     L2::SFO.AbstractStructureFunction, T2::SFO.AbstractStructureFunction, wavenumbers::AbstractVector;
-    asymptote = nothing,
+    variance::Real,
 )
     _assert_projection(L2.operator, 2, 0, "longitudinal")
     _assert_projection(T2.operator, 0, 2, "transverse")
     r, dll, dtt = _paired_bins(L2, T2)
-    asym = asymptote === nothing ? maximum(dll .+ dtt) : asymptote
-    total = isotropic_spectrum(SFT.S2SFType(), r, dll .+ dtt, wavenumbers, Val(2); asymptote = asym)
+    return _helmholtz_spectra(r, dll, dtt, wavenumbers, variance)
+end
+
+function _helmholtz_spectra(r, dll, dtt, wavenumbers, variance)
+    total = isotropic_spectrum(SFT.S2SFType(), r, dll .+ dtt, wavenumbers, Val(2); variance)
     diff = _hankel(Val(2), r, dll .- dtt, wavenumbers) ./ (4π)
     return (rotational = (total .- diff) ./ 2, divergent = (total .+ diff) ./ 2)
 end
@@ -253,14 +246,6 @@ function _hankel(::Val{N}, separations::AbstractVector, values::AbstractVector, 
                              wavenumbers, FT)
 end
 
-function _component_spectrum(op, r, sums, counts, wavenumbers, asymptote)
-    keep = findall(>(0), Array(counts))
-    isempty(keep) && throw(ArgumentError("every bin of the $(nameof(typeof(op))) component is empty"))
-    values = _take(sums, keep) ./ _take(counts, keep)
-    asym = asymptote === nothing ? maximum(values) : asymptote
-    return isotropic_spectrum(op, r[keep], values, wavenumbers, Val(2); asymptote = asym)
-end
-
 """
     bessel_kernel(::Val{N}, x)
 
@@ -323,7 +308,7 @@ assert_invertible(op) = throw(ArgumentError(
 ))
 
 """
-    isotropic_spectrum(operator, separations, values, wavenumbers, ::Val{D}; asymptote)
+    isotropic_spectrum(operator, separations, values, wavenumbers, ::Val{D}; variance)
 
 Power spectral density at each of `wavenumbers`, from a second-order structure function sampled at
 `separations`.
@@ -332,8 +317,9 @@ Power spectral density at each of `wavenumbers`, from a second-order structure f
 transform is confined to `k = 0`. Every returned wavenumber must therefore be nonzero, and the
 `k = 0` mode is not recoverable from `D`.
 
-`asymptote` is the large-separation limit of the structure function, subtracted so the integrand
-decays; it defaults to the largest value supplied.
+`variance` is the field's variance, summed over the components of a vector field. Twice it is the
+large-separation limit of the structure function, subtracted so the integrand decays; the integral
+stops at the last separation, so any other constant leaves an error that rings in `k`.
 
 The integral runs from zero separation, where the structure function vanishes, by the trapezoid rule
 over the separations supplied and the origin.
@@ -344,7 +330,7 @@ the convention: `∫₀^∞ shell_spectrum(...) dk == var(u)`.
 function isotropic_spectrum(
     operator, separations::AbstractVector, values::AbstractVector,
     wavenumbers::AbstractVector, ::Val{D};
-    asymptote = maximum(values),
+    variance::Real,
 ) where {D}
     assert_invertible(operator)
     length(separations) == length(values) || throw(DimensionMismatch(
@@ -359,10 +345,11 @@ function isotropic_spectrum(
     first(r) >= 0 || throw(ArgumentError("separations must be non-negative; got $(first(r))"))
 
     FT = float(promote_type(eltype(separations), eltype(values), eltype(wavenumbers)))
-    decaying = FT.(values) .- FT(asymptote)
+    limit = 2 * FT(variance)
+    decaying = FT.(values) .- limit
     if first(r) > 0
         r = vcat(zero(eltype(r)), r)
-        decaying = vcat(fill!(similar(decaying, 1), -FT(asymptote)), decaying)
+        decaying = vcat(fill!(similar(decaying, 1), -limit), decaying)
     end
     acc = _kernel_transform((k, ri) -> isotropic_kernel(Val(D), k * ri) * ri^(D - 1), r, _trapezoid_weights(r),
                             decaying, wavenumbers, FT)
@@ -370,7 +357,7 @@ function isotropic_spectrum(
 end
 
 """
-    isotropic_spectrum(result, wavenumbers, ::Val{D}; asymptote)
+    isotropic_spectrum(result, wavenumbers, ::Val{D}; variance)
 
 Spectral density from a structure function result, taking the operator, the separations and the
 values from the result itself.

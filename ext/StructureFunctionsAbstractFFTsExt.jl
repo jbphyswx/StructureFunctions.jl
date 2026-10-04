@@ -1167,24 +1167,24 @@ end
 
 Every slab pair of `engine` on `backend`. With at least as many pairs as tasks, a task takes whole pairs
 (`item!`, its inverse scratch from `make_scratch()`). With fewer, a pair's lags cannot be read until its inverse
-is done: the tasks fill the pair's columns, one plan on as many threads inverts them, and the tasks share the
-pair's lags (`lags(out)`).
+is done, so the pairs run one at a time in this process: the tasks of its backend fill the pair's columns, one plan
+on as many threads inverts them, and the tasks share the pair's lags (`lags(out)`).
 """
 function _sweep_pairs!(sums, counts, backend, eng, make_scratch, workspace, item!, lags)
-    n_tasks = SFC.sweep_tasks(backend)
     pairs = SFC.sweep_items(eng.s, eng.r_max, 1, false)
-    if length(pairs) >= n_tasks
+    if length(pairs) >= SFC.sweep_tasks(backend)
         SFC.sweep_reduce!(sums, counts, backend, pairs, make_scratch, item!)
         return nothing
     end
+    here = _stage_backend(backend)
+    k = SFC.sweep_tasks(here)
     ncols = length(eng.columns)
     F1 = eng.fwd[1][1]
-    split = SFC._kept!(workspace, :inverse_split, (typeof(F1), size(F1), eng.P, ncols, n_tasks),
-                       _split_inverse_plan(eng, ncols, n_tasks))
+    split = SFC._kept!(workspace, :inverse_split, (typeof(F1), size(F1), eng.P, ncols, k),
+                       _split_inverse_plan(eng, ncols, k))
     for it in pairs
-        out = _pair_inverse_split!(split, eng.fwd[it[1]], eng.fwd[it[2]], eng.columns, backend)
-        SFC.sweep_reduce!(sums, counts, backend, [(it[1], it[2], p, n_tasks) for p in 1:n_tasks], () -> nothing,
-                          lags(out))
+        out = _pair_inverse_split!(split, eng.fwd[it[1]], eng.fwd[it[2]], eng.columns, here)
+        SFC.sweep_reduce!(sums, counts, here, [(it[1], it[2], p, k) for p in 1:k], () -> nothing, lags(out))
     end
     return nothing
 end

@@ -184,6 +184,18 @@ its closed form.*
 
 *The serial result and the device kernels on `KernelAbstractions.CPU()`.*
 
+![Strong scaling](docs/src/assets/strong_scaling.png)
+
+*The threaded point kernel on one physical core per thread, for a fixed problem.*
+
+![GPU problem size](docs/src/assets/gpu_problem_size_scaling.png)
+
+*One GPU against one CPU core over the number of points.*
+
+![GPU slice batch](docs/src/assets/gpu_slice_batch_scaling.png)
+
+*`T` snapshots in one batch call on one CPU core and on the GPU, and one GPU call per snapshot.*
+
 ## Examples and development
 
 See [`examples/`](examples/) for executable examples. The test suite runs with `julia --project=test test/runtests.jl`

@@ -783,12 +783,34 @@ The distance bins of a run's pairs, which every slice shares: of its `n` in-rang
     return 0
 end
 
+"""The digitize key, approximate bin, separation and squared separation of every pair `(i, j)`, `j ∈ js`, of flat
+shared positions `xc`, into slot `j - o` of each buffer: what the point kernels form a pair's value from."""
+@inline function _bl_rows_geometry!(keybuf, idxbuf, dxbuf, r2buf, plan, xc, Xi, js, o, ::Val{D}) where {D}
+    @inbounds @simd for j in js
+        dx = _component_point(xc, j, Val(D)) - Xi
+        r2 = SFH.norm2(dx)
+        keybuf[j - o] = digitize_key(plan, r2)
+        if has_vector_index(plan)
+            idxbuf[j - o] = squared_approx_index(plan, r2)
+        end
+        r2buf[j - o] = r2
+        for d in 1:D
+            dxbuf[j - o, d] = dx[d]
+        end
+    end
+    return nothing
+end
+
+"""Slot `k`'s separation from a `(slots, D)` buffer."""
+@inline _bl_separation(dxbuf, k, ::Val{D}) where {D} = SA.SVector{D}(ntuple(d -> @inbounds(dxbuf[k, d]), Val(D)))
+
 """A task's scratch for the 1-D kernels over `N` points: the pair window, then the digitize keys, approximate bins,
-directions, compacted slots, distance bins and values."""
+separations, squared separations, compacted slots, distance bins and values."""
 function _bl_rows_scratch_1d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}) where {D, FT, OT}
     window = _pair_window(N)
     L = _pair_scratch_length(window, N)
-    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{Int32}(undef, L),
+    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{FT}(undef, L),
+            Vector{Int32}(undef, L),
             Vector{Int32}(undef, L), Vector{OT}(undef, L))
 end
 
@@ -801,7 +823,7 @@ pairs into the slice's row. One slice's own inputs (`us` a tuple) take [`_pf_sim
 """
 function _bl_rows_1d!(sums_bl::AbstractMatrix{OT}, counts_bl::AbstractMatrix{CT}, xc::NTuple{D}, us::AbstractVector,
                       sf, plan, ::Val{D}, blocks, brange, weights, scratch) where {OT, CT, D}
-    window, keybuf, idxbuf, rhbuf, sel, binbuf, valbuf = scratch
+    window, keybuf, idxbuf, dxbuf, r2buf, sel, binbuf, valbuf = scratch
     nb = n_histogram_bins(plan)
     boff = first(brange) - 1
     vD = Val(D)
@@ -813,7 +835,8 @@ function _bl_rows_1d!(sums_bl::AbstractMatrix{OT}, counts_bl::AbstractMatrix{CT}
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
             wi = _point_weight(weights, i)
-            _bl_block_geometry!(keybuf, idxbuf, rhbuf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o, vD)
+            _bl_rows_geometry!(keybuf, idxbuf, dxbuf, r2buf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o,
+                               vD)
             ks = (jlo - o):(last(jr) - o)
             compact = chooses && _compacts(_sample_in_range(plan, keybuf, ks)...)
             n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
@@ -821,7 +844,8 @@ function _bl_rows_1d!(sums_bl::AbstractMatrix{OT}, counts_bl::AbstractMatrix{CT}
                 uc = us[b]
                 Ui = _component_point(uc, i, vD)
                 @simd for k in ks
-                    valbuf[k] = sf(_component_point(uc, k + o, vD) - Ui, _bl_direction(rhbuf, k, vD))
+                    valbuf[k] = SFT.flat_pair_value(sf, _component_point(uc, k + o, vD) - Ui, _bl_separation(dxbuf, k, vD),
+                                                    r2buf[k])
                 end
                 s, c = _bl_row(sums_bl, b - boff), _bl_row(counts_bl, b - boff)
                 if compact
@@ -842,18 +866,19 @@ end
 
 function _bl_rows_1d!(sums_bl::AbstractMatrix, counts_bl::AbstractMatrix, xc::NTuple{D}, uc::Tuple, sf, plan,
                       vD::Val{D}, blocks, brange, weights, scratch) where {D}
-    window, keybuf, idxbuf, _, sel, _, valbuf = scratch
+    window, keybuf, idxbuf, _, _, sel, _, valbuf = scratch
     _pf_simd_pairs!(_bl_row(sums_bl, 1), _bl_row(counts_bl, 1), sf, xc, uc, plan, vD, keybuf, valbuf, idxbuf, sel,
                     window, blocks, weights)
     return nothing
 end
 
 """A task's scratch for the single-pass kernels: the pair window, then the digitize keys, approximate bins,
-directions, compacted slots, distance bins, `δu_L` and `‖δu‖²`."""
+separations, squared separations, compacted slots, distance bins, `δu_L` and `‖δu‖²`."""
 function _bl_rows_scratch_sp1d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}) where {D, FT, OT}
     window = _pair_window(N)
     L = _pair_scratch_length(window, N)
-    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{Int32}(undef, L),
+    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{FT}(undef, L),
+            Vector{Int32}(undef, L),
             Vector{Int32}(undef, L), Vector{OT}(undef, L), Vector{OT}(undef, L))
 end
 
@@ -865,7 +890,7 @@ scatter adds the six invariants. One slice's own inputs take [`_pf_sp_simd_pairs
 """
 function _bl_rows_sp1d!(sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{CT, 3}, xc::NTuple{D},
                         us::AbstractVector, plan, ::Val{D}, blocks, brange, weights, scratch) where {OT, CT, D}
-    window, keybuf, idxbuf, rhbuf, sel, binbuf, duLbuf, dn2buf = scratch
+    window, keybuf, idxbuf, dxbuf, r2buf, sel, binbuf, duLbuf, dn2buf = scratch
     nb = n_histogram_bins(plan)
     boff = first(brange) - 1
     vD = Val(D)
@@ -877,7 +902,8 @@ function _bl_rows_sp1d!(sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
             wi = _point_weight(weights, i)
-            _bl_block_geometry!(keybuf, idxbuf, rhbuf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o, vD)
+            _bl_rows_geometry!(keybuf, idxbuf, dxbuf, r2buf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o,
+                               vD)
             ks = (jlo - o):(last(jr) - o)
             compact = chooses && _compacts(_sample_in_range(plan, keybuf, ks)...)
             n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
@@ -885,9 +911,8 @@ function _bl_rows_sp1d!(sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{
                 uc = us[b]
                 Ui = _component_point(uc, i, vD)
                 @simd for k in ks
-                    du = _component_point(uc, k + o, vD) - Ui
-                    duLbuf[k] = SFH.fma_dot(du, _bl_direction(rhbuf, k, vD))
-                    dn2buf[k] = SFH.fma_dot(du, du)
+                    duLbuf[k], dn2buf[k] = SFH.increment_invariants(SFH.FlatGeometry{D}(), _bl_separation(dxbuf, k, vD),
+                                                                    sqrt(r2buf[k]), _component_point(uc, k + o, vD) - Ui)
                 end
                 s, c = _bl_row(sums_bl, b - boff), _bl_row(counts_bl, b - boff)
                 if compact
@@ -911,20 +936,21 @@ end
 
 function _bl_rows_sp1d!(sums_bl::AbstractArray{<:Any, 3}, counts_bl::AbstractArray{<:Any, 3}, xc::NTuple{D}, uc::Tuple,
                         plan, vD::Val{D}, blocks, brange, weights, scratch) where {D}
-    window, keybuf, idxbuf, _, sel, _, duLbuf, dn2buf = scratch
+    window, keybuf, idxbuf, _, _, sel, _, duLbuf, dn2buf = scratch
     _pf_sp_simd_pairs!(_bl_row(sums_bl, 1), _bl_row(counts_bl, 1), xc, uc, plan, vD, keybuf, duLbuf, dn2buf, idxbuf,
                        sel, window, blocks, weights)
     return nothing
 end
 
-"""A task's scratch for the joint kernels: the pair window, then the digitize keys, approximate bins, directions,
-compacted slots, distance bins, values, value columns, the shared columns of a second axis that is not the value,
+"""A task's scratch for the joint kernels: the pair window, then the digitize keys, approximate bins,
+separations, squared separations, compacted slots, distance bins, values, value columns, the shared columns of a second axis that is not the value,
 and the second-axis quantities [`_pf_2d_simd_pairs!`](@ref) reads."""
 function _bl_rows_scratch_joint(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, second_axis) where {D, FT, OT}
     window = _pair_window(N)
     L = _pair_scratch_length(window, N)
     valbuf = Vector{OT}(undef, L)
-    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{Int32}(undef, L),
+    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{FT}(undef, L),
+            Vector{Int32}(undef, L),
             Vector{Int32}(undef, L), valbuf, Vector{Int32}(undef, L), Vector{Int32}(undef, L),
             needs_axis_buffer(second_axis) ? Vector{OT}(undef, L) : valbuf)
 end
@@ -940,7 +966,7 @@ pass where the value edges digitize in vector form, else in its scatter. One sli
 function _bl_rows_joint!(sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{CT, 3}, xc::NTuple{D},
                          us::AbstractVector, sf, plan, val_be, second_axis, ::Val{D}, blocks, brange, weights,
                          scratch) where {OT, CT, D}
-    window, keybuf, idxbuf, rhbuf, sel, binbuf, valbuf, colbuf, acolbuf, _ = scratch
+    window, keybuf, idxbuf, dxbuf, r2buf, sel, binbuf, valbuf, colbuf, acolbuf, _ = scratch
     nb = n_histogram_bins(plan)
     n_val = n_histogram_bins(val_be)
     boff = first(brange) - 1
@@ -954,15 +980,16 @@ function _bl_rows_joint!(sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
             wi = _point_weight(weights, i)
-            _bl_block_geometry!(keybuf, idxbuf, rhbuf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o, vD)
+            _bl_rows_geometry!(keybuf, idxbuf, dxbuf, r2buf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o,
+                               vD)
             ks = (jlo - o):(last(jr) - o)
             s_in, s_n = _sample_in_range(plan, keybuf, ks)
             compact = chooses && _compacts(s_in, s_n)
             n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
             if needs_axis_buffer(second_axis)
                 for k in ks
-                    rh = _bl_direction(rhbuf, k, vD)
-                    acolbuf[k] = _value_column(val_be, axis_quantity(second_axis, rh, one(eltype(rh))), n_val)
+                    acolbuf[k] = _value_column(val_be, axis_quantity(second_axis, _bl_separation(dxbuf, k, vD), r2buf[k]),
+                                               n_val)
                 end
             end
             columns = !needs_axis_buffer(second_axis) && vector_columns && (!chooses || !_sparse(s_in, s_n))
@@ -971,13 +998,15 @@ function _bl_rows_joint!(sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray
                 Ui = _component_point(uc, i, vD)
                 if columns
                     @simd for k in ks
-                        v = OT(sf(_component_point(uc, k + o, vD) - Ui, _bl_direction(rhbuf, k, vD)))
+                        v = OT(SFT.flat_pair_value(sf, _component_point(uc, k + o, vD) - Ui, _bl_separation(dxbuf, k, vD),
+                                                  r2buf[k]))
                         valbuf[k] = v
                         colbuf[k] = _vector_value_column(val_be, v, n_val)
                     end
                 else
                     @simd for k in ks
-                        valbuf[k] = sf(_component_point(uc, k + o, vD) - Ui, _bl_direction(rhbuf, k, vD))
+                        valbuf[k] = SFT.flat_pair_value(sf, _component_point(uc, k + o, vD) - Ui, _bl_separation(dxbuf, k, vD),
+                                                    r2buf[k])
                     end
                 end
                 s, c = _bl_row(sums_bl, b - boff), _bl_row(counts_bl, b - boff)
@@ -1011,21 +1040,22 @@ end
 function _bl_rows_joint!(sums_bl::AbstractArray{<:Any, 3}, counts_bl::AbstractArray{<:Any, 3}, xc::NTuple{D},
                          uc::Tuple, sf, plan, val_be, second_axis, vD::Val{D}, blocks, brange, weights,
                          scratch) where {D}
-    window, keybuf, idxbuf, _, sel, _, valbuf, colbuf, _, axbuf = scratch
+    window, keybuf, idxbuf, _, _, sel, _, valbuf, colbuf, _, axbuf = scratch
     _pf_2d_simd_pairs!(_bl_row(sums_bl, 1), _bl_row(counts_bl, 1), sf, xc, uc, plan, val_be, vD, keybuf, valbuf,
                        idxbuf, colbuf, sel, window, blocks, second_axis, axbuf, weights)
     return nothing
 end
 
 """A task's scratch for the single-pass 2D kernels: the pair window, then the digitize keys, approximate bins,
-directions, compacted slots, distance bins, `δu_L`, `‖δu‖²`, the six value-column buffers, and the interleaved
+separations, squared separations, compacted slots, distance bins, `δu_L`, `‖δu‖²`, the six value-column buffers, and the interleaved
 histogram [`_sp2d_simd_pairs!`](@ref) fills for one slice's own inputs."""
 function _bl_rows_scratch_sp2d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, val_plan, n_bins::Int,
                                n_val::Int) where {D, FT, OT, CT}
     window = _pair_window(N)
     L = _pair_scratch_length(window, N)
     Lc = _sp2d_has_columns(val_plan, OT) ? L : 0
-    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{Int32}(undef, L),
+    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{FT}(undef, L),
+            Vector{Int32}(undef, L),
             Vector{Int32}(undef, L), Vector{OT}(undef, L), Vector{OT}(undef, L),
             ntuple(_ -> Vector{Int32}(undef, Lc), Val(SINGLE_PASS_N)), _sp2d_histogram(OT, CT, n_bins, n_val))
 end
@@ -1041,7 +1071,7 @@ slice's own inputs take [`_sp2d_simd_pairs!`](@ref).
 function _bl_rows_sp2d!(sums_bl::AbstractArray{OT, 4}, counts_bl::AbstractArray{CT, 4}, xc::NTuple{D},
                         us::AbstractVector, plan, value_bins, ::Val{D}, blocks, brange, weights,
                         scratch) where {OT, CT, D}
-    window, keybuf, idxbuf, rhbuf, sel, binbuf, duLbuf, dn2buf, C, _ = scratch
+    window, keybuf, idxbuf, dxbuf, r2buf, sel, binbuf, duLbuf, dn2buf, C, _ = scratch
     nb = n_histogram_bins(plan)
     n_val = size(sums_bl, 4) - 2
     boff = first(brange) - 1
@@ -1057,7 +1087,8 @@ function _bl_rows_sp2d!(sums_bl::AbstractArray{OT, 4}, counts_bl::AbstractArray{
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
             wi = _point_weight(weights, i)
-            _bl_block_geometry!(keybuf, idxbuf, rhbuf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o, vD)
+            _bl_rows_geometry!(keybuf, idxbuf, dxbuf, r2buf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o,
+                               vD)
             ks = (jlo - o):(last(jr) - o)
             s_in, s_n = _sample_in_range(plan, keybuf, ks)
             compact = chooses && _compacts(s_in, s_n)
@@ -1069,8 +1100,9 @@ function _bl_rows_sp2d!(sums_bl::AbstractArray{OT, 4}, counts_bl::AbstractArray{
                 Ui = _component_point(uc, i, vD)
                 if fused
                     @simd ivdep for k in ks
-                        du = _component_point(uc, k + o, vD) - Ui
-                        duL, dn2 = OT(SFH.fma_dot(du, _bl_direction(rhbuf, k, vD))), OT(SFH.fma_dot(du, du))
+                        duL, dn2 = SFH.increment_invariants(SFH.FlatGeometry{D}(), _bl_separation(dxbuf, k, vD),
+                                                            sqrt(r2buf[k]), _component_point(uc, k + o, vD) - Ui)
+                        duL, dn2 = OT(duL), OT(dn2)
                         duLbuf[k], dn2buf[k] = duL, dn2
                         v = single_pass_invariants(duL, dn2)
                         C1[k] = _vector_value_column(value_bins, v[1], n_val)
@@ -1082,9 +1114,8 @@ function _bl_rows_sp2d!(sums_bl::AbstractArray{OT, 4}, counts_bl::AbstractArray{
                     end
                 else
                     @simd for k in ks
-                        du = _component_point(uc, k + o, vD) - Ui
-                        duLbuf[k] = SFH.fma_dot(du, _bl_direction(rhbuf, k, vD))
-                        dn2buf[k] = SFH.fma_dot(du, du)
+                        duLbuf[k], dn2buf[k] = SFH.increment_invariants(SFH.FlatGeometry{D}(), _bl_separation(dxbuf, k, vD),
+                                                                        sqrt(r2buf[k]), _component_point(uc, k + o, vD) - Ui)
                     end
                     columns && _sp2d_invariant_columns!(C, value_bins, duLbuf, dn2buf, ks, n_val)
                 end
@@ -1124,7 +1155,7 @@ end
 
 function _bl_rows_sp2d!(sums_bl::AbstractArray{<:Any, 4}, counts_bl::AbstractArray{<:Any, 4}, xc::NTuple{D}, uc::Tuple,
                         plan, value_bins, vD::Val{D}, blocks, brange, weights, scratch) where {D}
-    window, keybuf, idxbuf, _, sel, _, duLbuf, dn2buf, C, h = scratch
+    window, keybuf, idxbuf, _, _, sel, _, duLbuf, dn2buf, C, h = scratch
     n_bins, n_val = size(sums_bl, 3), size(sums_bl, 4) - 2
     fill!(h, zero(eltype(h)))
     _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, vD, keybuf, duLbuf, dn2buf, idxbuf, C, sel, window, n_val, blocks,

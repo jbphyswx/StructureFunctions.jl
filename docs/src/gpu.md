@@ -164,16 +164,16 @@ histograms, the single-pass invariants and slice batches: each slice, slab pair 
 sweep its cells side by side, more when there are fewer lags to fill the device and when the lag is
 longer.
 
-A schedule with many slabs transforms many short monomials, so the *number* of operations rather than
-their size sets the cost. The monomials are built and transformed in blocks — every monomial of as
+A schedule with many slabs transforms many short monomials, whose number sets the cost. The monomials are built
+and transformed in blocks — every monomial of as
 many slabs as the batch budget admits, or one large slab's monomials in groups — each block in one
 broadcast and one batched transform, and the spectra are laid out in the order the spectral kernel
-reads them, so assembling its input is a reshape rather than a copy per spectrum.
+reads them, so its input is a reshape of them.
 
 The binning kernel launches each slab pair over the lags that pair can reach, the same box the host
 loop takes. On a lat-lon grid a parallel spans less distance the nearer it lies to a pole, so the box
 over all row pairs stays as wide as the equator's however small the largest bin edge is; a schedule
-that reports `uniform_lag_box` instead shares one box across every pair and is indexed by division.
+that reports `uniform_lag_box` shares one box across every pair, indexed by division.
 
 ## Single-type joint 2D shared memory
 
@@ -193,8 +193,7 @@ Where no native kernel takes the call, the device path for `calculate_structure_
 keeps the histogram on chip — whole (`:shared`) or one set of invariant planes per pair pass (`:typeplane`) —
 when the device's static shared-memory budget holds it for the call's element types, and accumulates in
 global memory otherwise. The six rows are `S2`, `L2`, `T2`, `S3`, `L3`, `L1T2`; the basis-dependent
-`T3` and `L2T1` are not part of the single-pass contract and take the general entries with their
-transverse convention.
+`T3` and `L2T1` take the general entries with their transverse convention.
 
 ## Testing tiers
 
@@ -205,11 +204,9 @@ transverse convention.
 | gridded parity table | `gpu/run_cuda_gridded_parity.sh` | counts exact and sums to round-off against the CPU on every schedule, the non-uniform FFT route and the tensor kernel |
 | benchmarks | `julia --project=gpu gpu/benchmark_suite.jl` | release-performance gates and timing JSON |
 
-`KA.CPU()` does not prove CUDA correctness, and that is why the CUDA tier exists. It compiles no
-kernels, so a construct that a device compiler rejects — a runtime-length tuple, a boxed capture, a
-runtime-value branch, an `@index` inside a branch, a formatted throw message — passes there and fails
-only on a device; and it runs none of the CUDA-specific launch routes, so a defect confined to one of
-those is invisible to it.
+`KA.CPU()` compiles no device kernels and runs none of the CUDA-specific launch routes, so the CUDA tier checks
+what a device compiler rejects — a runtime-length tuple, a boxed capture, a runtime-value branch, an `@index` inside
+a branch, a formatted throw message — and the CUDA routes themselves.
 
 ## Benchmarks and figures
 

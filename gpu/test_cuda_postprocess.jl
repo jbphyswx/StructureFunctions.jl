@@ -35,12 +35,17 @@ result(op) = SFC.calculate_structure_function(op, x, u, bins, OUT; backend = DEV
 s2, s3, l3, l2, t2 = result.((SFT.S2SFType(), SFT.S3SFType(), SFT.L3SFType(), SFT.L2SFType(), SFT.T2SFType()))
 host(r) = SF.to_host(r)
 s2.sums isa CUDA.CuArray || push!(failures, "the public result is not device-resident")
+const VARIANCE = let uh = Array(u)
+    sum(abs2, uh .- sum(uh; dims = 2) ./ N) / (N - 1)
+end
 
-check("isotropic spectrum", SFC.isotropic_spectrum(s2, Ks, Val(2)), SFC.isotropic_spectrum(host(s2), Ks, Val(2)))
-check("covariance", last(SFC.covariance(s2, 2.0)), last(SFC.covariance(host(s2), 2.0)))
+check("isotropic spectrum", SFC.isotropic_spectrum(s2, Ks, Val(2); variance = VARIANCE),
+      SFC.isotropic_spectrum(host(s2), Ks, Val(2); variance = VARIANCE))
+check("covariance", last(SFC.covariance(s2, VARIANCE)), last(SFC.covariance(host(s2), VARIANCE)))
 check("spectral flux from S3", SFC.spectral_flux(s3, Ks), SFC.spectral_flux(host(s3), Ks))
 check("spectral flux from L3 and S3", SFC.spectral_flux(l3, s3, Ks), SFC.spectral_flux(host(l3), host(s3), Ks))
-let d = SFC.helmholtz_spectra(l2, t2, Ks), h = SFC.helmholtz_spectra(host(l2), host(t2), Ks)
+let d = SFC.helmholtz_spectra(l2, t2, Ks; variance = VARIANCE),
+    h = SFC.helmholtz_spectra(host(l2), host(t2), Ks; variance = VARIANCE)
     check("Helmholtz rotational", d.rotational, h.rotational)
     check("Helmholtz divergent", d.divergent, h.divergent)
 end
