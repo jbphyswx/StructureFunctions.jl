@@ -3,10 +3,7 @@
 # answer. `KA.CPU()` cannot establish this: it compiles no kernels, and the staged-point loaders
 # read a `@localmem` tile through an `ntuple` closure, which only a device compile exercises.
 using CUDA, Random, Printf
-using StructureFunctions
-using StructureFunctions.Calculations: Calculations as SFC
-using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
-using StructureFunctions.StructureFunctionObjects: StructureFunctionObjects as SFO
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, StructureFunctionObjects as SFO
 using StaticArrays: StaticArrays as SA
 using ComputationalBackends: ComputationalBackends as CB
 

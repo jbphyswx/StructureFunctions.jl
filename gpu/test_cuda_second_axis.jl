@@ -4,9 +4,7 @@
 using CUDA: CUDA
 using Random: Random
 using Printf: Printf
-using StructureFunctions
-using StructureFunctions.Calculations: Calculations as SFC
-using StructureFunctions.StructureFunctionTypes: StructureFunctionTypes as SFT
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, StructureFunctionObjects as SFO
 using ComputationalBackends: ComputationalBackends as CB
 using StaticArrays: StaticArrays as SA
 

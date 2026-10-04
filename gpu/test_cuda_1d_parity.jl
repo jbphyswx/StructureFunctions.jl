@@ -5,15 +5,14 @@
 # not systematic.
 #   julia --project=gpu gpu/test_cuda_1d_parity.jl
 # =============================================================================
-using StructureFunctions
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 import KernelAbstractions as KA
-using CUDA, StaticArrays, Printf
-using Statistics: median
+using CUDA: CUDA
+using StaticArrays: StaticArrays
+using Printf: Printf
+using Statistics: Statistics
 using Random: Random
-const SF = StructureFunctions
-const SFC = SF.Calculations
 const GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-const SFT = SF.StructureFunctionTypes
 const FT = Float32
 const N = parse(Int, get(ENV, "SF_T_N", "3000"))
 const B = parse(Int, get(ENV, "SF_T_B", "8"))

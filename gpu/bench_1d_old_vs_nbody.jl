@@ -1,13 +1,6 @@
-# =============================================================================
-# Head-to-head for the one 1D regime where the routing choice is live: fixed-x
-# individual SF, where the warp-replica strip kernel beats the CUDA N-body
-# kernel, the histogram being small enough to be contention-bound. Checks that
-# the two fill equal histograms.
+# Times the portable warp-replica strip kernel against the native CUDA plan on a 1D batch over
+# shared positions, and checks that the two fill equal histograms.
 #   julia --project=gpu gpu/bench_1d_old_vs_nbody.jl
-#
-# Every other 1D and 2D regime takes the N-body or unified kernel, so it has one
-# launcher and nothing to compare.
-# =============================================================================
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH
 using KernelAbstractions: KernelAbstractions as KA
 using CUDA: CUDA
@@ -25,9 +18,9 @@ const GEOM = SF.HelperFunctions.FlatGeometry{D}()
 tput(t) = (N * (N - 1) / 2) * B / t / 1e9
 bench(f) = (f(); f(); ts = Float64[]; for _ in 1:5
     t = time_ns(); f(); push!(ts, (time_ns() - t) / 1e9)
-end; median(ts))
+end; Statistics.median(ts))
 
-lbe = LinearBinEdges(0.05f0, 2.0f0, NB + 1)
+lbe = SF.LinearBinEdges(0.05f0, 2.0f0, NB + 1)
 dig = GE._gpu_digitizer(BE, lbe, Val(:sf1d))
 x_fix = rand(FT, D, N); u = randn(FT, D, N, B)
 
