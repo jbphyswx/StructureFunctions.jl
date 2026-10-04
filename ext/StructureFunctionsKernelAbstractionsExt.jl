@@ -69,7 +69,7 @@ include(joinpath(@__DIR__, "gpu", "sp2d_accumulation_strategy.jl"))
 include(joinpath(@__DIR__, "gpu", "joint2d_shared_memory.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_2d.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_1d_single_pass.jl"))
-include(joinpath(@__DIR__, "gpu", "kernels_2d_direct.jl"))
+include(joinpath(@__DIR__, "gpu", "kernels_2d_single_pass.jl"))
 include(joinpath(@__DIR__, "gpu", "kernels_batch.jl"))
 # Unified parametric kernel core (building blocks) and the two tiled kernels built on it.
 include(joinpath(@__DIR__, "gpu", "sf_core.jl"))

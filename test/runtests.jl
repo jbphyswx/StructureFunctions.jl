@@ -158,8 +158,8 @@ Test.@testset "StructureFunctions.jl" begin
     println("--- Running GPU Single-Pass Tiled Parity Test ---")
     include("test_gpu_single_pass_tiled.jl")
 
-    println("--- Running GPU sp2d HTP-EJ Partitioned Test ---")
-    include("test_gpu_sp2d_partitioned.jl")
+    println("--- Running GPU sp2d Accumulation Strategy Test ---")
+    include("test_gpu_sp2d_strategy.jl")
 
     println("--- Running GPU sp2d 3D Test ---")
     include("test_gpu_sp2d_3d.jl")

@@ -1,8 +1,8 @@
 # Six-invariant single-pass 2D (SP2D) — HTP-EJ GPU path
 
-**Code:** `ext/gpu/kernels_2d_direct.jl`, `ext/gpu/sp2d_accumulation_strategy.jl`, `ext/gpu/launch.jl`, `ext/gpu/workspace.jl`
+**Code:** `ext/gpu/kernels_2d_single_pass.jl`, `ext/gpu/sp2d_accumulation_strategy.jl`, `ext/gpu/launch.jl`, `ext/gpu/workspace.jl`
 **Benchmark:** `gpu/benchmark_2d_grid_scaling.jl`
-**Tests:** `test/test_gpu_sp2d_partitioned.jl` (`KernelAbstractions.CPU()` parity for `:shared` and `:typeplane`)
+**Tests:** `test/test_gpu_sp2d_strategy.jl` (`KernelAbstractions.CPU()` parity for `:shared` and `:typeplane`)
 
 This document describes how the six-invariant single-pass 2D histograms are accumulated on a device.
 

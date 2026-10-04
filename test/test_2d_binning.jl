@@ -134,7 +134,7 @@ Test.@testset "2D Joint-Probability Binning Tests" begin
         Test.@test combined.counts == sf1.counts .+ sf2.counts
     end
 
-    # 6. The device joint histogram matches serial for 6 and 201 value bins at widths 2 and 3.
+    # 6. The device joint histogram matches serial for 5 and 200 value bins at widths 2 and 3.
     Test.@testset "the device global-atomic joint route agrees at every width" begin
         Random.seed!(4321)
         n = 150

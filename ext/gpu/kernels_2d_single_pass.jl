@@ -1,7 +1,6 @@
-# HTP-EJ: tiled128 pair traversal for six-invariant-type single-pass 2D.
-#
-# On-chip (:shared, :typeplane): @localmem histogram during pair loop; block-end flush
-#   via _sp2d_flush_*_to_output! (@atomic into out_sums/out_cnts, joint pattern).
+# Single-pass 2D kernels over tile pairs holding the histogram on chip, `:shared` (every invariant's
+# plane) or `:typeplane` (some invariants' planes per pass), flushed into the output by atomics at
+# block end.
 
 """
     _sp2d_val_stride(n_val)

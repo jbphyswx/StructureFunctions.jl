@@ -207,24 +207,25 @@ Test.@testset "the capability matrix: every route on every backend" begin
             Test.@test any(!iszero, ref_c)
 
             for (bname, be) in CM_BACKENDS
-                refusal = get(CM_REFUSED, (rname, bname), nothing)
-                outcome = try
-                    run(be)
-                catch e
-                    e
-                end
-
-                if refusal === nothing
-                    if outcome isa Exception
-                        Test.@test !(outcome isa Exception) "$rname on $bname raised $(typeof(outcome))"
-                    else
-                        Test.@test cm_agrees(outcome[1], ref_s)
-                        Test.@test cm_agrees(outcome[2], ref_c)
+                Test.@testset "$bname" begin
+                    refusal = get(CM_REFUSED, (rname, bname), nothing)
+                    outcome = try
+                        run(be)
+                    catch e
+                        e
                     end
-                else
-                    Test.@test outcome isa ArgumentError
-                    Test.@test outcome isa ArgumentError &&
-                               occursin(refusal.message, outcome.msg)
+
+                    if refusal === nothing
+                        Test.@test outcome isa Tuple
+                        if outcome isa Tuple
+                            Test.@test cm_agrees(outcome[1], ref_s)
+                            Test.@test cm_agrees(outcome[2], ref_c)
+                        end
+                    else
+                        Test.@test outcome isa ArgumentError
+                        Test.@test outcome isa ArgumentError &&
+                                   occursin(refusal.message, outcome.msg)
+                    end
                 end
             end
 
@@ -240,9 +241,11 @@ Test.@testset "an angle cell bins the angle" begin
     # disagree with its serial reference.
     ser = CB.SerialBackend()
     for (name, x, u) in (("point", CM_XP, CM_UP), ("aux axes", CM_XB, CM_UB), ("aux axes shared", CM_XP, CM_UB))
-        angle = SFC.calculate_structure_function(CM_OP, x, u, CM_BINS, CM_ABINS; backend = ser, second_axis = CM_AX)
-        value = SFC.calculate_structure_function(CM_OP, x, u, CM_BINS, CM_ABINS; backend = ser)
-        Test.@test angle.counts != value.counts "$name: the angle cell binned the value"
+        Test.@testset "$name" begin
+            angle = SFC.calculate_structure_function(CM_OP, x, u, CM_BINS, CM_ABINS; backend = ser, second_axis = CM_AX)
+            value = SFC.calculate_structure_function(CM_OP, x, u, CM_BINS, CM_ABINS; backend = ser)
+            Test.@test angle.counts != value.counts
+        end
     end
 end
 
