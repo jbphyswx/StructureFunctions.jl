@@ -246,15 +246,19 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
 end
 
 # A CPU batch is the single-slice entry run once per slice: every family, shared positions on both sides of the
-# slices-innermost threshold and positions varying per slice, weighted and culled, serial and threaded.
+# slices-innermost threshold and positions varying per slice, weighted, culled or not, value edges a vector or linear
+# (the value columns formed in the vectorized pass), serial and threaded.
 Test.@testset "a CPU batch equals one call per slice in every family" begin
     sft = SFT.L2SFType()
     for FT in (Float64, Float32), D in (2, 3), shared in (true, false), B in (1, 3, SFC.BL_SLICE_LANES_MIN + 1),
-        weighted in (false, true), backend in (CB.SerialBackend(), CB.ThreadedBackend())
+        weighted in (false, true), culling in (SFC.NoCulling(), SFC.AlwaysCulling()), linear in (false, true),
+        backend in (CB.SerialBackend(), CB.ThreadedBackend())
         Random.seed!(hash((FT, D, shared, B, weighted)))
         N = 200
         db = collect(FT, range(0, 0.4; length = 9))
-        vb = collect(FT, range(0, 0.6; length = 7))
+        vb = linear ? LinearBinEdges(FT(-0.2), FT(0.6), 7) : collect(FT, range(-0.2, 0.6; length = 7))
+        vbs6 = ntuple(k -> linear ? LinearBinEdges(FT(-0.3 * k), FT(0.6), 7) :
+                              collect(FT, range(-0.3 * k, 0.6; length = 7)), 6)
         nd, nv = length(db) - 1, length(vb) - 1
         x = shared ? rand(FT, D, N) : rand(FT, D, N, B)
         u = rand(FT, D, N, B)
@@ -263,7 +267,7 @@ Test.@testset "a CPU batch equals one call per slice in every family" begin
         xs(t) = shared ? x : view(x, :, :, t)
         tol = FT == Float32 ? 1e-4 : 1e-10
         same(a, b) = isapprox(a, b; rtol = tol, atol = tol * maximum(abs, b; init = 0.0))
-        kw = (; backend, culling = SFC.AlwaysCulling(), weights = w)
+        kw = (; backend, culling, weights = w)
         one = (; backend = CB.SerialBackend(), weights = w)
         got, ref = (zeros(FT, nd, B), zeros(CT, nd, B)), (zeros(FT, nd, B), zeros(CT, nd, B))
         SFC.calculate_structure_function_batch!(got..., sft, x, u, db; kw...)
@@ -289,7 +293,7 @@ Test.@testset "a CPU batch equals one call per slice in every family" begin
                                                            view(u, :, :, t), db; one...)
         end
         Test.@test same(got[1], ref[1]) && same(got[2], ref[2])
-        for vbs in (vb, ntuple(k -> collect(FT, range(-0.3 * k, 0.6; length = 7)), 6))
+        for vbs in (vb, vbs6)
             got, ref = (zeros(FT, 6, nd, nv, B), zeros(CT, 6, nd, nv, B)), (zeros(FT, 6, nd, nv, B), zeros(CT, 6, nd, nv, B))
             SFC.calculate_structure_functions_single_pass_2d_batch!(got..., x, u, db, vbs; kw...)
             for t in 1:B

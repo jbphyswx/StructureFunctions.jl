@@ -548,6 +548,7 @@ end
 #   make_accum(bw)                          → fresh zeroed (sums_bl, counts_bl) of batch width bw
 #   make_scratch()                          → a task's kernel scratch
 #   run_chunk!(acc, scratch, isub, brange)  → kernel over outer i ∈ isub and batch b ∈ brange
+#   _bl_flush!(acc, scratch, brange)        → called once per task after its chunks
 #   grid                                    → the cull grid of the sweep, per-slice grids, or `nothing`
 #   accum_bytes                             → bytes of one full-width accumulator, for the split model
 #   ws                                      → CPUSFWorkspace to draw accumulators from, or `nothing`
@@ -557,7 +558,9 @@ end
 @inline function _bl_serial_exec(make_accum, make_scratch, run_chunk!, ifull, grid, B, accum_bytes, ws)
     acc = _bl_accum_pool(ws, make_accum, [B])[1]
     _bl_zero_accum!(acc)
-    run_chunk!(acc, make_scratch(), ifull, 1:B)
+    scratch = make_scratch()
+    run_chunk!(acc, scratch, ifull, 1:B)
+    _bl_flush!(acc, scratch, 1:B)
     return acc
 end
 
@@ -704,7 +707,7 @@ end
 
 """Slices from which a flat 1-D or single-pass batch over shared positions sums each pair across the slices in its
 innermost loop, the pair's bin being the same in every slice; fewer slices loop the slices outside the pairs."""
-const BL_SLICE_LANES_MIN = 4
+const BL_SLICE_LANES_MIN = 8
 
 """
     _bl_mode(vS, Val(fixed_x), B, lanes_min, rows, lanes)
@@ -746,21 +749,92 @@ function _bl_slices(xb, ub, geom, distance_bins, culling::CullingPolicy, ::Val{f
 end
 
 """
+    BLRowsScratch(bufs, make_hist)
+
+A task's scratch for the kernels that loop the slices outside the pairs: the pair buffers `bufs`, and `hist[k]`, the
+histogram of the `k`-th slice of the task's batch chunk in the layout of the single-slice kernel, made by
+`make_hist()` and added into the task's batch-leading accumulator by [`_bl_flush!`](@ref).
+"""
+struct BLRowsScratch{S, H, VH <: AbstractVector{H}, M}
+    bufs::S
+    hist::VH
+    make_hist::M
+end
+
+BLRowsScratch(bufs, make_hist) = BLRowsScratch(bufs, [make_hist()], make_hist)
+
+"""The first `n` slice histograms of `s`, made as needed."""
+function _bl_hists!(s::BLRowsScratch, n::Int)
+    while length(s.hist) < n
+        push!(s.hist, s.make_hist())
+    end
+    return s.hist
+end
+
+"""
+    _bl_flush!(acc, scratch, brange)
+
+Add a task's slice histograms into rows `1:length(brange)` of its accumulator `acc` and zero them; a scratch that holds
+none adds nothing.
+"""
+@inline _bl_flush!(acc, scratch, brange) = nothing
+function _bl_flush!(acc, s::BLRowsScratch, brange)
+    for k in 1:min(length(brange), length(s.hist))
+        _bl_merge!(acc[1], acc[2], k, s.hist[k])
+    end
+    return nothing
+end
+
+"""Add slice histogram `h` into row `k` of the batch-leading `(sums_bl, counts_bl)` and zero it."""
+function _bl_merge!(sums_bl, counts_bl, k::Int, h::Tuple{AbstractArray, AbstractArray})
+    s, c = h
+    selectdim(sums_bl, 1, k) .+= s
+    selectdim(counts_bl, 1, k) .+= c
+    fill!(s, zero(eltype(s)))
+    fill!(c, zero(eltype(c)))
+    return nothing
+end
+
+function _bl_merge!(sums_bl, counts_bl, k::Int, h::AbstractArray{<:SumCount, 3})
+    @inbounds for d in axes(h, 3), col in axes(h, 2), t in axes(h, 1)
+        c = h[t, col, d]
+        sums_bl[k, t, d, col] += c.sum
+        counts_bl[k, t, d, col] += c.count
+    end
+    fill!(h, zero(eltype(h)))
+    return nothing
+end
+
+"""
+    _bl_rows_runner(kernel!, grid, xs, us, ws, N) -> run_chunk!
+
+The executor's `run_chunk!(acc, scratch, isub, brange)` for [`_bl_slices`](@ref)'s output: `kernel!(scratch, xs, us,
+slices, slots, blocks, weights)` once for the slices `brange` into the scratch's slice histograms
+`1:length(brange)`, or, for positions varying per slice, once per slice with that slice's inputs, grid and slot.
+"""
+function _bl_rows_runner(kernel!::K, grid, xs, us, ws, N::Int) where {K}
+    grid isa AbstractVector ||
+        return (acc, scratch, isub, br) -> kernel!(scratch, xs, us, br, 1:length(br), pair_blocks(N, isub; grid), ws)
+    return function (acc, scratch, isub, br)
+        for (k, b) in enumerate(br)
+            kernel!(scratch, xs[b], us[b], b:b, k:k, pair_blocks(N, isub; grid = grid[b]), ws[b])
+        end
+        return nothing
+    end
+end
+
+"""
     _bl_rows_sweep(executor, slices, kernel!, make_scratch, make_accum, N, B, accum_bytes, workspace)
 
-`executor` over [`_bl_slices`](@ref)'s output: `kernel!(sums, counts, xc, us, blocks, brange, weights, scratch)` with
-the shared positions and every slice of `brange`, or, for positions varying per slice, once per slice with that
-slice's own inputs (`us` then one tuple of field components, into row 1).
+`executor` over [`_bl_slices`](@ref)'s output through [`_bl_rows_runner`](@ref), the kernel filling the
+[`BLRowsScratch`](@ref) slice histograms `make_scratch` builds.
 """
 function _bl_rows_sweep(executor::E, slices::Tuple, kernel!::K, make_scratch::M, make_accum::A, N::Int, B::Int,
                         accum_bytes::Int, workspace) where {E, K, M, A}
     grid, xs, us, ws = slices
-    return executor(make_accum, make_scratch, _bl_chunk_runner(kernel!, grid, xs, us, ws, N), 1:(N - 1), grid, B,
+    return executor(make_accum, make_scratch, _bl_rows_runner(kernel!, grid, xs, us, ws, N), 1:(N - 1), grid, B,
                     accum_bytes, workspace)
 end
-
-"""Row `k` of a batch-leading accumulator: one slice's histogram."""
-@inline _bl_row(a::AbstractArray{<:Any, N}, k::Int) where {N} = view(a, k, ntuple(_ -> Colon(), Val(N - 1))...)
 
 """
     _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact) -> n
@@ -783,50 +857,52 @@ The distance bins of a run's pairs, which every slice shares: of its `n` in-rang
     return 0
 end
 
-"""The digitize key, approximate bin, separation and squared separation of every pair `(i, j)`, `j ∈ js`, of flat
-shared positions `xc`, into slot `j - o` of each buffer: what the point kernels form a pair's value from."""
-@inline function _bl_rows_geometry!(keybuf, idxbuf, dxbuf, r2buf, plan, xc, Xi, js, o, ::Val{D}) where {D}
-    @inbounds @simd for j in js
-        dx = _component_point(xc, j, Val(D)) - Xi
-        r2 = SFH.norm2(dx)
-        keybuf[j - o] = digitize_key(plan, r2)
+"""With `keys`, slot `k`'s digitize key and approximate bin from its squared separation `r2`."""
+@inline function _bl_rows_key!(keybuf, idxbuf, plan, k, r2, ::Val{keys}) where {keys}
+    if keys
+        @inbounds keybuf[k] = digitize_key(plan, r2)
         if has_vector_index(plan)
-            idxbuf[j - o] = squared_approx_index(plan, r2)
-        end
-        r2buf[j - o] = r2
-        for d in 1:D
-            dxbuf[j - o, d] = dx[d]
+            @inbounds idxbuf[k] = squared_approx_index(plan, r2)
         end
     end
     return nothing
 end
 
-"""Slot `k`'s separation from a `(slots, D)` buffer."""
-@inline _bl_separation(dxbuf, k, ::Val{D}) where {D} = SA.SVector{D}(ntuple(d -> @inbounds(dxbuf[k, d]), Val(D)))
+"""
+    _bl_choose(f, flags, args, vals = ())
 
-"""A task's scratch for the 1-D kernels over `N` points: the pair window, then the digitize keys, approximate bins,
-separations, squared separations, compacted slots, distance bins and values."""
-function _bl_rows_scratch_1d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}) where {D, FT, OT}
+`f(args..., vals..., Val(flags[1]), Val(flags[2]), …)`: each combination of a run's boolean `flags` reaches a method
+of `f` compiled for it alone.
+"""
+@inline _bl_choose(f::F, ::Tuple{}, args::Tuple, vals::Tuple = ()) where {F} = f(args..., vals...)
+@inline _bl_choose(f::F, flags::Tuple{Bool, Vararg{Bool}}, args::Tuple, vals::Tuple = ()) where {F} =
+    first(flags) ? _bl_choose(f, Base.tail(flags), args, (vals..., Val(true))) :
+                   _bl_choose(f, Base.tail(flags), args, (vals..., Val(false)))
+
+"""A task's [`BLRowsScratch`](@ref) for the 1-D kernels over `N` points: the pair window, the digitize keys,
+approximate bins, compacted slots, distance bins and values, and `n_bins`-bin slice histograms."""
+function _bl_rows_scratch_1d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, n_bins::Int) where {D, FT, OT, CT}
     window = _pair_window(N)
     L = _pair_scratch_length(window, N)
-    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{FT}(undef, L),
-            Vector{Int32}(undef, L),
-            Vector{Int32}(undef, L), Vector{OT}(undef, L))
+    bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
+            Vector{OT}(undef, L))
+    return BLRowsScratch(bufs, () -> (zeros(OT, n_bins), zeros(CT, n_bins)))
 end
 
 """
-    _bl_rows_1d!(sums_bl, counts_bl, xc, us, sf, plan, ::Val{D}, blocks, brange, weights, scratch)
+    _bl_rows_1d!(scratch, xc, us, slices, slots, sf, plan, ::Val{D}, blocks, weights)
 
-The 1-D pairs `blocks` covers, for the shared positions `xc` and every slice `b ∈ brange` of the fields `us[b]`: each
-run's geometry, in-range choice and bins once, then per slice a vectorized value pass and a scatter of the in-range
-pairs into the slice's row. One slice's own inputs (`us` a tuple) take [`_pf_simd_pairs!`](@ref) into row 1.
+The 1-D pairs `blocks` covers into the scratch's slice histograms `slots`, for the shared positions `xc` and the fields
+`us[b]`, `b ∈ slices`: the first slice's vectorized value pass also forms each run's digitize keys, from which the
+run's in-range choice and bins are taken once; each further slice takes a value pass; each slice scatters the
+in-range pairs. A single slice takes [`_pf_simd_pairs!`](@ref), as do one slice's own inputs (`us` a tuple).
 """
-function _bl_rows_1d!(sums_bl::AbstractMatrix{OT}, counts_bl::AbstractMatrix{CT}, xc::NTuple{D}, us::AbstractVector,
-                      sf, plan, ::Val{D}, blocks, brange, weights, scratch) where {OT, CT, D}
-    window, keybuf, idxbuf, dxbuf, r2buf, sel, binbuf, valbuf = scratch
-    nb = n_histogram_bins(plan)
-    boff = first(brange) - 1
-    vD = Val(D)
+function _bl_rows_1d!(scratch::BLRowsScratch, xc::NTuple{D}, us::AbstractVector, slices, slots, sf, plan, vD::Val{D},
+                      blocks, weights) where {D}
+    length(slices) == 1 && return _bl_rows_1d!(scratch, xc, us[first(slices)], slices, slots, sf, plan, vD, blocks,
+                                               weights)
+    window, keybuf, idxbuf, _, _, valbuf = scratch.bufs
+    hist = _bl_hists!(scratch, last(slots))
     chooses = _chooses_compaction(blocks)
     @inbounds for (ir, jr) in blocks
         _check_run_fits(window, keybuf, jr)
@@ -834,66 +910,102 @@ function _bl_rows_1d!(sums_bl::AbstractMatrix{OT}, counts_bl::AbstractMatrix{CT}
         for i in ir
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
-            wi = _point_weight(weights, i)
-            _bl_rows_geometry!(keybuf, idxbuf, dxbuf, r2buf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o,
-                               vD)
+            Xi = _component_point(xc, i, vD)
             ks = (jlo - o):(last(jr) - o)
+            _bl_rows_values!(valbuf, keybuf, idxbuf, plan, sf, xc, Xi, us[first(slices)], i, ks, o, vD, Val(true))
             compact = chooses && _compacts(_sample_in_range(plan, keybuf, ks)...)
-            n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
-            for b in brange
-                uc = us[b]
-                Ui = _component_point(uc, i, vD)
-                @simd for k in ks
-                    valbuf[k] = SFT.flat_pair_value(sf, _component_point(uc, k + o, vD) - Ui, _bl_separation(dxbuf, k, vD),
-                                                    r2buf[k])
-                end
-                s, c = _bl_row(sums_bl, b - boff), _bl_row(counts_bl, b - boff)
-                if compact
-                    for m in 1:n
-                        _pf_accumulate!(s, c, valbuf, weights, wi, o, Int(sel[m]), Int(binbuf[m]))
-                    end
-                else
-                    for k in ks
-                        bin = Int(binbuf[k])
-                        1 <= bin <= nb && _pf_accumulate!(s, c, valbuf, weights, wi, o, k, bin)
-                    end
-                end
-            end
+            _bl_choose(_bl_rows_1d_run!, (compact,), (hist, scratch.bufs, xc, Xi, us, slices, slots, sf, plan, vD, ks,
+                                                      o, i, _point_weight(weights, i), weights, chooses))
         end
     end
     return nothing
 end
 
-function _bl_rows_1d!(sums_bl::AbstractMatrix, counts_bl::AbstractMatrix, xc::NTuple{D}, uc::Tuple, sf, plan,
-                      vD::Val{D}, blocks, brange, weights, scratch) where {D}
-    window, keybuf, idxbuf, _, _, sel, _, valbuf = scratch
-    _pf_simd_pairs!(_bl_row(sums_bl, 1), _bl_row(counts_bl, 1), sf, xc, uc, plan, vD, keybuf, valbuf, idxbuf, sel,
-                    window, blocks, weights)
+"""
+    _bl_rows_values!(valbuf, keybuf, idxbuf, plan, sf, xc, Xi, uc, i, ks, o, ::Val{D}, ::Val{keys})
+
+The operator value of each slot `k ∈ ks` of outer point `i`'s run for the field `uc`, with `keys` also the run's
+digitize keys and approximate bins.
+"""
+@inline function _bl_rows_values!(valbuf, keybuf, idxbuf, plan, sf, xc, Xi, uc, i, ks, o, ::Val{D},
+                                  vkeys::Val) where {D}
+    Ui = _component_point(uc, i, Val(D))
+    @inbounds @simd for k in ks
+        dx = _component_point(xc, k + o, Val(D)) - Xi
+        r2 = SFH.norm2(dx)
+        _bl_rows_key!(keybuf, idxbuf, plan, k, r2, vkeys)
+        valbuf[k] = SFT.flat_pair_value(sf, _component_point(uc, k + o, Val(D)) - Ui, dx, r2)
+    end
     return nothing
 end
 
-"""A task's scratch for the single-pass kernels: the pair window, then the digitize keys, approximate bins,
-separations, squared separations, compacted slots, distance bins, `δu_L` and `‖δu‖²`."""
-function _bl_rows_scratch_sp1d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}) where {D, FT, OT}
-    window = _pair_window(N)
-    L = _pair_scratch_length(window, N)
-    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{FT}(undef, L),
-            Vector{Int32}(undef, L),
-            Vector{Int32}(undef, L), Vector{OT}(undef, L), Vector{OT}(undef, L))
+"""The values of a run's slots into one slice's histogram `(s, c)`: the `n` in-range slots compacted into `sel`, their
+bins in `binbuf[1:n]` (`compact`), or every slot `k ∈ ks` whose bin `binbuf[k]` is one of the `nb` bins."""
+@inline function _bl_rows_1d_scatter!(s, c, valbuf, sel, binbuf, weights, wi, o, ks, n, nb,
+                                      ::Val{compact}) where {compact}
+    @inbounds if compact
+        for m in 1:n
+            _pf_accumulate!(s, c, valbuf, weights, wi, o, Int(sel[m]), Int(binbuf[m]))
+        end
+    else
+        for k in ks
+            bin = Int(binbuf[k])
+            1 <= bin <= nb && _pf_accumulate!(s, c, valbuf, weights, wi, o, k, bin)
+        end
+    end
+    return nothing
 end
 
 """
-    _bl_rows_sp1d!(sums_bl, counts_bl, xc, us, plan, ::Val{D}, blocks, brange, weights, scratch)
+    _bl_rows_1d_run!(hist, bufs, xc, Xi, us, slices, slots, sf, plan, ::Val{D}, ks, o, i, wi, weights, chooses,
+                     ::Val{compact})
+
+The slots `ks` of outer point `i`'s run, whose keys and first slice's values are formed: the run's bins once, then per
+slice its scatter into `hist[slot]`, each further slice's value pass first, over the in-range slots compacted into
+`sel` (`compact`) or every slot.
+"""
+@noinline function _bl_rows_1d_run!(hist, bufs, xc, Xi, us, slices, slots, sf, plan, vD::Val{D}, ks, o, i, wi, weights,
+                                    chooses, vcompact::Val{compact}) where {D, compact}
+    _, keybuf, idxbuf, sel, binbuf, valbuf = bufs
+    nb = n_histogram_bins(plan)
+    n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
+    for q in eachindex(slices)
+        q > 1 && _bl_rows_values!(valbuf, keybuf, idxbuf, plan, sf, xc, Xi, us[slices[q]], i, ks, o, vD, Val(false))
+        _bl_rows_1d_scatter!(hist[slots[q]]..., valbuf, sel, binbuf, weights, wi, o, ks, n, nb, vcompact)
+    end
+    return nothing
+end
+
+function _bl_rows_1d!(scratch::BLRowsScratch, xc::NTuple{D}, uc::Tuple, slices, slots, sf, plan, vD::Val{D}, blocks,
+                      weights) where {D}
+    window, keybuf, idxbuf, sel, _, valbuf = scratch.bufs
+    s, c = _bl_hists!(scratch, first(slots))[first(slots)]
+    _pf_simd_pairs!(s, c, sf, xc, uc, plan, vD, keybuf, valbuf, idxbuf, sel, window, blocks, weights)
+    return nothing
+end
+
+"""A task's [`BLRowsScratch`](@ref) for the single-pass kernels: the pair window, the digitize keys, approximate bins,
+compacted slots, distance bins, `δu_L` and `‖δu‖²`, and `(6, n_bins)` slice histograms."""
+function _bl_rows_scratch_sp1d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, n_bins::Int) where {D, FT, OT, CT}
+    window = _pair_window(N)
+    L = _pair_scratch_length(window, N)
+    bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
+            Vector{OT}(undef, L), Vector{OT}(undef, L))
+    return BLRowsScratch(bufs, () -> (zeros(OT, SINGLE_PASS_N, n_bins), zeros(CT, SINGLE_PASS_N, n_bins)))
+end
+
+"""
+    _bl_rows_sp1d!(scratch, xc, us, slices, slots, plan, ::Val{D}, blocks, weights)
 
 The single-pass analogue of [`_bl_rows_1d!`](@ref): per slice a vectorized pass forms `δu_L` and `‖δu‖²`, and the
-scatter adds the six invariants. One slice's own inputs take [`_pf_sp_simd_pairs!`](@ref) into row 1.
+scatter adds the six invariants. A single slice, or one slice's own inputs, take [`_pf_sp_simd_pairs!`](@ref).
 """
-function _bl_rows_sp1d!(sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{CT, 3}, xc::NTuple{D},
-                        us::AbstractVector, plan, ::Val{D}, blocks, brange, weights, scratch) where {OT, CT, D}
-    window, keybuf, idxbuf, dxbuf, r2buf, sel, binbuf, duLbuf, dn2buf = scratch
-    nb = n_histogram_bins(plan)
-    boff = first(brange) - 1
-    vD = Val(D)
+function _bl_rows_sp1d!(scratch::BLRowsScratch, xc::NTuple{D}, us::AbstractVector, slices, slots, plan, vD::Val{D},
+                        blocks, weights) where {D}
+    length(slices) == 1 && return _bl_rows_sp1d!(scratch, xc, us[first(slices)], slices, slots, plan, vD, blocks,
+                                                 weights)
+    window, keybuf, idxbuf, _, _, duLbuf, dn2buf = scratch.bufs
+    hist = _bl_hists!(scratch, last(slots))
     chooses = _chooses_compaction(blocks)
     @inbounds for (ir, jr) in blocks
         _check_run_fits(window, keybuf, jr)
@@ -901,267 +1013,387 @@ function _bl_rows_sp1d!(sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{
         for i in ir
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
-            wi = _point_weight(weights, i)
-            _bl_rows_geometry!(keybuf, idxbuf, dxbuf, r2buf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o,
-                               vD)
+            Xi = _component_point(xc, i, vD)
             ks = (jlo - o):(last(jr) - o)
+            _bl_rows_invariants!(duLbuf, dn2buf, keybuf, idxbuf, plan, xc, Xi, us[first(slices)], i, ks, o, vD,
+                                 Val(true))
             compact = chooses && _compacts(_sample_in_range(plan, keybuf, ks)...)
-            n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
-            for b in brange
-                uc = us[b]
-                Ui = _component_point(uc, i, vD)
-                @simd for k in ks
-                    duLbuf[k], dn2buf[k] = SFH.increment_invariants(SFH.FlatGeometry{D}(), _bl_separation(dxbuf, k, vD),
-                                                                    sqrt(r2buf[k]), _component_point(uc, k + o, vD) - Ui)
-                end
-                s, c = _bl_row(sums_bl, b - boff), _bl_row(counts_bl, b - boff)
-                if compact
-                    for m in 1:n
-                        _sp1d_accumulate!(s, c, duLbuf, dn2buf, weights, wi, o, Int(sel[m]), Int(binbuf[m]))
-                    end
-                else
-                    for k in ks
-                        bin = Int(binbuf[k])
-                        1 <= bin <= nb && _sp1d_accumulate!(s, c, duLbuf, dn2buf, weights, wi, o, k, bin)
-                    end
-                end
-            end
+            _bl_choose(_bl_rows_sp1d_run!, (compact,), (hist, scratch.bufs, xc, Xi, us, slices, slots, plan, vD, ks, o,
+                                                        i, _point_weight(weights, i), weights, chooses))
         end
     end
-    for b in brange
-        _sp1d_derive_rows!(_bl_row(sums_bl, b - boff), _bl_row(counts_bl, b - boff))
+    for slot in slots
+        _sp1d_derive_rows!(hist[slot]...)
     end
     return nothing
 end
 
-function _bl_rows_sp1d!(sums_bl::AbstractArray{<:Any, 3}, counts_bl::AbstractArray{<:Any, 3}, xc::NTuple{D}, uc::Tuple,
-                        plan, vD::Val{D}, blocks, brange, weights, scratch) where {D}
-    window, keybuf, idxbuf, _, _, sel, _, duLbuf, dn2buf = scratch
-    _pf_sp_simd_pairs!(_bl_row(sums_bl, 1), _bl_row(counts_bl, 1), xc, uc, plan, vD, keybuf, duLbuf, dn2buf, idxbuf,
-                       sel, window, blocks, weights)
+"""
+    _bl_rows_invariants!(duLbuf, dn2buf, keybuf, idxbuf, plan, xc, Xi, uc, i, ks, o, ::Val{D}, ::Val{keys})
+
+`δu_L` and `‖δu‖²` of each slot `k ∈ ks` of outer point `i`'s run for the field `uc`, with `keys` also the run's
+digitize keys and approximate bins.
+"""
+@inline function _bl_rows_invariants!(duLbuf, dn2buf, keybuf, idxbuf, plan, xc, Xi, uc, i, ks, o, ::Val{D},
+                                      vkeys::Val) where {D}
+    Ui = _component_point(uc, i, Val(D))
+    @inbounds @simd for k in ks
+        dx = _component_point(xc, k + o, Val(D)) - Xi
+        r2 = SFH.fma_dot(dx, dx)
+        _bl_rows_key!(keybuf, idxbuf, plan, k, r2, vkeys)
+        duLbuf[k], dn2buf[k] = SFH.increment_invariants(SFH.FlatGeometry{D}(), dx, sqrt(r2),
+                                                        _component_point(uc, k + o, Val(D)) - Ui)
+    end
     return nothing
 end
 
-"""A task's scratch for the joint kernels: the pair window, then the digitize keys, approximate bins,
-separations, squared separations, compacted slots, distance bins, values, value columns, the shared columns of a second axis that is not the value,
-and the second-axis quantities [`_pf_2d_simd_pairs!`](@ref) reads."""
-function _bl_rows_scratch_joint(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, second_axis) where {D, FT, OT}
+"""The single-pass analogue of [`_bl_rows_1d_scatter!`](@ref)."""
+@inline function _bl_rows_sp1d_scatter!(s, c, duLbuf, dn2buf, sel, binbuf, weights, wi, o, ks, n, nb,
+                                        ::Val{compact}) where {compact}
+    @inbounds if compact
+        for m in 1:n
+            _sp1d_accumulate!(s, c, duLbuf, dn2buf, weights, wi, o, Int(sel[m]), Int(binbuf[m]))
+        end
+    else
+        for k in ks
+            bin = Int(binbuf[k])
+            1 <= bin <= nb && _sp1d_accumulate!(s, c, duLbuf, dn2buf, weights, wi, o, k, bin)
+        end
+    end
+    return nothing
+end
+
+"""
+    _bl_rows_sp1d_run!(hist, bufs, xc, Xi, us, slices, slots, plan, ::Val{D}, ks, o, i, wi, weights, chooses,
+                       ::Val{compact})
+
+The single-pass analogue of [`_bl_rows_1d_run!`](@ref): per further slice a vectorized pass forms `δu_L` and `‖δu‖²`,
+and the scatter adds the invariants.
+"""
+@noinline function _bl_rows_sp1d_run!(hist, bufs, xc, Xi, us, slices, slots, plan, vD::Val{D}, ks, o, i, wi, weights,
+                                      chooses, vcompact::Val{compact}) where {D, compact}
+    _, keybuf, idxbuf, sel, binbuf, duLbuf, dn2buf = bufs
+    nb = n_histogram_bins(plan)
+    n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
+    for q in eachindex(slices)
+        q > 1 && _bl_rows_invariants!(duLbuf, dn2buf, keybuf, idxbuf, plan, xc, Xi, us[slices[q]], i, ks, o, vD,
+                                      Val(false))
+        _bl_rows_sp1d_scatter!(hist[slots[q]]..., duLbuf, dn2buf, sel, binbuf, weights, wi, o, ks, n, nb, vcompact)
+    end
+    return nothing
+end
+
+function _bl_rows_sp1d!(scratch::BLRowsScratch, xc::NTuple{D}, uc::Tuple, slices, slots, plan, vD::Val{D}, blocks,
+                        weights) where {D}
+    window, keybuf, idxbuf, sel, _, duLbuf, dn2buf = scratch.bufs
+    s, c = _bl_hists!(scratch, first(slots))[first(slots)]
+    _pf_sp_simd_pairs!(s, c, xc, uc, plan, vD, keybuf, duLbuf, dn2buf, idxbuf, sel, window, blocks, weights)
+    return nothing
+end
+
+"""A task's [`BLRowsScratch`](@ref) for the joint kernels: the pair window, the digitize keys, approximate bins,
+compacted slots, distance bins, values, value columns, the shared columns of a second axis that is not the value and
+the second-axis quantities [`_pf_2d_simd_pairs!`](@ref) reads, and padded `(n_dist, n_val + 2)` slice histograms."""
+function _bl_rows_scratch_joint(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, second_axis, n_dist::Int,
+                                n_val::Int) where {D, FT, OT, CT}
     window = _pair_window(N)
     L = _pair_scratch_length(window, N)
     valbuf = Vector{OT}(undef, L)
-    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{FT}(undef, L),
-            Vector{Int32}(undef, L),
-            Vector{Int32}(undef, L), valbuf, Vector{Int32}(undef, L), Vector{Int32}(undef, L),
+    bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
+            valbuf, Vector{Int32}(undef, L), Vector{Int32}(undef, L),
             needs_axis_buffer(second_axis) ? Vector{OT}(undef, L) : valbuf)
+    return BLRowsScratch(bufs, () -> (zeros(OT, n_dist, n_val + 2), zeros(CT, n_dist, n_val + 2)))
 end
 
 """
-    _bl_rows_joint!(sums_bl, counts_bl, xc, us, sf, plan, val_be, second_axis, ::Val{D}, blocks, brange, weights, scratch)
+    _bl_rows_joint!(scratch, xc, us, slices, slots, sf, plan, val_be, second_axis, ::Val{D}, blocks, weights)
 
-The joint analogue of [`_bl_rows_1d!`](@ref) into the padded `(n_dist, n_val + 2)` rows: a second axis other than the
-value is binned once per pair for every slice; on the value axis each slice's value columns are formed in its value
-pass where the value edges digitize in vector form, else in its scatter. One slice's own inputs take
-[`_pf_2d_simd_pairs!`](@ref) into row 1.
+The joint analogue of [`_bl_rows_1d!`](@ref) into padded `(n_dist, n_val + 2)` slice histograms: a second axis other
+than the value is binned once per pair for every slice; on the value axis each slice's value columns are formed in its
+value pass where the value edges digitize in vector form, else in its scatter. A single slice, or one slice's own
+inputs, take [`_pf_2d_simd_pairs!`](@ref).
 """
-function _bl_rows_joint!(sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{CT, 3}, xc::NTuple{D},
-                         us::AbstractVector, sf, plan, val_be, second_axis, ::Val{D}, blocks, brange, weights,
-                         scratch) where {OT, CT, D}
-    window, keybuf, idxbuf, dxbuf, r2buf, sel, binbuf, valbuf, colbuf, acolbuf, _ = scratch
-    nb = n_histogram_bins(plan)
-    n_val = n_histogram_bins(val_be)
-    boff = first(brange) - 1
-    vD = Val(D)
-    vector_columns = has_vector_digitize(val_be, OT)
+function _bl_rows_joint!(scratch::BLRowsScratch, xc::NTuple{D}, us::AbstractVector, slices, slots, sf, plan, val_be,
+                         second_axis, vD::Val{D}, blocks, weights) where {D}
+    length(slices) == 1 && return _bl_rows_joint!(scratch, xc, us[first(slices)], slices, slots, sf, plan, val_be,
+                                                  second_axis, vD, blocks, weights)
+    window, keybuf, idxbuf, _, _, valbuf, colbuf, _, axbuf = scratch.bufs
+    hist = _bl_hists!(scratch, last(slots))
+    vector_columns = has_vector_digitize(val_be, eltype(valbuf))
     chooses = _chooses_compaction(blocks)
+    s_in, s_n = 0, 0
     @inbounds for (ir, jr) in blocks
         _check_run_fits(window, keybuf, jr)
         o = _slot_offset(window, jr)
         for i in ir
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
-            wi = _point_weight(weights, i)
-            _bl_rows_geometry!(keybuf, idxbuf, dxbuf, r2buf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o,
-                               vD)
+            Xi = _component_point(xc, i, vD)
             ks = (jlo - o):(last(jr) - o)
+            columns = !needs_axis_buffer(second_axis) && vector_columns && (!chooses || !_sparse(s_in, s_n))
+            _bl_choose(_bl_rows_joint_first!, (columns,), (valbuf, colbuf, axbuf, keybuf, idxbuf, plan, sf, val_be,
+                                                           second_axis, xc, Xi, us[first(slices)], i, ks, o, vD))
             s_in, s_n = _sample_in_range(plan, keybuf, ks)
             compact = chooses && _compacts(s_in, s_n)
-            n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
-            if needs_axis_buffer(second_axis)
-                for k in ks
-                    acolbuf[k] = _value_column(val_be, axis_quantity(second_axis, _bl_separation(dxbuf, k, vD), r2buf[k]),
-                                               n_val)
-                end
-            end
-            columns = !needs_axis_buffer(second_axis) && vector_columns && (!chooses || !_sparse(s_in, s_n))
-            for b in brange
-                uc = us[b]
-                Ui = _component_point(uc, i, vD)
-                if columns
-                    @simd for k in ks
-                        v = OT(SFT.flat_pair_value(sf, _component_point(uc, k + o, vD) - Ui, _bl_separation(dxbuf, k, vD),
-                                                  r2buf[k]))
-                        valbuf[k] = v
-                        colbuf[k] = _vector_value_column(val_be, v, n_val)
-                    end
-                else
-                    @simd for k in ks
-                        valbuf[k] = SFT.flat_pair_value(sf, _component_point(uc, k + o, vD) - Ui, _bl_separation(dxbuf, k, vD),
-                                                    r2buf[k])
-                    end
-                end
-                s, c = _bl_row(sums_bl, b - boff), _bl_row(counts_bl, b - boff)
-                if compact
-                    for m in 1:n
-                        k = Int(sel[m])
-                        _joint_accumulate!(s, c, valbuf, weights, wi, o, k, Int(binbuf[m]),
-                                           _bl_joint_column(second_axis, columns, val_be, valbuf, colbuf, acolbuf, k, n_val))
-                    end
-                else
-                    for k in ks
-                        bin = Int(binbuf[k])
-                        1 <= bin <= nb || continue
-                        _joint_accumulate!(s, c, valbuf, weights, wi, o, k, bin,
-                                           _bl_joint_column(second_axis, columns, val_be, valbuf, colbuf, acolbuf, k, n_val))
-                    end
-                end
-            end
+            _bl_choose(_bl_rows_joint_run!, (compact, columns),
+                       (hist, scratch.bufs, xc, Xi, us, slices, slots, sf, plan, val_be, second_axis, vD, ks, o, i,
+                        _point_weight(weights, i), weights, chooses))
         end
     end
     return nothing
 end
 
-"""The padded value column of slot `k` in a joint row: the shared second-axis column, the value column the value pass
-formed, or the value's column formed here."""
-@inline function _bl_joint_column(second_axis, columns::Bool, val_be, valbuf, colbuf, acolbuf, k, n_val)
-    needs_axis_buffer(second_axis) && return Int(@inbounds acolbuf[k])
-    return columns ? Int(@inbounds colbuf[k]) : _value_column(val_be, @inbounds(valbuf[k]), n_val)
-end
+"""
+    _bl_rows_joint_values!(valbuf, colbuf, axbuf, keybuf, idxbuf, plan, sf, val_be, second_axis, xc, Xi, uc, i, ks, o,
+                           ::Val{D}, ::Val{keys}, ::Val{columns})
 
-function _bl_rows_joint!(sums_bl::AbstractArray{<:Any, 3}, counts_bl::AbstractArray{<:Any, 3}, xc::NTuple{D},
-                         uc::Tuple, sf, plan, val_be, second_axis, vD::Val{D}, blocks, brange, weights,
-                         scratch) where {D}
-    window, keybuf, idxbuf, _, _, sel, _, valbuf, colbuf, _, axbuf = scratch
-    _pf_2d_simd_pairs!(_bl_row(sums_bl, 1), _bl_row(counts_bl, 1), sf, xc, uc, plan, val_be, vD, keybuf, valbuf,
-                       idxbuf, colbuf, sel, window, blocks, second_axis, axbuf, weights)
+The operator value of each slot `k ∈ ks` of outer point `i`'s run for the field `uc`, with `columns` its padded value
+column, with `keys` also the run's digitize keys, approximate bins and second-axis quantities.
+"""
+@inline function _bl_rows_joint_values!(valbuf, colbuf, axbuf, keybuf, idxbuf, plan, sf, val_be, second_axis, xc, Xi,
+                                        uc, i, ks, o, ::Val{D}, vkeys::Val{keys},
+                                        ::Val{columns}) where {D, keys, columns}
+    OT = eltype(valbuf)
+    n_val = n_histogram_bins(val_be)
+    Ui = _component_point(uc, i, Val(D))
+    @inbounds @simd for k in ks
+        dx = _component_point(xc, k + o, Val(D)) - Xi
+        r2 = SFH.norm2(dx)
+        _bl_rows_key!(keybuf, idxbuf, plan, k, r2, vkeys)
+        if keys && needs_axis_buffer(second_axis)
+            axbuf[k] = axis_quantity(second_axis, dx, r2)
+        end
+        v = OT(SFT.flat_pair_value(sf, _component_point(uc, k + o, Val(D)) - Ui, dx, r2))
+        valbuf[k] = v
+        if columns
+            colbuf[k] = _vector_value_column(val_be, v, n_val)
+        end
+    end
     return nothing
 end
 
-"""A task's scratch for the single-pass 2D kernels: the pair window, then the digitize keys, approximate bins,
-separations, squared separations, compacted slots, distance bins, `δu_L`, `‖δu‖²`, the six value-column buffers, and the interleaved
-histogram [`_sp2d_simd_pairs!`](@ref) fills for one slice's own inputs."""
+"""The first slice's [`_bl_rows_joint_values!`](@ref) with the run's keys."""
+@noinline _bl_rows_joint_first!(valbuf, colbuf, axbuf, keybuf, idxbuf, plan, sf, val_be, second_axis, xc, Xi, uc, i,
+                                ks, o, vD, vcolumns) =
+    _bl_rows_joint_values!(valbuf, colbuf, axbuf, keybuf, idxbuf, plan, sf, val_be, second_axis, xc, Xi, uc, i, ks, o,
+                           vD, Val(true), vcolumns)
+
+"""The joint analogue of [`_bl_rows_1d_scatter!`](@ref): each pair's value column from `cols` (`stored`), else from
+its value."""
+@inline function _bl_rows_joint_scatter!(s, c, valbuf, cols, val_be, sel, binbuf, weights, wi, o, ks, n, nb, n_val,
+                                         ::Val{compact}, ::Val{stored}) where {compact, stored}
+    @inbounds if compact
+        for m in 1:n
+            k = Int(sel[m])
+            _joint_accumulate!(s, c, valbuf, weights, wi, o, k, Int(binbuf[m]),
+                               stored ? Int(cols[k]) : _value_column(val_be, valbuf[k], n_val))
+        end
+    else
+        for k in ks
+            bin = Int(binbuf[k])
+            1 <= bin <= nb && _joint_accumulate!(s, c, valbuf, weights, wi, o, k, bin,
+                                                 stored ? Int(cols[k]) : _value_column(val_be, valbuf[k], n_val))
+        end
+    end
+    return nothing
+end
+
+"""
+    _bl_rows_joint_run!(hist, bufs, xc, Xi, us, slices, slots, sf, plan, val_be, second_axis, ::Val{D}, ks, o, i, wi,
+                        weights, chooses, ::Val{compact}, ::Val{columns})
+
+The joint analogue of [`_bl_rows_1d_run!`](@ref): a second axis other than the value is binned once for every slice;
+each slice's value pass forms its value columns with `columns`, else its scatter does.
+"""
+@noinline function _bl_rows_joint_run!(hist, bufs, xc, Xi, us, slices, slots, sf, plan, val_be, second_axis,
+                                       vD::Val{D}, ks, o, i, wi, weights, chooses, vcompact::Val{compact},
+                                       vcolumns::Val{columns}) where {D, compact, columns}
+    _, keybuf, idxbuf, sel, binbuf, valbuf, colbuf, acolbuf, axbuf = bufs
+    nb = n_histogram_bins(plan)
+    n_val = n_histogram_bins(val_be)
+    n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
+    @inbounds if needs_axis_buffer(second_axis)
+        for k in ks
+            acolbuf[k] = _value_column(val_be, axbuf[k], n_val)
+        end
+    end
+    cols = needs_axis_buffer(second_axis) ? acolbuf : colbuf
+    vstored = Val(needs_axis_buffer(second_axis) || columns)
+    for q in eachindex(slices)
+        q > 1 && _bl_rows_joint_values!(valbuf, colbuf, axbuf, keybuf, idxbuf, plan, sf, val_be, second_axis, xc, Xi,
+                                        us[slices[q]], i, ks, o, vD, Val(false), vcolumns)
+        _bl_rows_joint_scatter!(hist[slots[q]]..., valbuf, cols, val_be, sel, binbuf, weights, wi, o, ks, n, nb, n_val,
+                                vcompact, vstored)
+    end
+    return nothing
+end
+
+function _bl_rows_joint!(scratch::BLRowsScratch, xc::NTuple{D}, uc::Tuple, slices, slots, sf, plan, val_be,
+                         second_axis, vD::Val{D}, blocks, weights) where {D}
+    window, keybuf, idxbuf, sel, _, valbuf, colbuf, _, axbuf = scratch.bufs
+    s, c = _bl_hists!(scratch, first(slots))[first(slots)]
+    _pf_2d_simd_pairs!(s, c, sf, xc, uc, plan, val_be, vD, keybuf, valbuf, idxbuf, colbuf, sel, window, blocks,
+                       second_axis, axbuf, weights)
+    return nothing
+end
+
+"""A task's [`BLRowsScratch`](@ref) for the single-pass 2D kernels: the pair window, the digitize keys, approximate
+bins, compacted slots, distance bins, `δu_L`, `‖δu‖²` and the six value-column buffers, and the interleaved slice
+histograms of [`_sp2d_histogram`](@ref)."""
 function _bl_rows_scratch_sp2d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, val_plan, n_bins::Int,
                                n_val::Int) where {D, FT, OT, CT}
     window = _pair_window(N)
     L = _pair_scratch_length(window, N)
     Lc = _sp2d_has_columns(val_plan, OT) ? L : 0
-    return (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Matrix{FT}(undef, L, D), Vector{FT}(undef, L),
-            Vector{Int32}(undef, L),
-            Vector{Int32}(undef, L), Vector{OT}(undef, L), Vector{OT}(undef, L),
-            ntuple(_ -> Vector{Int32}(undef, Lc), Val(SINGLE_PASS_N)), _sp2d_histogram(OT, CT, n_bins, n_val))
+    bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
+            Vector{OT}(undef, L), Vector{OT}(undef, L), ntuple(_ -> Vector{Int32}(undef, Lc), Val(SINGLE_PASS_N)))
+    return BLRowsScratch(bufs, () -> _sp2d_histogram(OT, CT, n_bins, n_val))
 end
 
 """
-    _bl_rows_sp2d!(sums_bl, counts_bl, xc, us, plan, value_bins, ::Val{D}, blocks, brange, weights, scratch)
+    _bl_rows_sp2d!(scratch, xc, us, slices, slots, plan, value_bins, ::Val{D}, blocks, weights)
 
-The single-pass 2D analogue of [`_bl_rows_1d!`](@ref) into the padded `(6, n_bins, n_val + 2)` rows: per slice a
-vectorized pass forms `δu_L` and `‖δu‖²`, and the six invariants' value columns where
-[`_sp2d_column_pass`](@ref) or [`_sp2d_invariant_column_pass`](@ref) holds for the run, as the point kernel does. One
-slice's own inputs take [`_sp2d_simd_pairs!`](@ref).
+The single-pass 2D analogue of [`_bl_rows_1d!`](@ref) into interleaved slice histograms: per slice a vectorized pass
+forms `δu_L` and `‖δu‖²`, and the six invariants' value columns where [`_sp2d_column_pass`](@ref) or
+[`_sp2d_invariant_column_pass`](@ref) holds for the run, as the point kernel does. A single slice, or one slice's own
+inputs, take [`_sp2d_simd_pairs!`](@ref).
 """
-function _bl_rows_sp2d!(sums_bl::AbstractArray{OT, 4}, counts_bl::AbstractArray{CT, 4}, xc::NTuple{D},
-                        us::AbstractVector, plan, value_bins, ::Val{D}, blocks, brange, weights,
-                        scratch) where {OT, CT, D}
-    window, keybuf, idxbuf, dxbuf, r2buf, sel, binbuf, duLbuf, dn2buf, C, _ = scratch
-    nb = n_histogram_bins(plan)
-    n_val = size(sums_bl, 4) - 2
-    boff = first(brange) - 1
-    vD = Val(D)
+function _bl_rows_sp2d!(scratch::BLRowsScratch, xc::NTuple{D}, us::AbstractVector, slices, slots, plan, value_bins,
+                        vD::Val{D}, blocks, weights) where {D}
+    length(slices) == 1 && return _bl_rows_sp2d!(scratch, xc, us[first(slices)], slices, slots, plan, value_bins, vD,
+                                                 blocks, weights)
+    window, keybuf, idxbuf, _, _, duLbuf, dn2buf, C = scratch.bufs
+    hist = _bl_hists!(scratch, last(slots))
+    OT = eltype(duLbuf)
+    n_val = size(first(hist), 2) - 2
     vector_columns = has_vector_digitize(value_bins, OT)
     invariant_columns = _sp2d_invariant_linear(value_bins, OT)
     chooses = _chooses_compaction(blocks)
-    C1, C2, C3, C4, C5, C6 = C
+    s_in, s_n = 0, 0
     @inbounds for (ir, jr) in blocks
         _check_run_fits(window, keybuf, jr)
         o = _slot_offset(window, jr)
         for i in ir
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
-            wi = _point_weight(weights, i)
-            _bl_rows_geometry!(keybuf, idxbuf, dxbuf, r2buf, plan, xc, _component_point(xc, i, vD), jlo:last(jr), o,
-                               vD)
+            Xi = _component_point(xc, i, vD)
             ks = (jlo - o):(last(jr) - o)
+            fused = vector_columns && _sp2d_column_pass(OT, !chooses, s_in, s_n)
+            _bl_choose(_bl_rows_sp2d_first!, (fused,), (duLbuf, dn2buf, C, keybuf, idxbuf, plan, value_bins, n_val, xc,
+                                                        Xi, us[first(slices)], i, ks, o, vD))
             s_in, s_n = _sample_in_range(plan, keybuf, ks)
             compact = chooses && _compacts(s_in, s_n)
-            n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
-            fused = vector_columns && _sp2d_column_pass(OT, !chooses, s_in, s_n)
             columns = fused || (invariant_columns && _sp2d_invariant_column_pass(OT, s_in, s_n))
-            for b in brange
-                uc = us[b]
-                Ui = _component_point(uc, i, vD)
-                if fused
-                    @simd ivdep for k in ks
-                        duL, dn2 = SFH.increment_invariants(SFH.FlatGeometry{D}(), _bl_separation(dxbuf, k, vD),
-                                                            sqrt(r2buf[k]), _component_point(uc, k + o, vD) - Ui)
-                        duL, dn2 = OT(duL), OT(dn2)
-                        duLbuf[k], dn2buf[k] = duL, dn2
-                        v = single_pass_invariants(duL, dn2)
-                        C1[k] = _vector_value_column(value_bins, v[1], n_val)
-                        C2[k] = _vector_value_column(value_bins, v[2], n_val)
-                        C3[k] = _vector_value_column(value_bins, v[3], n_val)
-                        C4[k] = _vector_value_column(value_bins, v[4], n_val)
-                        C5[k] = _vector_value_column(value_bins, v[5], n_val)
-                        C6[k] = _vector_value_column(value_bins, v[6], n_val)
-                    end
-                else
-                    @simd for k in ks
-                        duLbuf[k], dn2buf[k] = SFH.increment_invariants(SFH.FlatGeometry{D}(), _bl_separation(dxbuf, k, vD),
-                                                                        sqrt(r2buf[k]), _component_point(uc, k + o, vD) - Ui)
-                    end
-                    columns && _sp2d_invariant_columns!(C, value_bins, duLbuf, dn2buf, ks, n_val)
-                end
-                row = b - boff
-                if compact
-                    for m in 1:n
-                        k = Int(sel[m])
-                        _bl_sp2d_add!(sums_bl, counts_bl, row, Int(binbuf[m]), k, duLbuf, dn2buf, columns, C,
-                                      value_bins, n_val, wi * _point_weight(weights, k + o))
-                    end
-                else
-                    for k in ks
-                        bin = Int(binbuf[k])
-                        1 <= bin <= nb || continue
-                        _bl_sp2d_add!(sums_bl, counts_bl, row, bin, k, duLbuf, dn2buf, columns, C, value_bins, n_val,
-                                      wi * _point_weight(weights, k + o))
-                    end
-                end
-            end
+            _bl_choose(_bl_rows_sp2d_run!, (compact, fused, columns),
+                       (hist, scratch.bufs, xc, Xi, us, slices, slots, plan, value_bins, vD, ks, o, i,
+                        _point_weight(weights, i), weights, chooses))
         end
     end
     return nothing
 end
 
-"""Add slot `k`'s six invariants, from its stored `δu_L` and `‖δu‖²`, into row `row` at distance bin `dbin`, each in
-its padded value column: the stored one with `columns`, else formed here."""
-@inline function _bl_sp2d_add!(sums_bl, counts_bl::AbstractArray{CT}, row, dbin, k, duLbuf, dn2buf, columns::Bool, C,
-                               value_bins, n_val, w) where {CT}
-    s = single_pass_invariants(@inbounds(duLbuf[k]), @inbounds(dn2buf[k]))
-    @sp2d_each_invariant value_bins t vb begin
-        col = columns ? Int(@inbounds(C[t][k])) : _value_column(vb, s[t], n_val)
-        @inbounds sums_bl[row, t, dbin, col] += w * s[t]
-        @inbounds counts_bl[row, t, dbin, col] += CT(w)
+"""
+    _bl_rows_sp2d_values!(duLbuf, dn2buf, C, keybuf, idxbuf, plan, value_bins, n_val, xc, Xi, uc, i, ks, o, ::Val{D},
+                          ::Val{keys}, ::Val{fused})
+
+`δu_L` and `‖δu‖²` of each slot `k ∈ ks` of outer point `i`'s run for the field `uc`, with `fused` the six invariants'
+value columns into `C`, with `keys` also the run's digitize keys and approximate bins.
+"""
+@inline function _bl_rows_sp2d_values!(duLbuf, dn2buf, C, keybuf, idxbuf, plan, value_bins, n_val, xc, Xi, uc, i, ks, o,
+                                       vD::Val{D}, vkeys::Val, ::Val{fused}) where {D, fused}
+    fused || return _bl_rows_invariants!(duLbuf, dn2buf, keybuf, idxbuf, plan, xc, Xi, uc, i, ks, o, vD, vkeys)
+    OT = eltype(duLbuf)
+    C1, C2, C3, C4, C5, C6 = C
+    Ui = _component_point(uc, i, vD)
+    @inbounds @simd ivdep for k in ks
+        dx = _component_point(xc, k + o, vD) - Xi
+        r2 = SFH.fma_dot(dx, dx)
+        _bl_rows_key!(keybuf, idxbuf, plan, k, r2, vkeys)
+        duL, dn2 = SFH.increment_invariants(SFH.FlatGeometry{D}(), dx, sqrt(r2), _component_point(uc, k + o, vD) - Ui)
+        duL, dn2 = OT(duL), OT(dn2)
+        duLbuf[k], dn2buf[k] = duL, dn2
+        v = single_pass_invariants(duL, dn2)
+        C1[k] = _vector_value_column(value_bins, v[1], n_val)
+        C2[k] = _vector_value_column(value_bins, v[2], n_val)
+        C3[k] = _vector_value_column(value_bins, v[3], n_val)
+        C4[k] = _vector_value_column(value_bins, v[4], n_val)
+        C5[k] = _vector_value_column(value_bins, v[5], n_val)
+        C6[k] = _vector_value_column(value_bins, v[6], n_val)
     end
     return nothing
 end
 
-function _bl_rows_sp2d!(sums_bl::AbstractArray{<:Any, 4}, counts_bl::AbstractArray{<:Any, 4}, xc::NTuple{D}, uc::Tuple,
-                        plan, value_bins, vD::Val{D}, blocks, brange, weights, scratch) where {D}
-    window, keybuf, idxbuf, _, _, sel, _, duLbuf, dn2buf, C, h = scratch
-    n_bins, n_val = size(sums_bl, 3), size(sums_bl, 4) - 2
-    fill!(h, zero(eltype(h)))
-    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, vD, keybuf, duLbuf, dn2buf, idxbuf, C, sel, window, n_val, blocks,
-                      weights)
-    _sp2d_unpack!(view(_bl_row(sums_bl, 1), :, :, 2:(n_val + 1)), view(_bl_row(counts_bl, 1), :, :, 2:(n_val + 1)), h,
-                  n_bins, n_val)
+"""The first slice's [`_bl_rows_sp2d_values!`](@ref) with the run's keys."""
+@noinline _bl_rows_sp2d_first!(duLbuf, dn2buf, C, keybuf, idxbuf, plan, value_bins, n_val, xc, Xi, uc, i, ks, o, vD,
+                               vfused) =
+    _bl_rows_sp2d_values!(duLbuf, dn2buf, C, keybuf, idxbuf, plan, value_bins, n_val, xc, Xi, uc, i, ks, o, vD,
+                          Val(true), vfused)
+
+"""The single-pass 2D analogue of [`_bl_rows_1d_scatter!`](@ref) into an interleaved histogram `h`: the six
+invariants' value columns from `C` (`columns`), else from the invariants."""
+@inline function _bl_rows_sp2d_scatter!(h, duLbuf, dn2buf, C, value_bins, sel, binbuf, weights, wi, o, ks, n, nb, n_val,
+                                        ::Val{compact}, ::Val{columns}) where {compact, columns}
+    C1, C2, C3, C4, C5, C6 = C
+    @inbounds if columns && compact
+        for m in 1:n
+            k = Int(sel[m])
+            _sp2d_add_columns!(h, k, Int(binbuf[m]), duLbuf, dn2buf, C1, C2, C3, C4, C5, C6,
+                               wi * _point_weight(weights, k + o))
+        end
+    elseif columns
+        for k in ks
+            bin = Int(binbuf[k])
+            1 <= bin <= nb && _sp2d_add_columns!(h, k, bin, duLbuf, dn2buf, C1, C2, C3, C4, C5, C6,
+                                                 wi * _point_weight(weights, k + o))
+        end
+    elseif compact
+        for m in 1:n
+            k = Int(sel[m])
+            _sp2d_scatter!(h, Int(binbuf[m]), single_pass_invariants(duLbuf[k], dn2buf[k]), value_bins, n_val,
+                           wi * _point_weight(weights, k + o))
+        end
+    else
+        for k in ks
+            bin = Int(binbuf[k])
+            1 <= bin <= nb && _sp2d_scatter!(h, bin, single_pass_invariants(duLbuf[k], dn2buf[k]), value_bins, n_val,
+                                             wi * _point_weight(weights, k + o))
+        end
+    end
+    return nothing
+end
+
+"""
+    _bl_rows_sp2d_run!(hist, bufs, xc, Xi, us, slices, slots, plan, value_bins, ::Val{D}, ks, o, i, wi, weights,
+                       chooses, ::Val{compact}, ::Val{fused}, ::Val{columns})
+
+The single-pass 2D analogue of [`_bl_rows_1d_run!`](@ref): per further slice a vectorized pass forms `δu_L` and
+`‖δu‖²`, with `fused` the six value columns in the same pass; with `columns` alone each slice takes a pass per
+invariant ([`_sp2d_invariant_columns!`](@ref)); the scatter adds the six invariants into the slice's interleaved
+histogram.
+"""
+@noinline function _bl_rows_sp2d_run!(hist, bufs, xc, Xi, us, slices, slots, plan, value_bins, vD::Val{D}, ks, o, i, wi,
+                                      weights, chooses, vcompact::Val{compact}, vfused::Val{fused},
+                                      vcolumns::Val{columns}) where {D, compact, fused, columns}
+    _, keybuf, idxbuf, sel, binbuf, duLbuf, dn2buf, C = bufs
+    nb = n_histogram_bins(plan)
+    n_val = size(hist[1], 2) - 2
+    n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
+    for q in eachindex(slices)
+        q > 1 && _bl_rows_sp2d_values!(duLbuf, dn2buf, C, keybuf, idxbuf, plan, value_bins, n_val, xc, Xi,
+                                       us[slices[q]], i, ks, o, vD, Val(false), vfused)
+        columns && !fused && _sp2d_invariant_columns!(C, value_bins, duLbuf, dn2buf, ks, n_val)
+        _bl_rows_sp2d_scatter!(hist[slots[q]], duLbuf, dn2buf, C, value_bins, sel, binbuf, weights, wi, o, ks, n, nb,
+                               n_val, vcompact, vcolumns)
+    end
+    return nothing
+end
+
+function _bl_rows_sp2d!(scratch::BLRowsScratch, xc::NTuple{D}, uc::Tuple, slices, slots, plan, value_bins, vD::Val{D},
+                        blocks, weights) where {D}
+    window, keybuf, idxbuf, sel, _, duLbuf, dn2buf, C = scratch.bufs
+    h = _bl_hists!(scratch, first(slots))[first(slots)]
+    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, vD, keybuf, duLbuf, dn2buf, idxbuf, C, sel, window, size(h, 2) - 2,
+                      blocks, weights)
     return nothing
 end
 
@@ -1178,10 +1410,11 @@ function _bl_run_1d!(sums, counts, sf_type, x, u, distance_bins, geom, executor,
     accum_bytes = _bl_accum_bytes(OT, CT, B, n_bins)
     rows = vS -> begin
         plan = squared_digitize_plan(distance_bins)
-        kernel! = (s, c, xc, us, blocks, br, w, scr) -> _bl_rows_1d!(s, c, xc, us, sf_type, plan, vS, blocks, br, w,
-                                                                     scr)
+        kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_1d!(scr, xc, us, bs, slots, sf_type, plan, vS, blocks,
+                                                                      w)
         _bl_rows_sweep(executor, _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
-                       () -> _bl_rows_scratch_1d(N, vS, eltype(x0), OT), make_accum, N, B, accum_bytes, workspace)
+                       () -> _bl_rows_scratch_1d(N, vS, eltype(x0), OT, CT, n_bins), make_accum, N, B, accum_bytes,
+                       workspace)
     end
     lanes = () -> begin
         sh_plan = _bl_shared_plan(geom, distance_bins)
@@ -1214,11 +1447,11 @@ function _bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins
     accum_bytes = _bl_accum_bytes(OT, CT, B, n_dist, n_val + 2)
     rows = vS -> begin
         plan = squared_digitize_plan(distance_bins)
-        kernel! = (s, c, xc, us, blocks, br, w, scr) -> _bl_rows_joint!(s, c, xc, us, sf_type, plan, val_be,
-                                                                        second_axis, vS, blocks, br, w, scr)
+        kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_joint!(scr, xc, us, bs, slots, sf_type, plan, val_be,
+                                                                         second_axis, vS, blocks, w)
         _bl_rows_sweep(executor, _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
-                       () -> _bl_rows_scratch_joint(N, vS, eltype(x0), OT, second_axis), make_accum, N, B,
-                       accum_bytes, workspace)
+                       () -> _bl_rows_scratch_joint(N, vS, eltype(x0), OT, CT, second_axis, n_dist, n_val), make_accum,
+                       N, B, accum_bytes, workspace)
     end
     lanes = () -> begin
         kernel! = _bl_by_layout(vFX,
@@ -1248,9 +1481,10 @@ function _bl_run_sp1d!(sums, counts, x, u, distance_bins, geom, executor, worksp
     accum_bytes = _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins)
     rows = vS -> begin
         plan = squared_digitize_plan(distance_bins)
-        kernel! = (s, c, xc, us, blocks, br, w, scr) -> _bl_rows_sp1d!(s, c, xc, us, plan, vS, blocks, br, w, scr)
+        kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_sp1d!(scr, xc, us, bs, slots, plan, vS, blocks, w)
         _bl_rows_sweep(executor, _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
-                       () -> _bl_rows_scratch_sp1d(N, vS, eltype(x0), OT), make_accum, N, B, accum_bytes, workspace)
+                       () -> _bl_rows_scratch_sp1d(N, vS, eltype(x0), OT, CT, n_bins), make_accum, N, B, accum_bytes,
+                       workspace)
     end
     lanes = () -> begin
         sh_plan = _bl_shared_plan(geom, distance_bins)
@@ -1282,8 +1516,8 @@ function _bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins, geom, exec
     accum_bytes = _bl_accum_bytes(OT, CT, B, SINGLE_PASS_N, n_bins, n_val + 2)
     rows = vS -> begin
         plan = squared_digitize_plan(distance_bins)
-        kernel! = (s, c, xc, us, blocks, br, w, scr) -> _bl_rows_sp2d!(s, c, xc, us, plan, val_plan, vS, blocks, br, w,
-                                                                       scr)
+        kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_sp2d!(scr, xc, us, bs, slots, plan, val_plan, vS,
+                                                                        blocks, w)
         _bl_rows_sweep(executor, _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
                        () -> _bl_rows_scratch_sp2d(N, vS, eltype(x0), OT, CT, val_plan, n_bins, n_val), make_accum,
                        N, B, accum_bytes, workspace)

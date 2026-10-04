@@ -737,16 +737,6 @@ function _accumulate_single_pass_2d!(
     return sums_3d, counts_3d
 end
 
-"""A histogram cell's sum, of `OT`, and the count of the pairs in it, of `CT`, adjacent in memory."""
-struct SumCount{OT, CT}
-    sum::OT
-    count::CT
-end
-
-Base.zero(::Type{SumCount{OT, CT}}) where {OT, CT} = SumCount{OT, CT}(zero(OT), zero(CT))
-Base.:+(a::SumCount{OT, CT}, b::SumCount{OT, CT}) where {OT, CT} =
-    SumCount{OT, CT}(a.sum + b.sum, a.count + b.count)
-
 """Accumulate single-pass 2D pairs for the outer indices `share` selects ([`_share_indices`](@ref)) into the caller's
 sums/counts."""
 function _sp2d_accumulate_range!(

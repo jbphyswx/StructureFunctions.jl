@@ -636,7 +636,9 @@ function _bl_threaded_exec(make_accum, make_scratch, run_chunk!, ifull, grid, B,
     nt = Threads.nthreads()
     if nt <= 1 || length(ifull) <= 1
         acc = SFC._bl_zero_accum!(SFC._bl_accum_pool(ws, make_accum, [B])[1])
-        run_chunk!(acc, make_scratch(), ifull, 1:B)
+        scratch = make_scratch()
+        run_chunk!(acc, scratch, ifull, 1:B)
+        SFC._bl_flush!(acc, scratch, 1:B)
         return acc
     end
 
@@ -671,6 +673,7 @@ end
         run_chunk!(acc, scratch, ichunks[k], brange)
         k = Threads.atomic_add!(next, 1)
     end
+    SFC._bl_flush!(acc, scratch, brange)
     return acc
 end
 

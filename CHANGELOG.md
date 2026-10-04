@@ -46,10 +46,11 @@ All notable changes to this project will be documented in this file.
   of fewer slices than tasks runs its slices one after another on every task. With FFTW loaded, the engine's plans
   are single-threaded: FFTW's global thread count, which NonuniformFFTs raises, made the threaded transform
   run each of its tasks' plans on that many threads again.
-- CPU batches on a flat metric of width 2 or 3: over shared positions, each run of pairs takes its geometry, its
-  in-range choice and its bins once for every slice, and each slice a vectorized value pass, in place of a
-  per-pair scalar loop for the joint and single-pass 2D histograms; over positions varying per slice, each slice's
-  pairs take the vectorized pair kernel in place of a scalar loop over pairs and slices.
+- CPU batches on a flat metric of width 2 or 3: over shared positions, each run of pairs takes its digitize keys,
+  in-range choice and bins once for every slice and each slice a vectorized value pass, in place of a scalar loop
+  over each pair's slices (1-D and single-pass batches over many slices keep summing each pair across the slices);
+  over positions varying per slice, each slice's pairs take the vectorized pair kernel in place of a scalar loop over
+  pairs and slices.
 
 ### Fixed
 

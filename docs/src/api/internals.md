@@ -6,7 +6,8 @@ CurrentModule = StructureFunctions
 
 Types and functions that are not exported but that the exported entries name: the schedules a grid
 resolves to, the lag transports, the field shapes, culling, the second histogram axis, the
-polynomial contract of the operators and the digitize plans.
+polynomial contract of the operators, the increments of a pair, the per-slice covariances of a fit
+and the digitize plans.
 
 ```@index
 Pages = ["internals.md"]
@@ -80,6 +81,19 @@ StructureFunctionTypes.SymmetricMoments
 StructureFunctionTypes.symmetric_indices
 StructureFunctionTypes.order
 StructureFunctionTypes.scalar_order
+```
+
+## Pair increments
+
+```@docs
+HelperFunctions.increment_invariants
+HelperFunctions.transverse_energy
+```
+
+## Fits over a batch
+
+```@docs
+Calculations.SliceCovariances
 ```
 
 ## Digitize plans

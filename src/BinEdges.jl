@@ -1,16 +1,16 @@
 # Custom bin edges for fast O(1) index digitizing/binning.
 
+abstract type AbstractVectorBinEdges{T} <: AbstractVector{T} end
+abstract type AbstractRangeBinEdges{T} <: AbstractRange{T} end
+
 """
-    AbstractBinEdges{T} <: AbstractVector{T}
+    AbstractBinEdges{T}
 
 Ordered histogram edges. Bin `i` contains queries in `(edges[i], edges[i+1]]`.
 [`BinEdges`](@ref) preserves arbitrary vectors. [`LinearBinEdges`](@ref) and
 [`LogBinEdges`](@ref) represent regular grids and use arithmetic to estimate
 lookup indices. [`InfPaddedBinEdges`](@ref) adds unbounded outer bins.
-
 """
-abstract type AbstractVectorBinEdges{T} <: AbstractVector{T} end
-abstract type AbstractRangeBinEdges{T} <: AbstractRange{T} end
 const AbstractBinEdges{T} = Union{AbstractVectorBinEdges{T}, AbstractRangeBinEdges{T}}
 
 """

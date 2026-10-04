@@ -350,3 +350,13 @@ slots in range, at most 7/8 of them."""
 
 """Whether a sample with `n_in` of `n` slots in range has at most 1/8 of them in range."""
 @inline _sparse(n_in::Int, n::Int) = 8 * n_in <= n
+
+"""A histogram cell's sum, of `OT`, and the count of the pairs in it, of `CT`, adjacent in memory."""
+struct SumCount{OT, CT}
+    sum::OT
+    count::CT
+end
+
+Base.zero(::Type{SumCount{OT, CT}}) where {OT, CT} = SumCount{OT, CT}(zero(OT), zero(CT))
+Base.:+(a::SumCount{OT, CT}, b::SumCount{OT, CT}) where {OT, CT} =
+    SumCount{OT, CT}(a.sum + b.sum, a.count + b.count)
