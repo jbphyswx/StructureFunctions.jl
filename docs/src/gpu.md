@@ -19,8 +19,8 @@ calls run on `KernelAbstractions.CPU()` by swapping the device, which is what th
 
 ## When to use the GPU
 
-- **Problem size.** Pair histograms pay off from a few thousand points up; the crossover depends on
-  the hardware. Below it the threaded CPU backend wins.
+- **Problem size.** Pair histograms pay off above a crossover size that depends on the hardware;
+  below it the threaded CPU backend is faster.
 - **Memory.** Device arrays use the layout `(D, N)` or `(D, N, T)` for batches. `Float32` is faster on
   the device; `Float64` is supported and is what the parity tests compare.
 - **Not a drop-in speedup on the CPU.** Without a GPU, `KA.CPU()` runs the same kernels on the host
@@ -40,7 +40,7 @@ bins = collect(Float32, range(0.0f0, 1.5f0; length = 21))
 res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins; backend = CB.GPUBackend(CUDA.CUDABackend()))
 ```
 
-`distance_bins` must have the element type of `x` and `u`; the device API casts nothing silently.
+`bins` must have the element type of `x` and `u`; the device API casts nothing silently.
 The joint value-binned histogram (`value_bins`), the six single-pass invariants and the batches over
 auxiliary axes take the same `backend` keyword.
 
@@ -202,7 +202,7 @@ transverse convention.
 |---|---|---|
 | default suite | `julia --project=test test/runtests.jl` | kernel arithmetic, binning, workspaces and slices on `KA.CPU()`, the same kernel source without CUDA |
 | CUDA | `julia --project=gpu gpu/runtests.jl` | every CUDA suite: point kernels, workspaces, 1-D and 2-D parity, end-to-end 2-D, slices, the gridded engine's parity table, and every tiled kernel's static shared memory against the bytes its launcher decides by (skipped when `!CUDA.functional()`) |
-| gridded parity table | `sbatch gpu/run_cuda_gridded_parity.sh` | counts exact and sums to round-off against the 8-thread CPU on every schedule, the non-uniform FFT route and the tensor kernel, with timings |
+| gridded parity table | `gpu/run_cuda_gridded_parity.sh` | counts exact and sums to round-off against the CPU on every schedule, the non-uniform FFT route and the tensor kernel |
 | benchmarks | `julia --project=gpu gpu/benchmark_suite.jl` | release-performance gates and timing JSON |
 
 `KA.CPU()` does not prove CUDA correctness, and that is why the CUDA tier exists. It compiles no
@@ -213,9 +213,9 @@ those is invisible to it.
 
 ## Benchmarks and figures
 
-The GPU figures in the README are problem-size scaling — one device against the serial CPU, sweeping
+The figures below show problem-size scaling — one device against the serial CPU, sweeping
 `N`, and one device sweeping the slice count `T` — not strong or weak scaling. They are regenerated on a
-GPU allocation with `gpu/collect_benchmark_assets.jl` followed by
+CUDA device with `gpu/collect_benchmark_assets.jl` followed by
 `docs/generate_assets/generate_gpu_figures.jl`; the parity figure (`KA.CPU()` against serial) with
 `docs/generate_assets/generate_assets.jl`. CPU thread scaling is in `benchmark/benchmark_scaling.jl`.
 

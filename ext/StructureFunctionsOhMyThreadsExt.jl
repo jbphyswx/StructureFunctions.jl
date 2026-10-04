@@ -19,8 +19,7 @@ function __init__()
     return nothing
 end
 
-"""Outer-index chunks per thread that a threaded sweep deals out on demand, so a core slowed by other work
-takes fewer of them."""
+"""Outer-index chunks per thread that a threaded sweep deals out on demand."""
 const CHUNKS_PER_THREAD = 64
 
 """The number of chunks `n_tasks` tasks of a threaded sweep split `indices` into."""
@@ -78,8 +77,7 @@ Multi-field pair sweep across threads.
 
 The setup — widening the fields, sorting into the cull grid — happens **once**, above the task
 loop; each task then sweeps its own share of outer indices into private histograms, which are
-reduced. A field of one vector field forwards to the array path, so a bare `u` and a one-field
-multi-field stay the same calculation on this backend too.
+reduced. A field of one vector field forwards to the array path.
 """
 function SFC.threaded_calculate_structure_function!(
     sums::AbstractVector, counts::AbstractVector,
@@ -629,19 +627,11 @@ function SFC._partial_single_pass_2d(
     return sums, counts
 end
 
-# ============================================================================================
-# Threaded CPU BATCH paths — parallelize over the OUTER pair index i (geometry computed once).
-#
-# Round-robin i-chunks (triangle load balance, like the point-field path) with thread-local
-# accumulators reduced by elementwise +. No `threadid()`. Reuses the same `_bl_run_*!` drivers
-# + `_bl_*!` kernels as serial; only the executor differs. These `::AbstractArray` methods are
-# more specialized than the generic core serial-fallback stubs, so they win dispatch here.
-# ============================================================================================
+# Batch paths: tasks split the outer pair index `i`, with thread-local accumulators reduced by elementwise +.
 
-# Executor: partition the (i, b) index space. `b` is split only as far as the accumulator budget demands,
-# because each batch chunk recomputes the pair geometry; each batch chunk's tasks take chunks of `i` from that
-# chunk's counter. Tasks in different batch chunks own disjoint output slices, so a task writes only its own
-# accumulator and the slices are summed into the result afterwards.
+# Executor: partition the (i, b) index space. `b` is split only as far as the accumulator budget demands;
+# each batch chunk's tasks take chunks of `i` from that chunk's counter and write only their own accumulator,
+# and the slices are summed into the result afterwards.
 function _bl_threaded_exec(make_accum, make_scratch, run_chunk!, ifull, grid, B, accum_bytes, ws)
     nt = Threads.nthreads()
     if nt <= 1 || length(ifull) <= 1
@@ -730,9 +720,7 @@ function SFC.threaded_calculate_structure_functions_single_pass_2d!(
         geometry, _bl_threaded_exec, workspace; weights, culling)
 end
 
-# Batched (ndims(u) >= 3) non-mutating joint-2D. The AbstractMatrix method earlier is more
-# specific and handles the point-field case; this is entered only for batched inputs (the
-# non-mutating ThreadedBackend dispatch routes value_bins here as the trailing argument).
+# Batched (ndims(u) >= 3) non-mutating joint-2D.
 function SFC.threaded_calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x_arr::AbstractArray{FT1},

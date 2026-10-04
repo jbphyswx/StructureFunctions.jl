@@ -22,16 +22,13 @@ import .StructureFunctionObjects:
     StructureFunctionTensorSumsAndCounts,
     HelmholtzDecomposition2D, to_host
 
-using .MultiFields: MultiFields # what is a field
+using .MultiFields: MultiFields
 using .HelperFunctions: HelperFunctions
 using .StructureFunctionTypes: StructureFunctionTypes
 using .StructureFunctionObjects: StructureFunctionObjects
 using .Calculations: Calculations
 using .KHM: KHM
 
-# The package's own names. Everything else is reached through the submodule that owns it —
-# `Calculations` for the entries, `StructureFunctionTypes` for the operators, `HelperFunctions` for
-# the geometry, `MultiFields` for `Fields`.
 export AbstractBinEdges, BinEdges, LinearBinEdges, LogBinEdges, LogBinEdges_from_log_edges,
     InfPaddedBinEdges, ModeBinEdges, n_histogram_bins, midpoints
 export AbstractTaper, NoTaper, Bartlett, GaussianTaper, HarmonicNodes, gauss_legendre
@@ -39,10 +36,6 @@ export AbstractStructureFunction, StructureFunction, StructureFunctionSumsAndCou
     StructureFunction2DSumsAndCounts, StructureFunctionTensor, StructureFunctionTensorSumsAndCounts,
     HelmholtzDecomposition2D, to_host
 export KHM
-
-# ---------------------------------------------------------------------------
-# Initialization & Precompilation
-# ---------------------------------------------------------------------------
 
 PrecompileTools.@setup_workload begin
     include("precompile.jl")

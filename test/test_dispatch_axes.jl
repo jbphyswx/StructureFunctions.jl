@@ -7,17 +7,8 @@ using OhMyThreads: OhMyThreads
 using StaticArrays: StaticArrays as SA
 using Random: Random
 
-# A route picks its implementation from things that are not the numbers being computed: the
-# coordinate width, the *type* of the bin edges, how many bins there are, and whether the
-# positions are shared across slices. Every one of those is a branch, and a test that fixes one
-# value of it exercises one side.
-#
-# Three defects reached the tree through exactly this blind spot — a device histogram that read
-# two coordinates whatever the width, reachable only above a bin-count threshold; a shared-position
-# batch that did the same, reachable only when the bins were spelled as `LinearBinEdges`; and a
-# width axis the three backends answered three different ways, where serial computed a width the
-# other two refused. All three were invisible to tests that used one shape, and the third was
-# invisible to this file while its own width loop ran over `(2, 3)`.
+# Each route is run over the axes it dispatches on (coordinate width, bin-edge type, bin count,
+# shared or per-slice positions), and the device must agree with serial on every combination.
 
 const DA_DEV = CB.GPUBackend(KA.CPU())
 const DA_SER = CB.SerialBackend()

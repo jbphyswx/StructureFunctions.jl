@@ -8,15 +8,12 @@
 # Every other 1D and 2D regime takes the N-body or unified kernel, so it has one
 # launcher and nothing to compare.
 # =============================================================================
-using StructureFunctions
-import KernelAbstractions as KA
-using CUDA, Printf
-using Statistics: median
-const SF = StructureFunctions
-const SFC = SF.Calculations
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH
+using KernelAbstractions: KernelAbstractions as KA
+using CUDA: CUDA
+using Printf: Printf
+using Statistics: Statistics
 const GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-const SFT = SF.StructureFunctionTypes
-using StructureFunctions: LinearBinEdges
 const FT = Float32
 const sf2 = SFT.L2SFType()
 const N = parse(Int, get(ENV, "SF_N", "20000"))

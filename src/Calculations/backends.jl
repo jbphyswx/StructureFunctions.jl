@@ -1,6 +1,3 @@
-# Backend tags come from ComputationalBackends; methods dispatch on the abstract types so
-# downstream concrete backends reach these kernels.
-
 using ComputationalBackends: ComputationalBackends as CB
 
 """

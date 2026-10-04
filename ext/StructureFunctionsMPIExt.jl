@@ -1,5 +1,5 @@
 """
-MPI execution backend for structure functions (offered for multi-node adoption).
+MPI execution backend for structure functions.
 
 Mirrors the parametric `DistributedBackend{Inner}`: each MPI rank computes a balanced share
 of the pairs with the `inner` backend (Serial/Threaded), then partial histograms are combined
@@ -91,9 +91,7 @@ function _mpi_point_1d(
     comm = _comm(b)
     x_vecs, u_vecs = SFC._prepared_tuples(geometry, x, u)
 
-    # A polynomial operator on a line has the exact `O(N log N)` route, and that sweep executes
-    # through `sweep_reduce!`, which this extension implements — so it splits across ranks here
-    # without a second decomposition. The pair loop below would cost `O(N²)`.
+    # A polynomial operator on a line takes the `O(N log N)` sorted sweep, which splits across ranks through `sweep_reduce!`.
     if SFC._on_a_line(geometry, structure_function_type)
         nb0 = SFC.n_histogram_bins(distance_bins)
         OT0 = promote_type(float(eltype(x)), float(eltype(u)))
@@ -393,8 +391,7 @@ function SFC._direct_coefficients(b::CB.AbstractMPIBackend, f, θ, φ, s, lmax)
 end
 
 # --- Gridded sweeps ---
-# One work item per rank-share of the sweep's items; `sweep_items` is asked for as many parts as
-# there are ranks, so a one-slab schedule splits its lags rather than leaving ranks idle.
+# `sweep_items` is asked for as many parts as there are ranks.
 SFC.sweep_tasks(b::CB.AbstractMPIBackend) = MPI.Comm_size(_comm(b))
 
 function SFC.sweep_reduce!(sums, counts, b::CB.AbstractMPIBackend, items, make_scratch, body!)

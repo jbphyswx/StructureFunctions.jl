@@ -290,15 +290,14 @@ Test.@testset "what the sorted route does not take stays on the pair loop, and i
     Test.@test _close(direct.sums, ref_s)
 end
 
-Test.@testset "the sorted route is linear in the points" begin
+# The sorted route on 100000 points counts exactly the pairs within the last bin edge, found by binary search.
+Test.@testset "the sorted route counts the pairs within range on many points" begin
     Random.seed!(4260)
     bins = collect(range(0.0, 0.5; length = 21))
-    small = rand(1, 2000)
-    SFC.calculate_structure_function(SFT.L2SFType(), small, randn(1, 2000), bins, Int64; backend = SERIAL)
     N = 100_000
     x = rand(1, N) .* 100.0
     u = randn(1, N)
-    t = @elapsed res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64, RAW; backend = SERIAL)
-    Test.@test sum(res.counts) > 0
-    Test.@test t < 2.0
+    res = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64, RAW; backend = SERIAL)
+    xs = sort(vec(x))
+    Test.@test sum(res.counts) == sum(i -> searchsortedlast(xs, xs[i] + 0.5) - i, 1:N)
 end

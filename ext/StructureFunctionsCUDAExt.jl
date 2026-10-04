@@ -4,14 +4,13 @@ CUDA-specialized fast structure-function kernels.
 Loaded automatically when **both** `KernelAbstractions` and `CUDA` are present.
 Provides N-body broadcast kernels with privatized or dynamic-shared histograms for NVIDIA GPUs, for
 weighted and unweighted calls at the geometry's coordinate and field widths, overriding the portable
-KernelAbstractions tiled kernels in `StructureFunctionsKernelAbstractionsExt`, which remain the CPU
-and GPU reference.
+KernelAbstractions tiled kernels in `StructureFunctionsKernelAbstractionsExt`.
 
 These kernels use CUDA-only intrinsics not exposed by KernelAbstractions:
 `CuDynamicSharedArray` (>48 KB dynamic shared via the opt-in attribute),
 `CUDA.@atomic`, `@cuda launch=false`, and device shared-memory queries. The
 `GPUBackend{B}` wrapper is parametric precisely so the CUDA backend can take this
-specialized path while the CPU backend stays on the KA kernels.
+specialized path.
 
 The kernels form each pair's moments with the core moment sets (`SFC._sf_pair_moments`) and bin with the
 host's `SFH.digitize`, as the portable kernels do.
@@ -97,8 +96,7 @@ function SFC.gpu_in_range_fraction(backend::CUDA.CUDABackend, x, dig, NB::Int, g
     return share
 end
 
-# The real device numbers. Reached only through the CUDABackend hook, so a device exists by
-# construction and a query failure is a driver fault.
+# The current device's shared-memory limits, multiprocessor count and warp size.
 function SFC.gpu_device_caps(::CUDA.CUDABackend)
     dev = CUDA.device()
     return SFC.GPUDeviceCaps(

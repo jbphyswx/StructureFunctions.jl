@@ -1,8 +1,4 @@
-# CPU Batch Calculation Drivers
-#
-# The batch-leading, Val{D}-specialized kernels + drivers live in batch_leading.jl (included
-# first). These public functions are thin wrappers selecting the serial executor; the
-# OhMyThreads extension provides threaded executors over the batch axis.
+# CPU batch drivers: wrappers over the batch_leading.jl kernels that select the serial executor.
 
 using Distances: Distances as DI
 
@@ -25,7 +21,7 @@ function auxiliary_structure_function!(sums, counts, sf_type, x, u, distance_bin
 end
 
 """
-    auxiliary_shared_positions!(sums, counts, x_mat, u_batch, sf_type, distance_bins; strip_width=32)
+    auxiliary_shared_positions!(sums, counts, x_mat, u_batch, sf_type, distance_bins; workspace, geometry, culling, weights)
 
 Fixed geometry batch: `x` is (N_dims, N), `u` has trailing batch dims.
 """
@@ -142,7 +138,7 @@ function threaded_calculate_structure_functions_single_pass! end
 """Threaded 2D single-pass batch driver; the OhMyThreads extension supplies the methods."""
 function threaded_calculate_structure_functions_single_pass_2d! end
 
-# --- Unified CPU Batch Entry Points (Methods of serial_calculate_structure_function / threaded_calculate_structure_function) ---
+# --- Batch methods of serial_calculate_structure_function / threaded_calculate_structure_function ---
 
 @inline _component_vector_views(a, ::Val{D}) where {D} =
     ntuple(k -> view(a, k, :), Val(D))

@@ -283,7 +283,7 @@ Test.@testset "an antipodal shell is refused, not given an arbitrary direction" 
 end
 
 Test.@testset "a spherical grid reaches the zonal sweep through the public entry" begin
-    # C3 is only a capability if the grid entry routes to it; before this it refused a sphere.
+    # The grid entry on a spherical geometry routes to the zonal sweep.
     geo = FG.Geometry.SphericalGeometry(R_UNIT)
     n_lon, n_lat = 12, 5
     lam = range(0.0, step = 2π / n_lon, length = n_lon)

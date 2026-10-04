@@ -30,15 +30,6 @@ abstract type AbstractDerivedStructureFunctionType <: AbstractStructureFunctionT
 # Identity call: allows `SFType()` for singleton operator instances.
 (sf::AbstractStructureFunctionType)() = sf
 
-# ---------------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Parametric Types
-# ---------------------------------------------------------------------------
-
 """
     ProjectedStructureFunctionType{NL, NT}(basis = CanonicalTransverseBasis())
 
@@ -49,10 +40,8 @@ is the convention's. [`SFH.CanonicalTransverseBasis`](@ref) is `n̂`, the turn a
 with the operator into every result.
 
 The two readings differ only for `D ≥ 3`, where the transverse plane has more than one direction; in
-2-D `‖δu_T‖² = (δu·n̂)²`. They cannot be unified: `‖δu_T‖^NT` is a polynomial in `δu` only for even
-`NT`, since `‖δu_T‖² = ‖δu‖² − δu_L²` and an odd power needs the square root, so odd `NT` admits the
-component reading alone. `NT = 2` is the energy because that is the quantity the second-order
-relations are written in — the Helmholtz split and the `D_LL`/`D_TT` isotropy relations all take it.
+2-D `‖δu_T‖² = (δu·n̂)²`. `‖δu_T‖^NT` is a polynomial in `δu` only for even `NT`, since
+`‖δu_T‖² = ‖δu‖² − δu_L²`, so odd `NT` is the component reading alone.
 [`TransverseComponentSecondOrderStructureFunctionType`](@ref) is the per-component form,
 `‖δu_T‖²/(D−1)`.
 """
@@ -86,7 +75,6 @@ Compute the structure function kernel for longitudinal/transverse components.
     end
     ex = :(one(eltype(δu)))
 
-    # Longitudinal contribution (always scalar, integer power)
     if !iszero(NL)
         if NL == 1
             ex = :($ex * SFH.mδu_l(δu, r̂))
@@ -113,7 +101,6 @@ Compute the structure function kernel for longitudinal/transverse components.
     end
 end
 
-# ---------------------------------------------------------------------------
 """
     SecondOrderStructureFunctionType()
 
@@ -126,7 +113,7 @@ struct SecondOrderStructureFunctionType <: AbstractPairwiseStructureFunctionType
 
 Third-order scalar flux structure function,
 ``S3SF = δu_L * ||δu||² = L3SF + L1T2SF``.
-It is intentionally not ``||δu||³``.
+It is not ``||δu||³``.
 """
 struct ThirdOrderStructureFunctionType <: AbstractPairwiseStructureFunctionType end
 
@@ -203,9 +190,6 @@ struct LongitudinalTransverseComponentThirdOrderStructureFunctionType <: Abstrac
 @inline (sf::LongitudinalTransverseComponentThirdOrderStructureFunctionType)(δu, r̂) =
     _direction_value(sf, δu, r̂)
 
-# ---------------------------------------------------------------------------
-# Named Constants: Type Aliases (longhand and shorthands)
-
 """`ProjectedStructureFunctionType{2, 0}`: the longitudinal second-order structure function ``⟨δu_L²⟩``."""
 const LongitudinalSecondOrderStructureFunctionType = ProjectedStructureFunctionType{2, 0}
 """`ProjectedStructureFunctionType{0, 2}`: the transverse second-order structure function ``⟨‖δu_T‖²⟩ = ⟨‖δu‖² − δu_L²⟩``."""
@@ -244,9 +228,6 @@ const L2T1SFType = DiagonalInconsistentThirdOrderStructureFunctionType
 const L1T2SFType = OffDiagonalInconsistentThirdOrderStructureFunctionType
 """Shorthand for [`LongitudinalTransverseComponentThirdOrderStructureFunctionType`](@ref)."""
 const L1T2ComponentSFType = LongitudinalTransverseComponentThirdOrderStructureFunctionType
-
-# ---------------------------------------------------------------------------
-# Named Constants: Singleton Functors (The "Longhand" names now point to instances)
 
 """The instance `SecondOrderStructureFunctionType()`."""
 const SecondOrderStructureFunction = SecondOrderStructureFunctionType()
@@ -316,7 +297,7 @@ const ScalarSFType = ScalarStructureFunctionType
 
 `{1, 0, 2}` is Yaglom's law, ``⟨δu_L (δθ)²⟩ = −(4/3) ε_θ r``; `{1, 0, 1}` is the flux of the tracer
 itself. The velocity part is read from a transported vector field and the scalar part from a
-differenced scalar field, so the two never mix frames.
+differenced scalar field.
 """
 struct MixedStructureFunctionType{NL, NT, P} <: AbstractPairwiseStructureFunctionType
     vector_field::Int
@@ -356,9 +337,8 @@ const ScalarDotSFType = ScalarDotStructureFunctionType
 
 ``⟨δu^{(a)} · δu^{(b)}⟩`` — a second-order **cross-field** vector moment.
 
-`(1, 1)` **is** `S2SF`: the existing second-order operator is this one's diagonal, not a separate
-thing. `(a, b)` with `a ≠ b` is `⟨δu · δ𝓐_u⟩`, the advective structure function, which holds without
-isotropy — the reason it is worth having beside the third-order laws.
+`(1, 1)` is `S2SF`. `(a, b)` with `a ≠ b` is `⟨δu · δ𝓐_u⟩`, the advective structure function, which
+holds without isotropy.
 """
 struct VectorDotStructureFunctionType <: AbstractPairwiseStructureFunctionType
     a::Int
@@ -370,9 +350,7 @@ const VectorDotSFType = VectorDotStructureFunctionType
 @inline (sf::VectorDotStructureFunctionType)(δu, r̂) =
     SFH.fma_dot(SFC_field_vector(δu, sf.a), SFC_field_vector(δu, sf.b))
 
-# How an operator reaches a field of an increment. A single-field increment is the plain
-# vector every existing operator takes, so naming field 1 of it is the vector itself — that is what
-# keeps `Fields(vectors = (u,))` identical to a bare `u`.
+# Field `i` of an increment; field 1 of a single-field increment is the vector itself.
 @inline SFC_field_vector(δu::MF.FieldIncrement{D, 0, K}, i::Integer) where {D, K} =
     throw(ArgumentError(
         "this field carries no vector fields, so a velocity operator has nothing to read. Build " *
@@ -393,10 +371,6 @@ end
     "this field carries no scalar fields; asked for scalar field $i. Build the field with " *
     "Fields(scalars = (...), ...) to carry one.",
 ))
-
-# ---------------------------------------------------------------------------
-# One pair's value
-# ---------------------------------------------------------------------------
 
 """The operators whose value on a pair is a function of `δu_L` and `‖δu‖²` of its vector field alone."""
 const InvariantOperator = Union{
@@ -521,9 +495,6 @@ const RotationalSecondOrderStructureFunction = RotationalSecondOrderStructureFun
 const DivergentSecondOrderStructureFunction = DivergentSecondOrderStructureFunctionType()
 """The instance `HelmholtzDecomposition2DType()`."""
 const HelmholtzDecomposition2DOperator = HelmholtzDecomposition2DType()
-
-# ---------------------------------------------------------------------------
-# Convenience Mappings
 
 const SF_TYPE_MAP = Dict{Symbol, AbstractStructureFunctionType}(
     :SecondOrderStructureFunction => SecondOrderStructureFunction,
@@ -700,10 +671,6 @@ scalar_order(::ScalarDotStructureFunctionType) = 2
 @inline is_odd_in_scalars(sf::AbstractStructureFunctionType) = isodd(scalar_order(sf))
 @inline is_odd_in_scalars(::MomentTensorOperator{P}) where {P} = isodd(P)
 
-# ---------------------------------------------------------------------------
-# Polynomial contract: an operator as a contraction of the increment moment tensor
-# ---------------------------------------------------------------------------
-
 """
     is_polynomial_operator(sf) -> Bool
 
@@ -811,8 +778,7 @@ end
     return SA.SVector{W, T}(ntuple(j -> off < j <= off + D ? r̂[j - off] : zero(T), Val(W)))
 end
 
-# One literal each: a device kernel compiles a throw of a constant, never a formatted or joined string.
-# The entry points name the field and the field's layout before any moment is contracted.
+# Each throw is one string literal: a device kernel cannot compile a formatted or joined message.
 @inline function _require_vector_field(a::Integer, ::Val{V}) where {V}
     1 <= a <= V || throw(ArgumentError(
         "the operator reads a vector field the field does not carry; build the field with Fields(vectors = (...), ...) or use a scalar operator",

@@ -26,8 +26,8 @@ Kernels digitize with the host's `digitize_plan` of the bins, so every bin type 
 exactly as on the CPU.
 
 !!! note "KernelAbstractions Macro Limitations"
-    We explicitly import `@index`, `@atomic`, `@Const`, `@private`, `@uniform`, and `@localmem` from `KernelAbstractions` because
-    these macros currently fail to resolve correctly when called as `KA.@index`, etc.
+    `@index`, `@atomic`, `@Const`, `@private`, `@uniform`, and `@localmem` are imported from `KernelAbstractions`
+    by name; they do not resolve as `KA.@index`, etc.
     `@Const` is only valid on **kernel** parameter lists, not on host `@inline` helpers.
 """
 module StructureFunctionsKernelAbstractionsExt
@@ -46,10 +46,6 @@ function __init__()
     SFC._KERNELABSTRACTIONS_LOADED[] = true
     return nothing
 end
-
-# ---------------------------------------------------------------------------
-# Tiled128 + block-local UInt32 histogram (2D/3D production fast path)
-# ---------------------------------------------------------------------------
 
 """Tile size for CADISHI-style pair blocks (`@localmem` histogram width is `SF_GPU_MAX_BINS`)."""
 const SF_GPU_TILE = 128
@@ -102,8 +98,7 @@ function _array_on_backend(a, backend::KA.Backend)
     return typeof(a_backend) == typeof(backend)
 end
 
-"""Host-dense view of `a` for `copyto!` into a device array. A host `Array` is passed through — the
-DMA accepts it directly, so materializing a copy first would double the host traffic."""
+"""Host-dense view of `a` for `copyto!` into a device array; a host `Array` is passed through."""
 @inline _as_host_dense(a::Array) = a
 @inline _as_host_dense(a) = Array(a)
 
@@ -235,10 +230,6 @@ _kept_cull(workspace::SFC.GPUSFWorkspace) = workspace.lazy.cull
 """Keep `memo` on `workspace`; without a workspace the memo lives for the call."""
 _keep_cull!(::Nothing, _) = nothing
 _keep_cull!(workspace::SFC.GPUSFWorkspace, memo) = (workspace.lazy.cull = memo; nothing)
-
-# ---------------------------------------------------------------------------
-# Public API – extends the stub declared in Calculations.jl
-# ---------------------------------------------------------------------------
 
 """
     gpu_calculate_structure_function(sf_type, backend, x_mat, u_mat, distance_bins, CT; workspace, geometry, culling, weights)
@@ -444,10 +435,6 @@ function _launch_single_pass_tiled_kernel!(
     return nothing
 end
 
-# ---------------------------------------------------------------------------
-# Single-Pass GPU Kernels (global-atomic path when NB > SF_GPU_MAX_BINS)
-# ---------------------------------------------------------------------------
-
 @inline _gpu_ld_col(m, k::Int, ::Val{W}, ::Type{FT}) where {W, FT} =
     SA.SVector{W, FT}(ntuple(d -> @inbounds(m[d, k]), Val(W)))
 
@@ -568,10 +555,6 @@ function _launch_single_pass_portable!(
     )
     return nothing
 end
-
-# ---------------------------------------------------------------------------
-# Joint 2D SF kernels (one sf_type, distance × value histogram)
-# ---------------------------------------------------------------------------
 
 KA.@kernel unsafe_indices=true function _sf_joint_2d_kernel!(
     output_sums,
@@ -817,10 +800,6 @@ function SFC.gpu_calculate_structure_function_2d!(sums, counts, sf, backend::KA.
     _add_accumulated!(sums, counts, ds, dc, direct)
     return nothing
 end
-
-# ---------------------------------------------------------------------------
-# Single-pass 2D GPU kernels (eight distance × value joint histograms)
-# ---------------------------------------------------------------------------
 
 
 @inline function _gpu_accumulate_single_pass_2d_pair!(

@@ -3,10 +3,7 @@ using Random: Random
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions: Calculations as SFC, HelperFunctions as SFH, LinearBinEdges, LogBinEdges
 
-# D = 3 single-pass 2D on the tiled shared-histogram path. Before this was supported, D = 3 fell
-# through to the global-atomic kernel with the general binary-search value plan and ran ~38x slower
-# (383 ms vs 10 ms at N=20000, 32x16, A100). The tiled kernel is dimension-generic because the six
-# invariants need only du_L and |du_T|² = |du|² - du_L², which requires no transverse basis vector.
+# The GPU single-pass 2D histogram for D = 2 and 3 matches the CPU accumulation.
 Test.@testset "GPU single-pass 2D, D = 3" begin
     Random.seed!(20260816)
     backend = KA.CPU()

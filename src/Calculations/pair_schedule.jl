@@ -1,5 +1,4 @@
-# How pair blocks are enumerated. One concept: a schedule lists the `(i-block, j-block)` pairs the
-# kernel must sweep, outermost, so each block pair is worked to completion while it is cache-warm.
+# How pair blocks are enumerated: a schedule lists the `(i-block, j-block)` pairs the kernel sweeps.
 
 """
     PairBlockSchedule
@@ -14,8 +13,7 @@ abstract type PairBlockSchedule end
     TiledUpperTriangle(n_points, tile)
 
 Every pair, in blocks of `tile` points. The `j` block is the outer loop, so one block of `j`
-coordinates and fields stays resident while every `i` sweeps it — which is what keeps the loop off
-the memory bus when many cores run it at once.
+coordinates and fields stays resident while every `i` sweeps it.
 """
 struct TiledUpperTriangle <: PairBlockSchedule
     n_points::Int
@@ -39,8 +37,7 @@ const PairBlock = Tuple{UnitRange{Int}, UnitRange{Int}}
     FullUpperTriangle(n_tiles)
 
 Every device tile pair `(ti, tj)` with `ti ≤ tj`, enumerated by [`tile_for`](@ref) from a linear
-block id. Passed into GPU kernels in place of the tile count: one integer, so the same
-kernel-argument bytes, and the concrete type is what specializes the kernel.
+block id. Passed into GPU kernels in place of the tile count.
 """
 struct FullUpperTriangle{I <: Integer} <: PairBlockSchedule
     n_tiles::I
@@ -50,7 +47,7 @@ end
     TilePairWorkList(pairs, n_tiles)
 
 Only the tile pairs in `pairs`, each packed by [`pack_tile_pair`](@ref), in a host or device
-vector. The vector type is a parameter so one type serves both sides of the transfer.
+vector.
 """
 struct TilePairWorkList{V <: AbstractVector} <: PairBlockSchedule
     pairs::V
@@ -93,9 +90,7 @@ n_pair_blocks(s::TilePairWorkList) = length(s.pairs)
 """
     TiledBlockPairs(n_points, tile)
 
-Lazy `(i-block, j-block)` iterator for the full upper triangle. The blocks are pure arithmetic, so
-the uncalled sweep enumerates them without allocating; only a grid-dependent schedule needs a
-materialized list.
+Lazy `(i-block, j-block)` iterator for the full upper triangle; each block is computed from its index.
 """
 struct TiledBlockPairs
     n_points::Int
@@ -121,8 +116,7 @@ end
     block_pairs(schedule)
 
 The schedule's `(i-block, j-block)` pairs: lazy for [`TiledUpperTriangle`](@ref), a materialized
-work list for a culled schedule (which depends on the grid and doubles as the list backends slice
-to divide work).
+work list for a culled schedule.
 """
 function block_pairs(s::TiledUpperTriangle)
     s.tile >= 1 || throw(ArgumentError("tile must be >= 1 (got $(s.tile))"))
@@ -133,8 +127,7 @@ end
     CulledBlockPairs(grid, cells = 1:n_occupied_cells(grid))
 
 Lazy `(i-block, j-block)` iterator over the stencil rows of the occupied cells `cells` of a
-[`CellGrid`](@ref). Each block is a pure function of `(cell, row)`, so the culled sweep enumerates without
-allocating, exactly like the full one; `collect` it when a materialized work list is wanted.
+[`CellGrid`](@ref). Each block is a pure function of `(cell, row)`; `collect` materializes the list.
 """
 struct CulledBlockPairs{D, G}
     grid::G
@@ -200,10 +193,6 @@ n_pair_blocks(s::CulledCellPairs) = count(_ -> true, block_pairs(s))
     BlocksForI(blocks, irange)
 
 `blocks` with each `i`-block narrowed to `irange`, dropping the ones that become empty.
-
-This is what lets a backend keep partitioning by outer index while the kernel consumes block pairs:
-the intersection of two ranges is a range, so a contiguous chunk and a strided rank share both stay
-allocation-free.
 """
 struct BlocksForI{B, R}
     blocks::B
@@ -284,8 +273,7 @@ highest."""
 end
 
 """
-Points per `j` block in the CPU pair loop. Sized so one block's coordinates, fields and the three
-per-`j` buffers stay resident in a core's private cache while every `i` sweeps it.
+Points per `j` block in the CPU pair loop.
 """
 const SF_CPU_PAIR_TILE = 65536
 

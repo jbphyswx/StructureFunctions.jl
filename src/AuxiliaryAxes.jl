@@ -14,7 +14,6 @@ end
 """View `(D, N)` field slice at linear auxiliary index `b`."""
 function batch_field_slice(u::AbstractArray, b::Int)
     bd = batch_dims(u)
-    # Reshape and take view
     N_dims, N = size(u)[1:2]
     B = prod(bd)
     u_flat = reshape(u, N_dims, N, B)
@@ -52,5 +51,5 @@ end
     return i, j
 end
 
-"""Public alias for tests and callers enumerating upper-triangle pairs."""
+"""Map 1-based upper-triangle pair index to `(i, j)` with `i < j` for `N` points."""
 pair_from_linear(k::Int, N::Int) = _pair_from_linear(k, N)

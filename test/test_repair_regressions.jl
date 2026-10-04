@@ -60,10 +60,9 @@ Test.@testset "Repair regressions" begin
                 SFC.gridded_lag_sweep!(reference, refcounts, SFT.S2SFType(), u, schedule, bins, Val(2))
                 for repetition in 1:2
                     sums, counts = zeros(Float32, 2), zeros(UInt64, 2)
-                    Test.@test begin
-                        SFC.gridded_sweep!(sums, counts, SFT.S2SFType(), u, schedule, bins, Val(2), SB.FastFourierTransformSpectralBackend())
-                        counts == refcounts && isapprox(sums, reference; rtol=5e-5)
-                    end
+                    SFC.gridded_sweep!(sums, counts, SFT.S2SFType(), u, schedule, bins, Val(2), SB.FastFourierTransformSpectralBackend())
+                    Test.@test counts == refcounts
+                    Test.@test isapprox(sums, reference; rtol=5e-5)
                 end
             end
         finally
@@ -83,10 +82,12 @@ Test.@testset "Count addition and mutation preflight" begin
     u = [0.0 1.0 2.0 3.0; 0.0 1.0 2.0 3.0]
     s, c = [0.0], UInt8[250]
     Test.@test_throws ArgumentError SFC.calculate_structure_function!(s, c, SFT.S2SFType(), x, u, bins; backend=SerialBackend())
-    Test.@test s == [0.0] && c == UInt8[250]
+    Test.@test s == [0.0]
+    Test.@test c == UInt8[250]
     ts, tc = zeros(2, 2, 1), UInt8[250]
     Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor!(ts, tc, Val(2), x, u, bins; backend=SerialBackend())
-    Test.@test all(iszero, ts) && tc == UInt8[250]
+    Test.@test all(iszero, ts)
+    Test.@test tc == UInt8[250]
 end
 
 Test.@testset "Dimensions above eight" begin

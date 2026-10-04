@@ -1,5 +1,3 @@
-# Serial 2D CPU Joint Reduction Kernels
-
 """
     _require_value_axis(second_axis, geometry)
 
@@ -31,8 +29,7 @@ function serial_calculate_structure_function!(
 ) where {OT, CT, T1, T2}
     val_be = digitize_plan(value_bins)
 
-    # Fast path: Euclidean + D ∈ (2,3) via the SIMD compute/scatter split (distance + SF value
-    # vectorize over j; the 2D (dist,value) scatter stays scalar).
+    # Flat D ∈ {2,3}: SIMD compute/scatter split; the (dist, value) scatter is scalar.
     vD = _simd_width(geometry)
     if vD !== nothing
         _pf_2d_simd_run!(sums_2d, counts_2d, structure_function_type, x_vecs, u_vecs, distance_bins, val_be, vD;
@@ -69,12 +66,11 @@ end
 shape `(n_dist, n_val + 2)`: value column `c + 1` holds value bin `c`, and the first and last columns the
 values below and above the value edges. `@simd` over each `j` block computes the distance key and the SF
 value into buffers indexed by `window`, and the value column into `colbuf` where [`has_vector_digitize`](@ref)
-holds for the value edges and the schedule is culled or the run before had more than 1/8 of its sampled pairs
-in range ([`_sparse`](@ref)); a scalar loop then scatters the in-range pairs as [`_pf_simd_pairs!`](@ref) does,
-forming the value column itself when the vectorized half did not. What the second axis bins is `second_axis`; binning the operator's own value reads
-the buffer the kernel already filled. Takes `(i-block, j-block)` pairs (see [`block_pairs`](@ref)), so it gets
-cache blocking and culling; the loop lives in this one kernel so the `@simd` vectorizes. Shared by serial +
-threaded.
+holds for the value edges and the schedule is culled or the run before was not sparse ([`_sparse`](@ref));
+a scalar loop then scatters the in-range pairs as [`_pf_simd_pairs!`](@ref) does, forming the value column
+itself when the vectorized half did not. `second_axis` selects what the second axis bins; the operator's own
+value is read from the buffer the kernel already filled. Takes `(i-block, j-block)` pairs (see
+[`block_pairs`](@ref)). The loop lives in this one kernel for the `@simd` to vectorize.
 """
 function _pf_2d_simd_pairs!(
     sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},
@@ -190,8 +186,7 @@ end
 """
     _pf_2d_run_blocks!(sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, bufs..., ilist, N, grid)
 
-2D-joint analogue of [`_pf_run_blocks!`](@ref): dispatch on `grid` so the kernel receives one
-concretely typed schedule.
+2D-joint analogue of [`_pf_run_blocks!`](@ref).
 """
 @inline _pf_2d_run_blocks!(
     sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf, colbuf, sel,
@@ -370,8 +365,7 @@ function _pf_2d_scalar_pairs!(
     FT2 = eltype(T2)
     n_dist = n_histogram_bins(dist_be)
     n_val = n_histogram_bins(val_be)
-    # The geometry carries the coordinate width, the field width and the velocity dimension; none of
-    # them need equal another.
+    # Coordinate width and field width of the geometry may differ.
     vW = SFH.coordinate_width(geom)
     vF = SFH.field_width(geom)
     W = _val_int(vW)

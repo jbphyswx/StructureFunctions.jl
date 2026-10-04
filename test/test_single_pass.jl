@@ -7,8 +7,7 @@ using Test: Test
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 
-# Single-pass now returns a NamedTuple keyed by invariant (each entry a single-operator result).
-# These are the six invariants in canonical order, and the matching reference operators.
+# Single-pass returns a NamedTuple keyed by invariant; these are the six invariants in canonical order and their reference operators.
 const SP_INV = (:S2, :L2, :T2, :S3, :L3, :L1T2)
 const SP_REF_TYPES = (
     SFT.SecondOrderStructureFunctionType(),

@@ -30,9 +30,12 @@ Test.@testset "every README code block runs" begin
     sandbox = Module(:READMESandbox)
     Core.eval(sandbox, :(eval(x) = Core.eval($sandbox, x)))
     for (i, block) in enumerate(blocks)
-        Test.@test (i, begin
+        failure = try
             Base.include_string(sandbox, block, "README.md block $i")
-            true
-        end) == (i, true)
+            nothing
+        catch e
+            (i, e)
+        end
+        Test.@test failure === nothing
     end
 end

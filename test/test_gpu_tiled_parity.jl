@@ -81,19 +81,17 @@ Test.@testset "GPU tiled parity — general monotone bins 2D" begin
     Test.@test gpu.sums ≈ ref.sums atol = 1e-10
 end
 
-# A struct carrying a device array into a kernel must adapt that field, or the launch dies with
-# "KernelError: passing non-bitstype argument" on CUDA. KA.CPU cannot reach that failure — adapt is
-# a no-op there — so assert the rule itself recurses.
+# Every digitizer plan adapts its array fields, checked with an adaptor that rewrites arrays to views.
 struct _EdgeAdaptProbe end
 KA.Adapt.adapt_storage(::_EdgeAdaptProbe, a::Array) = view(a, :)
 
 Test.@testset "device digitizers recurse through adapt" begin
-    GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+    KAExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
     to = _EdgeAdaptProbe()
     gen = SF.BinEdges(Float32[0, 0.2, 0.5, 1])
     bucket = SF.digitize_plan(LogBinEdges(0.01f0, 1.0f0, 9))
-    table = GPUExt._device_plan(LogBinEdges(0.01f0, 1.0f0, 9), Val(:sf1d))
-    padded_table = GPUExt._device_plan(SF.InfPaddedBinEdges(LogBinEdges(0.01f0, 1.0f0, 9)), Val(:sf1d))
+    table = KAExt._device_plan(LogBinEdges(0.01f0, 1.0f0, 9), Val(:sf1d))
+    padded_table = KAExt._device_plan(SF.InfPaddedBinEdges(LogBinEdges(0.01f0, 1.0f0, 9)), Val(:sf1d))
     Test.@test table isa SF.LogTableBinEdges
     Test.@test padded_table.edges isa SF.LogTableBinEdges
     logb = LogBinEdges(0.01f0, 1.0f0, 9)
@@ -109,7 +107,7 @@ Test.@testset "device digitizers recurse through adapt" begin
     end
     lin = LinearBinEdges(0.0f0, 1.0f0, 5)
     Test.@test KA.Adapt.adapt(to, lin) === lin
-    per_moment = GPUExt._gpu_digitizer(KA.CPU(), (gen, LogBinEdges(0.01f0, 1.0f0, 9), lin, gen, lin, gen), Val(:value))
+    per_moment = KAExt._gpu_digitizer(KA.CPU(), (gen, LogBinEdges(0.01f0, 1.0f0, 9), lin, gen, lin, gen), Val(:value))
     Test.@test per_moment[1] isa SF.BucketedBinEdges
     Test.@test per_moment[2] isa SF.BucketedBinEdges
     Test.@test per_moment[3] === lin
@@ -207,9 +205,7 @@ Test.@testset "GPU tiled parity — signed transverse operators keep the operato
 end
 
 Test.@testset "GPU parity above the tiled kernel's shared-memory cap" begin
-    # A histogram wider than `SF_GPU_MAX_BINS` has no `@localmem` to stage, so the route takes the
-    # global-atomic kernel instead of refusing. The answer must not depend on which side of the
-    # cap the bin count falls.
+    # Bin counts at and above `SF_GPU_MAX_BINS` give the serial counts and sums.
     N = 200
     FT = Float64
     Random.seed!(4242)
@@ -228,10 +224,8 @@ Test.@testset "GPU parity above the tiled kernel's shared-memory cap" begin
     end
 end
 
-# The tiled kernels size `@localmem` from the compile-time SF_GPU_MAX_BINS but index it by the
-# runtime NB under `@inbounds`, so an unguarded NB > 128 writes out of bounds in shared memory and
-# corrupts the histogram silently. The batch entries had no guard at all; these pin it down.
-Test.@testset "GPU batch — NB > SF_GPU_MAX_BINS errors (no silent shared-mem overrun)" begin
+# Batch entries with 64 and 129 bins (either side of the 128-bin cap) match the serial result.
+Test.@testset "GPU batch — bin counts either side of SF_GPU_MAX_BINS match serial" begin
     FT = Float32
     N, B = 20, 3
     sft = SFT.L2SFType()
@@ -245,8 +239,6 @@ Test.@testset "GPU batch — NB > SF_GPU_MAX_BINS errors (no silent shared-mem o
 
     for (name, x) in (("varying-x", x_vary), ("fixed-x", x_fixed))
         Test.@testset "1D individual batch $name" begin
-            # Both sides of the cap run, and the wide one is a different kernel, so the two must
-            # agree with the same per-slice serial answer rather than merely not throwing.
             for bins in (under, over)
                 nb = length(bins) - 1
                 ref_s = zeros(FT, nb, B)
@@ -265,8 +257,15 @@ Test.@testset "GPU batch — NB > SF_GPU_MAX_BINS errors (no silent shared-mem o
             end
         end
         Test.@testset "single-pass 1D batch $name" begin
-            Test.@test SFC.calculate_structure_functions_single_pass(x, u, under; backend = gpu_be) isa Any
-            Test.@test SFC.calculate_structure_functions_single_pass(x, u, over; backend = gpu_be) isa Any
+            for bins in (under, over)
+                ref = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = CB.SerialBackend())
+                got = SFC.calculate_structure_functions_single_pass(x, u, bins; backend = gpu_be)
+                Test.@test keys(got) == keys(ref)
+                for k in keys(ref)
+                    Test.@test collect(got[k].counts) == collect(ref[k].counts)
+                    Test.@test isapprox(collect(got[k].sums), collect(ref[k].sums); rtol = 1e-5, atol = 1e-5)
+                end
+            end
         end
     end
 end

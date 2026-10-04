@@ -3,9 +3,9 @@
 Each calculation is cross-checked against an independent reference. This page lists those oracles,
 strongest first, with what each one can and cannot catch.
 
-The ordering matters. An oracle that is exact to round-off will catch a defect that a
-percent-level physical check never notices, and most of the defects found in this package's history
-were of exactly that kind — a plausible number that was wrong by a constant factor.
+The ordering matters. An oracle that is exact to round-off catches a defect that a
+percent-level physical check never notices, such as a plausible number that is wrong by a constant
+factor.
 
 ## The oracles
 
@@ -44,7 +44,7 @@ were of exactly that kind — a plausible number that was wrong by a constant fa
 
 Every route with a device kernel — the point kernels, the transform engine on every schedule, the
 gridded direct lag sweep, the harmonic direct sum, the non-uniform FFT route and the tensor
-kernel — is also run on an A100 against the CPU by
+kernel — is also run on a CUDA device against the CPU by
 `gpu/test_cuda_gridded_parity.jl` and `gpu/runtests.jl`, counts exact and sums to round-off; the
 tolerance policy below says what "round-off" means there.
 
@@ -97,7 +97,7 @@ exact value is an integer that `Float64` represents exactly up to ``2^{53}``, an
 round-off is many orders below half a count at any grid size the engine can hold — but it is a
 rounded transform, not integer arithmetic, and what pins it is a test rather than the arithmetic:
 `test/test_gridded_masked.jl` requires the masked transform's counts to equal the masked lag sweep's
-**exactly**, on bounded, periodic and mixed topologies, and the sweep counts each pair as it goes.
+**exactly**, on bounded, periodic and mixed topologies.
 
 ### 3. Gridded against the unstructured pair loop
 
@@ -114,13 +114,13 @@ edges between achievable separations so the comparison is unambiguous.
 ### 6. Unit invariance
 
 A physical quantity may not change when the unit of length changes. This is a sharper test than it
-sounds: the Helmholtz decomposition once multiplied a cumulative integral by ``r``, which left the
-energy identity ``D_{rot} + D_{div} = D_{LL} + D_{TT}`` passing to `4e-16` — because the spurious
-terms cancel in that sum — while producing a 33 % divergent signal on a field with no divergent
-component, and moving that signal by a factor of 2600 under a change from metres to millimetres.
+sounds: a Helmholtz decomposition that multiplied a cumulative integral by ``r`` would still satisfy
+the energy identity ``D_{rot} + D_{div} = D_{LL} + D_{TT}``, because the spurious terms cancel in that
+sum, while producing a divergent signal on a field with no divergent component that changes with the
+unit of length.
 
-The lesson generalises: a conservation identity that the defect preserves is not a gate. Assert the
-invariance the defect actually breaks.
+A conservation identity that a defect preserves is not a gate. Assert the invariance the defect
+actually breaks.
 
 ### 7. Frame invariance
 
@@ -140,19 +140,19 @@ a constant returns a curve of exactly the right shape.
 **The isotropic transform against an analytic spectrum.** A Gaussian correlation
 ``C(r) = σ^2 e^{-r^2/2\ell^2}`` gives ``S_2(r) = 2σ^2[1 - e^{-r^2/2\ell^2}]`` and the closed-form
 density ``σ^2 \ell^D e^{-k^2\ell^2/2} / (2π)^{D/2}``. Because it *decays*, the transform is not
-truncation-limited and the comparison is pointwise: agreement to `6.6e-05`, `2.3e-09` and `9.9e-14`
-in one, two and three dimensions. A wrong kernel, a wrong solid angle, a wrong `(2π)^D` or a wrong
-sign would each break that, so one comparison covers all four.
+truncation-limited and the comparison is pointwise in one, two and three dimensions. A wrong kernel,
+a wrong solid angle, a wrong `(2π)^D` or a wrong sign would each break that, so one comparison covers
+all four.
 
-A discrete spectral line will *not* do for this. Its correlation does not decay, so the truncated
-transform is a sinc whose sidelobes fall off like `1/k` and are cut off by any finite range — worth
-1.9 % in one dimension, and refining the wavenumber grid does not move it. Lines are used only to
-check that peaks land on the right wavenumbers.
+A discrete spectral line does not serve for this. Its correlation does not decay, so the truncated
+transform is a sinc whose sidelobes fall off like `1/k` and are cut off by any finite range, and
+refining the wavenumber grid does not remove the difference. Lines are used only to check that peaks
+land on the right wavenumbers.
 
 **The gridded transform against the field's own spectrum.** Over the whole lag space nothing is
 angularly averaged and nothing is radially binned, so this must agree with transforming the field
-directly, and it does: `6.4e-17`, `3.0e-16`, `1.3e-16`. That is the standard the isotropic route
-cannot meet on a grid, where the lattice's separations are biased toward its axes.
+directly, to round-off. The isotropic route cannot meet that standard on a grid, where the lattice's
+separations are biased toward its axes.
 
 **The flux relation against a closed-form integral.** ``\int_0^R J_1(Kr)dr = (1 - J_0(KR))/K``, so a
 constant advective structure function `c` must give ``Π_K = -(c/2)(1 - J_0(KR))`` exactly. That pins
@@ -163,8 +163,8 @@ constant, or by a sign, still looks like a cascade.
 `S3` and `L3` structure functions are tied by `SF_A = (1/2r)\,d(r\,S3)/dr` and
 `S3 = (1/3r^2)\,d(r^3 L3)/dr`, so the three flux relations must agree on any analytic family built
 through those relations. They do only with the boundary terms their integrations by parts leave at
-the last separation: the tests show the integrals alone miss by tens of percent and can change sign,
-and the three routes then agree to `10⁻⁶`. The enstrophy routes are gated the same way through
+the last separation: without them the integrals alone miss and can change sign, and with them the
+three routes agree to `10⁻⁶`. The enstrophy routes are gated the same way through
 `SF_{Aω} = -∇² SF_{Au}`.
 
 **The Helmholtz split by linearity.** ``D_{rot} + D_{div} = D_{LL} + D_{TT}`` exactly and the
@@ -176,19 +176,11 @@ a gate.
 
 A covariance matrix must be positive semi-definite, and one assembled from a sampled covariance
 function need not be — **interpolating a positive-definite kernel does not preserve
-positive-definiteness**. The error falls as the square of the separation spacing:
+positive-definiteness**. The error falls as the square of the separation spacing.
 
-| separations over [0, 6] | spacing | most negative eigenvalue |
-|---|---|---|
-| 60 | 0.102 | −1.2e−03 |
-| 1 000 | 0.006 | −3.8e−07 |
-| 5 000 | 0.0012 | +8.0e−08 |
-| the kernel itself, uninterpolated | — | +1.6e−09 |
-| an oscillating function, which is no kernel at all | — | **−9.7** |
-
-So two quite different failures land in the same place, and the check distinguishes them: a
-covariance function that is invalid is off by the scale of the matrix itself, while one that is valid
-but under-resolved is off by a discretisation error. A coarse covariance that trips the check is
+Two different failures land in the same place, and the check distinguishes them: a covariance
+function that is invalid is off by the scale of the matrix itself, while one that is valid but
+under-resolved is off by a discretisation error. A coarse covariance that trips the check is
 reporting that the representation cannot support a valid matrix.
 
 ### 22–27. The later routes
@@ -208,8 +200,7 @@ count reproduces the hard bins.
 
 **The sorted line.** For one-dimensional points the pair loop and the sorted route bin every pair
 with the same `digitize` call on the same difference, so the counts are equal bit for bit and the
-sums to `1e-12`; the test also holds the route's cost linear in the points (10⁵ points in well under
-a second where the pair loop would need 5·10⁹ pairs).
+sums to `1e-12`.
 
 **Tensors.** The transform's symmetric moment store, expanded to the dense tensor, equals the point
 tensor on the grid's points at orders 2, 3 and 4 on flat grids and on a lat-lon grid, and the joint
@@ -238,21 +229,16 @@ by round-off only. "Round-off" is stated as a relative bound on the largest sum,
 | transform vs sweep | `1e-10` (`1e-9` at third order and above) | the transform's inverse FFT accumulates `O(n log n)` operations |
 | weighted counts | `1e-12` relative | a weighted count is a floating sum, not an integer |
 | soft-binned NUFFT route, CPU vs device | `1e-9` | the non-uniform FFT's own accuracy, once its kernel is evaluated in double precision |
-| `Float32` joint histogram over a value axis, CPU vs device | `3e-5` of pairs in a different value bin | the second axis bins on the pair's own value, so a value within an ulp of a value-bin edge falls either side of it under the two devices' rounding. The count of one bin is therefore not an invariant of the pair set and equality of counts is not the criterion; what is invariant is that every pair is placed, so the measure is the misplaced share of the total. Measured at `NMOM = 1`: ≤ 2.3e-7; at `NMOM = 6`, six binned invariants per pair and cubic values: ≤ 3.2e-5 |
+| `Float32` joint histogram over a value axis, CPU vs device | `3e-5` of pairs in a different value bin | the second axis bins on the pair's own value, so a value within an ulp of a value-bin edge falls either side of it under the two devices' rounding. The count of one bin is therefore not an invariant of the pair set and equality of counts is not the criterion; what is invariant is that every pair is placed, so the measure is the misplaced share of the total |
 
 A test that needs a looser bound than these is testing something other than parity, and says what.
 
 Every parity script fixes its draw, so that a row is reproducible and a change in it is attributable to
-the code. A fixed draw is never what makes a row pass: each row's verdict is one of the bounds above,
-which hold for any draw. A boolean that happens to come out true on one draw is not a criterion — the
-`Float32` value-axis row above was such a boolean until 2026-09-16, and it could not distinguish a
-regression from luck.
-The one exception recorded: NonuniformFFTs chooses a different kernel evaluation on CUDA than it does
-on the host, and under it a `Float64` transform of ours came out near `1e-5` rather than `1e-15`. The
-package's extension therefore names the kernel and the evaluation explicitly on every backend rather
-than taking a backend's default, which brings the device transform to `1e-15`. Why the default
-evaluation loses that much is not established here, and the difference belongs to that library's
-choice of defaults, not to a claim about it.
+the code. A fixed draw never makes a row pass: each row's verdict is one of the bounds above, which
+hold for any draw.
+
+The package's NonuniformFFTs extension names the kernel and its evaluation explicitly on every
+backend, so that the device transform agrees with the host.
 
 ## The printed boundary terms of Pearson et al. (2025)
 
@@ -264,8 +250,7 @@ two boundary terms in a form that is dimensionally inconsistent as read — `3 S
 where a flux ``∼ u^3/L`` requires `(3/K) SF_Luu J₁(Kr)`, and `K (dSF_Au/dr) J₁` in (B7) where the
 enstrophy flux ``∼ u^3/L^3`` requires `(1/K)(dSF_Au/dr) J₁`. The consistent forms are the ones that
 close on the power-law family and make the three energy routes and the three enstrophy routes agree
-to `1e-6` on analytic isotropic families; they are what the package ships. The paper has no erratum
-at the time of writing; the difference may be a rendering of a small `/K`.
+to `1e-6` on analytic isotropic families; they are what the package ships.
 
 ## What is checked statistically, and why it is not a gate
 
@@ -278,15 +263,15 @@ f(x) = 4\left[\tfrac{1}{3} - \frac{\sin x - x\cos x}{x^3}\right]
 
 holds for a three-dimensional isotropic field. The kernel itself is confirmed numerically here: the
 transverse-projector direction average equals ``\tfrac{1}{2} f(k_0 r)`` at every ``r`` and every
-shell radius, to within the spherical quadrature's own error of about `4e-6`.
+shell radius, to within the spherical quadrature's own error.
 
 The relation is nonetheless **not** used as a test assertion, because neither available construction
 makes it tight:
 
-- A field built from cubic-grid harmonics in a thin shell is 0.4–5 % anisotropic, and that does not
-  improve with shell radius — a shell of 3722 modes still shows 2 %.
+- A field built from cubic-grid harmonics in a thin shell is anisotropic, and that does not improve
+  with shell radius.
 - A field built from spherical-quadrature directions evaluated on scattered points converges only as
-  the sampling error allows: 5–8 % at 16 000 points.
+  the sampling error allows.
 
 In both cases the residual is a property of the mode set and the sampling, not of this package, so
 an assertion at that tolerance would mostly be testing the test. The exact multi-mode oracle in
@@ -314,5 +299,5 @@ julia --project=test test/test_tensor_khm.jl
 julia --project=test test/test_fits.jl
 ```
 
-The device parity runs need a GPU allocation: `sbatch gpu/run_cuda_gridded_parity.sh` writes its
-table to `gpu/benchmark_results/`, and `julia --project=gpu gpu/runtests.jl` runs every CUDA suite.
+The device parity runs need a CUDA device: `gpu/run_cuda_gridded_parity.sh` writes its table to
+`gpu/benchmark_results/`, and `julia --project=gpu gpu/runtests.jl` runs every CUDA suite.

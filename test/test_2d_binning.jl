@@ -100,31 +100,7 @@ Test.@testset "2D Joint-Probability Binning Tests" begin
         end
     end
 
-    # 4. Test Array Input Equivalence
-    Test.@testset "Array Equivalence" begin
-        sf_serial = SFC.calculate_structure_function(
-            SFT.L2SF,
-            x_mat,
-            u_mat,
-            distance_bins,
-            l2_value_bins;
-            backend = CB.SerialBackend()
-        )
-
-        sf_array = SFC.calculate_structure_function(
-            SFT.L2SF,
-            x_mat,
-            u_mat,
-            distance_bins,
-            l2_value_bins;
-            backend = CB.SerialBackend()
-        )
-
-        Test.@test sf_serial.sums == sf_array.sums
-        Test.@test sf_serial.counts == sf_array.counts
-    end
-
-    # 5. Test Threaded Backend Equivalence (OhMyThreads)
+    # 4. Test Threaded Backend Equivalence (OhMyThreads)
     Test.@testset "Serial vs Threaded Equivalence" begin
         sf_serial = SFC.calculate_structure_function(
             SFT.L2SF,
@@ -148,7 +124,7 @@ Test.@testset "2D Joint-Probability Binning Tests" begin
         Test.@test sf_serial.counts == sf_threaded.counts
     end
 
-    # 6. Test Algebraic Operator Support (+)
+    # 5. Test Algebraic Operator Support (+)
     Test.@testset "Base algebraic addition (+)" begin
         sf1 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins)
         sf2 = SFC.calculate_structure_function(SFT.L2SF, x_mat, u_mat, distance_bins, l2_value_bins)
@@ -158,8 +134,7 @@ Test.@testset "2D Joint-Probability Binning Tests" begin
         Test.@test combined.counts == sf1.counts .+ sf2.counts
     end
 
-    # 7. A histogram wider than the device's shared-memory cap takes its global-atomic kernels,
-    # which are a separate code path and read the coordinate width off the geometry.
+    # 6. The device joint histogram matches serial for 6 and 201 value bins at widths 2 and 3.
     Test.@testset "the device global-atomic joint route agrees at every width" begin
         Random.seed!(4321)
         n = 150

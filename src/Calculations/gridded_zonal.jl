@@ -1,21 +1,13 @@
-# Lat-lon enumeration. A lag in (λ, φ) is not a constant separation, so the uniform lag sweep does not
-# apply — but the geodesic frame, written in each endpoint's own east/north basis, depends only on
-# (φ₁, φ₂, Δλ) and not on absolute longitude. So the geometry is computed once per latitude pair and
-# longitude offset and reused around the whole circle.
-
 """
     ZonalLagSchedule(lats, n_lon, dlon, radius, lon_periodic)
 
 Pair enumeration for a lat-lon grid: one latitude per entry of `lats` (radians), `n_lon` cells per
 row spaced `dlon` apart in longitude (radians), on a sphere of the given `radius`.
 
-The latitude axis keeps whatever vector type it arrives as — a range stays a range — so a grid whose
-axis is a formula is not materialised to carry it.
-
 The field it sweeps is stored `(component, longitude, latitude)` with components in the local
-`(east, north[, radial])` basis, which is the basis the transport matrices are written in, so no
-per-pair conversion to ambient coordinates happens. Each latitude row is one slab and longitude is
-the uniform direction, with the pair frame applied per lag (see [`FrameTransport`](@ref)).
+`(east, north[, radial])` basis, the basis the transport matrices are written in. Each latitude row is
+one slab and longitude is the uniform direction, with the pair frame applied per lag (see
+[`FrameTransport`](@ref)).
 """
 struct ZonalLagSchedule{T, LV <: AbstractVector{T}} <: AbstractSeparableSchedule
     lats::LV
@@ -87,10 +79,8 @@ end
 Separation and the two transport matrices shared by every pair at latitudes `φ₁`, `φ₂` separated by
 `Δλ` in longitude: `δu = B·u_B − A·u_A`, with each velocity in its own local basis.
 
-One computation serves the whole circle of such pairs, because the geodesic frame written in the
-endpoints' local bases does not depend on absolute longitude — checked against
-[`SFH.pair_frame`](@ref) to `4e-15` over a full turn. It is evaluated at longitude zero, which is
-therefore representative.
+The geodesic frame written in the endpoints' local bases does not depend on absolute longitude, so
+one computation, evaluated at longitude zero, serves the whole circle of such pairs.
 
 Row 1 of each matrix is the longitudinal projection and row 2 the transverse, matching
 `geodesic_increments`; a third component is radial, which needs no transport and differences as a
@@ -184,11 +174,7 @@ end
     ScatteredPairs(points, metric)
 
 Pair enumeration for a grid with no structure to exploit: the points themselves, and the metric that
-measures between them.
-
-A pixelized sphere, a curvilinear mesh, a node set, a grid with no uniform direction — none of these
-share a separation between many pairs, so there is nothing to hoist and the pairs are enumerated.
-That is what the unstructured path does, with culling, and this schedule routes to it.
+measures between them. Pairs are enumerated by the unstructured path, with culling.
 """
 struct ScatteredPairs{X <: AbstractMatrix, M}
     points::X
@@ -205,8 +191,7 @@ end
 
 Accumulate every pair of a structureless grid, by enumerating them.
 
-Cells holding nothing are dropped before the sweep: the pair loop carries no mask, and a point that
-takes part in no pair is not passed to it.
+Cells holding nothing are dropped before the sweep.
 """
 function gridded_lag_sweep!(
     sums::AbstractVector, counts::AbstractVector,

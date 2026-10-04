@@ -91,8 +91,7 @@ KA.@kernel unsafe_indices = true function _lag_kernel!(
             scale = self_reverse ? T(0.5) : one(T)
             inv_r = inv(sqrt(r2))
             tr = SFC.lag_transport(s)
-            # Every name the slice loops write is assigned only inside these closures, so each is
-            # local to its closure; one also assigned outside would be captured and reassigned.
+            # Names the slice loops write are assigned only inside these closures, keeping each closure-local.
             if second_axis === nothing
                 SFC.with_frames(@inline(frames -> begin
                     for t in 1:nt
@@ -270,11 +269,8 @@ function SFC.device_transform_sweep_batch!(
         SFC.gpu_static_smem_fits(SFC.gpu_device_caps(dev), _lag_hist_smem_bytes(OT, CT, per_sum * cells, per_count * cells))
     NS, NC = shared ? (per_sum * cells, per_count * cells) : (1, 1)
     per_pair = nt * (nlin * ncols * sizeof(CF) + Pn * ncols * sizeof(FT))
-    # Equal batches sharing one buffer set: as many pairs as the device has room for, and never more
-    # than there are pairs. The room is half of what the device reports free, because the inverse
-    # transform holds working memory beside the buffer set it reads and writes. A set kept in the
-    # workspace keeps the width it was built with. Both kernels are launched over the pairs their batch
-    # holds, so a short last batch leaves the trailing columns untouched.
+    # Equal batches sharing one buffer set: as many pairs as fit in half the device's free memory (the inverse
+    # transform holds working memory beside the buffers), at most `n_items`. A workspace-kept set keeps its width.
     sizes = (:device_batch, typeof(F1), size(F1), P, ncols, n_items, nt)
     set = SFC._borrow!(workspace, sizes, () -> begin
         width = cld(n_items, cld(n_items, clamp(SFC.gpu_free_memory(dev) ÷ (2 * per_pair), 1, n_items)))

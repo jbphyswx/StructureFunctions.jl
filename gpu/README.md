@@ -2,7 +2,7 @@ CUDA validation, benchmark entry points, and profiling helpers for
 StructureFunctions.jl GPU work.
 
 Production GPU code lives in `ext/StructureFunctionsKernelAbstractionsExt.jl` and `ext/gpu/`.
-General user documentation lives in [`docs/gpu.md`](../docs/gpu.md).
+General user documentation lives in [`docs/src/gpu.md`](../docs/src/gpu.md).
 
 ## File Inventory
 
@@ -10,7 +10,7 @@ General user documentation lives in [`docs/gpu.md`](../docs/gpu.md).
 
 | File | Purpose |
 |------|---------|
-| `Project.toml`, `Manifest.toml` | CUDA/benchmark environment used inside SLURM allocations. |
+| `Project.toml`, `Manifest.toml` | CUDA and benchmark environment. |
 | `run.jl` | `include_gpu(...)` helper for pwd-independent script loading. |
 | `runtests.jl` | CUDA test entry point; includes CUDA parity and workspace tests. |
 | `test_cuda_parity.jl` | CUDA parity for 1D distance bins, joint 2D bins, and six-invariant SP2D. |
@@ -29,11 +29,10 @@ General user documentation lives in [`docs/gpu.md`](../docs/gpu.md).
 | `benchmark_workspace.jl` | Workspace reuse timing. |
 | `benchmark_slices.jl` | Slice-batch driver timing. |
 | `benchmark_batch_matrix.jl` | Current auxiliary-axis batch matrix benchmark. |
-| `benchmark_batch_breakdown.jl` | Phase timing for batch fixed-x (kernel vs merge vs adapt vs download). |
 | `benchmark_scaling_helpers.jl` | Shared timing helpers for maintained benchmark and asset scripts. |
 | `collect_benchmark_assets.jl` | Generates `gpu/benchmark_results/assets_latest.json` for docs/README figures. |
-| `collect_multi_gpu_scaling.jl` | Future multi-GPU scaling collector; retained as a maintained placeholder. |
-| `plot_cuda_parity.jl` | Optional docs parity figure, run under CUDA allocation. |
+| `collect_multi_gpu_scaling.jl` | Stub that raises an error; multi-GPU scaling is not implemented. |
+| `plot_cuda_parity.jl` | Optional docs parity figure; needs a CUDA device. |
 
 ### Profiling Helpers
 
@@ -42,33 +41,26 @@ General user documentation lives in [`docs/gpu.md`](../docs/gpu.md).
 | `benchmark_joint2d_diagnose.jl`, `benchmark_joint_value_route_ab.jl` | Focused joint2D route diagnostics. |
 | `profile_joint2d.jl`, `profile_joint2d_ncu.jl` | Nsight profiling workloads. |
 | `run_nsys_joint2d.sh`, `run_ncu_joint2d.sh`, `diag_ncu_julia.sh`, `list_joint2d_kernel_names.sh` | Nsight wrapper and inspection scripts. |
-| `NCU_JULIA.md` | Notes for working Nsight Compute commands on the cluster. |
+| `NCU_JULIA.md` | Nsight Compute commands for Julia workloads. |
 
 ### Documentation And Generated Outputs
 
 | Path | Purpose |
 |------|---------|
-| `SP2D_HTP_EJ.md` | Current six-invariant SP2D HTP-EJ strategy document. |
-| `GPU_2d_joint_sf_plan.md` | Joint 2D implementation status and follow-up notes. |
+| `OPTIMAL_KERNEL_DESIGN.md` | Structure of the device pair-histogram kernels. |
+| `SPEED_OF_LIGHT.md` | Per-pair cost structure and accumulation notes. |
+| `SP2D_HTP_EJ.md` | Six-invariant single-pass 2D accumulation strategies. |
+| `GPU_2d_joint_sf_plan.md` | Joint 2D route notes. |
 | `benchmark_results/README.md` | Describes generated benchmark output policy. |
 | `benchmark_results/assets_latest.json` | Generated docs asset snapshot. Regenerate intentionally; do not commit profiler dumps or local run logs. |
 
-## CUDA Validation On Slurm
+## CUDA Validation
 
-CUDA is not run by default CI for this repository. Before trusting GPU changes, run this
-inside a GPU allocation:
+CUDA is not run by default CI for this repository. On a machine with a CUDA device (on a
+cluster, request one through the scheduler first), run:
 
 ```bash
-srun --gres=gpu:1 --time=06:00:00 --pty bash
 julia --project=gpu -e 'include("gpu/runtests.jl")'
-```
-
-Expected result after the array-only public API cleanup:
-
-```text
-Test Summary:          | Pass  Total
-StructureFunctions GPU |   24     24
-GPU tests passed.
 ```
 
 For a faster manual smoke before the full CUDA testset:
@@ -79,8 +71,8 @@ julia --project=gpu gpu/smoke_cuda.jl
 
 ## Running Scripts
 
-Start Julia once inside the allocation. Precompile is expensive; do not spawn a fresh
-`julia script.jl` process for every benchmark.
+Start Julia once; precompile is expensive, so avoid spawning a fresh `julia script.jl` process
+for every benchmark.
 
 ```julia
 using Pkg: Pkg
@@ -96,8 +88,8 @@ include_gpu("benchmark_2d_grid_scaling.jl")
 include_gpu("benchmark_workspace.jl")
 ```
 
-Large benchmarks, profiling helpers, and any script that allocates CUDA arrays must run
-inside the SLURM allocation. Re-`include` is cheap; restarting Julia is not.
+Large benchmarks, profiling helpers, and any script that allocates CUDA arrays need a CUDA
+device. Re-`include` is cheap; restarting Julia is not.
 
 The maintained benchmark command for release checks is:
 
@@ -113,8 +105,8 @@ and prints these ratios:
 - explicit per-slice loops vs fused shared-position auxiliary axes;
 - explicit per-slice loops vs fused varying-position auxiliary axes.
 
-Use `BENCH_BACKEND=kacpu` only as a smoke test that the benchmark still runs. Treat
-performance ratios as meaningful only under CUDA allocation and representative `N/BATCH`.
+Use `BENCH_BACKEND=kacpu` only as a smoke test that the benchmark still runs. Performance
+ratios are meaningful only on a CUDA device and at representative `N/BATCH`.
 
 For the large auxiliary-axis matrix runs, load `benchmark_batch_matrix.jl` once and
 call `run_batch_matrix_benchmark` directly:
@@ -177,28 +169,19 @@ run_batch_matrix_benchmark(
 )
 ```
 
-If the explicit optimized loop is faster, the fused varying-position route should be
-replaced or redesigned. If both are slow, investigate the point-field route,
-workspace reuse, and device-view staging first.
+## Performance gates (`profile = :reference`)
 
-## A100 performance gates (`profile = :reference`)
-
-Run on a GPU node after batch-kernel changes:
+Run on a CUDA device after batch-kernel changes:
 
 ```bash
 julia --project=gpu -e 'include("gpu/benchmark_batch_matrix.jl");
     run_batch_matrix_benchmark(profile=:reference, allow_slow=true)'
-nsys profile -o batch_fixed_x --trace=cuda,nvtx --force-overwrite=true \
-    julia --project=gpu gpu/profile_batch_fixed_x.jl
-nsys stats --force-export=true --report cuda_gpu_kern_sum batch_fixed_x.nsys-rep
 ```
-
-Dev timing split: `gpu/benchmark_batch_breakdown.jl`. Working notes: `gpu/benchmark_results/`.
 
 | Gate | Target |
 |------|--------|
-| `N=20_000`, `B=8064`, `individual_fixed` | beat explicit slice extrapolation; stretch < 10 s hot launch |
-| `workspace_speedup`, `sp2d_vs_6x_joint2d` | > 1.0× (open) |
+| `N=20_000`, `B=8064`, `individual_fixed` | faster than the explicit slice extrapolation |
+| `workspace_speedup`, `sp2d_vs_6x_joint2d` | > 1.0× |
 
 Record logs under `gpu/benchmark_results/`.
 

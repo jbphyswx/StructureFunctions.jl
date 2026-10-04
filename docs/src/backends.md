@@ -38,10 +38,7 @@ GPU individual, joint-value, and single-pass point calculations retain device
 arrays for snapshots and batches. `to_host(result)` explicitly copies numerical
 buffers to host memory. Mutating forms require outputs on the selected backend
 and add to existing values. Allocating results own their buffers across workspace
-reuse. The current A100 validation covers shared and varying positions, multiple
-batch axes, and weighted and unweighted calculations. Tensor, multifield, grid,
-and harmonic residency coverage remains incomplete.
-
+reuse.
 ## Repeated calculations
 
 `CPUSFWorkspace` and `GPUSFWorkspace` retain buffers for compatible calculations. Construct a workspace for the calculation's layout, bins, precision, and backend; pass it with `workspace=...`. A workspace serves one call at a time. On a grid, a `TransformWorkspace()` keeps the transform's spectra, plans and scratch from one call to the next, as a time series on one grid makes; it takes no arguments and rebuilds what it keeps when a call's sizes change.
@@ -56,6 +53,3 @@ Direct pairs support general pairwise operators. Culling restricts enumeration u
 
 Use `SpectralBackends` method tags where the interface accepts them. An FFT requires a compatible provider and a polynomial moment representation. Approximate spectral methods must be chosen with their resolution assumptions understood.
 
-## Resource use on clima
-
-Run all GPU work, CPU scaling, and substantial parallel computations in Slurm. A visible GPU is not an allocation. Small CPU examples and documentation builds use one Julia thread and one BLAS thread. See the repository's development instructions for the persistent Julia launcher.

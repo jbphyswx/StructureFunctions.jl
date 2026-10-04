@@ -31,8 +31,6 @@ function SFC.nufft_monomial_transforms(
         end
         full = similar(set.θ[1], Complex{FT}, set.grid..., ntrans)
         SFC.nufft_type1_exec!(set.plan, strengths, full)
-        # The two gathers stay lazy and the combination writes once: materialising `F[pos]`, `F[neg]`,
-        # their conjugate and the difference separately costs four arrays of the half spectrum per key.
         return map(1:nkeys) do n
             F = view(full, ntuple(_ -> Colon(), Val(Dg))..., cld(n, 2))
             Fp = view(F, set.pos...)
@@ -48,9 +46,7 @@ function SFC.nufft_monomial_transforms(
     end
 end
 
-# Unpacking a mode needs its negation, so the transform is taken on the mode set closed under negation,
-# `−⌊M/2⌋ … ⌊M/2⌋`: the schedule's own set when a direction holds an odd number of modes, one mode more when
-# it holds an even number, whose `−M/2` the schedule's set lacks.
+# The transform is taken on the mode set closed under negation, `−⌊M/2⌋ … ⌊M/2⌋` per direction.
 """The schedule's batched plan of `ntrans` transforms in precision `FT` with its points set, the points, the
 closed mode grid, the positions of each half-spectrum mode and of its negation in it, and the taper."""
 function _points_plan(tag, s::SFC.ScatteredModesSchedule{Dg}, ::Type{FT}, ntrans::Int, to) where {Dg, FT}

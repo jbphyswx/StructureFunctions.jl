@@ -79,9 +79,7 @@ Test.@testset "KHM Diagnostics" begin
 end
 
 Test.@testset "each inertial-range law takes the quantity it is stated for" begin
-    # §9.4: the four-fifths law is for ⟨δu_L³⟩ (L3SF) and the four-thirds law for ⟨δu_L‖δu‖²⟩
-    # (S3SF). They differ by 5/3, so handing one function the other's quantity returns a wrong ε
-    # that looks entirely plausible. These pin that the two are distinct and each inverts its own law.
+    # The four-fifths law inverts ⟨δu_L³⟩ (L3SF) and the four-thirds law ⟨δu_L‖δu‖²⟩ (S3SF); each recovers ε from its own quantity.
     r = collect(range(0.1, 2.0; length = 9))
     eps = 0.37
 

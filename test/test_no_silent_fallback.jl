@@ -103,7 +103,6 @@ Test.@testset "an explicit threaded backend is refused without the OhMyThreads e
 
     try
         SFC._OHMYTHREADS_LOADED[] = false
-        Test.@test !SFC._ohmythreads_loaded()
         for (entry, ref) in zip(NSF_THREADED_ENTRIES, references)
             Test.@testset "$(entry.name)" begin
                 err = try

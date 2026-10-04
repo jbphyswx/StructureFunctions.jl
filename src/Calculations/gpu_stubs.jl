@@ -1,10 +1,6 @@
 # GPU Extension and Workspace Stubs
 
-# ---------------------------------------------------------------------------
 # Native kernels of a backend (supplied by StructureFunctionsCUDAExt)
-# ---------------------------------------------------------------------------
-# Every device launcher asks for the backend's native launch plan, launches the native kernel with it
-# when there is one, and the portable KernelAbstractions kernel when there is none.
 
 """
     gpu_native_1d_plan(backend, XT, UT, OT, CT, weights, geom, NB, moments) -> plan or nothing
@@ -44,7 +40,7 @@ gpu_native_2d_plan(backend, XT, UT, OT, CT, weights, geom, moments, n_dist, n_va
 Launch the native distance × value kernel `plan` describes into `out`/`cnt` of shape
 `(NMOM, n_dist, n_val, B)`; `second_axis` is what the value axis bins; the rest as for
 [`gpu_native_launch_1d!`](@ref). `portable!(out, cnt)` launches the same call on the portable kernels into buffers of
-that shape, a candidate the plan may time beside its own.
+that shape.
 """
 function gpu_native_launch_2d! end
 
@@ -163,9 +159,8 @@ gpu_device_caps(::Any) = GPUDeviceCaps(GPU_SMEM_UNIVERSAL_FLOOR, GPU_SMEM_UNIVER
 """
     gpu_free_memory(backend) -> Int
 
-Bytes `backend` reports free for allocation. There is deliberately **no generic method**: a staged
-calculation sizes its batches against this, and a backend whose memory is unknown raises rather than
-staging against a guess. `KernelAbstractions.CPU()` answers with the host's free memory and
+Bytes `backend` reports free for allocation. There is no generic method: a backend whose free memory
+is unknown raises. `KernelAbstractions.CPU()` answers with the host's free memory and
 `CUDA.CUDABackend()` with the device's.
 """
 function gpu_free_memory end

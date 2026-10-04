@@ -74,5 +74,3 @@ Spectrum and flux routines specify their dimensionality, normalization, and samp
 ## Examples and development
 
 See [`examples/`](examples/) for small executable examples. Performance experiments, scientific validation, and figure generation have separate entry points; they do not run during the documentation build.
-
-On clima, GPU work and substantial CPU calculations require Slurm. Package development instructions are in [`AGENTS.md`](AGENTS.md).

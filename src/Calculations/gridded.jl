@@ -7,10 +7,8 @@
 
 Every cell holds a usable datum, as an indexable value.
 
-Distinct from a grid's own mask, which says which cells *exist*: a cell can exist and still hold
-nothing, and it is the field that decides. [`field_validity`](@ref) combines the two. Spelling the
-complete-field case as a value that answers `true` keeps one kernel — the test folds away, so a
-complete field pays nothing, and no separate masked kernel can drift from the unmasked one.
+A grid's own mask says which cells exist; the field says which hold a datum.
+[`field_validity`](@ref) combines the two.
 """
 struct AllValid end
 
@@ -39,8 +37,7 @@ _with_valid(f::F, valid) where {F} = f(valid)
 """
     NoWeights()
 
-Every pair counts once, as an indexable value: the unweighted sweep is the same kernel with the
-weight folded away, as [`AllValid`](@ref) folds the mask away.
+Every pair counts once, as an indexable value.
 """
 struct NoWeights end
 
@@ -146,10 +143,7 @@ end
     return 0
 end
 
-# ---------------------------------------------------------------------------------------------------
 # Entry points
-# ---------------------------------------------------------------------------------------------------
-
 
 """
     gridded_sweep!(sums, counts, sf, u, schedule, distance_bins[, axis_bins], ::Val{D}, spectral_backend; valid, weights, backend)
@@ -158,12 +152,10 @@ end
 Accumulate the histogram of every pair `schedule` names, by the algorithm `spectral_backend` selects.
 `valid` and `weights` are as on [`gridded_lag_sweep!`](@ref).
 
-Which algorithm sums the pairs is an axis of its own, orthogonal to which hardware runs it: the lag
-sweep visits each lag and is exact for any pairwise operator, while a transform produces the increment
-moment tensor of every lag at once and so serves the operators that are polynomials in `δu`.
-`AutoSpectralBackend` picks whichever does less work, and resolves to the lag sweep unless a transform
-is loaded — an extension supplies the transform, and answers `Auto` with a cost comparison because
-only it knows what a transform would cost. `backend` names the hardware, as on the unstructured entry.
+The lag sweep visits each lag and is exact for any pairwise operator; a transform produces the
+increment moment tensor of every lag at once and serves the operators that are polynomials in `δu`.
+`AutoSpectralBackend` picks the one with less work and resolves to the lag sweep unless a transform
+is loaded. `backend` names the hardware, as on the unstructured entry.
 
 With `axis_bins` the histogram is joint in separation and `second_axis`: each pair's value
 ([`InvariantValueAxis`](@ref)), which only the lag sweep bins, or the angle a
@@ -246,9 +238,7 @@ gridded_lag_sweep!(sums::AbstractMatrix, counts::AbstractMatrix, sf, f::MF.Field
     gridded_lag_sweep!(sums, counts, sf, MF.packed(f), schedule, distance_bins, axis_bins, Val(D),
                        Val(V), Val(K); kwargs...)
 
-# ---------------------------------------------------------------------------------------------------
 # Schedules with a uniform direction
-# ---------------------------------------------------------------------------------------------------
 
 """
     AbstractSeparableSchedule
@@ -319,9 +309,7 @@ function enumerated_pairs end
 """
     n_enumerated_pairs(schedule, r_max) -> Int
 
-How many pairs [`enumerated_pairs`](@ref) yields, without building them. The cost model asks this of
-a schedule it has not decided to sweep yet, so materialising the pairs there would allocate the
-whole `O(n_slabs²)` list to read one number off it.
+How many pairs [`enumerated_pairs`](@ref) yields.
 """
 n_enumerated_pairs(s, r_max) = count(_ -> true, enumerated_pairs(s, r_max))
 
@@ -658,9 +646,7 @@ end
     return SA.SVector{Dr, T}(ntuple(d -> d <= N ? (@inbounds dxp[positions[d]]) : zero(T), Val(Dr)))
 end
 
-# ---------------------------------------------------------------------------------------------------
 # Work partition and execution
-# ---------------------------------------------------------------------------------------------------
 
 """
     sweep_items(schedule, r_max, n_tasks, split_lags) -> Vector{NTuple{4, Int}}
@@ -856,9 +842,7 @@ end
 
 @inline _gridded_threads() = _ohmythreads_loaded() ? Threads.nthreads() : 1
 
-# ---------------------------------------------------------------------------------------------------
 # The direct sweep
-# ---------------------------------------------------------------------------------------------------
 
 """
     _lag_visit(sf, schedule, uniform, I, J, h, plan, nb, ::Val{D}, ::Val{V}, ::Val{K})
@@ -1030,9 +1014,8 @@ than a per-cell branch.
     return totals, n_pairs
 end
 
-# Selected, never multiplied by `ok`: an empty cell may hold NaN, and NaN * 0 is NaN. A function of its
-# own so the running totals are never a captured variable that is reassigned, which Julia would box.
-# An unweighted pair carries the weight `true`, which the compiler folds away.
+# Selected, never multiplied by `ok`: an empty cell may hold NaN, and NaN * 0 is NaN.
+# An unweighted pair carries the weight `true`.
 @inline _accumulate(totals::NTuple{M}, vals::NTuple{M}, ok::Bool, ::Bool) where {M} =
     ntuple(@inline(m -> @inbounds(totals[m] + (ok ? vals[m] : zero(vals[m])))), Val(M))
 @inline _accumulate(totals::NTuple{M}, vals::NTuple{M}, ok::Bool, w) where {M} =
@@ -1058,7 +1041,7 @@ field, `sums` and `counts` `(6, n_distance)`, each row counting every pair.
 
 `u` is stored `(component, cells...)` with its trailing axes matching the schedule, and `D` is its
 component count, which may exceed the grid's dimension — a lag then lies in the grid's directions
-and is zero along the rest. A a multi-field carries several fields the same way. `valid` says
+and is zero along the rest. A multi-field carries several fields the same way. `valid` says
 which cells hold a datum; a pair counts only when both of its ends do (see [`field_validity`](@ref)).
 `weights`, one finite weight per cell (`nothing` for none), multiplies each pair by `w_k · w_kp` in both
 `sums` and `counts`, so the bin average is `Σ w w v / Σ w w` and `counts` must then be floating point;
@@ -1066,17 +1049,14 @@ which cells hold a datum; a pair counts only when both of its ends do (see [`fie
 entry; a threaded backend splits the slab pairs
 across tasks, and the lags of a schedule with a single slab.
 
-Exact, not approximate: each unordered pair is counted once, because lags are enumerated one per
-distinct separation and within a slab only one of `±lag` is kept. A lag equal to its own reverse is
-swept over half of one direction, which is one representative per pair.
+Each unordered pair is counted once: lags are enumerated one per distinct separation and within a
+slab only one of `±lag` is kept. A lag equal to its own reverse is swept over half of one direction.
 
 Where a periodic direction has an even cell count, its half-period offset joins two cells by two
-minimal paths of equal length and opposite sign, so the separation direction is not unique there.
-The operator is averaged over those equal-length displacements, which is the only choice that does
-not favour one of them; an operator odd in the separation direction therefore vanishes on the pairs
-whose every offset half-turns, as it must when no direction is preferred. In the joint histogram
-such a lag's pairs are split between their images' bins in equal halves, so `counts` must then hold
-a floating-point type.
+minimal paths of equal length and opposite sign. The operator is averaged over those equal-length
+displacements, so an operator odd in the separation direction vanishes on the pairs whose every
+offset half-turns. In the joint histogram such a lag's pairs are split between their images' bins in
+equal halves, so `counts` must hold a floating-point type.
 """
 function gridded_lag_sweep!(
     sums::AbstractArray, counts::AbstractArray,
@@ -1117,9 +1097,7 @@ Accumulate the direct lag sweep on a device into `sums`/`counts` `(nb, nt)` — 
 single-pass invariants — or `(nb, n_axis, nt)` with `axis = (axis_plan, n_axis, second_axis)`: one work item
 per (slab pair, lag), each reducing over the
 cells of the uniform directions for every slice of `data` `(W, cells, nt)`, laid out as the schedule's
-slabs, with `valid` `AllValid()` or `(cells, nt)`. Supplied by the KernelAbstractions extension; this is
-the route a non-polynomial operator and a value histogram take on a grid, which the transform cannot
-express.
+slabs, with `valid` `AllValid()` or `(cells, nt)`. Supplied by the KernelAbstractions extension.
 """
 function device_lag_sweep! end
 
@@ -1435,9 +1413,7 @@ floating-point type; an exact one's need room for every pair on top of what they
 _assert_grid_counts(s, counts::AbstractArray, n_cells::Int, weights) =
     _soft_binned(s) ? _assert_mass_counts(eltype(counts)) : _assert_counts_can_accumulate(counts, n_cells, weights)
 
-# ---------------------------------------------------------------------------------------------------
 # Batches over a trailing slice axis
-# ---------------------------------------------------------------------------------------------------
 
 """
     batch_validity(u[, cell_mask]) -> Bool matrix or AllValid
@@ -1465,9 +1441,7 @@ Whether a transform batch visits each lag once and contracts every slice against
 slices' inverted columns of a slab pair at the same time.
 
 A schedule answering `false` takes its slices one at a time, with the inverse scratch of a single
-slice. Curved schedules answer `true`: their per-lag geometry is a geodesic frame and `W×W` transport
-matrices built from the schedule alone, and their uniform directions are a slab's, so the columns of
-every slice fit together.
+slice. Curved schedules answer `true`.
 """
 batch_shares_lag_geometry(s::AbstractSeparableSchedule) = lag_transport(s) isa FrameTransport
 

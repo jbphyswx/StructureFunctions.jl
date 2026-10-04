@@ -42,7 +42,6 @@ Test.@testset "E2E: Structure Function E2E Suite" begin
 
     Test.@testset "Multi-field Execution" begin
         sf_type = SFT.SecondOrderStructureFunction
-        # calculate_structure_function now returns a StructureFunction object
         res = SFC.calculate_structure_function(
             sf_type,
             pos,

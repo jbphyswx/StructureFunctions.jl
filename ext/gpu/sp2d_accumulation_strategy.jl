@@ -70,8 +70,7 @@ Compile-time `@localmem` histogram width. Sized to what the config actually need
 histogram the mode's kernel fits.
 """
 @inline function _sp2d_sharedhist_compile_cells(config::SP2DAccumulationStrategy)
-    # Both branches must use the PADDED extents: the kernel indexes and bounds its loops with the
-    # padded layout, so sizing `@localmem` from the logical cell counts runs it off the end.
+    # Both branches use the padded extents: the kernel indexes and bounds its loops with the padded layout.
     need = config.accum_mode === :shared ? config.shared_cells : config.types_per_pass * config.plane_shared_cells
     quantized = cld(need, SP2D_COMPILE_CELL_QUANTUM) * SP2D_COMPILE_CELL_QUANTUM
     return min(quantized, config.max_shared_cells)

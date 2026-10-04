@@ -37,12 +37,10 @@ end
 
 """
 Trailing kernel args after tile launch params: `C, plane, types_per_pass, n_type_passes`, then the
-compile-time shared-histogram width as a `Val`. Every launch site splats this, so the width reaches
-all of them from one place.
+compile-time shared-histogram width as a `Val`. The geometry's coordinate and field widths follow as `Val`s.
 
-`C` and `plane` are the **padded** extents, because the kernel uses them to bound its zeroing and
-flush loops over the shared layout — not the logical cell counts, which are what the histogram
-actually contains. The geometry's coordinate and field widths follow as `Val`s.
+`C` and `plane` are the **padded** extents; the kernel uses them to bound its zeroing and flush loops
+over the shared layout.
 """
 @inline function _sp2d_strategy_kernel_tail_args(config::SP2DAccumulationStrategy, geom,
                                                  cnt_eltype::Type, weights, backend)
@@ -200,10 +198,8 @@ function _launch_single_pass_2d_portable!(
     )
 end
 
-# Production batch launch drivers — fixed-x.
-#
-# Fixed-x launch invariant (do not regress):
-# - `ndrange = n_tile_blocks * workgroup_size` only — never multiply by `cld(B, strip_w)`.
+# Fixed-x batch launch drivers.
+# - `ndrange = n_tile_blocks * workgroup_size`.
 # - Host strip loop over `_batch_usmem_strip_w(caps, FT)` via `_batch_fixed_x_usmem_priv!`.
 # - `KA.CPU`: serial merge; other backends: grouped merge. Same kernel on both.
 

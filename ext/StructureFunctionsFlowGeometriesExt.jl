@@ -14,8 +14,7 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
 The metric a grid's geometry measures with.
 
 A spherical grid's coordinates are `(λ, φ)` in **radians** on a sphere of the geometry's radius,
-which is [`SphericalDistance`](@ref SFH.SphericalDistance) — never `Haversine`, which reads degrees
-and would scale every separation by 180/π.
+measured by [`SphericalDistance`](@ref SFH.SphericalDistance).
 """
 _grid_metric(::FG.Grids.AbstractGrid{<:FG.Geometry.AbstractCartesianGeometry}) = DI.Euclidean()
 
@@ -77,8 +76,7 @@ function _lag_schedule(grid::FG.Grids.AbstractStructuredGrid{<:FG.Geometry.Abstr
     return SFC.RectilinearLagSchedule(su, Tuple(c[order[k]] for k in (Du + 1):N), order)
 end
 
-# A lat-lon grid's lags are not constant separations, so it gets the zonal schedule instead: the
-# geodesic frame is shared around a circle of longitude, not along a lag. A stretched longitude axis
+# A lat-lon grid shares its geodesic frame around a circle of longitude. A stretched longitude axis
 # enumerates pairs; the great-circle metric wraps of itself, so a periodic flag on it is no obstacle.
 function _lag_schedule(grid::FG.Grids.AbstractStructuredGrid{<:FG.Geometry.AbstractSphericalGeometry})
     c = FG.Grids.coordinates(grid)
@@ -163,7 +161,7 @@ bin. Which enumeration the grid gets is decided by the types of its axes (see
 
 `u` is `(component, cells...)` with its trailing axes matching the grid, and its component count may
 exceed the grid's dimension — a lag then lies in the grid's directions and is zero along the rest. A
-a multi-field built from grid-shaped fields is taken the same way. On a spherical grid the
+multi-field built from grid-shaped fields is taken the same way. On a spherical grid the
 components are `(east, north[, radial])` and separations are in the unit of the geometry's radius.
 
 `spectral_backend`, a `SpectralBackends` tag, names the algorithm that sums the pairs, an axis of its

@@ -110,9 +110,7 @@ Test.@testset "Array shape contract" begin
 end
 
 Test.@testset "dimension support follows what an operator needs" begin
-    # Issue #19: the isotropic invariants are built from δu_L and ‖δu‖², both defined at any D, so
-    # they are not restricted. An operator needing an *oriented* transverse direction is, and must
-    # say so rather than silently picking a basis.
+    # Operators built from δu_L and ‖δu‖² run at every D; operators odd in the transverse component are refused outside D = 2 and 3.
     Random.seed!(1919)
     bins = collect(range(0.0, 2.0; length = 5))
     unrestricted = (SFT.S2SFType(), SFT.L2SFType(), SFT.T2SFType(), SFT.L3SFType(), SFT.L1T2SFType())

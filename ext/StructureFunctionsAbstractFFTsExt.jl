@@ -37,8 +37,7 @@ end
 """Embed `src` at the origin of a zero array of size `P`, in `src`'s array family."""
 function _embed(src::AbstractArray{FT, Dg}, P::NTuple{Dg, Int}) where {FT, Dg}
     out = similar(src, P)
-    # Only the padding has to be zeroed. A fully periodic schedule pads nothing, so `src` covers
-    # `out` and zeroing it first would write every element twice.
+    # Only the padding is zeroed; a fully periodic schedule pads nothing.
     size(src) == P && return copyto!(out, src)
     fill!(out, zero(FT))
     view(out, map(n -> 1:n, size(src))...) .= src
@@ -137,10 +136,6 @@ end
 
 moment_component(mt::MonomialTransforms, j::NTuple) = moment_component(mt, mt, j)
 
-# ---------------------------------------------------------------------------------------------------
-# The moments one slab pair needs, as columns of one batched inverse transform
-# ---------------------------------------------------------------------------------------------------
-
 # Fill the columns for slab pair (I, J) from the two slabs' forward transforms and invert them all at
 # once; returns the `(lags, columns)` matrix of raw moments.
 function _pair_inverse!(scratch, fwdI::AbstractVector, fwdJ::AbstractVector, columns::AbstractVector)
@@ -161,10 +156,6 @@ function _pair_inverse!(scratch, fwdI::AbstractVector, fwdJ::AbstractVector, col
     LA.mul!(scratch.out, scratch.iplan, scratch.spec)
     return scratch.outf
 end
-
-# ---------------------------------------------------------------------------------------------------
-# The engine
-# ---------------------------------------------------------------------------------------------------
 
 SFC.transform_engine(sf, data::AbstractMatrix, s::SFC.AbstractSeparableSchedule, dist_be, vD::Val, vV::Val, vK::Val,
                      valid, weights, tag; to = identity, workspace = nothing, slice::NTuple{2, Int} = (1, 1)) =
@@ -302,9 +293,8 @@ function _forward_stage(dp, ::Type{FT}, P::NTuple{Dg}, lay, keys) where {FT, Dg}
 end
 
 # Every monomial of degree ≤ Pm of every slab, transformed; the first key is the mask. Each block of the
-# spectra is built in one broadcast and transformed in one batch straight into its place, so the launch count
-# scales with the blocks alone. A scattered schedule's single slab is transformed by the non-uniform FFT
-# provider.
+# spectra is built in one broadcast and transformed in one batch straight into its place. A scattered
+# schedule's single slab is transformed by the non-uniform FFT provider.
 function _slab_transforms(
     ::SB.AbstractFastFourierTransformSpectralBackend, s::SFC.AbstractSeparableSchedule, dp, vp, wp, su, P,
     ::Val{W}, ::Val{Pm}; to, forward, workspace,
@@ -379,7 +369,7 @@ function _inverse_plan(eng, ncols::Int)
     P = eng.P
     Ph = size(F1)
     # Neither buffer is zeroed: `_pair_inverse!` writes every element of `spec` before reading it,
-    # and the inverse transform writes `out` whole. The batch sibling has always relied on that.
+    # and the inverse transform writes `out` whole.
     return () -> begin
         spec = similar(F1, Ph..., ncols)
         out = similar(F1, FT, P..., ncols)
@@ -523,10 +513,8 @@ function SFC.gridded_sweep!(
     return sums, counts
 end
 
-# ---------------------------------------------------------------------------------------------------
-# The non-uniform FFT route: the same engine on a ScatteredModesSchedule, its forward transforms from
-# a NUFFT provider. Counts are a kernel-weighted pair mass and need a floating-point type.
-# ---------------------------------------------------------------------------------------------------
+# The non-uniform FFT route: the engine on a ScatteredModesSchedule, its forward transforms from a NUFFT
+# provider. Counts are a kernel-weighted pair mass and need a floating-point type.
 
 function SFC.gridded_sweep!(
     sums::AbstractArray, counts::AbstractArray{CT}, sf::SFT.AbstractPairwiseStructureFunctionType,
@@ -617,10 +605,8 @@ SFC.gridded_sweep!(::AbstractMatrix, ::AbstractMatrix, ::SFT.AbstractPairwiseStr
                    ::SB.AbstractNonUniformFastFourierTransformSpectralBackend; kwargs...) where {D, V, K} =
     _nufft_needs_scattered(s)
 
-# ---------------------------------------------------------------------------------------------------
 # Batches over a trailing slice axis: one engine per slice, one geometry pass, the slices as the
 # innermost loop of every lag.
-# ---------------------------------------------------------------------------------------------------
 
 # The per-executor scratch for `nt` slices of `ncols` columns and the batched inverse plan that
 # fills it; `outs[t]` is the `(lags, columns)` matrix of slice `t`. Both buffers are written whole
@@ -921,10 +907,8 @@ _batch_auto_tag(::SB.AbstractAutoSpectralBackend, ::SFC.AbstractSeparableSchedul
     SB.FastFourierTransformSpectralBackend()
 _batch_auto_tag(tag::SB.AbstractAutoSpectralBackend, ::SFC.ScatteredModesSchedule) = _scattered_needs_nufft(tag)
 
-# ---------------------------------------------------------------------------------------------------
-# Tensors on grids: the same engine, with each lag's symmetric moment store binned in place of the
-# contraction, and the dense tensor assembled once at the end.
-# ---------------------------------------------------------------------------------------------------
+# Tensors on grids: each lag's symmetric moment store is binned, and the dense tensor is assembled once
+# at the end.
 
 # The transform a tensor sweep runs with: `Auto` is the FFT on a grid, and a tag must match its schedule.
 _tensor_tag(tag::SB.AbstractFastFourierTransformSpectralBackend, ::SFC.AbstractSeparableSchedule) = tag
@@ -1149,10 +1133,8 @@ _transform_sweep!(
 ) = SFC.device_transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, vD, vV, vK, valid, weights,
                                 tag, axis, workspace)
 
-# `Auto` is answered here because only this extension knows what a transform would cost: the sweep
-# visits every lag of every slab pair over the slab's cells, the transform pays one forward transform
-# per monomial per slab and one inverse per raw moment per slab pair, however few lags are wanted.
-# Dispatching on the concrete tag out-specialises the core method.
+# The lag sweep visits every lag of every slab pair over the slab's cells; the transform pays one forward
+# transform per monomial per slab and one inverse per raw moment per slab pair, however few lags are wanted.
 _auto_transform(sf, s, dist_be, W::Int, valid, weights, ::CB.AbstractExecutionBackend) =
     _prefers_transform(sf, s, dist_be, W, valid, weights)
 
@@ -1201,10 +1183,6 @@ function SFC.gridded_sweep!(
         SFC.gridded_lag_sweep!(sums, counts, sf, data, s, dist_be, axis_be, Val(D), Val(V), Val(K);
                                valid, weights, backend, second_axis)
 end
-
-# ---------------------------------------------------------------------------------------------------
-# Spectra from the lag-space structure function
-# ---------------------------------------------------------------------------------------------------
 
 """
     _trace_lags(mt, ::Val{D}) -> (trace, counts)

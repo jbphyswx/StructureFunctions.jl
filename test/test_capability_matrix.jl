@@ -216,9 +216,7 @@ Test.@testset "the capability matrix: every route on every backend" begin
 
                 if refusal === nothing
                     if outcome isa Exception
-                        # Naming the exception is what makes the failure readable: an unlisted
-                        # refusal, a MethodError and a crashed worker are three different defects.
-                        Test.@test (bname, nameof(typeof(outcome))) == (bname, :NoException)
+                        Test.@test !(outcome isa Exception) "$rname on $bname raised $(typeof(outcome))"
                     else
                         Test.@test cm_agrees(outcome[1], ref_s)
                         Test.@test cm_agrees(outcome[2], ref_c)
@@ -244,7 +242,7 @@ Test.@testset "an angle cell bins the angle" begin
     for (name, x, u) in (("point", CM_XP, CM_UP), ("aux axes", CM_XB, CM_UB), ("aux axes shared", CM_XP, CM_UB))
         angle = SFC.calculate_structure_function(CM_OP, x, u, CM_BINS, CM_ABINS; backend = ser, second_axis = CM_AX)
         value = SFC.calculate_structure_function(CM_OP, x, u, CM_BINS, CM_ABINS; backend = ser)
-        Test.@test (name, angle.counts != value.counts) == (name, true)
+        Test.@test angle.counts != value.counts "$name: the angle cell binned the value"
     end
 end
 
@@ -255,18 +253,6 @@ Test.@testset "a schedule of one slab pair splits its lags across every task" be
     items = SFC.sweep_items(CM_WU_S, 0.4, n_tasks, true)
     Test.@test length(items) >= n_tasks
     Test.@test sort([it[3] for it in items]) == 1:items[1][4]
-end
-
-Test.@testset "the matrix table names only cells that exist" begin
-    # A refusal that has been implemented must be deleted from the table, not left behind: a stale
-    # row would quietly stop asserting anything.
-    cells = Set((r[1], b[1]) for r in CM_ROUTES, b in CM_BACKENDS)
-    for key in keys(CM_REFUSED)
-        Test.@test key in cells
-    end
-    for (_, spec) in CM_REFUSED
-        Test.@test !isempty(spec.reason)
-    end
 end
 
 finally

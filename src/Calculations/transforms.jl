@@ -1,5 +1,3 @@
-# Transforms between a binned structure function and spectral space.
-
 """
     isotropic_kernel(::Val{D}, x)
 
@@ -69,9 +67,8 @@ C(r) = C(0) - D(r)/2
 with `C(0)` the variance. **`variance` must be supplied and cannot be recovered from `D`**, which is
 blind to it — the same blindness that makes `k = 0` unavailable to [`isotropic_spectrum`](@ref).
 
-Valid only if the field is **second-order stationary**. A field that is merely *intrinsically*
-stationary has a variogram but need not have a finite variance, and then no covariance exists to
-compute; supplying a number anyway produces a curve with no referent.
+Valid only if the field is **second-order stationary**; an intrinsically stationary field has a
+variogram but need not have a finite variance.
 """
 function covariance(sf::Union{SFO.StructureFunction, SFO.StructureFunctionSumsAndCounts}, variance::Real)
     assert_variogram(sf.operator)
@@ -86,11 +83,10 @@ end
 Covariance matrix over `points`, evaluating the covariance function `(separations, C)` at each pair
 distance by linear interpolation and holding it constant outside the sampled range.
 
-A covariance matrix must be positive semi-definite, and one built this way need not be, so it is
-checked. Two different things trip the check and the message distinguishes them:
-a covariance function that is not a valid kernel at all, and one that is valid but sampled too
-coarsely — interpolating a kernel does not preserve positive-definiteness, and the error falls as
-the square of the separation spacing. `check_posdef = false` returns the matrix regardless.
+The matrix is checked for positive semi-definiteness, which fails for a covariance function that is
+not a valid kernel and for a valid one sampled too coarsely — interpolation does not preserve
+positive-definiteness, and its error falls as the square of the separation spacing.
+`check_posdef = false` returns the matrix unchecked.
 """
 function covariance_matrix(
     points::AbstractMatrix, separations::AbstractVector, C::AbstractVector;
@@ -176,8 +172,7 @@ density integrates over `d²k` to the variance. The first line is [`isotropic_sp
 trace and needs the trace's large-separation limit `a`, which defaults to its largest value; the
 second needs none, since `D_LL − D_TT` decays on its own. Both kernels need `Bessels`.
 
-Its error is the truncation of the Hankel integrals at the last separation, which is a different
-error from the one the real-space route through [`helmholtz_decompose_2d`](@ref) carries.
+Its error is the truncation of the Hankel integrals at the last separation.
 """
 function helmholtz_spectra(
     L2::SFO.AbstractStructureFunction, T2::SFO.AbstractStructureFunction, wavenumbers::AbstractVector;
@@ -207,12 +202,12 @@ The bin abscissae of a result on the host, its values in the result's own array 
 pair), and the bins holding a value, on the host.
 """
 function _binned(sf::SFO.StructureFunction)
-    return collect(midpoints(sf.distance)), sf.values, Array(findall(isfinite, sf.values))
+    return collect(midpoints(sf.distance)), sf.values, findall(isfinite, Array(sf.values))
 end
 
 function _binned(sf::SFO.StructureFunctionSumsAndCounts)
     vals = ifelse.(sf.counts .> 0, sf.sums ./ sf.counts, oftype(float(zero(eltype(sf.sums))), NaN))
-    return collect(midpoints(sf.distance)), vals, Array(findall(>(0), sf.counts))
+    return collect(midpoints(sf.distance)), vals, findall(>(0), Array(sf.counts))
 end
 
 """The entries `keep` (host indices) of `v`, in `v`'s array family."""
@@ -261,7 +256,7 @@ function _hankel(::Val{N}, separations::AbstractVector, values::AbstractVector, 
 end
 
 function _component_spectrum(op, r, sums, counts, wavenumbers, asymptote)
-    keep = Array(findall(>(0), counts))
+    keep = findall(>(0), Array(counts))
     isempty(keep) && throw(ArgumentError("every bin of the $(nameof(typeof(op))) component is empty"))
     values = _take(sums, keep) ./ _take(counts, keep)
     asym = asymptote === nothing ? maximum(values) : asymptote
@@ -273,8 +268,7 @@ end
 
 Bessel function of the first kind of order `N`.
 
-Orders 0 through 3 are what the flux relations use. Every one needs `Bessels`, which core does not
-depend on, so this is the single point where that package is reached.
+Orders 0 through 3 are supported once `Bessels` is loaded.
 """
 function bessel_kernel(::Val{N}, x) where {N}
     throw(ArgumentError(
@@ -321,8 +315,7 @@ function assert_invertible(op::SFT.ProjectedStructureFunctionType{NL, NT}) where
     ))
 end
 
-# Each Helmholtz component is the part of the second-order trace carried by one of the two fields the
-# decomposition separates, so each inverts by the same route as the trace itself.
+# Each Helmholtz component is a share of the second-order trace and inverts as the trace does.
 assert_invertible(::SFT.RotationalSecondOrderStructureFunctionType) = nothing
 assert_invertible(::SFT.DivergentSecondOrderStructureFunctionType) = nothing
 
@@ -339,7 +332,7 @@ Power spectral density at each of `wavenumbers`, from a second-order structure f
 
 `D(r) = 2[C(0) - C(r)]`, so the transform of `D` differs from that of `-2C` only by a constant, whose
 transform is confined to `k = 0`. Every returned wavenumber must therefore be nonzero, and the
-`k = 0` mode is not recoverable — no variance argument would help, because `D` does not carry it.
+`k = 0` mode is not recoverable from `D`.
 
 `asymptote` is the large-separation limit of the structure function, subtracted so the integrand
 decays; it defaults to the largest value supplied.
@@ -376,8 +369,7 @@ end
 Spectral density from a structure function result, taking the operator, the separations and the
 values from the result itself.
 
-The abscissa is the bin representative of `result`'s edges. Bins holding no pair are dropped rather
-than carried as `NaN`, which would otherwise propagate through the quadrature into every wavenumber.
+The abscissa is the bin representative of `result`'s edges. Bins holding no pair are dropped.
 
 The transform averages over the directions of the separation, so it assumes the pairs behind each
 bin sample direction uniformly. Scattered points do; a rectilinear grid does **not**, and on gridded
@@ -622,15 +614,11 @@ same uniform-direction assumption [`isotropic_spectrum`](@ref) carries applies h
 itself assumes no isotropy of the flow, which is what these estimators are for. The integral is the
 trapezoid rule over the samples from the origin, where the integrand vanishes, to the last separation.
 
-The kernel's first peak sets which separations carry the most weight at a given wavenumber: `J₁`
-peaks at `Kr ≈ 1.84`, so the flux at `K` is reported on mostly by separations near `1.84/K`. That is
-a statement about weighting, not about where `Π` itself is largest — the explicit factor of `K`
-means `|Π|` keeps growing with `K` for a fixed feature.
+`J₁` peaks at `Kr ≈ 1.84`, so the flux at `K` is weighted mostly by separations near `1.84/K`.
 
-This is the `J₁` relation, which takes the advective structure function and assumes no isotropy of
-the flow. The companion relations on third-order structure functions are the methods on
-`S3SFType`, `L3SFType` and `MixedSFType{1,0,2}`, each with the boundary term its integration by
-parts leaves at the last separation.
+The companion relations on third-order structure functions are the methods on `S3SFType`,
+`L3SFType` and `MixedSFType{1,0,2}`, each with the boundary term its integration by parts leaves at
+the last separation.
 """
 function spectral_flux(
     operator, separations::AbstractVector, values::AbstractVector,
@@ -808,7 +796,7 @@ end
 
 What a lag-space spectrum does with a lag no pair of held cells names. `RefuseMissingLags()` throws,
 since the structure function is undefined there. `ZeroDeviationAtMissingLags()` sets the
-autocovariance to zero at that lag, which is what a taper does at the lags beyond its reach.
+autocovariance to zero at that lag.
 """
 abstract type AbstractMissingLagPolicy end
 struct RefuseMissingLags <: AbstractMissingLagPolicy end
@@ -822,8 +810,7 @@ space.
 
 No direction is averaged over and no separation is binned, so this carries none of the angular
 assumption [`isotropic_spectrum`](@ref) makes. It reads the field only through its structure function
-and the variance of its held cells, so it accepts a field with cells missing, which is the case where
-the field's own transform is meaningless while the pair average is still unbiased.
+and the variance of its held cells, so it accepts a field with cells missing.
 
 On a complete periodic grid the result is the field's own spectrum to round-off. With cells missing,
 or on a bounded direction, it is an **estimate**: the exact transform of the exact masked structure

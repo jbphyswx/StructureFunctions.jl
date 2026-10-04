@@ -203,10 +203,9 @@ Test.@testset "GPU point-field families honour a spherical metric" begin
             ("joint2d", (be,) -> SFC.calculate_structure_function(
                 sft, x, u, db, vb; backend = be, kw...)),
             ("sp1d", (be,) -> SFC.calculate_structure_functions_single_pass(
-                x, u, db, SFO.StructureFunctionSumsAndCounts; backend = be,
-                distance_metric = m)),
+                x, u, db, SFO.StructureFunctionSumsAndCounts; backend = be, kw...)),
             ("sp2d", (be,) -> SFC.calculate_structure_functions_single_pass_2d(
-                x, u, db, vb; backend = be, distance_metric = m)),
+                x, u, db, vb; backend = be, kw...)),
         )
         g = call(GPU_SHAPE_BE); c = call(GPU_SHAPE_CPU_BE)
         if g isa NamedTuple

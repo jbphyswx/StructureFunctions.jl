@@ -1,6 +1,6 @@
-# ncu + Julia (clima)
+# ncu + Julia
 
-Working one-liner (user-verified on this node):
+Nsight Compute on a minimal CUDA workload:
 
 ```bash
 ncu --set basic --target-processes all \

@@ -1,10 +1,6 @@
-# =============================================================================
-# Unified parametric tiled kernels. Building blocks in sf_core.jl.
-#
-# sf_tiled_1d_varying!  — non-batch (B=1) and varying-x batch (B>1). One
-#   workgroup per (tile-pair, batch element). Privatized + R-replicated shared
-#   histogram; replicas summed at flush. Every kernel takes a moment set (sf_core.jl) as `sf_type`.
-# =============================================================================
+# Tiled kernels; each takes a moment set (see sf_core.jl) as `sf_type`.
+# `sf_tiled_1d_varying!` serves non-batch (B=1) and varying-x batch (B>1): one workgroup per (tile-pair,
+# batch element), with an R-replicated shared histogram whose replicas are summed at flush.
 
 KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
     output,                 # (NMOM, NB, B)
@@ -184,10 +180,6 @@ KA.@kernel unsafe_indices = true function sf_tiled_1d_varying!(
     end
 end
 
-# -----------------------------------------------------------------------------
-# Launch wrappers
-# -----------------------------------------------------------------------------
-
 """Static shared bytes of `sf_tiled_1d_varying!` for `W`-wide coordinates of `XT`, `F`-wide fields of
 `UT`, sums of `OT`, counts of `CST`, `NMOM` moments and `R` histogram replicas."""
 @inline _sf_1d_varying_smem_bytes(::Type{XT}, ::Type{UT}, ::Type{OT}, ::Type{CST}, W::Int, F::Int, NMOM::Int,
@@ -265,10 +257,8 @@ function _launch_sf_wide_1d!(
     return nothing
 end
 
-"""Replication factor R for the 1D varying-x shared histogram, by regime:
-- individual (NMOM = 1): the histogram is small and per-bin contention high, so a second replica
-  pays for itself at small bin counts and a third costs more occupancy than it returns;
-- single-pass (NMOM = 6): the histogram is six times larger, so any replication costs occupancy."""
+"""Replication factor R for the 1D varying-x shared histogram: 2 for an individual operator (NMOM = 1),
+1 for single-pass (NMOM = 6)."""
 @inline _sf_tiled_1d_replication(NMOM::Int) = NMOM == 1 ? 2 : 1
 
 """Launch sf_tiled_1d_varying! for non-batch (B=1) or varying-x (B>1).
@@ -304,18 +294,11 @@ function _launch_sf_tiled_1d_varying!(
     return nothing
 end
 
-# =============================================================================
-# sf_tiled_1d_fixed! — fixed-x batch: shared geometry x, B velocity fields u.
-# Geometry (dist, r̂, bin) is computed ONCE per pair and amortized across a strip
-# of SW fields (SW is the privatization axis). Sums use lane = field (scatter to B
-# at flush, NOT summed). Counts are field-independent, so the SW lanes are used as
-# contention replicas (one atomic/pair) and summed → broadcast to the strip's B.
-# The host launches ⌈B/SW⌉ strips asynchronously and synchronizes once; geometry is recomputed per
-# strip, so each computation is reused SW-fold.
-# Strip shared index for field w, component d, local point k:
-# `((w-1)*F + (d-1))*SF_GPU_TILE + k`, written inline at the use sites, as every looped `@localmem`
-# index must be.
-# =============================================================================
+# sf_tiled_1d_fixed!: fixed-x batch with shared geometry x and B velocity fields u. Geometry (dist, r̂, bin)
+# is computed once per pair for a strip of SW fields. Sums use lane = field, scattered to B at flush; counts
+# are field-independent, so the SW lanes are contention replicas, summed and broadcast to the strip's B.
+# The host launches ⌈B/SW⌉ strips asynchronously and synchronizes once. Strip shared index for field w,
+# component d, local point k: `((w-1)*F + (d-1))*SF_GPU_TILE + k`, written inline at the use sites.
 
 KA.@kernel unsafe_indices = true function sf_tiled_1d_fixed!(
     output,                 # (NMOM, NB, B)
@@ -503,9 +486,7 @@ end
 @inline _sf_load_field(::Val{F}, buf, w::Int, k::Int) where {F} =
     SA.SVector{F}(ntuple(d -> @inbounds(buf[((w - 1) * F + (d - 1)) * SF_GPU_TILE + k]), Val(F)))
 
-"""Strip width SW for fixed-x 1D, by regime:
-- individual (NMOM = 1): a 4-wide strip amortizes one pair's geometry over four fields;
-- single-pass (NMOM = 6): the histogram is six times larger and striping costs occupancy, so SW = 1."""
+"""Strip width SW for fixed-x 1D: 4 for an individual operator (NMOM = 1), 1 for single-pass (NMOM = 6)."""
 @inline _sf_tiled_1d_fixed_strip(NMOM::Int) = NMOM == 1 ? 4 : 1
 
 """Launch fixed-x batch 1D over ⌈B/SW⌉ strips. x_dev=(W,N), u_dev=(F,N,B),
@@ -549,15 +530,9 @@ function _launch_sf_tiled_1d_fixed!(
     return nothing
 end
 
-# =============================================================================
-# 2D joint-histogram tiled kernels (distance × value). Output is
-# (NMOM, n_dist, n_val[, B]) — far too large for shared memory (6·128·128·4 ≈
-# 393 KB), so accumulation is DIRECT GLOBAL ATOMICS. Spread over up to ~16K
-# cells the per-cell contention is low (fast on Volta+). x/u tiles are still
-# staged in shared memory for data reuse. NMOM=1 → joint2d (individual),
-# NMOM=6 → single-pass 2D. Replaces the naive per-cell (N,N) kernel + host
-# for-b loop that caused the batch 17s regression.
-# =============================================================================
+# 2D joint-histogram tiled kernels (distance × value). Output is (NMOM, n_dist, n_val[, B]); accumulation is
+# direct global atomics, with the x/u tiles staged in shared memory. NMOM=1 is joint2d (individual),
+# NMOM=6 is single-pass 2D.
 
 KA.@kernel unsafe_indices = true function sf_tiled_2d_varying!(
     output,                 # (NMOM, n_dist, n_val, B)
@@ -697,14 +672,10 @@ function _launch_sf_tiled_2d_varying!(
     return nothing
 end
 
-# ----- 2D with a SHARED-memory histogram (small bin counts), fixed or varying --
-# When NMOM·n_dist·n_val fits in shared memory, accumulate into a block-local
-# histogram (fast shared atomics) and flush once — same idea as the 1D kernel and
-# the existing tiled joint2d kernel, which beats direct global atomics by ~7×.
-# NCELLS = n_dist·n_val is a compile-time Val so @localmem can be sized to it
-# (keeps occupancy high — no over-allocation). One block per (tile-pair, b).
-# `x` is always 3D: (W,N,B) for varying-x, (W,N,1) for fixed-x (FIXED_X picks the
-# x slice; u is always (F,N,B)). Host uses this only when it fits.
+# 2D with a shared-memory histogram, fixed or varying x: accumulates into a block-local histogram of
+# NMOM·n_dist·n_val cells and flushes once. NCELLS = n_dist·n_val is a compile-time Val so `@localmem` is
+# sized to it. One block per (tile-pair, b). `x` is always 3D: (W,N,B) for varying-x, (W,N,1) for fixed-x
+# (FIXED_X picks the x slice); u is always (F,N,B).
 KA.@kernel unsafe_indices = true function sf_tiled_2d_shared!(
     output,                 # (NMOM, n_dist, n_val, B)
     counts,                 # (NMOM, n_dist, n_val, B)
@@ -902,7 +873,7 @@ function _launch_sf_tiled_2d_shared!(
     return nothing
 end
 
-# ----- fixed-x 2D: geometry once, SW-field strip, direct global atomics -------
+# Fixed-x 2D: geometry once, SW-field strip, direct global atomics.
 
 KA.@kernel unsafe_indices = true function sf_tiled_2d_fixed!(
     output,                 # (NMOM, n_dist, n_val, B)
@@ -1137,10 +1108,6 @@ function _launch_sf_wide_2d!(
     fixed_x ? launch(Val(true)) : launch(Val(false))
     return nothing
 end
-
-# -----------------------------------------------------------------------------
-# Dispatch helpers used when rewiring the public API onto the unified kernels.
-# -----------------------------------------------------------------------------
 
 """Launch a 2D batch of the moment set `sf_type`: the backend's native plan for the call
 ([`SFC.gpu_native_2d_plan`](@ref)), handed the portable launch as a candidate, or

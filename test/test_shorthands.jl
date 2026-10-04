@@ -4,6 +4,7 @@ using StructureFunctions:
     Calculations as SFC
 using StaticArrays: StaticArrays as SA
 
+# Structure-function type names, orders and categories resolve to the right types, the shorthand aliases match their long names, and non-type arguments or tuple inputs are rejected.
 Test.@testset "Structure function resolver API" begin
     N = 10
     FT = Float64

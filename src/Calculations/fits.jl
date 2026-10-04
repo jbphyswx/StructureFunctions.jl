@@ -2,10 +2,6 @@
 # values on wavenumber bins to the structure function at the result's separations, and the inversions
 # that fit them.
 
-# ---------------------------------------------------------------------------------------------------
-# Wavenumber quadrature
-# ---------------------------------------------------------------------------------------------------
-
 """
     _bin_nodes(k_edges, r_max) -> (k, w, bin)
 
@@ -49,10 +45,6 @@ end
 """The bin each column of a forward matrix stands for: its centre and width."""
 _bin_centres(k_edges) = [(k_edges[j] + k_edges[j + 1]) / 2 for j in 1:(length(k_edges) - 1)]
 _bin_widths(k_edges) = [k_edges[j + 1] - k_edges[j] for j in 1:(length(k_edges) - 1)]
-
-# ---------------------------------------------------------------------------------------------------
-# Forward models
-# ---------------------------------------------------------------------------------------------------
 
 """
     AbstractForwardModel
@@ -186,10 +178,6 @@ end
 """The matrix taking a flux model's `(ε, ξ…)` to the flux at the bin centres."""
 flux_matrix(m::FluxForwardModel) = m.G
 
-# ---------------------------------------------------------------------------------------------------
-# Data covariance
-# ---------------------------------------------------------------------------------------------------
-
 function _check_fit_data(H, y)
     size(H, 1) == length(y) || throw(DimensionMismatch("H rows must match the number of observations"))
     size(H, 1) > 0 && size(H, 2) > 0 || throw(ArgumentError("the fit needs observations and parameters"))
@@ -275,10 +263,6 @@ independent_pair_variance(
     "split pair mass, which is not a number of pairs. An unweighted histogram with an integer count type gives it.",
 ))
 
-# ---------------------------------------------------------------------------------------------------
-# Inversions
-# ---------------------------------------------------------------------------------------------------
-
 """
     AbstractFitMethod
 
@@ -316,9 +300,7 @@ end
     NonNegativeLeastSquares()
 
 Least squares with every fitted value constrained non-negative, by the Lawson–Hanson active-set
-algorithm on the whitened system. For a flux that is the monotone-flux model, which cannot resolve a
-sink; for a spectrum it is the constraint that a spectral density is non-negative. It returns no
-covariance. `solve(method, H, y, W; maxiter, return_info=true)` also returns a
+algorithm on the whitened system. It returns no covariance. `solve(method, H, y, W; maxiter, return_info=true)` also returns a
 third value containing `converged`, `iterations`, `kkt_residual`, and `tolerance`.
 The default two-value form throws on nonconvergence.
 """
@@ -348,7 +330,7 @@ struct SegmentedPowerLaw <: AbstractFitMethod
 end
 
 # A zero-mean Gaussian prior contributes rows L⁻¹ to the least-squares system,
-# where P = LLᵀ. QR then avoids forming the squared-condition normal matrix.
+# where P = LLᵀ.
 _prior_rows(::Nothing, n::Int) = zeros(Float64, 0, n)
 function _prior_rows(P::AbstractVector, n::Int)
     length(P) == n || throw(DimensionMismatch("the prior names $(length(P)) variances for $n values"))
@@ -488,10 +470,6 @@ function _nnls(A::AbstractMatrix, b::AbstractVector;
     return x
 end
 
-# ---------------------------------------------------------------------------------------------------
-# The segmented power law
-# ---------------------------------------------------------------------------------------------------
-
 """Log-uniform breakpoints, `S + 1` of them from `k_lo` to `k_hi`."""
 _segment_edges(k_lo::Real, k_hi::Real, S::Int) = exp.(range(log(k_lo), log(k_hi); length = S + 1))
 
@@ -539,7 +517,7 @@ end
     _segmented_design(::Val{D}, r, edges) -> (k, w, K)
 
 Quadrature nodes and weights over the segments — Gauss–Legendre on log-uniform panels of at most a
-quarter octave, where a power law is close to linear — and the kernel matrix
+quarter octave — and the kernel matrix
 `K[i, q] = 2 w_q [1 - kernel_D(k_q r_i)]`, so the model is `K * E(p)(k)` with `E` the spectrum at the
 nodes.
 """
@@ -557,10 +535,6 @@ function _segmented_design(::Val{D}, r::AbstractVector, edges::AbstractVector) w
     end
     return k, w, K
 end
-
-# ---------------------------------------------------------------------------------------------------
-# Fits of result objects
-# ---------------------------------------------------------------------------------------------------
 
 """The separations and values a result holds, restricted to the bins with a value."""
 function _fit_samples(sf::SFO.AbstractStructureFunction)
@@ -796,8 +770,7 @@ end
 
 For each prior in `priors` (each a prior variance shared by every value, or a vector of them), the
 regularised least-squares fit of `y` through `model` under the data covariance `W`, reporting the
-`W`-normalised misfit `‖W^{-1/2}(H x̂ - y)‖²` and `‖x̂‖₂`. The curve is returned for the caller to
-choose from; nothing is chosen.
+`W`-normalised misfit `‖W^{-1/2}(H x̂ - y)‖²` and `‖x̂‖₂`.
 """
 function tradeoff_curve(model::AbstractForwardModel, y::AbstractVector, W, priors::AbstractVector)
     H = forward_matrix(model)

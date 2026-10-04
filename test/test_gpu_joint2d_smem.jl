@@ -7,8 +7,8 @@ using StructureFunctions:
 using StructureFunctions.Calculations: joint2d_smem_max, joint2d_smem_exact, joint2d_smem_align256
 using Random: Random
 
-const GPUExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-GPUExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded")
+const KAExt = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
+KAExt === nothing && error("StructureFunctionsKernelAbstractionsExt not loaded")
 
 Random.seed!(42)
 
@@ -32,17 +32,17 @@ Test.@testset "joint2d smem helpers" begin
                                (3, 2, Float64, Float64, UInt32))
         m = joint2d_smem_max(KA.CPU(), W, F, XT, OT, CT)
         Test.@test m > 0
-        Test.@test GPUExt._gpu_joint_2d_tiled_eligible(caps, W, F, XT, OT, CT, m)
-        Test.@test !GPUExt._gpu_joint_2d_tiled_eligible(caps, W, F, XT, OT, CT, m + 1)
+        Test.@test KAExt._gpu_joint_2d_tiled_eligible(caps, W, F, XT, OT, CT, m)
+        Test.@test !KAExt._gpu_joint_2d_tiled_eligible(caps, W, F, XT, OT, CT, m + 1)
     end
     Test.@test joint2d_smem_exact(20, 22) == 440
     Test.@test joint2d_smem_align256(20, 22) == 512
     Test.@test joint2d_smem_align256(50, 52) == 2816  # cld(2600, 256) * 256
     Test.@test joint2d_smem_align256(128, 129) == 16640
-    Test.@test_throws ArgumentError GPUExt._joint2d_resolve_compile_cells(100, 50)
-    Test.@test GPUExt._joint2d_resolve_compile_cells(100, nothing) == 100
-    Test.@test GPUExt._joint2d_resolve_compile_cells(100, 256) == 256
-    Test.@test GPUExt._joint2d_resolve_compile_cells(100, 20_000) == 20_000
+    Test.@test_throws ArgumentError KAExt._joint2d_resolve_compile_cells(100, 50)
+    Test.@test KAExt._joint2d_resolve_compile_cells(100, nothing) == 100
+    Test.@test KAExt._joint2d_resolve_compile_cells(100, 256) == 256
+    Test.@test KAExt._joint2d_resolve_compile_cells(100, 20_000) == 20_000
 end
 
 Test.@testset "GPU joint2d exact smem parity — NB2=100" begin
@@ -107,7 +107,7 @@ Test.@testset "GPU joint2d past the shared-memory fit" begin
         val = collect(FT, range(-3.0, 3.0; length = 101))
         sft = SFT.L2SFType()
         caps = SFC.gpu_device_caps(KA.CPU())
-        Test.@test !GPUExt._gpu_joint_2d_tiled_eligible(caps, 2, 2, FT, FT, UInt32, 100 * 100)
+        Test.@test !KAExt._gpu_joint_2d_tiled_eligible(caps, 2, 2, FT, FT, UInt32, 100 * 100)
         ref = _ref_joint(sft, x, u, dist, val)
         gpu = _gpu_joint(sft, x, u, dist, val)
         Test.@test gpu.counts == ref.counts
@@ -122,7 +122,7 @@ Test.@testset "GPU joint2d past the shared-memory fit" begin
         small_dist = collect(FT, range(0.0, 1.4; length = 11))
         small_val = collect(FT, range(-3.0, 3.0; length = 11))
         ws = SFC.GPUSFWorkspace(KA.CPU(), small_dist, small_val; joint2d_compile_cells = 20_000)
-        Test.@test !GPUExt._gpu_joint_2d_tiled_eligible(caps, 2, 2, FT, FT, UInt32, 20_000)
+        Test.@test !KAExt._gpu_joint_2d_tiled_eligible(caps, 2, 2, FT, FT, UInt32, 20_000)
         sref = _ref_joint(sft, x, u, small_dist, small_val)
         sgpu = _gpu_joint(sft, x, u, small_dist, small_val; workspace = ws)
         Test.@test sgpu.counts == sref.counts

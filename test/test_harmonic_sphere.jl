@@ -162,7 +162,7 @@ Test.@testset "the Wigner-d recurrence agrees with the explicit formula and the 
     Test.@test SFC.wigner_d_column(1, 0, β, 2)[2:3] ≈ [-s / sqrt(2), -sqrt(3 / 8) * sin(2β)]
     # spin zero is Legendre
     Test.@test SFC.wigner_d_column(0, 0, β, 3)[4] ≈ (5c^3 - 3c) / 2
-    # the closed forms the spherical inversion of G4 rests on
+    # spin-1 columns against their closed forms in the Legendre polynomials and derivatives
     x = c
     P, dP = SFC._legendre_values(x, 7), nothing
     for l in 1:6

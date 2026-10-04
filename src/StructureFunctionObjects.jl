@@ -279,10 +279,6 @@ struct HelmholtzDecomposition2D{FT, BT, VS, VC, VV} <: AbstractStructureFunction
     end
 end
 
-# ---------------------------------------------------------------------------
-# Ergonomics & Base Extensions
-# ---------------------------------------------------------------------------
-
 import Base: show, length, +
 
 Base.length(sf::StructureFunction) = length(sf.values)

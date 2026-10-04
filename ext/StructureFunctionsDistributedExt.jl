@@ -74,9 +74,7 @@ function _parallel_calculate_structure_function_core(
 ) where {CT}
     OT0 = promote_type(float(eltype(x_vecs[1])), float(eltype(u_vecs[1])))
 
-    # A polynomial operator on a line has the exact `O(N log N)` route, and that sweep executes
-    # through `sweep_reduce!`, which this extension implements — so it distributes here without a
-    # second decomposition. Reaching it through the pair loop instead costs `O(N²)`.
+    # A polynomial operator on a line takes the `O(N log N)` sorted sweep, which distributes through `sweep_reduce!`.
     if SFC._on_a_line(geometry, structure_function_type)
         nb0 = SFC.n_histogram_bins(distance_bins)
         lsums = zeros(OT0, nb0)
@@ -496,8 +494,7 @@ function SFC._dispatch_single_pass_2d!(
 end
 
 # --- Single pass over auxiliary axes ---
-# One slice per work item, like every other auxiliary-axis entry here, so `AutoBackend` has a
-# distributed method to choose and never has to refuse.
+# One slice per work item.
 function SFC._dispatch_single_pass(
     db::CB.AbstractDistributedBackend,
     ::Union{SFC.SharedPositionField, SFC.VaryingPositionField},
@@ -549,10 +546,8 @@ function SFC._direct_coefficients(db::CB.AbstractDistributedBackend, f, θ, φ, 
 end
 
 # --- Gridded sweeps ---
-# Each worker takes a balanced share of the sweep's work items into its own histograms, which add
-# because a histogram is order-independent. `sweep_items` is asked for enough parts to feed every
-# worker and, under a threaded inner backend, every task inside one, so a one-slab schedule splits
-# its lags rather than leaving all but one worker idle.
+# Each worker takes a balanced share of the sweep's work items into its own histograms, which add.
+# `sweep_items` is asked for one part per worker and, under a threaded inner backend, per task within it.
 SFC.sweep_tasks(db::CB.AbstractDistributedBackend) =
     max(1, Distributed.nworkers()) * SFC.sweep_tasks(CB.local_backend(db))
 

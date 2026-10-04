@@ -8,8 +8,7 @@ Structure functions of one fixed sampling observed over a trailing slice axis, a
 `sums` and `counts` of shape `(NB, T)` with `NB = length(distance_bins) - 1`.
 
 With coordinates `x` the sampling is a point list, `(N_dims, N_points, T)`, and the pair loop runs
-once for the whole batch: `GPUBackend` keeps the batch on the device and synchronises once when
-`KernelAbstractions` is loaded.
+once for the whole batch; on a `GPUBackend` the batch stays on the device.
 
 With a grid or a lag schedule in place of `x` the sampling is a grid, the field is
 `(component, cells..., T)`, and the lag enumeration runs once for the whole batch; `axis_bins` makes
@@ -130,9 +129,9 @@ function _dispatch_2d_batch!(
     return nothing
 end
 
-# --- Single-pass 2D value-axis types (defined before slice drivers that annotate them) ---
+# --- Single-pass invariants and 2D value bins ---
 
-"""Value-axis specification for [`calculate_structure_functions_single_pass_2d`](@ref)."""
+"""Number of native single-pass invariants."""
 const SINGLE_PASS_N = 6
 const SINGLE_PASS_WITH_HELMHOLTZ_N = 8
 
@@ -157,13 +156,10 @@ const SinglePass2DValueBins = Union{AbstractVector, Tuple{Vararg{AbstractVector,
     @sp2d_each_invariant value_bins t vb body
 
 Run `body` once per `SINGLE_PASS_N` invariant, with `t` bound to a literal index and `vb` to that
-invariant's concretely-typed value bins. Each repetition gets its own `let` scope, so `vb` is a
-distinct binding per invariant.
+invariant's concretely-typed value bins. Each repetition gets its own `let` scope.
 
-`value_bins` may be a heterogeneous `NTuple{6}` (log bins for the non-negative invariants, linear
-for the signed ones is the natural choice). Indexing it with a *runtime* `t` makes `vb` a `Union`,
-which turns the `digitize` call into a dynamic dispatch on every pair × invariant in the hot loop.
-A macro, so `body` is emitted inline at each of the six literal indices.
+`value_bins` may be a heterogeneous `NTuple{6}`; `body` is emitted inline at each of the six literal
+indices, so each `vb` has a concrete type.
 """
 macro sp2d_each_invariant(value_bins, t, vb, body)
     blocks = map(1:SINGLE_PASS_N) do i

@@ -19,30 +19,9 @@ session with `include("examples/simple_2d.jl")`. GPU examples use `--project=gpu
 They fail if CUDA is unavailable. Each script also defines a function for repeated
 execution after its initial demonstration.
 
-On clima, GPU use and parallel CPU work require a Slurm allocation. For an
-interactive threaded session:
-
-```bash
-salloc --cpus-per-task=4 --mem=4G --time=00:30:00
-srun --pty env OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 julia --project=examples --threads=4
-```
-
-Request `--gres=gpu:A100:1` for CUDA work and use the GPU project. The example
-resource guard verifies the running owned allocation, node, step, CPU count,
-and assigned GPU indices before importing CUDA.
-
-Codex development on clima uses the installed persistent Julia skill:
-
-```bash
-python3 ~/.codex/skills/julia-repl/scripts/jlrepl.py start --owner examples-cpu \
-  --project examples --mode heavy --slurm --threads 4 --memory 4G --time 00:30:00
-python3 ~/.codex/skills/julia-repl/scripts/jlrepl.py run --owner examples-cpu \
-  --project examples examples/distributed_parallel.jl
-python3 ~/.codex/skills/julia-repl/scripts/jlrepl.py start --owner examples-gpu \
-  --project gpu --mode gpu --slurm --threads 2 --memory 8G --time 00:30:00
-python3 ~/.codex/skills/julia-repl/scripts/jlrepl.py run --owner examples-gpu \
-  --project gpu examples/gpu_acceleration.jl
-```
+The threaded and Distributed examples need several CPUs; start Julia with
+`--threads=N` for the threaded example. The GPU examples need a CUDA device; on a
+cluster, request one through the scheduler before starting Julia.
 
 The Distributed example starts only the missing local workers with the active
 project and one thread each. It preserves existing workers and removes the ones

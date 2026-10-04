@@ -1,5 +1,3 @@
-# Serial 1D CPU Reduction Kernels
-
 function serial_calculate_structure_function!(
     output::AbstractVector{OT},
     counts::AbstractVector{CT},
@@ -11,15 +9,12 @@ function serial_calculate_structure_function!(
     culling::CullingPolicy = AutoCulling(),
     weights = NoWeights(),
 ) where {OT, CT, T1, T2}
-    # A polynomial operator on a line: sorted once, every bin is an index range (sorted_line.jl), so
-    # no pair outside the bins is formed under any culling policy.
+    # Polynomial operator on a line: sorted once, every bin is an index range.
     if _on_a_line(geometry, structure_function_type)
         return sorted_line_sweep!(output, counts, structure_function_type, x_vecs[1],
             reshape(collect(u_vecs[1]), 1, :), distance_bins, Val(1), Val(1), Val(0); weights)
     end
-    # Fast path: flat D ∈ (2,3) uses the SIMD compute/scatter-split kernel (vectorizes the per-pair
-    # compute over j; only the histogram scatter is scalar). Curved geometries take the scalar
-    # kernel, which forms the frame through `pair_frame`.
+    # Flat D ∈ {2,3}: SIMD compute/scatter-split kernel; other geometries: scalar kernel through `pair_frame`.
     vD = _simd_width(geometry)
     vD === nothing || return _pf_simd_run!(output, counts, structure_function_type, x_vecs, u_vecs, distance_bins, vD;
                                            culling, weights)
@@ -59,9 +54,8 @@ end
     _pf_simd_run!(output, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}; culling, weights) -> mutates buffers
 
 Point-field 1D (Euclidean) via the SIMD compute/scatter split. Materializes contiguous
-per-component vectors (so consecutive `j` are unit-stride → packed loads), then for each `i`:
-`@simd` over `j>i` computes distance + SF value into buffers (no scatter ⇒ vectorizes), and a
-short scalar loop digitizes + scatters into the histogram. `Val{D}` keeps it type-stable.
+per-component vectors, then for each `i`: `@simd` over `j>i` computes distance + SF value into
+buffers, and a scalar loop digitizes + scatters into the histogram.
 """
 function _pf_simd_run!(
     output::AbstractVector{OT}, counts::AbstractVector{CT},
@@ -86,11 +80,9 @@ Accumulate the pairs `(i, j>i)` covered by `blocks` into `output`/`counts`, each
 `weights[i] * weights[j]` in both.
 
 `blocks` yields `(i-block, j-block)` index ranges (see [`block_pairs`](@ref)); each is worked to
-completion, so the `j` block stays cache-resident across its whole `i` sweep, which keeps the loop off
-the memory bus under multi-core load.
+completion, so the `j` block stays cache-resident across its whole `i` sweep.
 
-Uniqueness is `j > i`, so a block pair never needs to know whether it lies on the diagonal, and a
-culled schedule enumerating only nearby cells is exact for the same reason.
+Uniqueness is `j > i`, independent of whether a block pair lies on the diagonal.
 
 The `@simd` half writes the digitize key, the SF value, and the approximate bin index to buffers; the
 scalar half scatters the in-range pairs straight into `output`/`counts`, under a range branch or, on a
@@ -98,8 +90,7 @@ schedule that [`_chooses_compaction`](@ref) and a run whose sampled keys [`_comp
 in-range list [`_compact_in_range!`](@ref) builds in `sel`. The buffers are indexed by `window`
 ([`PairWindow`](@ref)).
 
-The `i`-loop and the inner `@simd` must stay in this function body; factoring the inner loop into a
-per-`i` helper stops it vectorizing.
+The `i`-loop and the inner `@simd` must stay in this function body to vectorize.
 """
 function _pf_simd_pairs!(
     output::AbstractVector{OT}, counts::AbstractVector{CT},
@@ -171,10 +162,7 @@ end
 """
     _assert_counts_representable(CT, n_points)
 
-Throw unless the worst-case pair count `n_points*(n_points-1)÷2` fits in `CT`.
-
-Every pair can land in one bin, so that product is the only safe bound. `UInt32` saturates at
-`N = 92682`, past which the counter wraps silently.
+Throw unless the worst-case pair count `n_points*(n_points-1)÷2`, all pairs in one bin, fits in `CT`.
 """
 @inline function _assert_counts_representable(::Type{CT}, n_points::Int) where {CT <: Integer}
     n_pairs = _pair_count_bound(n_points)
@@ -253,11 +241,9 @@ end
     _bin_average!(out, sums, counts)
     _bin_average(sums, counts)
 
-Per-bin mean `sums ./ counts` with the empty-bin guard `count == 0 → NaN`. The cast uses
-`eltype(out)` (so Float32 stays Float32, Float64 stays Float64). Elementwise: works for 1D
-vectors, 2D matrices, and batched `(n_bins, batch...)` arrays whose `sums`/`counts` share a
-shape. The allocating form returns a fresh array of `eltype(sums)`. This is the single
-canonical averaging used by `_finalize`.
+Per-bin mean `sums ./ counts` with the empty-bin guard `count == 0 → NaN`, cast to `eltype(out)`.
+Elementwise over `sums`/`counts` of a shared shape. The allocating form returns a fresh array of
+`eltype(sums)`.
 """
 function _bin_average!(out::AbstractArray{T}, sums::AbstractArray, counts::AbstractArray) where {T}
     axes(out) == axes(sums) == axes(counts) || throw(DimensionMismatch("mean buffers must have matching axes"))
@@ -273,7 +259,7 @@ end
 
 Tensor analogue of `_bin_average`: `counts` (indexed by `(bin, aux...)`) broadcasts over
 the `P` leading component axes of `sums` (shape `(D×P..., n_bins, aux...)`). Same empty-bin guard
-(`count == 0 → NaN`) and `eltype` preservation. Used by `_finalize` to average a tensor result.
+(`count == 0 → NaN`) and `eltype` preservation.
 """
 function _tensor_bin_average(sums::AbstractArray, counts::AbstractArray, ::Val{P}) where {P}
     T = eltype(sums)
@@ -366,8 +352,7 @@ function _partial_sums_counts(
     nb = n_histogram_bins(distance_bins)
     sums = zeros(OT, nb)
     counts = zeros(CT, nb)
-    # Flat D ∈ {2,3} takes the SIMD compute/scatter kernel, the same one the serial and threaded
-    # drivers use; other geometries take the scalar kernel.
+    # Flat D ∈ {2,3}: SIMD kernel; other geometries: scalar kernel.
     vD = _simd_width(geometry)
     if vD !== nothing
         _pf_simd_partial!(sums, counts, structure_function_type, x_vecs, u_vecs, distance_bins, vD, share,
@@ -382,10 +367,8 @@ end
 """
     _pf_run_blocks!(sums, counts, sf, xc, uc, plan, ::Val{D}, bufs..., ilist, N, grid, weights)
 
-Run the pair kernel with the schedule `grid` selects, over buffers sized by
-[`_pair_scratch_length`](@ref)`(N)`. Whether a grid exists is decided from the data, so it arrives here
-as a `Union`; dispatching on it resolves that into one concretely typed schedule per method, which is
-what keeps the kernel statically specialized.
+Run the pair kernel with the schedule `grid` selects (`nothing` or a `CellGrid`), over buffers sized by
+[`_pair_scratch_length`](@ref)`(N)`.
 """
 @inline _pf_run_blocks!(
     sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, sel, ilist, N, ::Nothing, weights,
@@ -437,8 +420,7 @@ end
     _outer_share(grid, indices, w, k)
 
 Share `w` of `k` of the outer indices of a sweep over `grid`'s schedule, a range: every `k`-th index from the
-`w`-th without a cull grid, which balances the triangle's work of `N - i` per index; the `w`-th of `k`
-consecutive runs with a grid or per-slice grids, so a share sweeps only its own cells.
+`w`-th without a cull grid; the `w`-th of `k` consecutive runs with a grid or per-slice grids.
 """
 @inline _outer_share(::Nothing, indices::AbstractRange, w::Integer, k::Integer) = indices[w:k:end]
 @inline function _outer_share(::Union{CellGrid, AbstractVector}, indices::AbstractRange, w::Integer, k::Integer)

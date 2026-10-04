@@ -1,5 +1,3 @@
-# Array shape contract for public calculation APIs.
-
 """
     AbstractFieldShape{D}
 
@@ -10,9 +8,8 @@ on axis 1 of `u`. Backends dispatch on this, so `D` reaches the kernels as a sta
 - `SharedPositionField`: `u` is `(D, N, auxiliary...)` — one set of positions, many fields.
 - `VaryingPositionField`: `x` and `u` both carry matching auxiliary axes.
 
-The coordinate count on axis 1 of `x` is deliberately **not** here: it is fixed by the metric's
-geometry (see `HelperFunctions.coordinate_width`), so it is read off that geometry once `D` is
-static.
+The coordinate count on axis 1 of `x` is fixed by the metric's geometry (see
+`HelperFunctions.coordinate_width`).
 """
 abstract type AbstractFieldShape{D} end
 struct PointField{D} <: AbstractFieldShape{D} end
@@ -25,10 +22,9 @@ struct VaryingPositionField{D} <: AbstractFieldShape{D} end
 """
     BatchLeading(u)
 
-Wrap a velocity/position array that is already stored **batch-leading**, shape `(B, D, N)`
-(batch axis innermost/contiguous — the CPU-optimal SoA layout). CPU batch kernels then run
-zero-copy. A plain `(D, N, B...)` array (the default contract, GPU-optimal) is transposed once
-internally. Zero-cost type tag.
+Wrap a velocity/position array stored **batch-leading**, shape `(B, D, N)` (batch axis
+innermost/contiguous). CPU batch kernels run on it zero-copy. A plain `(D, N, B...)` array is
+transposed once internally.
 """
 struct BatchLeading{A <: AbstractArray}
     data::A
@@ -60,9 +56,7 @@ end
 
 Check the velocity dimension on axis 1 of `u`.
 
-The isotropic invariants are built from `δu_L` and `‖δu‖²`, both defined for any `D ≥ 1`, so the
-width is not restricted here. An operator needing an oriented transverse basis states that
-requirement where the basis is formed, and `T2ComponentSF` states its own where it averages.
+The isotropic invariants are built from `δu_L` and `‖δu‖²`, both defined for any `D ≥ 1`.
 """
 function _validate_spatial_dimension(D::Integer)
     D >= 1 ||

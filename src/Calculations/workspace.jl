@@ -1,11 +1,7 @@
-# CPUSFWorkspace — reusable host scratch for the batch (auxiliary-axis) drivers.
-
 """
     _bl_partition(B, n_tasks, accum_bytes) -> (bchunks, n_ichunks)
 
-The batch-axis chunks and the number of outer-index chunks each is split into. Shared by the
-threaded executor and by [`CPUSFWorkspace`](@ref) so a workspace cannot be sized for a partition
-the executor will not use.
+The batch-axis chunks and the number of outer-index chunks each is split into.
 """
 @inline function _bl_partition(B::Int, n_tasks::Int, accum_bytes::Int)
     n_bchunks = _bl_batch_chunk_count(accum_bytes, B, n_tasks)
@@ -28,17 +24,14 @@ accumulator per task, and the full-width reduction accumulator. Pass to a batch 
 `workspace = ...` to make repeated calls allocation-free. `CT` is the count element type of the
 calls it serves (default `$(DEFAULT_COUNT_TYPE)`).
 
-Without it a batch call allocates one accumulator per task, tens of MiB at large `B`, on every
-call; the GC pauses that follow land on some calls and widen the spread of call times.
-
 `kind` matches [`GPUSFWorkspace`](@ref): `:sf1d`, `:joint2d`, `:single_pass` or `:single_pass_2d`.
 It is a type parameter, so the accumulator rank is fixed at construction and every field is
 concretely typed.
 
 Built from the same arguments as the call it serves — including `backend`, which fixes how many
 accumulators it holds — and checked against them on use: a workspace built for a different shape,
-element type or backend is a hard error, never a silent reallocation. Composes with [`BatchLeading`](@ref) — when the input is already batch-leading the
-transpose buffers have length zero and are never touched.
+element type or backend is a hard error. With a [`BatchLeading`](@ref) input the transpose buffers
+have length zero and are never touched.
 
 Not thread-safe: one workspace serves one call at a time, exactly like [`GPUSFWorkspace`](@ref).
 """
@@ -80,8 +73,7 @@ function CPUSFWorkspace{kind}(
     FTx, FTu = eltype(x_raw), eltype(u_raw)
     OT = promote_type(float(FTx), float(FTu))
 
-    # Coordinate width and velocity width are independent: on a shell `x` is (2, N) while `u` may
-    # be (3, N), so the two transpose buffers are sized separately.
+    # Coordinate width W and field width D are independent (`x` may be (2, N) with `u` (3, N)).
     W = x_bl ? size(x_raw, 2) : size(x_raw, 1)
     if u_bl
         B, D, N = size(u_raw)
@@ -94,7 +86,7 @@ function CPUSFWorkspace{kind}(
             n_histogram_bins(value_bins isa Tuple ? value_bins[1] : value_bins)
     tail = _bl_accum_tail(Val(kind), n_bins, n_val)
 
-    # Length zero when the input is already batch-leading: there is nothing to transpose into.
+    # Length zero when the input is already batch-leading.
     xb = Array{FTx, 3}(undef, (fixed_x || x_bl) ? (0, 0, 0) : (B, W, N))
     ub = Array{FTu, 3}(undef, u_bl ? (0, 0, 0) : (B, D, N))
 
@@ -113,9 +105,7 @@ end
 """Accumulator axes after the batch axis, as the workspace was built for."""
 @inline _ws_tail(ws::CPUSFWorkspace) = size(ws.result[1])[2:end]
 
-# The kernels write through `@inbounds`, so a workspace built for other inputs must be rejected
-# before it is used, never left to corrupt memory. The two checks run where their information first
-# exists: the input shape inside `_bl_prepare`, the accumulator layout in the driver.
+# The kernels write through `@inbounds`; the input shape is checked in `_bl_prepare`, the accumulator layout in the driver.
 
 """Throw unless `ws` was built for this input shape. Checked before the transpose buffers are used."""
 @inline _validate_ws_shape(::Nothing, ::Int, ::Int, ::Int, ::Int) = nothing
@@ -151,8 +141,6 @@ function reset_histogram!(ws::CPUSFWorkspace)
     return ws
 end
 
-# --- Buffer providers for the batch drivers ---
-
 @inline _ws_ub(ws::CPUSFWorkspace) = ws.ub
 @inline _ws_xb(ws::CPUSFWorkspace) = ws.xb
 
@@ -168,9 +156,7 @@ function _bl_result_accum(ws::CPUSFWorkspace, ::F, ::Int) where {F}
     return ws.result
 end
 
-# GPU device-resident workspace. The type carries no device dependency — every buffer is a
-# type parameter — so it lives here beside CPUSFWorkspace; the constructors are added by
-# StructureFunctionsKernelAbstractionsExt.
+# GPU device-resident workspace; its constructors are defined in StructureFunctionsKernelAbstractionsExt.
 
 """
     GPUSFWorkspace(backend, distance_bins; kind=:sf1d)
@@ -238,10 +224,9 @@ end
 """
     schedule_for(cull, n_points, tile) -> PairBlockSchedule
 
-The tile-pair schedule a kernel with `tile`-point tiles enumerates: the full upper triangle when
-`cull` is `nothing`, otherwise the memo's device work list for that tile size
-([`gpu_tile_worklist`](@ref)), built on first use and kept for later calls. Each kernel family picks
-its own tile, so the list is derived from the grid at the size asked for.
+The tile-pair schedule a kernel with `tile`-point tiles enumerates: the full upper triangle for
+`nothing`; for a memo, its device work list for that tile size ([`gpu_tile_worklist`](@ref)), built
+on first use and kept for later calls.
 """
 schedule_for(::Nothing, n_points::Int, tile::Int) = FullUpperTriangle(cld(n_points, tile))
 

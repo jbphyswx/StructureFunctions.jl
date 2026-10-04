@@ -119,9 +119,7 @@ function gridded_lag_sweep!(
     _no_lag_sweep(s)
 end
 
-# ---------------------------------------------------------------------------------------------------
-# The providers of the non-uniform FFT, as tags
-# ---------------------------------------------------------------------------------------------------
+# Non-uniform FFT provider tags
 
 """
     NonuniformFFTsSpectralBackend(; tolerance = 1e-12)
@@ -321,9 +319,8 @@ The soft-binned structure function of one set of scattered points sampled repeat
 `(D, N, slices)` over the `N` points of `schedule` and `sums`/`counts` are
 `(n_distance, n_slices)`, the counts a kernel-weighted pair mass.
 
-The points fix every pair, so the lags are enumerated once and every slice is summed against them —
-the fixed-station case of the point-list slice batch, with one plan set to the points for every slice.
-Accumulates into the caller's arrays and returns nothing. A [`TransformWorkspace`](@ref) passed as
+The lags are enumerated once and every slice is summed against them, with one plan set to the
+points for every slice. Accumulates into the caller's arrays and returns nothing. A [`TransformWorkspace`](@ref) passed as
 `workspace` keeps the plan for later calls. See [`ScatteredModesSchedule`](@ref) for what is and is not
 exact.
 """

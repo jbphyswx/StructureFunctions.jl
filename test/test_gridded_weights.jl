@@ -407,8 +407,7 @@ Test.@testset "weights are refused where they cannot be honoured" begin
 end
 
 Test.@testset "the value-binned joint histogram takes pair weights" begin
-    # Before this, no backend accepted weights on a joint (distance x value) histogram; the entry
-    # refused them for every backend. The oracle is a weighted pair loop written out here.
+    # The weighted joint (distance x value) histogram on the serial and threaded backends equals a weighted pair loop.
     Random.seed!(2024)
     N, nb, nv = 60, 6, 5
     x = rand(2, N) .* 3

@@ -236,13 +236,8 @@ KA.@kernel unsafe_indices=true function _batch_merge_usmem_cnts_grouped!(
 end
 
 
-# ---------------------------------------------------------------------------
-# Fixed-x individual SF — u-smem priv strip kernel
-#
-# Histogram levels:
-#   1. Pair loop: `@atomic` into `partial_sums[bin, col, priv_idx]`, one slot per warp.
-#   2. Host merge kernel: sum all `priv_idx` → strip output (`_batch_merge_usmem_*`, `n_priv` axis).
-# ---------------------------------------------------------------------------
+# Fixed-x individual SF: the pair loop adds atomically into `partial_sums[bin, col, priv_idx]`, one slot per
+# warp; the `_batch_merge_usmem_*` kernels sum the `priv_idx` axis into the strip output.
 
 KA.@kernel unsafe_indices=true function _batch_fixed_x_usmem_priv!(
     partial_sums::AbstractArray{FT},

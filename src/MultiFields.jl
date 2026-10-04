@@ -1,10 +1,8 @@
 """
 Several fields at one set of points, differenced together.
 
-A structure function is a statement about one pair and any number of quantities carried at its two
-ends. Velocity is a **vector** field, parallel-transported by the geometry before differencing; a
-tracer, a vorticity, a temperature is a **scalar** field, differenced as it stands. Both are the
-same pair sweep, so they travel together in one [`Fields`](@ref).
+Vector fields (velocity) are parallel-transported by the geometry before differencing; scalar fields
+(tracer, vorticity, temperature) are differenced as they stand. Both travel in one [`Fields`](@ref).
 """
 module MultiFields
 
@@ -27,12 +25,7 @@ Fields(scalars = (ω, 𝓐ω))                     # a scalar and its advection
 
 Each vector is `(D, N)` and each scalar is `(N,)` or `(1, N)`; on a grid, each vector is
 `(D, cells...)` and each scalar `(cells...)`, the cells flattened in the order the array stores them.
-They are packed once, at construction, into the single `(V·D + K, N)` array the kernels already load —
-so a pair costs one contiguous read whatever it carries, and the field counts are type parameters,
-so the kernel specialises on them.
-
-Which is transported and which is not follows from the name and from nothing else: a vector field
-carries a direction the geometry must rotate, a scalar field does not.
+They are packed at construction into a single `(V·D + K, N)` array; `V` and `K` are type parameters.
 """
 struct Fields{D, V, K, A <: AbstractMatrix}
     data::A
@@ -102,9 +95,6 @@ end
 One pair's increment across every field: each vector field already transported into the pair's
 common frame, each scalar field already differenced.
 
-An operator reads the fields it names. A field of one vector field and no scalars does **not**
-produce one of these — its increment is the plain `SVector` every existing operator already takes, so
-the single-field path is unchanged down to the instruction.
 """
 struct FieldIncrement{D, V, K, T}
     vectors::NTuple{V, SA.SVector{D, T}}

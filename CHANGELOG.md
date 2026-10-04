@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Breaking changes
+
+- The count type and the result representation are positional arguments of every public entry, after the bins:
+  `calculate_structure_function(sf, x, u, bins[, CT][, OT]; …)`, and likewise for the joint, single-pass, tensor,
+  multi-field, harmonic, scattered-modes and grid forms. The keywords `count_eltype` and `output_type` are gone. A
+  call without `CT` counts in `UInt32`.
+- `verbose`, `show_progress` and the ProgressMeter dependency are removed. Passing either keyword raises, as any
+  unknown keyword does.
+- The backend-keyword entries are the public surface; the `serial_*`, `threaded_*`, `gpu_*` and `auxiliary_*` drivers
+  are internal.
+- A result computed on a GPU backend stays on the device; `to_host(result)` copies it to the host. In-place calls on a
+  GPU backend take device output buffers.
+- A vector of edges is `BinEdges`; `LinearBinEdges(::AbstractVector)` and `LogBinEdges(::AbstractVector)` raise. A
+  uniform grid of edges is given by its endpoints and count, or as a range.
+- `NonuniformFFTsSpectralBackend{M}` carries the kernel half-support its tolerance implies as the type parameter `M`,
+  and is built only as `NonuniformFFTsSpectralBackend(; tolerance)`.
+- `StructureFunction2DSumsAndCounts` records the second axis it was binned over; adding two results binned over
+  different axes raises.
+- The grid entries default their spectral backend to `AutoSpectralBackend()`.
+- `independent_pair_variance` raises for a histogram over the separation angle and for floating-point (weighted or
+  split) counts, where the counts are not a number of independent pairs.
+- Fitting a result with batch axes returns an array of the per-slice fits over those axes.
+
+### New
+
+- `TransformWorkspace` keeps a grid transform's buffers and plans, including non-uniform FFT plans set to a scattered
+  schedule's points, from one call to the next.
+- On grids: the six single-pass invariants, by the lag sweep and by the transform; the joint histogram over the
+  operator value; device routes for the joint histograms, the batches and the tensor.
+- Culling on every CPU and device pair route, batches, tensors and multi-fields included, with or without a
+  workspace.
+- On a device: tensors of any order, multi-fields, the sorted line, harmonic coefficients, weighted calls and any width
+  on the native CUDA kernels.
+- Spectra, fluxes, the covariance and the Helmholtz split of a device result are computed in the result's own array
+  family.
+
+### Fixed
+
+- Every digitizer, on every backend, places a value in the bin `searchsortedfirst` on the edges gives it.
+- The CPU single-pass joint histogram counted in the sums' element type, so `Float32` sums stopped counting at 2²⁴
+  pairs per cell; it counts in the count type.
+- Weighted single-pass calls on `DistributedBackend` and `MPIBackend` returned the unweighted result, and an explicit
+  `culling` was replaced by the default there.
+- `AlwaysCulling()` on a device batch over varying positions without a workspace swept every pair instead of culling.
+
 ## [0.4.0] - 2026-09-11
 
 ### Names and namespace
@@ -99,12 +146,10 @@ All notable changes to this project will be documented in this file.
 - The direct lag sweep and the transform's lag loop allocate nothing per pair or per lag.
 - The device transform builds each monomial for every slab in one broadcast and transforms the slabs
   in one batch, and writes the spectra in the order the binning stage reads them, so assembling its
-  input is a reshape. On an A100 the 720×360 lat-lon `L2` transform runs 28× the 8-thread CPU and a
-  stretched 256×128 grid 3.6×.
+  input is a reshape.
 - The device binning kernel launches each slab pair over its own lag box, which a schedule reports
-  through `uniform_lag_box`. On a sphere the box over all row pairs does not narrow with the largest
-  bin edge while each row pair's does, so the kernel speeds up as the sweep narrows: 2× at a quarter
-  of the sphere's radius, 3× at an eighth.
+  through `uniform_lag_box`. On a sphere each row pair's box narrows with the largest bin edge, so
+  the kernel's cost falls as the sweep narrows.
 
 ### Removed
 
@@ -132,15 +177,6 @@ All notable changes to this project will be documented in this file.
 - Supports NVIDIA (CUDA), AMD (ROCm), CPU (for testing) via KernelAbstractions
 - `GPUBackend` passes to kernels seamlessly; full parity with CPU implementations validated
 
-#### Boolean Keyword Annotation
-- Added explicit `::Bool` type annotations to `verbose` and `show_progress` keywords
-- Enhanced clarity; enables stricter type checking in downstream code
-
-#### Progress Display Fix
-- **Critical bug fix**: Progress bar now displays correctly when `show_progress=true`
-- Previously: Progress disabled for pre-computed bins (now fixed)
-- Currently: Progress shown via `ProgressMeter.@showprogress` macro for all main loops
-
 #### Fixed Critical threadid() PSA Bug
 - **Issue**: Multi-threaded execution attempted to index thread-local buffers via `Threads.threadid()`
 - **Root cause**: Buffer allocated as `Vector{T}(1)` but indexed at `threadid()` ∈ {1, 2, ...} on N threads → BoundsError
@@ -160,16 +196,15 @@ All notable changes to this project will be documented in this file.
 |------|------|-----------|
 | `backend=:serial` | `backend=SerialBackend()` | Change symbol to type instance |
 | `backend=:threaded` | `backend=ThreadedBackend()` | Requires OhMyThreads.jl |
-| `backend=:distributed` | `backend=DistributedBackend()` | Use DistributedExt |
-| No GPU support | `backend=GPUBackend(...)` | New feature; use GPUExt |
+| `backend=:distributed` | `backend=DistributedBackend()` | `using Distributed` loads `StructureFunctionsDistributedExt` |
+| No GPU support | `backend=GPUBackend(...)` | New feature; `using KernelAbstractions` loads `StructureFunctionsKernelAbstractionsExt` |
 | Implicit auto-selection | `backend=AutoBackend()` | Explicit type; now default |
 
 ### Performance Improvements
 
 - **Type-stable dispatch**: No runtime penalty for backend selection
-- **Eliminated dynamic Val(N)** construction in hot paths → 5-10% faster for small datasets
-- **Thread-local reductions**: Zero-copy reduction in "threaded" backend (was: atomic operations)
-- **GPU kernel parity**: GPU and CPU paths produce bit-identical results (when precision matches)
+- **Eliminated dynamic Val(N)** construction in hot paths
+- **Thread-local reductions**: private partial reductions in the threaded backend
 
 ### New Public API
 
@@ -177,14 +212,8 @@ All notable changes to this project will be documented in this file.
 # New typed backends
 backends = [SerialBackend(), ThreadedBackend(), DistributedBackend(), GPUBackend(...), AutoBackend()]
 
-# Enhanced calculate_structure_function signature
-calculate_structure_function(sf_type, x, u, bins; 
-                            backend=AutoBackend()  # NEW: was implicit before
-                            return_sums_and_counts=false,
-                            distance_metric=Euclidean(),
-                            verbose::Bool=true,      # NEW: explicit type
-                            show_progress::Bool=true # NEW: explicit type
-                            kwargs...)
+# calculate_structure_function signature
+calculate_structure_function(sf_type, x, u, bins[, CT][, OT]; backend=AutoBackend())
 ```
 
 ### Docstrings & Documentation
@@ -196,10 +225,8 @@ calculate_structure_function(sf_type, x, u, bins;
 
 ### Test Suite Enhancements
 
-- **JET stability audit** expanded to 44 tests; all pass with target_modules filter
+- **JET stability audit** expanded; runs with a `target_modules` filter
 - **Threading test suite** added (`test_threads.jl`) validating ThreadedBackend on multi-threaded Julia
-- **Fixed JET false positive** from ProgressMeter's IJulia detection (via `target_modules=(SF,)` filtering)
-- **Full CI passing**: 149/149 tests pass (was: 147/149 with threadid + JET failures)
 
 ### Dependencies & Compatibility
 
@@ -214,7 +241,7 @@ calculate_structure_function(sf_type, x, u, bins;
 
 - **Qualified imports**: All imports now explicit (no wildcard `using Package`)
 - **Type annotations**: No more untyped boolean parameters
-- **Code organization**: Extensions clearly separated (DistributedExt, GPUExt, OhMyThreadsExt)
+- **Code organization**: Extensions separated (`StructureFunctionsDistributedExt`, `StructureFunctionsKernelAbstractionsExt`, `StructureFunctionsOhMyThreadsExt`)
 
 ### Removed/Deprecated
 
@@ -225,7 +252,6 @@ calculate_structure_function(sf_type, x, u, bins;
 ### Known Issues & Future Work
 
 - **Block E (NUFFT)**: Spectral extensions partially integrated; full NUFFT modernization deferred to v0.4
-- **Documentation**: `docs/` folder structure not yet added (future: comprehensive theory/architecture guides)
 
 ### Upgrade Guide
 

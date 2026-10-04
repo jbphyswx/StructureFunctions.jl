@@ -5,6 +5,7 @@ using StructureFunctions.Calculations: CPUSFWorkspace, reset_histogram!
 using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads: OhMyThreads
 
+# CPUSFWorkspace reuse leaves single-pass batch results unchanged and rejects workspaces that do not fit the call.
 Test.@testset "CPUSFWorkspace" begin
     Random.seed!(4242)
     N, B, nd, nv = 60, 8, 12, 10
@@ -19,6 +20,7 @@ Test.@testset "CPUSFWorkspace" begin
 
     # Threaded sums add in the order the tasks take their chunks, so they agree to rounding; counts are exact.
     same_sums(a, b, backend) = backend isa CB.SerialBackend ? a == b : isapprox(a, b; rtol = 1e-12)
+    # Single-pass and single-pass-2D batch results with a workspace equal those without, on each backend.
     Test.@testset "results identical with and without a workspace" begin
         for backend in (CB.SerialBackend(), backends...)
             ws = CPUSFWorkspace{:single_pass_2d}(x, u, db, vb; backend)
@@ -39,6 +41,7 @@ Test.@testset "CPUSFWorkspace" begin
         end
     end
 
+    # Three calls through one workspace each reproduce the no-workspace serial result exactly.
     Test.@testset "reuse across calls is stable" begin
         ws = CPUSFWorkspace{:single_pass_2d}(x, u, db, vb)
         ref_s = zeros(Float64, 6, nd, nv, B); ref_c = zeros(UInt32, 6, nd, nv, B)
@@ -53,6 +56,7 @@ Test.@testset "CPUSFWorkspace" begin
         end
     end
 
+    # A workspace built from a BatchLeading array allocates no transpose buffers and reproduces the result without one.
     Test.@testset "composes with BatchLeading (no transpose buffer)" begin
         ubl = SFC.BatchLeading(permutedims(u, (3, 1, 2)))
         ws = CPUSFWorkspace{:single_pass_2d}(x, ubl, db, vb)
@@ -68,6 +72,7 @@ Test.@testset "CPUSFWorkspace" begin
         Test.@test c1 == c2
     end
 
+    # A workspace with the wrong N, B, bin count or kind, or an unknown kind, throws ArgumentError.
     Test.@testset "a mismatched workspace is a hard error" begin
         s = zeros(Float64, 6, nd, nv, B); c = zeros(UInt32, 6, nd, nv, B)
         call!(ws) = SFC.calculate_structure_functions_single_pass_2d_batch!(
@@ -83,6 +88,7 @@ Test.@testset "CPUSFWorkspace" begin
         Test.@test_throws ArgumentError CPUSFWorkspace{:nonsense}(x, u, db, vb)
     end
 
+    # The workspace type and its fields are concrete, and reset_histogram! returns the workspace with a zeroed result.
     Test.@testset "concretely typed" begin
         ws = CPUSFWorkspace{:single_pass_2d}(x, u, db, vb)
         T = typeof(ws)

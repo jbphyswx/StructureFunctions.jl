@@ -7,31 +7,27 @@ using Distances: Distances as DI
 @inline _bl_unwrap(u) = (u, false)              # (array, already_batch_leading)
 @inline _bl_unwrap(u::BatchLeading) = (u.data, true)
 
-# Prepare batch-leading (B,D,N) buffers for `geom`. Handles the default plain `(D,N,B...)` (transposed
-# once) and `BatchLeading` `(B,D,N)` (zero-copy). `x` may be fixed (D,N) or varying. Returns
-# (xb, ub, B, D, W, N, Val(fixed_x)): `D` and `W` are the field and coordinate widths of the staged arrays.
 """
-Component-first view of an input, so `prepare_pair_inputs` — which reads components from axis 1 —
-can convert it. Only a batch-leading `(B, W, N)` array needs permuting; the default `(W, N, B…)`
-layout is already component-first. `permutedims` costs one `O(N·B)` pass per call.
+Component-first view of an input, as `prepare_pair_inputs` reads components from axis 1. Only a
+batch-leading `(B, W, N)` array is permuted; a `(W, N, B…)` array is returned as is.
 """
 @inline _bl_component_first(a, is_batch_leading::Bool) =
     is_batch_leading ? permutedims(a, (2, 3, 1)) : a
 
+# Stages plain `(D,N,B...)` (transposed once) or `BatchLeading` `(B,D,N)` (zero-copy) inputs; `x` is fixed `(D,N)` or varying.
+# Returns (xb, ub, B, D, W, N, Val(fixed_x)), with `D` and `W` the field and coordinate widths of the staged arrays.
 function _bl_prepare(x, u, geom, workspace = nothing)
     u_raw, u_bl = _bl_unwrap(u)
     x_raw, x_bl = _bl_unwrap(x)
     fixed_x = ndims(x_raw) == 2
     if !(geom isa SFH.FlatGeometry)
-        # Convert once per call, component-first, then let the layout code below run unchanged.
         x_raw, u_raw = SFH.prepare_pair_inputs(
             geom, _bl_component_first(x_raw, x_bl), _bl_component_first(u_raw, u_bl),
         )
         x_bl = false
         u_bl = false
     end
-    # `W` is the coordinate width and `D` the field width the kernels load; they differ from each
-    # other and from the velocity dimension on a sphere.
+    # `W` is the coordinate width and `D` the field width the kernels load; on a sphere they differ.
     W = x_bl ? size(x_raw, 2) : size(x_raw, 1)
     if u_bl
         B, D, N = size(u_raw)
@@ -53,8 +49,7 @@ end
 @inline _bl_by_layout(::Val{false}, shared, varying) = varying
 
 # Statically-sized, unchecked loads for the two layouts the batch drivers hold: `(W, N)` shared
-# positions and `(B, W, N)` batch-leading, indexed within the shapes `_bl_prepare` validated. The width
-# comes from the geometry, never from the velocity rank.
+# positions and `(B, W, N)` batch-leading, indexed within the shapes `_bl_prepare` validated.
 @inline _bl_pt(x::AbstractMatrix, i, ::Val{W}) where {W} =
     SA.SVector{W}(ntuple(d -> @inbounds(x[d, i]), Val(W)))
 @inline _bl_pt(xb::AbstractArray{<:Any, 3}, b, i, ::Val{W}) where {W} =
@@ -85,17 +80,13 @@ end
 @inline _ws_ub(::Nothing) = nothing
 @inline _ws_xb(::Nothing) = nothing
 
-# (D,N,B) -> (B,D,N) materialized batch-leading buffer (lazy PermutedDimsArray would put the
-# strided read back in the hot loop, so we materialize — cheap, O(D·N·B) ≪ O(N²·B)).
+# (D,N,B) -> (B,D,N), materialized.
 @inline _to_batch_leading(u_DNB, ::Nothing) = permutedims(u_DNB, (3, 1, 2))
 @inline _to_batch_leading(u_DNB, dest::AbstractArray) = permutedims!(dest, u_DNB, (3, 1, 2))
 
-# ----------------------------------------------------------------------------------------
-# Shared positions ("same surface"): x is (D,N) fixed; geometry computed ONCE per pair.
-# ub :: (B, D, N) ; sums_bl, counts_bl :: (B, n_bins)
-# ----------------------------------------------------------------------------------------
-"""The distance plan of a shared-position kernel: squared on a flat metric, whose kernels digitize
-`r²` in a vectorized geometry pass; the bins' own plan otherwise."""
+# Shared positions: x is (D,N), geometry is computed once per pair; ub is (B, D, N); sums_bl, counts_bl are (B, n_bins).
+"""The distance plan of a shared-position kernel: squared for a flat metric, whose kernels digitize
+`r²` in a vectorized geometry pass; the bins' own plan for any other."""
 @inline _bl_shared_plan(::SFH.FlatGeometry, bins) = squared_digitize_plan(bins)
 @inline _bl_shared_plan(geom, bins) = digitize_plan(bins)
 
@@ -233,8 +224,7 @@ function _bl_shared_1d!(
             ok, dist, frame = SFH.pair_frame(geom, Xi, Xj)
             bin = SFH.digitize(dist, dist_be)
             (ok && 1 <= bin <= nb) || continue
-            # Loop-invariant across the b strip: one frame, one direction and one pair weight serve
-            # every field, since a weight belongs to the point and not to the slice.
+            # Frame, direction and pair weight are invariant across b.
             rh = SFH.pair_direction(geom, frame, dist)
             w = wi * _point_weight(weights, j)
             @simd for b in brange
@@ -248,9 +238,7 @@ function _bl_shared_1d!(
     return nothing
 end
 
-# ----------------------------------------------------------------------------------------
-# Varying positions: x is (B,D,N) too; geometry depends on b ⇒ computed inside the b loop.
-# ----------------------------------------------------------------------------------------
+# Varying positions: x is (B,D,N); geometry is computed inside the b loop.
 function _bl_varying_1d!(
     sums_bl::AbstractMatrix{OT},
     counts_bl::AbstractMatrix{CT},
@@ -288,10 +276,7 @@ function _bl_varying_1d!(
     return nothing
 end
 
-# ----------------------------------------------------------------------------------------
-# Joint 2D (single SF): output accumulator (B, n_dist, n_val). vbin varies per b (scatter on
-# the value axis) ⇒ plain b-loop (still 0-alloc, type-stable). dbin constant for shared x.
-# ----------------------------------------------------------------------------------------
+# Joint 2D (single SF): accumulator (B, n_dist, n_val); vbin varies per b, dbin is constant across b for shared x.
 """
     _shared_axis_bin(source, Xi, Xj, val_be) -> Int or nothing
 
@@ -374,11 +359,8 @@ function _bl_joint2d_varying!(
     return nothing
 end
 
-# ----------------------------------------------------------------------------------------
-# Single-pass 1D (6 invariants). Accumulator (B, 6, n_dist): for shared x the dist bin is
-# constant over b, so each of the 6 writes is contiguous in b (vectorizes). Note: only du_L
-# and du_norm2=⟨du,du⟩ are needed — the old `du_T = mδu_t(...)` was dead work (now removed).
-# ----------------------------------------------------------------------------------------
+# Single-pass 1D (6 invariants): accumulator (B, 6, n_dist); for shared x the dist bin is constant over b.
+# Only du_L and du_norm2 = ⟨du,du⟩ are needed.
 @inline function _bl_sp1d_write!(sums_bl, counts_bl, b, bin, du_L, du_norm2, ::Type{CT},
                                  w = true) where {CT}
     vals = single_pass_invariants(du_L, du_norm2)
@@ -495,10 +477,7 @@ function _bl_sp1d_varying!(
     return nothing
 end
 
-# ----------------------------------------------------------------------------------------
-# Single-pass 2D (6 invariants × per-invariant value bins). Accumulator (B, 6, n_dist, n_val);
-# per-invariant value bin ⇒ scatter ⇒ plain b-loop.
-# ----------------------------------------------------------------------------------------
+# Single-pass 2D (6 invariants × per-invariant value bins): accumulator (B, 6, n_dist, n_val).
 @inline function _bl_sp2d_write!(sums_bl, counts_bl, b, dbin, vals, value_bins, n_val, ::Type{CT},
                                  w = true) where {CT}
     @sp2d_each_invariant value_bins t vb begin
@@ -568,12 +547,8 @@ function _bl_sp2d_varying!(
     return nothing
 end
 
-# ========================================================================================
-# Drivers: prep (transpose to batch-leading) + run kernel via an EXECUTOR + transpose back.
-#
-# Parallelism is over the outer pair index `i`, so each pair's geometry is computed once and the
-# inner batch loop over `b` stays full and SIMD-vectorized. `i` is partitioned into chunks as the
-# schedule wants them, and thread-local accumulators are reduced at the end.
+# Drivers: stage to batch-leading, run a kernel through an executor, add the result into the caller's arrays.
+# The outer pair index `i` is partitioned into chunks, and per-task accumulators are reduced at the end.
 #
 # executor(make_accum, make_scratch, run_chunk!, ifull, grid, B, accum_bytes, ws) → reduced (sums, counts), width B:
 #   make_accum(bw)                          → fresh zeroed (sums_bl, counts_bl) of batch width bw
@@ -584,7 +559,6 @@ end
 #   ws                                      → CPUSFWorkspace to draw accumulators from, or `nothing`
 #   serial  : one full-width accumulator over ifull
 #   threaded: partitions (i, b); per-task accumulators are only as wide as their b-chunk
-# ========================================================================================
 
 @inline function _bl_serial_exec(make_accum, make_scratch, run_chunk!, ifull, grid, B, accum_bytes, ws)
     acc = _bl_accum_pool(ws, make_accum, [B])[1]
@@ -620,12 +594,9 @@ end
 
 How many chunks to split the batch axis into, given the full-width accumulator size in bytes.
 
-Every task holds an accumulator, so the live footprint is `n_tasks * accum_bytes` — that is what
-turns into GC and page-fault time, and it is what a batch chunk divides. Splitting `b` costs pair
-geometry, recomputed once per batch chunk, so the right answer is the SMALLEST split that brings
-the footprint under budget. Kernels whose footprint already fits (the 1D batch accumulator is tens
-of KiB) keep `Bc == 1` and never pay geometry twice; the single-pass 2D accumulator at large `B`
-and many threads reaches hundreds of MiB and is split until it fits.
+Every task holds an accumulator, so the live footprint is `n_tasks * accum_bytes`. The count is 1 when
+that fits `_BL_ACCUM_BUDGET`, else the smallest count that fits it, at most `min(n_tasks, B)`. Pair
+geometry is recomputed once per batch chunk.
 """
 @inline function _bl_batch_chunk_count(accum_bytes::Int, B::Int, n_tasks::Int)
     footprint = accum_bytes * n_tasks
@@ -644,9 +615,8 @@ const _BL_ACCUM_BUDGET = 64 * 1024 * 1024
     _bl_n_tasks(backend) -> Int
 
 How many tasks a batch call on `backend` splits into, and therefore how many accumulators a
-[`CPUSFWorkspace`](@ref) must hold. A threaded backend is refused without the OhMyThreads
-extension, so with the extension absent the count is the one task a serial or `AutoBackend()` call
-will use.
+[`CPUSFWorkspace`](@ref) must hold: one for a serial or `AutoBackend()` call, and for a threaded
+backend when OhMyThreads is not loaded.
 """
 _bl_n_tasks(::CB.AbstractExecutionBackend) = 1
 _bl_n_tasks(::CB.AbstractThreadedBackend) = _ohmythreads_loaded() ? Threads.nthreads() : 1
@@ -667,11 +637,8 @@ _bl_executor(b::CB.AbstractExecutionBackend) = throw(ArgumentError(
 """
     _bl_add_permuted!(dest, src_bl, perm)
 
-Add the batch-leading accumulator `src_bl` into `dest` through the permutation `perm`.
-
-`!` entry points across the package **accumulate** into the caller's buffers; zeroing belongs to the
-non-mutating wrappers. `PermutedDimsArray` is a lazy view, so this fuses the permute with the add
-and allocates nothing.
+Accumulate the batch-leading accumulator `src_bl` into `dest` through the permutation `perm`,
+fusing the permute with the add via a lazy `PermutedDimsArray`.
 """
 @inline function _bl_add_permuted!(dest, src_bl, perm)
     dest .+= PermutedDimsArray(src_bl, perm)

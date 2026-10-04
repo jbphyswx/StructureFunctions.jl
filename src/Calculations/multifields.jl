@@ -1,16 +1,11 @@
-# Multi-field pair sweep. A field carrying more than one field forms its increment field by
-# field — vectors transported, scalars differenced — and hands the whole multi-field to the operator,
-# which reads the fields it names.
-
 """
     field_increment(Val(F), Val(V), Val(K), geom, frame, a, b) -> FieldIncrement
 
 One pair's increment across every field of a packed column: `a` and `b` are the two points' columns,
 `V` vector fields of width `F` followed by `K` scalars.
 
-Each vector field is transported into the pair's common frame before differencing, exactly as a
-single-field case is; each scalar field is differenced where it stands, because a scalar has
-nothing to transport.
+Each vector field is transported into the pair's common frame before differencing, as in the
+single-field case; each scalar field is differenced directly.
 """
 @inline function field_increment(::Val{F}, ::Val{V}, ::Val{K}, geom, frame, a::SA.SVector{L, T},
                                  b::SA.SVector{L, T}) where {F, V, K, L, T}
@@ -48,12 +43,11 @@ end
 """
     _kernel_fields(fields, geom, x) -> (x_kernel, packed_kernel, Val{F})
 
-The field in the form the kernels index: every vector field widened by the geometry exactly as a
-single-field case is, scalars untouched.
+The field in the form the kernels index: every vector field widened by the geometry as in the
+single-field case, scalars untouched.
 
-On a sphere a velocity is carried as an ambient 3-vector, so a multi-field's vector fields must be
-widened too — the same `prepare_pair_inputs` the array path uses, once per field, so there is no
-second conversion to drift from it.
+On a sphere a velocity is carried as an ambient 3-vector; each vector field is widened with
+`prepare_pair_inputs`, the array path's conversion.
 """
 function _kernel_fields(f::MF.Fields{D, V, K}, geom, x::AbstractMatrix) where {D, V, K}
     data = MF.packed(f)
@@ -80,10 +74,10 @@ end
 
 Accumulate a multi-field's pairs into the 1-D distance histogram.
 
-A field of one vector field and no scalars is the array path — it forwards there, so a bare `u` and
-`Fields(vectors = (u,))` give the same answer through the same kernel. Anything carrying more than
-one field takes this sweep, which builds each pair's whole increment and hands it to the
-operator; it is a scalar loop, where the single-field path is a SIMD compute/scatter split.
+A field of one vector field and no scalars forwards to the array path, so a bare `u` and
+`Fields(vectors = (u,))` give the same answer. Anything carrying more than one field takes this
+sweep, which builds each pair's whole increment and hands it to the operator: a SIMD
+compute/scatter split on flat geometry, a scalar loop otherwise.
 """
 function serial_calculate_structure_function!(
     sums::AbstractVector, counts::AbstractVector,
@@ -137,8 +131,7 @@ Everything a multi-field sweep on `geometry` needs before its first pair: the wi
 and fields, the digitize plan, and the cull grid with both arrays and the weights already permuted
 into it.
 
-Shared by the serial and threaded drivers so the sort and the widening happen **once**, above any
-task loop — doing them inside one would pay them per task.
+Shared by the serial and threaded drivers; the sort and the widening happen once, above any task loop.
 """
 function field_setup(f::MF.Fields{D, V, K}, x::AbstractMatrix, distance_bins,
                        geom, culling::CullingPolicy, weights = NoWeights()) where {D, V, K}
@@ -162,8 +155,6 @@ fields' width, or for a field of scalars alone, which has none, at the coordinat
     V == 0 ? _shaped((_, geometry) -> g(geometry), PointField, size(x, 1), distance_metric) :
              g(SFH.pair_geometry_for(distance_metric, Val(D)))
 
-# Dispatch on the grid so the kernel receives one concretely typed schedule, as the single-field
-# path does.
 @inline _field_run_blocks!(sums, counts, sf, xk, data, geom, vF, vV, vK, plan, nb, vW, ilist, N,
                              ::Nothing, weights) =
     _field_pairs!(sums, counts, sf, xk, data, geom, vF, vV, vK, plan, nb, vW,
@@ -180,12 +171,9 @@ fields' width, or for a field of scalars alone, which has none, at the coordinat
 Accumulate the pairs `blocks` covers for a multi-field, each pair carrying
 `weights[i] * weights[j]` in both sums and counts.
 
-Each block pair is worked to completion, so its columns stay cache-resident across the `i` sweep —
-the reason the single-field kernel is blocked, and it applies here for the same reason.
+Each block pair is worked to completion, so its columns stay cache-resident across the `i` sweep.
 """
-# Flat geometry: the separation IS the displacement, so the whole per-pair computation is arithmetic
-# on stack values and the compute half vectorizes — the same compute/scatter split the single-field
-# kernel uses, and for the same reason (a scatter in the loop body stops it vectorizing).
+# Flat geometry: the separation is the displacement; the compute half runs under `@simd`, the scatter is scalar.
 function _field_pairs!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
@@ -289,8 +277,7 @@ end
 
 The highest vector and scalar field index an operator reads.
 
-Every operator that predates the multi-field reads the field itself, which is field 1 of the
-vector side — that is what keeps `Fields(vectors = (u,))` identical to a bare `u`.
+An operator with no field index reads vector field 1.
 """
 @inline required_fields(::SFT.AbstractPairwiseStructureFunctionType) = (1, 0)
 @inline required_fields(sf::SFT.ScalarStructureFunctionType) = (0, sf.field)
@@ -304,8 +291,7 @@ vector side — that is what keeps `Fields(vectors = (u,))` identical to a bare 
 
 Refuse an operator that reads a field the multi-field does not carry.
 
-Checked once at the entry, where a threaded backend has not yet opened a task: an error thrown
-inside one surfaces wrapped in a `TaskFailedException`.
+Checked once at the entry, before any backend task opens.
 """
 validate_fields(sf::SFT.AbstractPairwiseStructureFunctionType, ::MF.Fields{D, V, K}) where {D, V, K} =
     validate_fields(sf, Val(V), Val(K))

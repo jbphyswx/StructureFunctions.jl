@@ -2,9 +2,7 @@
 # truncated Legendre / Wigner-d series of the masked field's pseudo-spectra is, exactly, the pair sum
 # with a soft kernel of width ~π/lmax in place of a hard bin.
 
-# ---------------------------------------------------------------------------------------------------
 # Wigner small-d functions: d^l_{mn}(β) = ⟨l m| exp(−iβ J_y) |l n⟩, Condon–Shortley phase
-# ---------------------------------------------------------------------------------------------------
 
 """`log k!` for `k = 0:N` at `t[k + 1]`."""
 function _log_factorials(N::Integer)
@@ -60,16 +58,11 @@ end
 wigner_d_column(m::Integer, n::Integer, β::Real, lmax::Integer) =
     wigner_d_column!(zeros(Float64, lmax + 1), m, n, β, lmax, _log_factorials(2lmax + 2))
 
-# ---------------------------------------------------------------------------------------------------
-# Pseudo-coefficients
-# ---------------------------------------------------------------------------------------------------
-
 """
     pseudo_coefficients_direct(f, θ, φ, s, lmax; backend) -> ComplexF64 matrix
 
 `C[l + 1, m + lmax + 1] = Σ_i f_i conj(ₛY_lm(θ_i, φ_i))` with `ₛY_lm = √((2l+1)/4π) d^l_{m,−s}(θ) e^{imφ}`,
-by direct summation over the points: `O(N lmax²)`, and the reference every faster provider is checked
-against. `θ` is colatitude and `φ` longitude, both in radians. On a GPU `backend` the matrix is on its
+by direct summation over the points: `O(N lmax²)`. `θ` is colatitude and `φ` longitude, both in radians. On a GPU `backend` the matrix is on its
 device.
 """
 function pseudo_coefficients_direct(f::AbstractVector{<:Number}, θ::AbstractVector, φ::AbstractVector,
@@ -84,7 +77,7 @@ end
     direct_coefficients_partial(f, θ, φ, s, lmax, ilist) -> Matrix{ComplexF64}
 
 The pseudo-coefficient sum of [`pseudo_coefficients_direct`](@ref) over the points in `ilist`.
-Partials over disjoint index lists add, which is what lets a backend split the point loop.
+Partials over disjoint index lists add.
 """
 function direct_coefficients_partial(f::AbstractVector{<:Number}, θ::AbstractVector,
                                      φ::AbstractVector, s::Integer, lmax::Integer, ilist)
@@ -167,11 +160,7 @@ function _node_kernel(s::Integer, s′::Integer, nodes::HarmonicNodes, lf)
     return K
 end
 
-# ---------------------------------------------------------------------------------------------------
-# An operator as a polynomial in the two ends' spin quantities
-# ---------------------------------------------------------------------------------------------------
-#
-# In the pair's geodesic frame `u_L + i u_T = Ū`, where `Ū = U e^{−iψ}` is the spin-1 quantity
+# An operator as a polynomial in the two ends' spin quantities. In the pair's geodesic frame `u_L + i u_T = Ū`, where `Ū = U e^{−iψ}` is the spin-1 quantity
 # `U = u_θ + i u_φ` rotated by the bearing `ψ` of the geodesic toward the other point. At the second
 # point the frame continues the geodesic, so its tangent has bearing `ψ + π` and the frame components
 # there are `−Ū`. Hence `δu_L + i δu_T = −(Ū_i + Ū_j)`; a radial component and a scalar difference as
@@ -283,10 +272,6 @@ function _operator_terms(sf, vD::Val{D}, vV::Val{V}, vK::Val{K}) where {D, V, K}
     end
     return terms
 end
-
-# ---------------------------------------------------------------------------------------------------
-# The sweep
-# ---------------------------------------------------------------------------------------------------
 
 """`v` where the weight `w` is nonzero, else zero: a point that holds nothing contributes nothing, even where
 its datum is not finite."""
@@ -532,10 +517,6 @@ calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::A
                              u::Union{AbstractArray, MF.Fields}, nodes::HarmonicNodes, spectral_backend,
                              ::Type{OT}; kwargs...) where {OT <: SFO.AbstractStructureFunction} =
     calculate_structure_function(sf, x, u, nodes, spectral_backend, _mass_type(u), OT; kwargs...)
-
-# ---------------------------------------------------------------------------------------------------
-# Pseudo-spectra
-# ---------------------------------------------------------------------------------------------------
 
 """
     harmonic_spectra(x, u, lmax, spectral_backend; distance_metric, weights, valid, backend) -> (l, C) or (l, EE, BB, EB)

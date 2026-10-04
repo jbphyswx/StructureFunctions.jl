@@ -8,9 +8,8 @@ Euclidean cutoff, in the coordinate space the kernels see, that bounds a true se
 `r_max`. Culling compares squared Euclidean distances against this, so it must be at least the true
 bound; a smaller one drops in-range pairs.
 
-`nothing` means the geometry has declared no such bound, and culling declines. A user-defined
-geometry is therefore correct by default and opts in by adding
-a method — it is never required to have one.
+`nothing` means the geometry declares no such bound, and culling declines. A geometry opts in by
+adding a method.
 """
 @inline cull_cutoff(::Any, r_max) = nothing
 
@@ -31,14 +30,11 @@ end
 Uniform cell decomposition of a point set, with points sorted by cell id, so every cell is one
 contiguous run: `cell_run(grid, c)` in the permuted order.
 
-Only **occupied** cells are stored, as the sorted ids `cell_ids` and their run boundaries
-`run_starts`. The cell-id space is unbounded — `dims` grows as `(extent/cutoff)^D`, reaching 2.3 GB
-of ids for a flat 3-D set at `r_max/L = 0.003` — while occupancy never exceeds the point count, so
-storing the occupied cells keeps both the memory and the block enumeration `O(N)` at any
-resolution.
+Only occupied cells are stored, as the sorted ids `cell_ids` and their run boundaries `run_starts`;
+the cell-id space `prod(dims)` grows as `(extent/cutoff)^D`, while occupancy is at most the point
+count, so memory and block enumeration are `O(N)`.
 
-The index and offset arrays are type parameters, not `Vector`s, so one type serves a host build and
-a device-resident copy.
+The index and offset arrays are type parameters, so one type serves host and device-resident copies.
 """
 struct CellGrid{D, FT, IV, PV, OV}
     origin::NTuple{D, FT}
@@ -91,8 +87,6 @@ end
 end
 
 """1-based cell multi-index of point `i` of `xc`, clamped into the grid."""
-# Only the length is a method parameter: an empty tuple determines no element type, so naming one
-# would leave it unbound at `D = 0`.
 @inline function cull_cell_multi_index(
     origin::Tuple{Vararg{Any, D}}, inv_h, dims::NTuple{D, Int}, xc::Tuple{Vararg{Any, D}},
     i::Integer,
@@ -108,8 +102,7 @@ end
 
 Each surviving stencil row as `(offset over dimensions 2:D, half-extent along dimension 1)`.
 Dimension 1 is carried as an extent: cells adjacent along it are contiguous in the sorted order, so
-a whole row is swept as one run. The extent is the widest that
-still satisfies the corner test, so the row is no larger than the true stencil.
+a whole row is swept as one run. The extent is the widest that satisfies the corner test.
 """
 function cull_row_offsets(span::Int, ::Val{D}) where {D}
     keep = Tuple{NTuple{D - 1, Int}, Int}[]
@@ -121,7 +114,6 @@ function cull_row_offsets(span::Int, ::Val{D}) where {D}
         end
         rem = span * span - near2
         rem < 0 && continue
-        # widest |offset| along dimension 1 that still satisfies the corner test for this row
         push!(keep, (c, min(span, isqrt(rem) + 1)))
     end
     return keep
@@ -133,11 +125,8 @@ const SF_CULL_COUNTING_SORT_CELLS_PER_POINT = 8
 """
     _cull_sortperm(cell_raw, n_cells, N)
 
-Permutation sorting the points by cell id.
-
-A counting sort is faster but needs scratch proportional to the **cell-id space**, which is
-unbounded in the cutoff. So it is used only while that space stays within a small multiple of the
-point count; `sortperm` covers the rest, where the cells are mostly empty anyway.
+Permutation sorting the points by cell id: a counting sort while `n_cells` is within
+`SF_CULL_COUNTING_SORT_CELLS_PER_POINT * N`, `sortperm` beyond.
 """
 function _cull_sortperm(cell_raw::AbstractVector{Int}, n_cells::Int, N::Int)
     n_cells <= SF_CULL_COUNTING_SORT_CELLS_PER_POINT * N || return sortperm(cell_raw)
@@ -163,9 +152,8 @@ end
 Sort the points of `xc` into cells of side `cutoff / cells_per_cutoff` and return the
 [`CellGrid`](@ref).
 
-`O(N)` memory regardless of the cell-id space, which is unbounded in `cutoff`; the sort is
-`O(N + n_cells)` while that space stays small and `O(N log N)` beyond it (see
-[`_cull_sortperm`](@ref)).
+Memory is `O(N)`; the sort is `O(N + n_cells)` for a small cell-id space and `O(N log N)` beyond it
+(see [`_cull_sortperm`](@ref)).
 """
 function build_cell_grid(
     xc::NTuple{D, <:AbstractVector{FT}}, cutoff::Real, cells_per_cutoff::Int,
@@ -244,9 +232,7 @@ const SF_CULL_CELLS_PER_CUTOFF = 2
 """Whether the last bin is unbounded, so every pair lands in a reported bin."""
 @inline _cull_is_unbounded(bins) = isinf(last(bins))
 
-# The overflow bin is reported, and its sum needs each far pair's value, which needs that pair's
-# displacement. So no pair can be skipped: only the digitize is knowable in advance, and that is
-# not where the time goes.
+# The overflow bin is reported and its sum needs every far pair's value, so no pair can be skipped.
 _cull_on_unbounded(::AutoCulling) = nothing
 _cull_on_unbounded(::AlwaysCulling) = throw(ArgumentError(
     "culling cannot skip any pair when the last bin is unbounded: the overflow bin is reported, and its " *
@@ -254,8 +240,6 @@ _cull_on_unbounded(::AlwaysCulling) = throw(ArgumentError(
     "could be skipped, which is not the cost. Pass culling = NoCulling(), or finite bin edges.",
 ))
 
-# A geometry that declares no Euclidean bound (`cull_cutoff` returning `nothing`) cannot be culled
-# safely: nothing relates its separations to the coordinates the cells are built from.
 _cull_on_unknown_geometry(::AutoCulling, _) = nothing
 _cull_on_unknown_geometry(::AlwaysCulling, geometry) = throw(ArgumentError(
     "culling cannot be used with $(typeof(geometry)): it declares no Euclidean bound relating " *
@@ -263,8 +247,7 @@ _cull_on_unknown_geometry(::AlwaysCulling, geometry) = throw(ArgumentError(
     "culling = NoCulling().",
 ))
 
-# `AlwaysCulling` sorts regardless; `AutoCulling` declines when the stencil already spans the grid,
-# where culling removes no pairs. The test runs off the bounding box, before the sort is paid for.
+# `AutoCulling` declines when the stencil spans the grid along every axis; the test uses the bounding box.
 _cull_is_worthwhile(::AlwaysCulling, _, _) = true
 _cull_is_worthwhile(::AutoCulling, dims::NTuple{D, Int}, span::Int) where {D} =
     any(d -> dims[d] > 2 * span + 1, 1:D)
@@ -275,9 +258,7 @@ _cull_enabled(::CullingPolicy) = true
 """
     _cull_reject_unsupported(policy, what)
 
-Refuse an explicit culling request on a path that cannot cull. `AutoCulling` means "cull where it
-is supported and worthwhile", so it is a no-op here; `AlwaysCulling` is a request, and silently
-ignoring it would hide that the pairs were never skipped.
+Throw for `AlwaysCulling` on a path that cannot cull; `AutoCulling` and `NoCulling` pass.
 """
 _cull_reject_unsupported(::AutoCulling, _) = nothing
 _cull_reject_unsupported(::NoCulling, _) = nothing
@@ -393,8 +374,7 @@ end
 Cull grid for the kernel coordinates held column-wise in `x`, with `x`/`u` reordered to match, or
 `(nothing, x, u)` when no culling applies.
 
-The grid is built in whatever space the kernels already see, which on a shell is the ambient unit
-position, so a curved geometry needs no special case beyond its [`cull_cutoff`](@ref).
+The grid is built in the kernel coordinate space, which on a shell is the ambient unit position.
 """
 function cull_sorted_matrices(
     x::AbstractMatrix, u::AbstractMatrix, geometry, distance_bins, policy::CullingPolicy,

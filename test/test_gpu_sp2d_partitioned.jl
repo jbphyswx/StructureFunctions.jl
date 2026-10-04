@@ -175,12 +175,7 @@ Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
 end
 
 Test.@testset "GPU sp2d typeplane production shape log+infpadded (KA.CPU)" begin
-    # Production LLC4320 SF shape: 50 log distance bins × 52 inf-padded linear value
-    # bins in Float32. This is the first shape class that selects :typeplane AND the
-    # log_linear/inflinear_cols kernel variant, whose flush helper takes lid::Int —
-    # the combination that failed to compile on CUDA when @index returned Int32
-    # (see the Int(@index(...)) bindings in ext/gpu). KA.CPU verifies numerics; the
-    # Int32 dispatch itself is pinned by the script-hygiene test.
+    # 50 log distance bins by 52 inf-padded linear value bins in Float32 select :typeplane and match the serial histogram.
     backend = KA.CPU()
     FT = Float32
     N = 64
@@ -331,9 +326,7 @@ Test.@testset "GPU sp2d general distance edges take the tiled path (KA.CPU)" beg
 end
 
 Test.@testset "GPU sp2d keeps data precision when bins are narrower (KA.CPU)" begin
-    # The tiled kernel carries two element types: the coordinate tiles follow the data, the
-    # shared histogram follows the output. Binding both from the bin scalars instead would
-    # round Float64 coordinates to Float32 here, losing ~7 digits with nothing to show for it.
+    # Float64 coordinates with Float32 bin edges reproduce the Float64 serial histogram to Float64 precision.
     backend = KA.CPU()
     N, nd, nv = 64, 10, 8
     Random.seed!(20260816)
@@ -353,13 +346,11 @@ Test.@testset "GPU sp2d keeps data precision when bins are narrower (KA.CPU)" be
         sums_gpu, cnts_gpu, x, u, db, vb; backend = CB.GPUBackend(backend),
     )
     Test.@test cnts_gpu == cnts_ref
-    # Float32 tiles would land near 1e-7 here; full Float64 throughout is orders tighter.
     Test.@test sums_gpu ≈ sums_ref rtol = 1e-12
 end
 
 Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
-    # The GPU batch entry points take the production LogBinEdges + InfPaddedBinEdges shape used by
-    # varying-x conditioned batches. Varying-x (2, N, T) with per-slice coordinates.
+    # The GPU batch entries with LogBinEdges distance bins, InfPaddedBinEdges value bins and per-slice (2, N, T) coordinates match serial.
     backend = KA.CPU()
     FT = Float32
     N = 40
@@ -374,7 +365,7 @@ Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
     inf_val = InfPaddedBinEdges(inner)
     n_val = length(inf_val) - 1
 
-    # sp2d batch (the production conditioned-run path)
+    # sp2d batch
     sums_ref = zeros(FT, 6, n_dist_bins, n_val, T)
     cnts_ref = zeros(UInt32, 6, n_dist_bins, n_val, T)
     for t in 1:T
@@ -435,8 +426,7 @@ Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
     Test.@test res.counts == cntsf_ref
 end
 
-# Histograms past `n_dist = 128`, without a workspace. Float64: a histogram this sparse (few pairs per
-# cell, cancelling odd moments) differs from a Float64 reference by percent in Float32 on any backend.
+# Single-pass 2D histograms of 100 and 200 bins per axis, run without a workspace, match the Float64 serial result.
 Test.@testset "GPU sp2d large bin counts (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float64
@@ -462,7 +452,7 @@ Test.@testset "GPU sp2d large bin counts (KA.CPU)" begin
     end
 end
 
-# The routing decision itself: each route computes the same histogram, at different speeds.
+# Each (bin counts, element type) shape selects the expected accumulation mode.
 Test.@testset "GPU sp2d strategy routing" begin
     for (nd, nv, FT, mode) in ((16, 8, Float32, :shared), (30, 30, Float64, :typeplane), (60, 60, Float64, nothing),
                                (80, 80, Float32, nothing), (100, 100, Float64, nothing))

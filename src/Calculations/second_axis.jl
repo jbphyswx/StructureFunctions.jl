@@ -1,7 +1,3 @@
-# What the joint histogram's second axis bins. The distance axis is always the separation; the second
-# axis is a choice, and the kernels are already parameterised over how it is digitized — so a new
-# choice is a new source of the quantity, not a new histogram.
-
 """
     AbstractSecondAxisSource
 
@@ -10,7 +6,7 @@ What the second axis of a joint histogram bins.
 The first axis is always the separation. The second is a choice: the operator's own value, giving
 the distribution of the structure function at each separation; or the separation's **direction**,
 giving the structure function resolved by angle. Both are digitized the same way into the same
-histogram, so a source is where the binned quantity comes from, not a new kind of output.
+histogram.
 """
 abstract type AbstractSecondAxisSource end
 
@@ -24,17 +20,16 @@ struct InvariantValueAxis <: AbstractSecondAxisSource end
 """
     SeparationAngleAxis(reference_axis)
 
-Bin the angle between the pair's separation and `reference_axis`, giving `S(r, θ)` — the structure
-function resolved by direction, which is what an anisotropic flow needs.
+Bin the angle between the pair's separation and `reference_axis`, giving `S(r, θ)`, the structure
+function resolved by direction.
 
-The angle is folded so that a pair and its reverse give the same value, which they must: swapping the
-two ends flips the separation, and no structure function distinguishes the two. In two dimensions the
+The angle is folded so that a pair and its reverse give the same value. In two dimensions the
 signed azimuth is taken modulo `π`, giving `[0, π)`; in three or more the polar angle to the axis is
 taken from `|cos|`, giving `[0, π/2]`.
 
 `reference_axis` need not be normalized. A pair separated along the reference axis has angle exactly
-`0`, and bins are `(lo, hi]`, so bins over this axis start just below zero — [`axis_bounds`](@ref)
-does — or an axis-aligned pair falls in no bin.
+`0`, and bins are `(lo, hi]`, so bins over this axis must start just below zero, as
+[`axis_bounds`](@ref) does, for an axis-aligned pair to fall in a bin.
 """
 struct SeparationAngleAxis{V} <: AbstractSecondAxisSource
     reference_axis::V
@@ -45,7 +40,7 @@ Base.hash(s::SeparationAngleAxis, h::UInt) = hash(s.reference_axis, hash(Separat
 
 """
 Whether the source needs its own per-pair buffer, or reads the operator value the kernel already
-computed. Constant-folded, so binning the operator's value costs no extra store.
+computed.
 """
 @inline needs_axis_buffer(::InvariantValueAxis) = false
 @inline needs_axis_buffer(::SeparationAngleAxis) = true

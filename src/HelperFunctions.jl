@@ -67,11 +67,9 @@ Remove points (columns) where either the position `x_mat` or the velocity `u_mat
 contains a `NaN`. Returns `(x_mat_clean, u_mat_clean)`.
 """
 function remove_nans(x_mat::AbstractMatrix{FT}, u_mat::AbstractMatrix{FT}) where {FT}
-    # Find columns that have NO NaNs in either matrix
     nan_in_x = any(isnan, x_mat, dims = 1)
     nan_in_u = any(isnan, u_mat, dims = 1)
 
-    # Combined mask (vec to turn 1xN matrix into N-vector)
     valid_mask = vec(.!(nan_in_x .| nan_in_u))
 
     return x_mat[:, valid_mask], u_mat[:, valid_mask]
@@ -91,10 +89,6 @@ end
     digitize.(x, Ref(bins))
 end
 
-## `digitize` dispatches on `AbstractBinEdges` via `searchsortedfirst` overrides in `BinEdges.jl`.
-
-
-
 @inline LA.normalize(x::Tuple{T, Vararg{T}}) where {T} =
     NTuple{length(x), T}(LA.normalize(SA.SVector(x)))
 
@@ -109,12 +103,7 @@ end
 end
 
 @inline r̂(x1, x2, ::DI.Euclidean, distance) = δr(x1, x2) / distance
-# `LA.normalize` is cheap here because the vector is an `SVector`: no scaling checks.
 @inline r̂(x1, x2, ::DI.PreMetric, distance) = LA.normalize(δr(x1, x2))
-
-# -----------------------------------------------------------------------------
-# Spherical geometry: unit positions, geodesic frames, parallel transport
-# -----------------------------------------------------------------------------
 
 @inline _unit_position(sλ, cλ, sφ, cφ) = SA.SVector(cφ * cλ, cφ * sλ, sφ)
 
@@ -143,9 +132,7 @@ Smallest `sin²σ` for which the separation direction is still representable: `f
 guards `1/0` alone.
 
 The normalization is exact as `σ → 0`: `t_A ≈ d` is `O(σ)` and `inv_s ≈ 1/σ`, so their product stays
-`O(1)` and a short pair is computed to full precision. The tolerance therefore has to stay below the
-physical scales in play — `sin²σ` is `2.5e-8` for a 1 km separation on Earth, and smaller as the
-square of the separation.
+`O(1)` and a short pair is computed to full precision.
 """
 @inline _geodesic_degeneracy_tol(::Type{T}) where {T} = floatmin(T)
 
@@ -175,16 +162,14 @@ Both tangents also share one normalizer, since `‖q̂ − (p̂·q̂)p̂‖² = 
 So the whole frame costs one `sqrt`.
 
 `σ` uses the tangent-half-angle form `2·atan(‖p̂−q̂‖, ‖p̂+q̂‖)`, accurate for every `σ` including
-antipodal. `acos(p̂·q̂)` loses half the mantissa near `σ=0`, which is fatal in `Float32`.
+antipodal.
 
-`ok` is `false` for coincident (`σ=0`) and antipodal (`σ=π`) pairs, where the direction is genuinely
+`ok` is `false` for coincident (`σ=0`) and antipodal (`σ=π`) pairs, where the direction is
 undefined — antipodal points are joined by infinitely many great circles, so parallel transport
-between them is not unique. Callers must skip such pairs: `1/s` is otherwise `Inf` and a single NaN
-lane poisons an entire atomic accumulator.
+between them is not unique. Callers must skip such pairs.
 """
 @inline function geodesic_frame(p̂::SA.SVector{3, T}, q̂::SA.SVector{3, T}) where {T}
-    # Work through d = q̂ - p̂ (magnitude O(σ)): forming `q̂ - (p̂·q̂)p̂` directly cancels
-    # catastrophically as σ → 0 because both terms approach p̂.
+    # d = q̂ - p̂ has magnitude O(σ); `q̂ - (p̂·q̂)p̂` formed directly cancels as σ → 0.
     d = q̂ - p̂
     sum_pq = p̂ + q̂
     dp = fma_dot(d, p̂)               # = p̂·q̂ - 1 = -2sin²(σ/2), small and accurate
@@ -194,7 +179,7 @@ lane poisons an entire atomic accumulator.
     s2 = fma_dot(w, w)               # = sin²σ
     c2 = fma_dot(sum_pq, sum_pq)     # = 4cos²(σ/2), the scale that vanishes at antipodal
     σ = 2 * atan(sqrt(fma_dot(d, d)), sqrt(c2))
-    # Both roots of `sin σ = 0`, which need different thresholds — see the two tolerances.
+    # `sin σ = 0` at both roots, each with its own tolerance.
     ok = s2 > _geodesic_degeneracy_tol(T) && c2 > _antipodal_degeneracy_tol(T)
     inv_s = ok ? inv(sqrt(s2)) : zero(T)
     return σ, t_A * inv_s, t_B * inv_s, w * inv_s, ok
@@ -217,8 +202,8 @@ velocities, `3` for a thin shell carrying an additional radial component.
 `D` cannot be inferred from the coordinates — a point on a shell has two of them either way — and it
 changes the answer, because `transverse_component_norm2` divides the transverse energy by `D - 1`.
 
-`metric` is retained because the coordinates mean whatever it says they mean: it is what fixes their
-angle unit, which `pair_frame` needs in order to take a `sincos`. See [`unit_position`](@ref).
+`metric` fixes the coordinates' angle unit, which [`prepare_pair_inputs`](@ref) needs to take a
+`sincos`. See [`unit_position`](@ref).
 """
 struct SphericalGeometry{D, M, T}
     metric::M
@@ -270,15 +255,12 @@ whether a radial component is carried, so it cannot be read off a prepared array
 
 Separation and the geometry-specific frame data for one pair, touching **no velocities**.
 
-Split from [`pair_increments`](@ref) because callers depend on that order: the scalar kernels reject
-out-of-range pairs before loading `u_j` at all, and the batch kernels build one frame per `(i, j)`
-and reuse it across a whole strip of velocity fields. A single call taking the velocities would
-defeat both.
+The scalar kernels reject out-of-range pairs before loading `u_j`, and the batch kernels build one
+frame per `(i, j)` and reuse it across a strip of velocity fields; see [`pair_increments`](@ref).
 """
 @inline function pair_frame(::FlatGeometry, x1, x2)
     dx = δr(x1, x2)
-    # Carry the RAW displacement, not `dx / r`: normalizing here would make every out-of-range pair
-    # pay a divide and D multiplies for a direction the bin test is about to discard.
+    # The frame is the raw displacement; `pair_direction` normalizes it.
     return true, sqrt(fma_dot(dx, dx)), dx
 end
 
@@ -486,10 +468,9 @@ end
 """
     pair_geometry_for(metric, ::Val{D}) -> geometry
 
-Geometry implied by `metric` for user-facing dimension `D`. A distance function alone does not define
-a direction or a transport rule, so there is deliberately **no generic method** and an unrecognized
-metric raises. Add a method here (and a
-[`pair_geometry`](@ref) method for the geometry it returns) to support another manifold.
+Geometry implied by `metric` for user-facing dimension `D`. There is no generic method: an
+unrecognized metric raises. Add a method here (and a [`pair_geometry`](@ref) method for the geometry
+it returns) to support another manifold.
 """
 pair_geometry_for(::DI.Euclidean, ::Val{D}) where {D} = FlatGeometry{D}()
 pair_geometry_for(m::DI.Haversine, ::Val{D}) where {D} = SphericalGeometry{D}(m, m.radius)
@@ -521,9 +502,7 @@ pair_geometry_for(m::SphericalDistance, ::Val{D}) where {D} = SphericalGeometry{
 
 Ingest helpers that take the angle unit from the metric's own documented convention:
 `Distances.Haversine` is **degrees**, `Distances.SphericalAngle` and [`SphericalDistance`](@ref) are
-**radians**. Confusing the two
-silently rescales every separation by a factor of ~57, so the convention is pinned next to the metric
-that defines it.
+**radians**.
 """
 @inline unit_position(::DI.Haversine, lon, lat) = unit_position(lon, lat)
 @inline local_east_north(::DI.Haversine, lon, lat) = local_east_north(lon, lat)
@@ -742,7 +721,7 @@ Return the signed longitudinal magnitude of `δu` along `r_hat`. The caller must
 a unit vector.
 """
 @inline function magnitude_δu_longitudinal(δu, r_hat)
-    return fma_dot(δu, r_hat) # r_hat is unit vector so just dot product
+    return fma_dot(δu, r_hat)
 end
 
 """
@@ -758,7 +737,6 @@ Return the transverse magnitude of `δu`, signed relative to the normal vector `
 caller must ensure `r_hat` is a unit vector.
 """
 @inline function magnitude_δu_transverse(δu, r_hat)
-    # Signed relative to n̂; the norm of the rejected component is the unsigned magnitude.
     return fma_dot(δu, n̂(r_hat))
 end
 

@@ -13,8 +13,7 @@ struct HarmPlan{WG, PTS, LT}
 end
 
 """The plan for `n_m` orders over `N` points on the device `caps` describes: `HARM_WG` lanes of `HARM_PTS` points,
-degree tiles of `HARM_LT`, and chunks enough for `HARM_GROUPS_PER_SM` workgroups per multiprocessor — the constants with
-the least worst-case regret over the regimes of the `harmonic` section of `gpu/benchmark_launch_plans.jl`."""
+degree tiles of `HARM_LT`, and chunks enough for `HARM_GROUPS_PER_SM` workgroups per multiprocessor."""
 _harm_plan(caps::SFC.GPUDeviceCaps, n_m::Int, N::Int) =
     HarmPlan{HARM_WG, HARM_PTS, HARM_LT}(clamp(cld(HARM_GROUPS_PER_SM * caps.n_sms, n_m), 1,
                                                max(1, cld(N, HARM_WG * HARM_PTS))))

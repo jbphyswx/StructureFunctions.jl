@@ -25,7 +25,7 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
     n_vals = length(value_bins) - 1
     G2 = SFH.FlatGeometry{2}()
 
-    # 1. 1D Serial mutating Array tests
+    # 1. The 1D serial in-place entry reproduces the allocating result and accumulates on a second call
     Test.@testset "1D Serial Mutating Array Correctness & Accumulation" begin
         # Baselines
         bas = SFC.calculate_structure_function(
@@ -47,26 +47,7 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
         Test.@test counts == bas.counts .* 2
     end
 
-    # 2. 1D Serial mutating Array tests
-    Test.@testset "1D Serial Mutating Array Correctness & Accumulation" begin
-        bas = SFC.calculate_structure_function(
-            SFT.L2SF, x_mat, u_mat, distance_bins, SF.StructureFunctionSumsAndCounts;
-            backend = CB.SerialBackend()
-        )
-
-        sums = zeros(Float64, n_dist)
-        counts = zeros(UInt32, n_dist)
-
-        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
-        Test.@test sums == bas.sums
-        Test.@test counts == bas.counts
-
-        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
-        Test.@test sums ≈ bas.sums .* 2
-        Test.@test counts == bas.counts .* 2
-    end
-
-    # 3. 2D Serial mutating Array and Array tests
+    # 2. The 2D serial in-place entry reproduces the allocating result and accumulates on a second call
     Test.@testset "2D Serial Mutating Array & Array Correctness & Accumulation" begin
         bas_arr = SFC.calculate_structure_function(
             SFT.L2SF, x_mat, u_mat, distance_bins, value_bins;
@@ -85,16 +66,9 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
         SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
         Test.@test sums_arr ≈ bas_arr.sums .* 2
         Test.@test counts_arr == bas_arr.counts .* 2
-
-        # Mutate Array
-        sums_arr = zeros(Float64, n_dist, n_vals)
-        counts_arr = zeros(UInt32, n_dist, n_vals)
-        SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
-        Test.@test sums_arr == bas_arr.sums
-        Test.@test counts_arr == bas_arr.counts
     end
 
-    # 4. Threaded mutating tests
+    # 3. The threaded in-place entries match the serial ones in 1D and 2D, with a bounded allocation
     Test.@testset "1D & 2D Threaded Mutating Parity & Low Allocation" begin
         # 1D Array Threaded
         sums_ser = zeros(Float64, n_dist)
@@ -107,13 +81,6 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
 
         Test.@test sums_ser ≈ sums_thr
         Test.@test counts_ser == counts_thr
-
-        # 1D Array Threaded
-        sums_thr_arr = zeros(Float64, n_dist)
-        counts_thr_arr = zeros(UInt32, n_dist)
-        SFC.threaded_calculate_structure_function!(sums_thr_arr, counts_thr_arr, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
-        Test.@test sums_ser ≈ sums_thr_arr
-        Test.@test counts_ser == counts_thr_arr
 
         # 2D Array Threaded
         sums_2d_ser = zeros(Float64, n_dist, n_vals)
@@ -134,7 +101,7 @@ Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
         Test.@test alloc1 < 250_000 # extremely lightweight compared to O(N_points)
     end
 
-    # 5. Public backend dispatch calculate_structure_function! tests
+    # 4. The public in-place entry with AutoBackend matches the serial one in 1D and 2D
     Test.@testset "Public Entrypoints & Backend Dispatch" begin
         # 1D Public AutoBackend (resolves to threaded or serial)
         sums_pub = zeros(Float64, n_dist)

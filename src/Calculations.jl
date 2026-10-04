@@ -1,5 +1,5 @@
 """
-The workhorse of this package, split into focused files under src/Calculations/
+Structure-function, spectrum, and fit entry points, split into files under src/Calculations/.
 """
 module Calculations
 
@@ -63,7 +63,6 @@ even periodic direction splits each of its pairs in halves between two angle bin
 """
 const DEFAULT_SPLIT_COUNT_TYPE = Float32
 
-# Re-include backend types, GPU stubs, batch CPU drivers, serial solvers, and main entry dispatch.
 include("Calculations/backends.jl")
 include("Calculations/shapes.jl")
 include("Calculations/culling.jl")

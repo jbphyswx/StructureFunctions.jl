@@ -1,9 +1,7 @@
 # Dispatch Entry Points and Backend Routing
 
-# --- Public Entry Points ---
+# Public entry points
 
-# Tuple inputs are deliberately rejected at the public calculation boundary while
-# the array API is stabilized. Lower-level tuple kernels remain private helpers.
 function _derived_structure_function_error(structure_function_type)
     throw(ArgumentError(
         "$(typeof(structure_function_type)) is a derived structure-function quantity, " *
@@ -12,10 +10,7 @@ function _derived_structure_function_error(structure_function_type)
     ))
 end
 
-# --- Result finalization (result-type dispatch) ---
-# Backends compute and return only the raw accumulator (`…SumsAndCounts`). The public boundary
-# maps it to the requested result type `OT` via dispatch on `(raw, ::Type{OT})`. An unsupported
-# representation (e.g. an averaged 2D result) raises in the fallback.
+# Result finalization: maps a backend's raw accumulator to the requested result type `OT`; unsupported pairs raise.
 _finalize(r::SFO.StructureFunctionSumsAndCounts, ::Type{<:SFO.StructureFunctionSumsAndCounts}) = r
 _finalize(r::SFO.StructureFunctionSumsAndCounts, ::Type{<:SFO.StructureFunction}) =
     SFO.StructureFunction(r.operator, r.distance, _bin_average(r.sums, r.counts))
@@ -94,8 +89,6 @@ calculate_structure_function(sf::SFT.AbstractPairwiseStructureFunctionType, x::A
                              distance_bins::AbstractVector, ::Type{OT}; kwargs...) where {OT <: SFO.AbstractStructureFunction} =
     calculate_structure_function(sf, x, u, distance_bins, DEFAULT_COUNT_TYPE, OT; kwargs...)
 
-# There is no averaged joint representation, so an `OT` other than the raw histogram raises in
-# `_finalize`.
 function calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x::AbstractArray,
@@ -150,7 +143,6 @@ function calculate_structure_function(
     end
     actual_bins = _auto_distance_bins(min_distance, max_distance, distance_bins, bin_spacing)
 
-    # `bin_spacing` selected these edges and means nothing downstream, so it is consumed here.
     return calculate_structure_function(
         structure_function_type,
         x,
@@ -209,7 +201,7 @@ function minmax_i(i::Int, x::AbstractMatrix{FT}, distance_metric, ::Val{W}) wher
     return min_distance, max_distance
 end
 
-# --- StructureFunction Factory Constructor ---
+# StructureFunction factory constructor
 function SFO.StructureFunction(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
     x,
@@ -221,7 +213,7 @@ function SFO.StructureFunction(
     return calculate_structure_function(structure_function_type, x, u, bins, args...; kwargs...)
 end
 
-# --- Backend Dispatch for Mutating API (calculate_structure_function!) ---
+# Backend dispatch for the mutating API
 
 calculate_structure_function!(sums, counts, sf_type::SFT.AbstractDerivedStructureFunctionType, x, u, args...;
                               kwargs...) = _derived_structure_function_error(sf_type)
@@ -269,8 +261,6 @@ function calculate_structure_function!(
     return nothing
 end
 
-# # --- Backend Dispatch Layers for Mutating API ---
-
 function _dispatch_execution_backend!(
     ::CB.AbstractSerialBackend, shape::AbstractFieldShape, sums, counts, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins; kwargs...
 )
@@ -314,7 +304,7 @@ _dispatch_execution_backend!(::CB.AbstractAutoBackend, shape::AbstractFieldShape
     _dispatch_execution_backend!(resolve_auto_backend(), shape, sums, counts, structure_function_type, x, u,
                                  distance_bins; kwargs...)
 
-# --- Mutating 2D Backend Dispatch Layers ---
+# Mutating 2D backend dispatch
 
 function _dispatch_execution_backend!(
     ::CB.AbstractSerialBackend, shape::AbstractFieldShape, sums_2d, counts_2d, structure_function_type::SFT.AbstractPairwiseStructureFunctionType, x, u, distance_bins, value_bins::AbstractVector; kwargs...
@@ -367,12 +357,9 @@ function _dispatch_execution_backend!(
     return _dispatch_execution_backend!(backend, sums_2d, counts_2d, structure_function_type, x, u, distance_bins, value_bins; kwargs...)
 end
 
-# --- Non-Mutating Dispatch Layers ---
-# 1D (distance_bins only) and 2D (distance_bins + value_bins) are distinguished by ARITY here:
-# 1D methods take `(backend, shape, sf, x, u, distance_bins, CT)` and return a raw
-# `StructureFunctionSumsAndCounts`; 2D methods take `value_bins::AbstractVector` before `CT` and return a
-# raw `StructureFunction2DSumsAndCounts`. The public boundary applies `_finalize` to pick the
-# representation.
+# Non-mutating dispatch: 1D methods take `(backend, shape, sf, x, u, distance_bins, CT)` and return a raw
+# `StructureFunctionSumsAndCounts`; 2D methods take `value_bins` before `CT` and return a raw
+# `StructureFunction2DSumsAndCounts`.
 
 # 1D
 function _dispatch_execution_backend(

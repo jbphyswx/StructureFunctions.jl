@@ -1,5 +1,4 @@
 PrecompileTools.@compile_workload begin
-    # Common types
     FTs = [Float64, Float32]
     dims = [2, 3]
 

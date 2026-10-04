@@ -40,7 +40,7 @@ end
 """Unified 1D batch device launch of the moment set `moments` through `_sf_launch_1d_batch!`: fixed-x
 and varying-x, any width, any distance-bin type, culled by `culling`. Accumulates into the caller's
 `sums`/`counts` when [`_accumulation_buffers`](@ref) admits them, else into fresh buffers; returns
-`(sums, counts, direct)` of shape `(NMOM, NB, B)`. `u` is staged `(F,N,B)` with no batch-major permute."""
+`(sums, counts, direct)` of shape `(NMOM, NB, B)`. `u` is staged `(F,N,B)`."""
 function _gpu_1d_unified_device(
     backend, x, u, moments, distance_bins, NB::Int, B::Int, fixed_x::Bool, ::Type{OT}, ::Type{CT}, geom;
     weights = SFC.NoWeights(), workspace = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(), source = x,
@@ -197,8 +197,7 @@ end
 """Unified 2D batch device launch of the moment set `moments` through `_sf_launch_2d_batch!`: fixed-x
 and varying-x, any distance- and value-bin type, culled by `culling`. Accumulates into the caller's
 `sums`/`counts` when [`_accumulation_buffers`](@ref) admits them, else into fresh buffers; returns
-`(sums, counts, direct)` of shape `(NMOM, n_dist, n_val, B)`. `u` is staged `(F,N,B)` with no batch-major
-permute."""
+`(sums, counts, direct)` of shape `(NMOM, n_dist, n_val, B)`. `u` is staged `(F,N,B)`."""
 function _gpu_2d_unified_device(
     backend, x, u, moments, distance_bins, value_bins,
     n_dist::Int, n_val::Int, B::Int, fixed_x::Bool, ::Type{OT}, ::Type{CT}, geom;

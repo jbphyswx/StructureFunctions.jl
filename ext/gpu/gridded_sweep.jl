@@ -2,7 +2,7 @@
 # grid, which the transform cannot express because it computes polynomial moments of each lag.
 #
 # A unit of `L` lanes owns one slice of one (slab pair, lag), or one of `n_chunks` parts of it when the lags
-# alone would not fill the device; its lanes sweep the lag's cells at the stride of the chunked unit
+# alone do not fill the device; its lanes sweep the lag's cells at the stride of the chunked unit
 # (`SFC._lag_fold`), so consecutive lanes read consecutive cells, and a workgroup of `WG` lanes holds `WG ÷ L`
 # units ([`LagPlan`](@ref)).
 # The lanes an item takes follow the launch's total work and the lag's cells ([`_lag_plan`](@ref)). A schedule

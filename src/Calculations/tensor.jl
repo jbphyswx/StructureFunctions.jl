@@ -1,5 +1,3 @@
-# Tensor structure-function calculations.
-
 """
     calculate_structure_function_tensor(order, x, u, distance_bins[, CT][, OT]; backend, distance_metric, weights)
 
@@ -317,7 +315,7 @@ and the weights permuted into it ([`_tensor_cull`](@ref)). With `axis = (axis_bi
 second_axis)` the sweep is joint in separation and angle, over one field on a flat metric; the setup's
 `axis` holds the digitize plan of `axis_bins` in their place.
 
-Shared by every backend so the preparation happens **once**, above any task or worker loop.
+Shared by every backend.
 """
 function _tensor_setup(
     order::Val{P}, shape::AbstractFieldShape{D}, sums, counts, x, u, distance_bins, geom,
@@ -417,9 +415,8 @@ end
 Accumulate every pair `(i, j > i)` for `i` in `outer`, in the block pairs of `s`'s cull grid when it
 has one.
 
-The outer list is a parameter so that one kernel serves every backend: serial passes the whole
-range, threaded and distributed pass a chunk of it, and the partial results add because a histogram
-is order-independent. With a second axis in `s` the pair's angle picks the second bin.
+Partial results over disjoint `outer` ranges add. With a second axis in `s` the pair's angle picks
+the second bin.
 """
 function _tensor_pairs!(sums_flat, counts_flat, order::Val{P}, s, outer) where {P}
     if s.grid isa AbstractVector
@@ -588,9 +585,7 @@ end
     end
 end
 
-# ---------------------------------------------------------------------------------------------------
 # Tensors on grids: the transform engine's per-lag symmetric moment store, binned without contraction.
-# ---------------------------------------------------------------------------------------------------
 
 """
     gridded_tensor_sweep!(sums, counts, order, data, schedule, distance_bins[, axis_bins], ::Val{D}, spectral_backend; valid, weights, backend[, second_axis])
@@ -622,7 +617,6 @@ gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule, 
 gridded_tensor_sweep!(sums, counts, order::Val, data::AbstractMatrix, schedule, distance_bins, axis_bins, ::Val{D},
                       spectral_backend; kwargs...) where {D} = _not_a_spectral_tag(spectral_backend)
 
-# A gridded tensor has one algorithm, the transform; the pair loop over the grid's points is the point entry.
 _no_tensor_sum() = throw(ArgumentError(
     "a gridded tensor structure function is computed by transform: pass FastFourierTransformSpectralBackend() or " *
     "AutoSpectralBackend() on a grid, or a non-uniform FFT tag on a ScatteredModesSchedule. The pair loop is the " *

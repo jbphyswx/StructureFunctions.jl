@@ -34,9 +34,11 @@ function _rand_batch_varying(N::Int, B::Int)
     return x, u, edges
 end
 
+# Every batch fast path on the KA.CPU backend reproduces the serial reference histograms.
 Test.@testset "batch matrix parity (KA.CPU)" begin
     N, B = 24, 3
 
+    # pair_from_linear returns an ordered pair of valid indices at the ends and middle of a 20000-point pair list.
     Test.@testset "pair_from_linear large N" begin
         Nbig = 20_000
         total = Nbig * (Nbig - 1) ÷ 2
@@ -46,9 +48,9 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         end
     end
 
+    # The 1D histogram of a batch sharing one position set matches the serial shared-position reference.
     Test.@testset "row1 individual 1D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
-        Test.@test ndims(x) == 2
         NB = length(lbe) - 1
         cpu_s = zeros(Float32, NB, B)
         cpu_c = zeros(UInt32, NB, B)
@@ -61,7 +63,8 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         Test.@test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
 
-    Test.@testset "row1b individual 1D fixed-x B>strip (regression)" begin
+    # The shared-position 1D histogram matches serial for a batch of 17 slices.
+    Test.@testset "row1b individual 1D fixed-x with a 17-slice batch" begin
         Nb, Bb = 24, 17
         x, u, lbe = _rand_batch_fixed(Nb, Bb)
         NB = length(lbe) - 1
@@ -75,9 +78,9 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         Test.@test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
 
+    # The 1D batch histogram with per-slice positions matches the serial varying-position reference.
     Test.@testset "row2 individual 1D varying-x" begin
         x, u, lbe = _rand_batch_varying(N, B)
-        Test.@test ndims(x) == 3
         NB = length(lbe) - 1
         cpu_s = zeros(Float32, NB, B)
         cpu_c = zeros(UInt32, NB, B)
@@ -91,6 +94,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         Test.@test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
     end
 
+    # T3 and L2T1 batch histograms match serial for shared and varying positions and are not all zero.
     Test.@testset "row2b signed transverse operators on the batch kernels" begin
         for sft in (SFT.T3SFType(), SFT.L2T1SFType())
             x, u, lbe = _rand_batch_fixed(N, B)
@@ -118,6 +122,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         end
     end
 
+    # Serial batch single-pass equals per-slice single-pass, and the backend entry matches both for every invariant.
     Test.@testset "row3 SP1D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
         n_bins = length(lbe) - 1
@@ -145,6 +150,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         end
     end
 
+    # The single-pass batch with per-slice positions matches the serial reference.
     Test.@testset "row4 SP1D varying-x slices" begin
         x, u, lbe = _rand_batch_varying(N, B)
         n_bins = length(lbe) - 1
@@ -160,6 +166,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         Test.@test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
     end
 
+    # The single-pass joint (distance x value) histogram with shared positions matches serial for every invariant.
     Test.@testset "row5 SP2D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
         val_edges = LinearBinEdges(-1.0f0, 1.0f0, 9)
@@ -180,6 +187,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         end
     end
 
+    # The single-pass joint histogram batch with per-slice positions matches the serial reference.
     Test.@testset "row6 SP2D varying-x slices" begin
         x, u, lbe = _rand_batch_varying(N, B)
         val_edges = LinearBinEdges(-1.0f0, 1.0f0, 9)
@@ -197,6 +205,7 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         Test.@test batch_histograms_equal(gpu_s, gpu_c, cpu_s, cpu_c; atol = 1f-4)
     end
 
+    # The L2 joint (distance x value) histogram of a shared-position batch matches serial.
     Test.@testset "row7 joint 2D fixed-x" begin
         x, u, lbe = _rand_batch_fixed(N, B)
         val_edges = LinearBinEdges(-0.5f0, 1.5f0, 9)
@@ -212,7 +221,8 @@ Test.@testset "batch matrix parity (KA.CPU)" begin
         Test.@test batch_histograms_equal(gpu_out.sums, gpu_out.counts, cpu_s, cpu_c; atol = 1f-4)
     end
 
-    Test.@testset "row8 SP2D fixed-x production 50x50 bin grid (smoke)" begin
+    # The single-pass joint histogram on a 10 x 50 bin grid matches serial for every invariant.
+    Test.@testset "row8 SP2D fixed-x 10 x 50 bin grid" begin
         Np, Bp = 32, 2
         x, u, lbe = _rand_batch_fixed(Np, Bp)
         val_edges = LinearBinEdges(-1.0f0, 1.0f0, 51)

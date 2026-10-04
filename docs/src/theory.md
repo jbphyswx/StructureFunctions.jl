@@ -231,7 +231,7 @@ Using one flat direction for both endpoints ignores the meridian convergence, th
 25° at 1000 km and 70°. ``D_{LT}`` vanishes identically under reflection symmetry, so this leaks
 ``O(ψ)(D_{TT} - D_{LL})/2`` into a quantity whose true value is zero, and the third-order cascade
 diagnostics inherit ``O(ψ)``. For a solid-body rotation, which has no strain, the transported frame
-gives ``\sum D_{LL} / \sum S_2 ≈ 5×10^{-32}`` while a flat lon/lat frame puts 36 % of the signal into
+gives ``D_{LL} = 0`` to round-off while a flat lon/lat frame puts a finite share of the signal into
 ``D_{LL}``. Below about 10 km a flat tangent plane is fine; beyond about 100 km, or poleward of about
 60°, use a spherical metric.
 

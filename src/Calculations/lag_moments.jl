@@ -15,7 +15,7 @@ end
 
 """
 Pairs a lag names between two slabs: the count column of the inverted transforms when the field is masked
-or weighted (a weighted pair mass in the latter case), the slab overlap otherwise; halved on a lag equal
+or weighted (a weighted pair mass in the latter case), else the slab overlap; halved on a lag equal
 to its own reverse.
 """
 @inline function _named_pairs(::Val{false}, masked::Bool, out, idx::Int, ncol::Int, su::UniformLagSchedule, h,
@@ -61,9 +61,8 @@ end
     _item_pair_lag(Val(UB), Val(Dg), gid, first_pair, last_pair, boxes) -> (pair, lag)
 
 The slab pair and the lag that work item `gid` of the pairs `first_pair:last_pair` owns. Under `UB` every
-pair carries the one box `(n_box, lo, len, strides)` and the pair follows by division; otherwise
-`boxes.off` indexes the per-pair boxes `boxes.lo`, `boxes.len`, `boxes.str`. One value, so neither
-part is a variable a caller's closure captures and reassigns.
+pair carries the one box `(n_box, lo, len, strides)` and the pair follows by division; under `!UB`
+`boxes.off` indexes the per-pair boxes `boxes.plo`, `boxes.plen`, `boxes.pstr`.
 """
 @inline function _item_pair_lag(::Val{UB}, ::Val{Dg}, gid::Int, first_pair::Int, last_pair::Int, boxes) where {UB, Dg}
     if UB

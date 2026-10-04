@@ -107,7 +107,7 @@ Test.@testset "Core Correctness - Block A" begin
         )[1][1] == 0.0
 
         # Off-Diagonal Consistent Third Order (t^3): with the right-handed n̂ = ẑ × r̂ the transverse
-        # component is +1 here, so t^3 = +1 (it was -1 under the old clockwise n̂).
+        # component is +1 here, so t^3 = +1.
         Test.@test SFC.calculate_structure_function(
             SFT.OffDiagonalConsistentThirdOrderStructureFunction,
             x,
@@ -257,7 +257,7 @@ Test.@testset "Count element type must represent the worst-case pair count" begi
     small_x = rand(Float32, 2, 64)
     Test.@test SFC.calculate_structure_function(
         sft, small_x, small_x, bins_of,
-    ) isa Any
+    ) isa SF.StructureFunction
 end
 
 # The auto-binning min/max scan covers unordered pairs once (`j > i`) and accumulates in the input

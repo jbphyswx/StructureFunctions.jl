@@ -29,6 +29,15 @@ output's own count type for a pair mass."""
 """Byte offset of the dynamic count plane: after the sum plane, aligned for any element."""
 @inline _cuda_count_plane_offset(::Type{FT}, cells::Int) where {FT} = cld(cells * sizeof(FT), 16) * 16
 
+"""Moment `p` of a launch whose planes start at moment `p0`."""
+@inline _cuda_plane(::Val{P0}, p) where {P0} = P0 + p - 1
+@inline _cuda_plane(p0::Int, p) = p0 + p - 1
+
+"""The first moment of a launch's planes: a `Val` when one launch holds all `NMOM` of them, so the kernel selects each
+moment and its value plan when it compiles."""
+@inline _cuda_planes_from(::Val{NMOM}, ::Val{NMOM}, p0::Int) where {NMOM} = Val(1)
+@inline _cuda_planes_from(::Val, ::Val, p0::Int) = p0
+
 # Moments `p0 … p0 + NP - 1` of the moment set: a launch holds their planes in shared memory, and a histogram whose
 # `NMOM` planes do not fit takes several launches.
 function _cuda_sf_2d_kernel!(
@@ -41,7 +50,7 @@ function _cuda_sf_2d_kernel!(
     ddig,                   # device digitize plan of the distance bins
     vplan,                  # device value plan: one digitize plan, or one per moment
     N::Int, n_dist::Int, n_val::Int, hcells::Int,
-    sched, ntb::Int, p0::Int,
+    sched, ntb::Int, p0::Union{Int, Val},
     ::Val{W}, ::Val{F}, ::Val{NMOM}, ::Val{FIXED_X}, ::Val{TILE}, ::Val{CST}, ::Val{NP},
     geom, second_axis,
 ) where {W, F, NMOM, FIXED_X, TILE, CST, NP}
@@ -119,7 +128,7 @@ function _cuda_sf_2d_kernel!(
                 moments = SFC._sf_pair_moments(sf_type, geom, frame, dist, Xi, Xj, Ui, Uj)
                 pw = wi * SFC._point_weight(wts, jbase + jj - 1)
                 @inbounds for p in 1:NP
-                    m = p0 + p - 1
+                    m = _cuda_plane(p0, p)
                     v = SFC._sf_tuple_at(moments, m)
                     vb = SFC._sf_value_bin(vplan, SFC.pair_axis_key(second_axis, v, Xi, Xj, dist), m)
                     if 1 <= vb <= n_val
@@ -145,8 +154,8 @@ function _cuda_sf_2d_kernel!(
         vb = lc % vstride + 1
         # vb > n_val is a padding column, never written
         if cc != zero(CST) && vb <= n_val
-            CUDA.@atomic output[p0 + p - 1, dbin, vb, b] += s
-            CUDA.@atomic counts[p0 + p - 1, dbin, vb, b] += cc
+            CUDA.@atomic output[_cuda_plane(p0, p), dbin, vb, b] += s
+            CUDA.@atomic counts[_cuda_plane(p0, p), dbin, vb, b] += cc
         end
         cell += wg
     end
@@ -278,7 +287,7 @@ function _cuda_2d_fit(caps::SFC.GPUDeviceCaps, ::Type{XT}, ::Type{UT}, ::Type{FT
 end
 
 """In-range share below which the native 2-D shared kernel holds every moment's histogram plane at once, and at or
-above which two planes, or one, per launch."""
+above which also two planes, or one, per launch."""
 const CU_2D_PLANE_SHARE = 0.2
 
 """Pair evaluations from which a native 2-D call samples its in-range share and times its candidates
@@ -289,15 +298,15 @@ const CU_2D_CHOOSE_FROM = (1.0e7, 1.5e6)
 of `UT` at width `F`, sums of `FT`, shared counts of `CST`, `NMOM` moments and an `n_dist × n_val` histogram per moment
 on the device `caps` describes: the shared-histogram kernel at the largest tile of 512 and 256 whose tile pairs reach
 4 blocks per multiprocessor, at the largest of 1024, 512 and 256 whose tile pairs reach one block per multiprocessor
-(else 128 for either), and at 256 and 128, holding every plane per launch below [`CU_2D_PLANE_SHARE`](@ref) and two or one
-above; then the global-atomic kernel at tile 128 (256 for 10⁸ evaluations or more at a share of at least 0.02); then
-the portable kernels ([`CUDAPortablePlan`](@ref)). Each native plan steps down until it fits."""
+(else 128 for either), and at 128, holding every plane per launch below [`CU_2D_PLANE_SHARE`](@ref) and every plane,
+two or one above; then the global-atomic kernel at tile 128 (256 for 10⁸ evaluations or more at a share of at least
+0.02); then the portable kernels ([`CUDAPortablePlan`](@ref)). Each native plan steps down until it fits."""
 function _cuda_2d_candidates(caps::SFC.GPUDeviceCaps, ::Type{XT}, ::Type{UT}, ::Type{FT}, ::Type{CST}, W::Int,
                              F::Int, NMOM::Int, n_dist::Int, n_val::Int) where {XT, UT, FT, CST}
     fit(spec) = _cuda_2d_fit(caps, XT, UT, FT, CST, W, F, NMOM, n_dist, n_val, spec)
     return function (N::Int, B::Int, fixed::Bool, evaluations::Real, share::Real)
-        tiles = (_cuda_tile_for(caps, N, B, 4, (512, 256)), _cuda_tile_for(caps, N, B, 1, (1024, 512, 256)), 256, 128)
-        planes = share < CU_2D_PLANE_SHARE ? (NMOM,) : NMOM == 1 ? (1,) : (2, 1)
+        tiles = (_cuda_tile_for(caps, N, B, 4, (512, 256)), _cuda_tile_for(caps, N, B, 1, (1024, 512, 256)), 128)
+        planes = share < CU_2D_PLANE_SHARE ? (NMOM,) : NMOM == 1 ? (1,) : (NMOM, 2, 1)
         shared = (fit((t, np)) for np in planes for t in tiles)
         glob = fit((evaluations >= 1e8 && share >= 0.02 ? 256 : 128, 0))
         return unique(filter(!isnothing, Any[shared..., glob, CUDAPortablePlan()]))
@@ -342,8 +351,9 @@ function _cuda_launch_2d!(plan::CUDA2DPlan{W, F, NMOM, TILE, CST, NP}, out, cnt,
     fx = fixed_x ? Val(true) : Val(false)
     for p0 in 1:NP:NMOM
         group = p0 + NP - 1 <= NMOM ? Val(NP) : Val(NMOM % NP)
-        args = (out, cnt, xv, uv, wts, sf_type, ddig, vplan, N, n_dist, n_val, plan.hcells, sched, ntb, p0,
-                Val(W), Val(F), Val(NMOM), fx, Val(TILE), Val(CST), group, geom, second_axis)
+        args = (out, cnt, xv, uv, wts, sf_type, ddig, vplan, N, n_dist, n_val, plan.hcells, sched, ntb,
+                _cuda_planes_from(Val(NP), Val(NMOM), p0), Val(W), Val(F), Val(NMOM), fx, Val(TILE), Val(CST), group,
+                geom, second_axis)
         kern = @cuda launch=false _cuda_sf_2d_kernel!(args...)
         # Staging plus the dynamic histogram may pass the default dynamic limit, so every launch opts in;
         # the plan guarantees the total is within the device's opt-in maximum.

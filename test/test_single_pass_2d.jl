@@ -7,8 +7,7 @@ using KernelAbstractions: KernelAbstractions as KA
 using Test: Test
 using Random: Random
 
-# Single-pass 2D now returns a NamedTuple keyed by invariant (each entry a
-# StructureFunction2DSumsAndCounts). Canonical invariant order matches the stacked-row order.
+# Single-pass 2D returns a NamedTuple keyed by invariant, in the stacked-row order of these six.
 const SP2D_INV = (:S2, :L2, :T2, :S3, :L3, :L1T2)
 
 """Wide synthetic value-bin edges for unit tests only."""

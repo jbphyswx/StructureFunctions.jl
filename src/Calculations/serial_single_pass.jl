@@ -56,7 +56,6 @@ function helmholtz_decompose_2d(
 
     D_LL = _bin_average(L2_sums, L2_counts)
     D_TT = _bin_average(T2_sums, T2_counts)
-    # Separation metadata is small; numerical integration follows the field backend.
     bin_mids = similar(D_LL, OT, n_bins)
     copyto!(bin_mids, collect(OT, midpoints(distance_bins)))
     integrand = (D_TT .- D_LL) ./ bin_mids
@@ -133,7 +132,7 @@ end
 
 # --- 1D Single Pass Functions ---
 
-"""Serial pair-loop accumulation into native ``(6, n_bins)`` buffers (no allocation)."""
+"""Serial pair-loop accumulation into native ``(6, n_bins)`` buffers."""
 function _accumulate_single_pass_1d!(
     sums::AbstractMatrix{OT},
     counts::AbstractMatrix{CT},
@@ -150,8 +149,7 @@ function _accumulate_single_pass_1d!(
         throw(DimensionMismatch("sums must have shape ($SINGLE_PASS_N, n_bins); got $(size(sums))"))
     size(counts) == (SINGLE_PASS_N, n_bins) ||
         throw(DimensionMismatch("counts must have shape ($SINGLE_PASS_N, n_bins); got $(size(counts))"))
-    # Flat D ∈ (2,3) via the SIMD compute/scatter split (vectorizes the per-pair du_L / |du|² compute over j; the
-    # 6-way histogram scatter stays scalar).
+    # Flat D ∈ (2,3): SIMD compute/scatter split.
     vD = _simd_width(geometry)
     if vD !== nothing
         _sp_simd_run!(sums, counts, x, u, distance_bins, vD, culling, weights)
@@ -169,17 +167,11 @@ end
 """
     _sp1d_derive_rows!(sums, counts)
 
-Fill the two derived invariant rows and replicate the shared count of a `(SINGLE_PASS_N, n_bins)`
+Fill the derived rows 3 and 6 and replicate the shared count of a `(SINGLE_PASS_N, n_bins)`
 accumulator.
 
-`T2 = S2 - L2` and `L1T2 = S3 - L3` hold for every pair, and a bin is a sum, so the pair loops store
-only rows 1, 2, 4, 5 — four stores per pair — and these two are differenced once per call. The count
-is identical across all six rows, so it is accumulated into row 1 and broadcast here.
-
-Uses `=`, never `+=`, so it is **idempotent**: correct whether a kernel runs once or many times over
-the same buffer, and correct under threaded/partial reduction because the derivation is linear
-(`Σ(S2-L2) = ΣS2 - ΣL2`). So it runs in one place, the end of each pair kernel, where the callers'
-assembly points number more than twenty.
+`T2 = S2 - L2` and `L1T2 = S3 - L3` hold for every pair, so the pair loops store only rows 1, 2, 4, 5
+and the count in row 1. Assigns with `=`, so repeated calls on one buffer are idempotent.
 """
 @inline function _sp1d_derive_rows!(sums::AbstractMatrix, counts::AbstractMatrix)
     @inbounds for b in axes(sums, 2)
@@ -198,11 +190,8 @@ end
 
 Single-pass (6 invariants) point-field SIMD compute/scatter kernel over the pairs `blocks` covers.
 For each `i`: `@simd` over its `j` block computes distance, `du_L = du·r̂`, and `|du|²` into buffers
-(contiguous components ⇒ packed loads, no scatter ⇒ vectorizes), then a scalar loop scatters the 6
-invariants of the in-range pairs as [`_pf_simd_pairs!`](@ref) does. Like it, it consumes `(i-block, j-block)`
-pairs (see [`block_pairs`](@ref)), so it gets both cache blocking and culling, and the loop must
-live in this one kernel (not a per-`i` helper) for the `@simd` to vectorize. The buffers are
-indexed by `window` ([`PairWindow`](@ref)). Shared by serial + threaded.
+indexed by `window` ([`PairWindow`](@ref)), then a scalar loop scatters the 6 invariants of the in-range
+pairs as [`_pf_simd_pairs!`](@ref) does. Consumes `(i-block, j-block)` pairs (see [`block_pairs`](@ref)).
 """
 function _pf_sp_simd_pairs!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
@@ -289,7 +278,6 @@ concretely typed schedule.
 ) where {D} = _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf,
     idxbuf, sel, _pair_window(N), pair_blocks(N, ilist; grid = grid), weights)
 
-# Serial driver: the full outer range through the same per-worker kernel.
 function _sp_simd_run!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
     x::AbstractMatrix, u::AbstractMatrix, dist_be, ::Val{D},
@@ -338,11 +326,9 @@ function _partial_single_pass_1d(
 end
 
 """
-    _sp1d_pairs!(sums, counts, x, u, dist_be, geom, n_bins, ilist)
+    _sp1d_pairs!(sums, counts, x, u, dist_be, geom, n_bins, blocks, weights)
 
-Six-invariant scalar pair loop over the outer indices `ilist`, for geometries with no SIMD fast
-path. The coordinate and field widths come from `geom` as `Val`s, so the `SVector`s stay concrete
-inside the loop.
+Six-invariant scalar pair loop over the pairs `blocks` covers, for geometries with no SIMD fast path.
 """
 function _sp1d_pairs!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
@@ -421,7 +407,6 @@ function _sp_simd_partial!(
            cull_grid_for(x_raw, SFH.FlatGeometry{D}(), dist_be, culling)
     xc, uc = isnothing(grid) ? (x_raw, u_raw) :
              (apply_perm(x_raw, grid.perm), apply_perm(u_raw, grid.perm))
-    # The cull reorders the points, so the weights are gathered the same way.
     wc = isnothing(grid) ? weights : _permuted_point_weights(weights, grid.perm)
     _sp_run_blocks!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf, idxbuf, sel,
         _share_indices(grid, N - 1, share), N, grid, wc)
@@ -515,7 +500,6 @@ function _dispatch_single_pass(
     sums = zeros(OT, SINGLE_PASS_N, n_bins)
     counts = zeros(CT, SINGLE_PASS_N, n_bins)
     _accumulate_single_pass_1d!(sums, counts, x, u, distance_bins; kwargs...)
-    # The raw six-row accumulator; the public entry builds the Helmholtz entry from it.
     return (sums = sums, counts = counts)
 end
 
@@ -637,9 +621,7 @@ function _single_pass_collection_1d(
         L3   = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.L3, distance_bins, _sp_rowview(sums, 5), cc), OT),
         L1T2 = _finalize(SFO.StructureFunctionSumsAndCounts(SINGLE_PASS_OPERATORS.L1T2, distance_bins, _sp_rowview(sums, 6), cc), OT),
     )
-    # Helmholtz exists exactly for point-field input (a 2D stacked matrix); batched input is
-    # ndims ≥ 3. Branch on `ndims(sums)` ALONE (compile-time) — not a runtime size check — so the
-    # return type is a single concrete NamedTuple (type-stable), not a Union of 6/7-key tuples.
+    # Point-field input is a 2D stacked matrix; batched input has ndims ≥ 3. The branch is on `ndims`, so the return type is concrete.
     if ndims(sums) == 2
         return merge(base, (; helmholtz = helmholtz_decompose_2d(distance_bins, sums, counts)))
     end
@@ -656,13 +638,10 @@ raw `StructureFunctionSumsAndCounts` that the 2D sibling also returns; pass `Str
 bin averages. For point-field input a `:helmholtz` entry (a
 [`HelmholtzDecomposition2D`](@ref StructureFunctions.StructureFunctionObjects.HelmholtzDecomposition2D)) is included.
 
-!!! note "Why only six invariants (no L2T1 / T3)"
-    The single-pass set is the six **isotropic** invariants. The directional third-order
-    invariants `L2T1` (`DiagonalInconsistentThirdOrderStructureFunction`) and `T3`
-    (`OffDiagonalConsistentThirdOrderStructureFunction`) are intentionally excluded: they require
-    choosing a basis direction for the transverse/normal component (the isotropy does not cancel),
-    so they are not basis-independent and are uncommon in practice. They remain available as
-    standalone operator types for an explicit [`calculate_structure_function`](@ref) call.
+!!! note "Excluded invariants"
+    The directional third-order invariants `L2T1` (`DiagonalInconsistentThirdOrderStructureFunction`)
+    and `T3` (`OffDiagonalConsistentThirdOrderStructureFunction`) depend on a basis direction for the
+    transverse component. They are available as operator types for [`calculate_structure_function`](@ref).
 """
 function calculate_structure_functions_single_pass(
     x::AbstractArray{FT1},
@@ -734,7 +713,7 @@ function calculate_structure_functions_single_pass_2d!(
     return sums_3d, counts_3d
 end
 
-"""Serial pair-loop accumulation into native ``(6, n_bins, n_val)`` buffers (no allocation)."""
+"""Serial pair-loop accumulation into native ``(6, n_bins, n_val)`` buffers."""
 function _accumulate_single_pass_2d!(
     sums_3d::AbstractArray{OT, 3},
     counts_3d::AbstractArray{CT, 3},
@@ -840,7 +819,6 @@ end
     _sp2d_pairs!(h, x, u, dist_be, value_bins, geom, n_bins, n_val, blocks)
 
 Single-pass 2D scalar pair loop over the pairs `blocks` covers, for non-Euclidean metrics.
-Specialized on the spatial dimension `D` so the `SVector`s are concrete.
 """
 function _sp2d_pairs!(
     h::AbstractArray{<:SumCount, 3},
@@ -986,7 +964,7 @@ indexed by `window`, and the six invariants' value columns into `C` where [`has_
 for the value edges and [`_sp2d_column_pass`](@ref) for the run; with a linear edge set per invariant, a pass per
 invariant forms them when [`_sp2d_invariant_column_pass`](@ref) holds for the run. The scalar half adds each
 in-range pair's six invariants into their cells, over the compacted in-range slots ([`_compact_in_range!`](@ref))
-when the schedule and the run's sample choose it, under the range test otherwise. Shared by serial + threaded.
+when the schedule and the run's sample choose it, else under the range test.
 """
 function _sp2d_simd_pairs!(
     h::AbstractArray{SumCount{OT, CT}, 3},
@@ -1243,9 +1221,8 @@ _dispatch_single_pass_2d(::CB.AbstractAutoBackend, shape::AbstractFieldShape, x:
 
 Wrap the stacked 2D single-pass `(sums, counts)` (shape `(6, n_dist, n_val, aux...)`) into a
 `NamedTuple` keyed by invariant, each value a `StructureFunction2DSumsAndCounts` view into the
-stacked accumulator. In 2-D each invariant's value lands in a different value bin, so the per-cell
-counts differ per invariant and are taken per invariant. The 2D joint
-histogram has no averaged representation, so `OT` must be `StructureFunction2DSumsAndCounts`.
+stacked accumulator. Counts are per invariant, since each invariant's value lands in its own value bin.
+`OT` must be `StructureFunction2DSumsAndCounts`.
 """
 function _single_pass_collection_2d(
     sums::AbstractArray, counts::AbstractArray, distance_bins, value_bins, ::Type{OT},

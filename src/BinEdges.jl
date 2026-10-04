@@ -9,14 +9,9 @@ Ordered histogram edges. Bin `i` contains queries in `(edges[i], edges[i+1]]`.
 lookup indices. [`InfPaddedBinEdges`](@ref) adds unbounded outer bins.
 
 """
-# abstract type AbstractBinEdges{T} <: AbstractVector{T} end
 abstract type AbstractVectorBinEdges{T} <: AbstractVector{T} end
 abstract type AbstractRangeBinEdges{T} <: AbstractRange{T} end
 const AbstractBinEdges{T} = Union{AbstractVectorBinEdges{T}, AbstractRangeBinEdges{T}}
-
-# ========================================================================= #
-# 1. Generic Wrapped Bin Edges
-# ========================================================================= #
 
 """
     BinEdges(edges::AbstractVector{T})
@@ -168,8 +163,7 @@ end
 @inline Base.searchsortedlast(b::LinearBinEdges, x) = _searchsortedlast_from_first(b, x)
 @inline Base.searchsorted(b::LinearBinEdges, x) = searchsortedfirst(b, x):searchsortedlast(b, x)
 
-# Base searches a real range from `first` and `step`; these edges are thresholds, so every ordering it
-# searches that way goes through the edges.
+# Orderings Base searches from `first` and `step` are searched through the edges.
 @inline Base.searchsortedfirst(b::LinearBinEdges, x::Real, o::Base.Sort.FastRangeOrderings) =
     o === Base.Order.Forward ? searchsortedfirst(b, x) :
     invoke(searchsortedfirst, Tuple{AbstractVector, Any, Base.Order.Ordering}, b, x, o)
@@ -418,7 +412,7 @@ Base.@propagate_inbounds Base.getindex(b::BucketedBinEdges, k::Int) = b.edges[k]
     LogTableBinEdges(b::LogBinEdges)
 
 The edges of `b` as a table, searched from the index estimate `⌊a log₂x + c⌋ + 2`, which is formed in
-the type of `a` and `c` (`Float32` here) with `Base.FastMath.log2_fast` and stepped to the first edge
+the type of `a` and `c` (`Float32` by default) with `Base.FastMath.log2_fast` and stepped to the first edge
 at or above `x`. The edges decide the bin, so the estimate's rounding does not. A device kernel
 digitizes [`LogBinEdges`](@ref) with it.
 """
@@ -454,36 +448,20 @@ end
 @inline Base.searchsortedlast(p::LogTableBinEdges, x) = _searchsortedlast_from_first(p, x)
 @inline Base.searchsorted(p::LogTableBinEdges, x) = searchsortedfirst(p, x):searchsortedlast(p, x)
 
-# ========================================================================= #
-# 4. Infinity Padded Wrapper
-# ========================================================================= #
-
 """
     InfPaddedBinEdges(edges::AbstractVector{T})
 
-Wrapper that implicitly prepends \$-\\infty\$ (or `typemin(T)`) and appends \$+\\infty\$ (or `typemax(T)`) to 
-an existing bin edge collection.
+Wraps `edges` with an implicit first element `typemin(T)` and last element `typemax(T)`, so every
+query, including one below the first or above the last edge, maps to a bin of the half-open
+intervals ``(r_i, r_{i+1}]``. Nothing is copied. A `NaN` falls in the last bin.
 
-### Why InfPaddedBinEdges Exists
-Structure function distance bins are defined as half-open intervals \$(r_i, r_{i+1}]\$. When mapping a distance 
-\$r\$ to a bin, any query value \$r < \\text{first}(edges)\$ or \$r > \\text{last}(edges)\$ is out-of-bounds.
-`InfPaddedBinEdges` embeds the infinite endpoints, so an inner loop needs no out-of-bounds branch:
-- The first element is treated as `typemin(T)` (\$-\\infty\$).
-- The last element is treated as `typemax(T)` (\$+\\infty\$).
-
-This guarantees that every valid positive separation distance maps to a valid index without allocating 
-actual padding elements in memory or copying the array. A `NaN` falls in the last bin.
-
-### Prevention of Double Padding
-The constructor checks if the input array already has infinite endpoints. If they exist, it trims them 
-before wrapping to prevent nested padding (e.g. \$[-\\infty, -\\infty, ...]\$).
+Infinite endpoints already present in `edges` are trimmed before wrapping.
 """
 struct InfPaddedBinEdges{T, ET <: AbstractBinEdges{T}} <: AbstractVectorBinEdges{T}
     edges::ET
 end
 
-# Infinite endpoints already present are dropped, so the padding is never doubled. Edges that need no
-# trimming keep their own type, so a typed grid keeps its O(1) lookup.
+# Infinite endpoints already present are dropped; untrimmed edges keep their type.
 function InfPaddedBinEdges(edges::AbstractVector{T}) where {T}
     lo = isinf(first(edges)) ? 2 : 1
     hi = isinf(last(edges)) ? length(edges) - 1 : length(edges)
@@ -541,7 +519,7 @@ end
 Distance bins applied to the lags of a mode grid. The edges are ordinary bin edges, but every pair
 reaches them through the periodic kernel of the mode set `schedule` describes, so a bin's sum and
 count are kernel-weighted and the histogram is soft-binned. Carried by the results of the
-non-uniform FFT route, so they cannot be mistaken for pair counts.
+non-uniform FFT route.
 """
 struct ModeBinEdges{T, ET <: AbstractBinEdges{T}, S} <: AbstractVectorBinEdges{T}
     edges::ET
@@ -564,8 +542,7 @@ Base.getindex(v::ModeBinEdges, i::Int) = v.edges[i]
     midpoints!(out, edges) -> out
 
 The abscissa each bin's average is taken to apply at, from flat edges `[e₀, e₁, …, eₙ]`
-(length `n+1` → `n` values). Quadratures and finite differences over binned structure functions
-need one.
+(length `n+1` → `n` values).
 
 Uniform and arbitrary edges give the arithmetic mean `(eᵢ + eᵢ₊₁)/2`; [`LogBinEdges`](@ref) give the
 geometric mean, which is the arithmetic mean on the grid those edges are uniform on.
@@ -629,9 +606,6 @@ midpoints(::InfPaddedBinEdges) = throw(
 
 midpoints(v::ModeBinEdges) = midpoints(v.edges)
 
-
-
-
 """
     n_histogram_bins(edges::AbstractVector) -> Int
 
@@ -650,16 +624,12 @@ Normalize flat edge input to [`AbstractBinEdges`](@ref) for hot-loop `digitize`:
 BinEdges(edges::AbstractBinEdges) = edges
 BinEdges(edges::AbstractRange) = LinearBinEdges(edges)
 
-# ========================================================================================= #
-# 5. Squared-distance digitize plans
-# ========================================================================================= #
-
 """
     _fast_log2(x)
 
 `log2(x)` for finite `x > 0`, max error ~4e-8 (Float64). Exponent extract plus an odd series on a
-mantissa recentred to `[1/√2, √2)`, so it vectorizes where the scalar `libm log` does not.
-Approximate: the bin is decided by [`squared_digitize`](@ref)'s correction.
+mantissa recentred to `[1/√2, √2)`. Approximate: the bin is decided by [`squared_digitize`](@ref)'s
+correction.
 """
 @inline function _fast_log2(x::Float64)
     ix = reinterpret(UInt64, x)
@@ -704,8 +674,7 @@ struct SquaredLogPlan{T, V <: AbstractVector{T}} <: AbstractSquaredDigitizePlan{
     sqedges::V
 end
 
-"""Uniform-in-`r` edges: the squares of a uniform grid are not uniform, so this takes one `sqrt` and
-the grid's own lookup."""
+"""Uniform-in-`r` edges: one `sqrt` and the grid's own lookup."""
 struct SquaredLinearPlan{T, E <: LinearBinEdges{T}} <: AbstractSquaredDigitizePlan{T}
     edges::E
     n_bins::Int
@@ -790,8 +759,7 @@ squared_digitize_plan(edges::AbstractVector) = squared_digitize_plan(BinEdges(ed
     has_vector_index(plan) -> Bool
 
 Whether the plan's index is branch-free, and so worth computing in the vectorized half of a pair
-kernel. False for the linear plan, whose `searchsortedfirst` branches would de-vectorize the whole
-`@simd` body.
+kernel. False for the linear plan.
 """
 @inline has_vector_index(::AbstractSquaredDigitizePlan) = false
 @inline has_vector_index(::SquaredLogPlan) = true
@@ -832,8 +800,7 @@ index `i` the vectorized half computed; otherwise `i` is ignored.
 @inline squared_bin(p::SquaredLogPlan, key, i::Integer) = squared_correct(p, key, i) - 1
 @inline squared_bin(p::SquaredLinearPlan, key, ::Integer) = searchsortedfirst(p.edges, key) - 1
 @inline squared_bin(p::SquaredBucketPlan, key, i::Integer) = _bucket_first(p.thresholds, key, i) - 1
-# The implicit -Inf edge shifts every inner index up by one; the inner plan already reports
-# `n_bins + 1` above its last edge, which becomes the overflow bin. No separate range test needed.
+# The implicit -Inf edge shifts every inner index up by one; the inner `n_bins + 1` becomes the overflow bin.
 @inline squared_bin(p::SquaredInfPaddedPlan, key, i::Integer) = squared_bin(p.inner, key, i) + 1
 
 """
@@ -879,8 +846,7 @@ end
 """
     squared_correct(plan, r2, i) -> Int
 
-Walk `i` to the exact `searchsortedfirst(sqedges, r²)`. 0 or 1 step for a random separation; within a
-few ulps of an edge it can take more, so it loops.
+Walk `i` to the exact `searchsortedfirst(sqedges, r²)`.
 """
 @inline function squared_correct(p::SquaredLogPlan, r2, i::Integer)
     sq = p.sqedges
@@ -907,10 +873,6 @@ Exact `digitize(r, edges)` computed from `r²` alone. Out-of-range gives `0` (be
     squared_bin(p, digitize_key(p, r2), squared_approx_index(p, r2))
 
 
-# ========================================================================================= #
-# 6. Tapers and the harmonic nodes of a kernel-binned statistic
-# ========================================================================================= #
-
 """
     AbstractTaper
 
@@ -918,7 +880,7 @@ A weight applied before a transform: on a lag-space autocovariance, as a functio
 length; on a spherical harmonic series, as a function of the degree. `NoTaper()` leaves every term as
 it is, `Bartlett()` falls linearly to zero at the largest lag or degree, `GaussianTaper(σ)` weights a
 lag of length `r` by `exp(-r²/2σ²)` and a degree `l` by `exp(-l(l+1)σ²/2)`, with `σ` in the lag's or
-the sphere's own unit. A taper trades resolution for variance, or a hard bin for a positive kernel.
+the sphere's own unit.
 """
 abstract type AbstractTaper end
 
