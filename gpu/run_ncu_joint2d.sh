@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Profile joint 2D tiled kernel with ncu (headless).
 #
-# Validated on clima: bare julia works, e.g.
+# ncu wraps julia directly, e.g.
 #   ncu --set basic --target-processes all julia --project=gpu -e 'using CUDA; ...'
 #
 # Usage:

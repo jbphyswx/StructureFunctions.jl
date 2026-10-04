@@ -83,14 +83,14 @@ function generate_kolmogorov_figure()
 
     fig = CM.Figure(size=(820, 520), fontsize=14)
     CM.Label(fig[0, 1],
-        "2nd-Order Structure Function — Kolmogorov Scaling",
+        "Second-order structure function of a synthetic 2-D field",
         fontsize=16, font=:bold)
 
     ax = CM.Axis(fig[1, 1],
         xlabel="Separation r  [km]",
         ylabel="S₂(r)",
         xscale=CM.log10, yscale=CM.log10,
-        title="S₂(r) vs K41 prediction r^(2/3)")
+        title="S₂(r) and the K41 slope r^(2/3)")
 
     CM.scatterlines!(ax, rdist[valid], sf2[valid],
         label="S₂(r)  (computed)", color=:steelblue,
@@ -199,7 +199,7 @@ function generate_parity_figure()
     ax2 = CM.Axis(fig[1, 2],
         xlabel="Separation r", ylabel="|Serial − Threaded| / |Serial|",
         xscale=CM.log10,
-        title="Relative difference (should be ≈ 0)")
+        title="Relative difference per bin")
     v = sf_s .> 0
     CM.scatterlines!(ax2, rd[v], rel[v],
         color=:darkorange, markersize=6, linewidth=1)
@@ -250,7 +250,7 @@ function generate_gpu_parity_figure()
 
     ax2 = CM.Axis(fig[1, 2],
         xlabel = "Bin center", ylabel = "|Serial − KA.CPU| / |Serial|",
-        title = "Relative difference (should be ≈ 0)")
+        title = "Relative difference per bin")
     CM.scatterlines!(ax2, rd, rel, color = :darkorange, markersize = 6, linewidth = 1)
     CM.hlines!(ax2, [1e-12]; color = :black, linewidth = 0.8, linestyle = :dot)
 
@@ -272,7 +272,7 @@ function generate_single_pass_figure()
 
     # One O(N²) pass → NamedTuple of the six isotropic invariants; point-field input also
     # yields a `:helmholtz` entry (rotational/divergent decomposition).
-    res = SFC.calculate_structure_functions_single_pass(x, u, bins; backend=CB.SerialBackend())
+    res = SFC.calculate_structure_functions_single_pass(x, u, bins, SF.StructureFunction; backend=CB.SerialBackend())
 
     fig = CM.Figure(size=(900, 560), fontsize=14)
     CM.Label(fig[0, 1],

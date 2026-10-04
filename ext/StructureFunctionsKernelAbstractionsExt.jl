@@ -1,13 +1,11 @@
 """
-GPU-accelerated structure function kernels using KernelAbstractions.jl.
+Device kernels for every structure-function route, written with KernelAbstractions.jl.
 
-This extension is loaded automatically when `KernelAbstractions` is loaded by the user.
-The `gpu_calculate_structure_function` entry point accepts any KA-compatible backend:
-  - `KernelAbstractions.CPU()` – for CPU-parallel testing / parity verification
-  - `CUDABackend()` from CUDA.jl – for NVIDIA GPU acceleration
-  - `ROCBackend()` from AMDGPU.jl – for AMD GPU acceleration
+Loaded with `KernelAbstractions`. An entry called with `backend = GPUBackend(b)` runs here for a
+KernelAbstractions backend `b` (`KernelAbstractions.CPU()`, `CUDA.CUDABackend()`, …). On CUDA the
+native kernels of the CUDA extension take the calls their launch plans admit, and these kernels the rest.
 
-The fast path uses tiled128 pair blocks with block-local `UInt32` histograms at every coordinate
+The tiled kernels use 128-point pair blocks with block-local `UInt32` histograms at every coordinate
 and field width whose staged tiles fit the device's shared memory. Joint 2D SF
 (`calculate_structure_function` with `value_bins`) uses the same tiled schedule
 when its histogram fits the device's shared memory. Six-invariant-type single-pass 1D uses

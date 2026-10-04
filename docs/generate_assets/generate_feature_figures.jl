@@ -24,6 +24,9 @@ using Random: Random
 const ASSETS_DIR = joinpath(@__DIR__, "..", "src", "assets")
 mkpath(ASSETS_DIR)
 
+"""Seconds of the fastest of `n` calls of `f`, after one untimed call."""
+best_time(f; n = 5) = (f(); minimum(@elapsed(f()) for _ in 1:n))
+
 # ─── Shared fields ─────────────────────────────────────────────────────────
 
 """Divergence-free 2-D field on a periodic grid with a prescribed `k^(-5/3)` energy spectrum."""
@@ -137,7 +140,7 @@ function generate_missing_data_figure()
     CM.axislegend(ax1; position = :lb)
 
     ax2 = CM.Axis(fig[1, 2]; xlabel = "fraction of cells missing", ylabel = "relative spectral error",
-                  title = "Why go through the structure function")
+                  title = "Spectral error by fraction of cells missing")
     CM.barplot!(ax2, (1:3) .- 0.18, sf_err; width = 0.34, label = "via the structure function")
     CM.barplot!(ax2, (1:3) .+ 0.18, naive_err; width = 0.34, label = "zero-fill the gaps and FFT")
     ax2.xticks = (1:3, ["10%", "30%", "50%"])
@@ -187,13 +190,14 @@ end
 
 function generate_helmholtz_spectra_figure()
     n_bins = 60
-    edges = collect(10 .^ range(-2, 0.5; length = n_bins + 1))
+    edges = collect(10 .^ range(-2, log10(8.0); length = n_bins + 1))
     mids = SF.midpoints(edges)
     counts = ones(UInt32, n_bins)
     kq = collect(range(1.0, 60.0; length = 250))
 
-    D_LL = [r^(2 / 3) for r in mids]
-    D_TT = (5 / 3) .* D_LL                       # solenoidal: D_div ≡ 0
+    # a Gaussian-correlated 2-D solenoidal field: D_TT = d(r D_LL)/dr, so D_div ≡ 0
+    D_LL = @. 2 * (1 - exp(-mids^2 / 2))
+    D_TT = @. 2 * (1 - (1 - mids^2) * exp(-mids^2 / 2))
     h_rot = SFC.helmholtz_decompose_2d(edges, D_LL, counts, D_TT, counts)
     h_div = SFC.helmholtz_decompose_2d(edges, D_TT, counts, D_LL, counts)   # irrotational
 
@@ -204,14 +208,14 @@ function generate_helmholtz_spectra_figure()
     CM.lines!(ax1, mids, D_TT; label = "D_TT", linewidth = 2)
     CM.lines!(ax1, mids, h_rot.rotational_sums; label = "rotational", linewidth = 3,
               linestyle = :dash)
-    CM.lines!(ax1, mids, h_rot.divergent_sums; label = "divergent (true value 0)", linewidth = 3,
+    CM.lines!(ax1, mids, h_rot.divergent_sums; label = "divergent (exact value 0)", linewidth = 3,
               color = :crimson)
     CM.axislegend(ax1; position = :lt)
 
     sr = SFC.helmholtz_spectra(h_rot, kq)
     sd = SFC.helmholtz_spectra(h_div, kq)
     ax2 = CM.Axis(fig[1, 2]; xlabel = "wavenumber k", ylabel = "spectral density",
-                  title = "and the spectra it transforms to")
+                  title = "Rotational and divergent spectra")
     CM.lines!(ax2, kq, sr.rotational; linewidth = 3, label = "E_rot, solenoidal field")
     CM.lines!(ax2, kq, sr.divergent; linewidth = 2, color = :crimson,
               label = "E_div, solenoidal field")
@@ -297,27 +301,24 @@ function generate_gridded_algorithms_figure()
         nb = SFC.n_histogram_bins(SFC.squared_digitize_plan(b))
         ss = zeros(Float64, nb); sc = zeros(Int, nb)
         fs = zeros(Float64, nb); fc = zeros(Int, nb)
-        SFC.gridded_lag_sweep!(ss, sc, SFT.L2SFType(), u, s, b, Val(2))         # warm up
-        SFC.gridded_sweep!(fs, fc, SFT.L2SFType(), u, s, b, Val(2),
-                           SB.FastFourierTransformSpectralBackend())
-        fill!(ss, 0); fill!(sc, 0); fill!(fs, 0); fill!(fc, 0)
-        t1 = time(); SFC.gridded_lag_sweep!(ss, sc, SFT.L2SFType(), u, s, b, Val(2))
-        push!(t_sweep, time() - t1)
-        t2 = time(); SFC.gridded_sweep!(fs, fc, SFT.L2SFType(), u, s, b, Val(2),
-                                        SB.FastFourierTransformSpectralBackend())
-        push!(t_fft, time() - t2)
+        ws = SFC.TransformWorkspace()
+        push!(t_sweep, best_time(() -> SFC.gridded_lag_sweep!(ss, sc, SFT.L2SFType(), u, s, b, Val(2);
+                                                              backend = CB.SerialBackend())))
+        push!(t_fft, best_time(() -> SFC.gridded_sweep!(fs, fc, SFT.L2SFType(), u, s, b, Val(2),
+                                                        SB.FastFourierTransformSpectralBackend();
+                                                        backend = CB.SerialBackend(), workspace = ws)))
     end
 
     fig = CM.Figure(size = (1100, 430))
     ax1 = CM.Axis(fig[1, 1]; yscale = log10, xlabel = "separation r",
                   ylabel = "relative difference",
-                  title = "Transform vs lag sweep: two algorithms, one definition")
+                  title = "Transform and lag sweep on one 96² grid")
     CM.lines!(ax1, collect(mids0)[ok], max.(rel, 1e-17); linewidth = 3)
     CM.hlines!(ax1, [1e-16]; color = :black, linestyle = :dash)
     CM.text!(ax1, collect(mids0)[ok][3], 3e-16; text = "double-precision round-off")
 
     ax2 = CM.Axis(fig[1, 2]; xscale = log10, yscale = log10, xlabel = "grid side n (n² cells)",
-                  ylabel = "time per call (s)", title = "and what each one costs")
+                  ylabel = "seconds per call, one thread", title = "Cost of each algorithm")
     CM.scatterlines!(ax2, Float64.(ns), t_sweep; linewidth = 3, label = "lag sweep")
     CM.scatterlines!(ax2, Float64.(ns), t_fft; linewidth = 3, label = "transform")
     CM.axislegend(ax2; position = :lt)
@@ -374,32 +375,27 @@ function generate_advective_figure()
     vals = asf.sums ./ max.(asf.counts, 1)
     okb = asf.counts .> 0
 
-    fig = CM.Figure(size = (1100, 430))
+    fig = CM.Figure(size = (1650, 430))
     ax1 = CM.Axis(fig[1, 1]; xlabel = "separation r", ylabel = "⟨δu · δ𝓐ᵤ⟩",
-                  title = "Advective structure function, and the flux it gives")
-    CM.lines!(ax1, collect(mids)[okb], vals[okb]; linewidth = 3, label = "⟨δu · δ𝓐ᵤ⟩")
+                  title = "Advective structure function")
+    CM.lines!(ax1, collect(mids)[okb], vals[okb]; linewidth = 3)
     CM.hlines!(ax1, [0.0]; color = :black, linestyle = :dash)
-    ax1r = CM.Axis(fig[1, 1]; yaxisposition = :right, ylabel = "spectral flux Π(K)",
-                   xlabel = "wavenumber K", xaxisposition = :top, ygridvisible = false)
-    CM.lines!(ax1r, Ks, flux; linewidth = 3, color = :seagreen, linestyle = :dash)
-    CM.text!(ax1r, Ks[35], flux[35]; text = "  Π(K)", color = :seagreen)
 
-    # The kernel and its prefactor are exact against a closed form: ∫₀^R J₁(Kr)dr = (1 − J₀(KR))/K,
-    # so a constant advective structure function `c` must give Π_K = −(c/2)(1 − J₀(KR)).
+    ax2 = CM.Axis(fig[1, 2]; xlabel = "wavenumber K", ylabel = "Π(K)",
+                  title = "Spectral flux Π(K) = −(K/2)∫₀^R ⟨δu · δ𝓐ᵤ⟩ J₁(Kr) dr")
+    CM.lines!(ax2, Ks, flux; linewidth = 3, color = :seagreen)
+    CM.hlines!(ax2, [0.0]; color = :black, linestyle = :dash)
+
+    # ∫₀^R J₁(Kr) dr = (1 − J₀(KR))/K, so a constant advective structure function c gives Π(K) = −(c/2)(1 − J₀(KR))
     c, R = 0.8, 60.0
     rq = collect(range(0.0, R; length = 200_000))
     Kq = collect(range(0.2, 20.0; length = 300))
     got = SFC.spectral_flux(SFT.VectorDotSFType(1, 2), rq, fill(c, length(rq)), Kq)
     want = [-(c / 2) * (1 - Bessels.besselj0(K * R)) for K in Kq]
 
-    ax2 = CM.Axis(fig[1, 2]; xlabel = "wavenumber K", ylabel = "Π(K) for a constant SF_A",
-                  title = "the flux kernel against a closed form")
-    CM.lines!(ax2, Kq, got; linewidth = 4, label = "−(K/2)∫₀^R SF_A J₁(Kr) dr")
-    CM.lines!(ax2, Kq, want; linewidth = 2, color = :black, linestyle = :dash,
-              label = "−(c/2)(1 − J₀(KR)), exact")
-    CM.hlines!(ax2, [-c / 2]; color = :gray, linestyle = :dot)
-    CM.text!(ax2, 12.0, -c / 2 + 0.012; text = "−c/2, the whole-line value", color = :gray)
-    CM.axislegend(ax2; position = :rt)
+    ax3 = CM.Axis(fig[1, 3]; xlabel = "wavenumber K", ylabel = "|Π − Π_exact| / (c/2)", yscale = log10,
+                  title = "Flux of a constant ⟨δu · δ𝓐ᵤ⟩ against its closed form")
+    CM.lines!(ax3, Kq, max.(abs.(got .- want) ./ (c / 2), 1e-17); linewidth = 3)
 
     out = joinpath(ASSETS_DIR, "sf_advective_flux.png")
     CM.save(out, fig)
@@ -525,9 +521,7 @@ function generate_spherical_figure()
     sched = SFC.ZonalLagSchedule(lats, nlon, lons[2] - lons[1], 1.0, true)
     nb = SFC.n_histogram_bins(SFC.squared_digitize_plan(sbins))
     zs = zeros(Float64, nb); zc = zeros(Int, nb)
-    t1 = time()
     SFC.gridded_lag_sweep!(zs, zc, SFT.L2SFType(), ug, sched, sbins, Val(2))
-    t_zonal = time() - t1
 
     xs = zeros(2, nlon * nlat)
     us = zeros(2, nlon * nlat)
@@ -536,16 +530,14 @@ function generate_spherical_figure()
         xs[1, q] = lons[i]; xs[2, q] = lats[j]
         us[1, q] = ug[1, i, j]; us[2, q] = ug[2, i, j]
     end
-    t2 = time()
     un = SFC.calculate_structure_function(SFT.L2SFType(), xs, us, sbins, SF.StructureFunctionSumsAndCounts;
                                           distance_metric = DI.SphericalAngle())
-    t_unstr = time() - t2
 
     smids = SF.midpoints(sbins)
     okz = (zc .> 0) .& (un.counts .> 0)
     ax2 = CM.Axis(fig[1, 2]; xlabel = "separation (radians on the sphere)",
                   ylabel = "⟨δu_L²⟩",
-                  title = "Lat-lon fast path vs the pair loop ($(round(t_unstr/t_zonal; digits=1))× faster)")
+                  title = "Zonal lag schedule and pair loop on a 48 × 24 lat-lon grid")
     CM.lines!(ax2, collect(smids)[okz], (zs ./ max.(zc, 1))[okz]; linewidth = 4,
               label = "zonal lag schedule")
     CM.lines!(ax2, collect(smids)[okz], (un.sums ./ max.(un.counts, 1))[okz]; linewidth = 2,
@@ -554,7 +546,7 @@ function generate_spherical_figure()
 
     out = joinpath(ASSETS_DIR, "sf_spherical.png")
     CM.save(out, fig)
-    println("  wrote $out  (zonal $(round(t_unstr/t_zonal; digits=1))x, counts equal: $(zc == un.counts))")
+    println("  wrote $out  (counts equal: $(zc == un.counts))")
 end
 
 # ─── Figure: culling changes the cost, never the answer ────────────────────
@@ -569,35 +561,27 @@ function generate_culling_figure()
     exact = Bool[]
     for f in fracs
         bins = collect(range(0.0, f; length = 16))
-        a = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
-                culling = SFC.NoCulling())
-        t1 = time()
-        a = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
-                culling = SFC.NoCulling())
-        tn = time() - t1
-        b = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
-                culling = SFC.AlwaysCulling())
-        t2 = time()
-        b = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
-                culling = SFC.AlwaysCulling())
-        tc = time() - t2
-        push!(speed, tn / tc)
+        full() = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
+                                                  culling = SFC.NoCulling(), backend = CB.SerialBackend())
+        culled() = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts;
+                                                    culling = SFC.AlwaysCulling(), backend = CB.SerialBackend())
+        a, b = full(), culled()
+        push!(speed, best_time(full) / best_time(culled))
         push!(exact, a.counts == b.counts)
     end
 
     fig = CM.Figure(size = (1100, 430))
     ax1 = CM.Axis(fig[1, 1]; xscale = log10, yscale = log10,
-                  xlabel = "r_max / domain size", ylabel = "speedup from culling",
-                  title = "Culling: cost falls with the cutoff")
+                  xlabel = "r_max / domain size", ylabel = "time without culling / time with it",
+                  title = "Culling against the full pair sweep, one thread")
     CM.scatterlines!(ax1, fracs, speed; linewidth = 3, markersize = 14)
     CM.hlines!(ax1, [1.0]; color = :black, linestyle = :dash)
 
-    ax2 = CM.Axis(fig[1, 2]; xlabel = "r_max / domain size", ylabel = "pair counts identical?",
-                  title = "and never changes the answer")
+    ax2 = CM.Axis(fig[1, 2]; xlabel = "r_max / domain size", ylabel = "pair counts equal (1) or not (0)",
+                  title = "Pair counts with and without culling")
     CM.barplot!(ax2, 1:length(fracs), Float64.(exact); color = :seagreen)
     ax2.xticks = (1:length(fracs), string.(fracs))
     CM.ylims!(ax2, 0, 1.3)
-    CM.text!(ax2, 1.0, 1.1; text = "exact pair-for-pair at every cutoff")
 
     out = joinpath(ASSETS_DIR, "sf_culling.png")
     CM.save(out, fig)
@@ -622,7 +606,7 @@ function generate_covariance_figure()
     CM.lines!(ax1, r, [σ2 * exp(-q^2 / (2ℓ^2)) for q in r]; linewidth = 2, color = :black,
               linestyle = :dash, label = "true covariance")
     CM.hlines!(ax1, [σ2]; color = :gray, linestyle = :dot)
-    CM.text!(ax1, 3.5, σ2 * 1.02; text = "variance, which D(r) cannot supply", color = :gray)
+    CM.text!(ax1, 1.9, σ2 * 1.02; text = "variance C(0), supplied", color = :gray)
     CM.axislegend(ax1; position = :rc)
 
     # interpolating a positive-definite kernel does not preserve positive-definiteness
@@ -639,9 +623,9 @@ function generate_covariance_figure()
     ax2 = CM.Axis(fig[1, 2]; xscale = log10, yscale = log10,
                   xlabel = "samples of C(r) used to build the matrix",
                   ylabel = "|most negative eigenvalue|",
-                  title = "Positive-definiteness is checked, not assumed")
+                  title = "Most negative eigenvalue of the covariance matrix")
     CM.scatterlines!(ax2, Float64.(nss), abs.(λmin); linewidth = 3, markersize = 12)
-    CM.text!(ax2, 100.0, 3e-4; text = "under-resolved:\nnot a valid covariance matrix")
+    CM.text!(ax2, 100.0, 3e-4; text = "under-resolved C(r):\nnegative eigenvalues")
     CM.text!(ax2, 1200.0, 2e-8; text = "resolved")
 
     out = joinpath(ASSETS_DIR, "sf_covariance.png")
@@ -707,14 +691,13 @@ function generate_sorted_line_figure()
     t_pairs = Float64[]
     for N in Ns
         x, u = line_field(N)
-        f() = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64, SF.StructureFunction)
-        f()
-        push!(t_sorted, minimum(@elapsed(f()) for _ in 1:3))
+        f() = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, Int64, SF.StructureFunction;
+                                               backend = CB.SerialBackend())
+        push!(t_sorted, best_time(f))
         if N <= 8_000
             g() = SFC.calculate_structure_function(SFT.FullVectorStructureFunctionType{3}(), x, u, bins,
-                                                   Int64, SF.StructureFunction)
-            g()
-            push!(t_pairs, @elapsed g())
+                                                   Int64, SF.StructureFunction; backend = CB.SerialBackend())
+            push!(t_pairs, best_time(g; n = 3))
         end
     end
 
@@ -736,11 +719,11 @@ function generate_sorted_line_figure()
 
     fig = CM.Figure(size = (1100, 430))
     ax1 = CM.Axis(fig[1, 1]; xscale = log10, yscale = log10, xlabel = "points N",
-                  ylabel = "seconds", title = "Prefix sums of the monomials, not a pair loop")
+                  ylabel = "seconds per call, one thread", title = "Cost on a line of N points")
     CM.scatterlines!(ax1, Float64.(Ns), t_sorted; linewidth = 3, markersize = 11,
-                     label = "sorted route (polynomial operator)")
+                     label = "sorted route, ⟨δu_L²⟩")
     CM.scatterlines!(ax1, Float64.(Ns[1:length(t_pairs)]), t_pairs; linewidth = 3, markersize = 11,
-                     label = "pair loop (‖δu‖³, not a polynomial)")
+                     label = "pair loop, ⟨‖δu‖³⟩")
     CM.lines!(ax1, Float64.(Ns), t_sorted[1] .* (Ns ./ Ns[1]); linestyle = :dot, color = :gray,
               label = "N")
     CM.lines!(ax1, Float64.(Ns[1:length(t_pairs)]), t_pairs[1] .* (Ns[1:length(t_pairs)] ./ Ns[1]) .^ 2;
@@ -748,7 +731,7 @@ function generate_sorted_line_figure()
     CM.axislegend(ax1; position = :lt)
 
     ax2 = CM.Axis(fig[1, 2]; xlabel = "separation r", ylabel = "⟨δu_L²⟩",
-                  title = "and it is exact: every pair the loop counts, counted once")
+                  title = "Sorted route and an explicit pair loop, N = 1500")
     CM.lines!(ax2, mids, ref; linewidth = 6, color = (:steelblue, 0.35), label = "pair loop")
     CM.lines!(ax2, mids, got.values; linewidth = 2, color = :black, linestyle = :dash,
               label = "sorted route")
@@ -777,7 +760,7 @@ function generate_tensor_figure()
 
     fig = CM.Figure(size = (1100, 430))
     ax1 = CM.Axis(fig[1, 1]; xlabel = "separation r", ylabel = "⟨δu_a δu_b⟩",
-                  title = "The second moment as a tensor, not a scalar")
+                  title = "Components of the second-moment tensor")
     CM.lines!(ax1, mids, T.values[1, 1, :]; linewidth = 3, label = "T₁₁")
     CM.lines!(ax1, mids, T.values[2, 2, :]; linewidth = 3, label = "T₂₂")
     CM.lines!(ax1, mids, T.values[1, 2, :]; linewidth = 3, label = "T₁₂")
@@ -832,7 +815,7 @@ function generate_scattered_modes_figure()
 
     ax2 = CM.Axis(fig[1, 2]; xscale = log10, yscale = log10, xlabel = "modes per direction",
                   ylabel = "max relative difference",
-                  title = "not exact at any finite mode count, and convergent")
+                  title = "Difference from the hard-binned pair loop by mode count")
     CM.scatterlines!(ax2, Float64.(Ms), errs; linewidth = 3, markersize = 12)
 
     out = joinpath(ASSETS_DIR, "sf_scattered_modes.png")
@@ -868,7 +851,7 @@ function generate_fits_figure()
 
     fig = CM.Figure(size = (1100, 430))
     ax1 = CM.Axis(fig[1, 1]; xscale = log10, yscale = log10, xlabel = "wavenumber k",
-                  ylabel = "E(k)", title = "A spectrum fitted from S₂, not inverted")
+                  ylabel = "E(k)", title = "Spectrum fitted to S₂ by a segmented power law")
     CM.lines!(ax1, kc, E_true; linewidth = 6, color = (:black, 0.3), label = "true k^(-5/3)")
     CM.lines!(ax1, kc, SFC.segmented_spectrum(seg.parameters, kc, seg.breakpoints); linewidth = 2,
               linestyle = :dash, label = "SegmentedPowerLaw(1)")
@@ -876,14 +859,14 @@ function generate_fits_figure()
     CM.axislegend(ax1; position = :lb)
 
     ax2 = CM.Axis(fig[1, 2]; xscale = log10, xlabel = "wavenumber k", ylabel = "flux Π(k)",
-                  title = "and a spectral flux from S₃, where the prior does the work")
+                  title = "Spectral flux fitted to S₃, with and without a prior")
     CM.lines!(ax2, nnls.k, F_true; linewidth = 6, color = (:black, 0.3), label = "true flux")
     CM.lines!(ax2, plain.k, plain.F; linewidth = 2, linestyle = :dash, color = :firebrick,
               label = "least squares, no prior")
     CM.lines!(ax2, nnls.k, nnls.F; linewidth = 2, color = :seagreen,
               label = "NonNegativeLeastSquares (ξ ≥ 0)")
     CM.vlines!(ax2, [k_resolved]; color = :gray, linestyle = :dashdot)
-    CM.text!(ax2, k_resolved * 1.04, minimum(F_true); text = "π / r_max", color = :gray)
+    CM.text!(ax2, k_resolved * 1.04, 0.25 * maximum(F_true); text = "π / r_max", color = :gray)
     CM.hlines!(ax2, [0.0]; color = :gray, linestyle = :dot)
     CM.axislegend(ax2; position = :rb)
 
@@ -910,14 +893,15 @@ function generate_slice_batch_figure()
     function pair_of_times(s, bins, ncell, nt)
         nb = length(bins) - 1
         u = randn(2, ncell, nt)
+        ws_looped, ws_batch = SFC.TransformWorkspace(), SFC.TransformWorkspace()
         looped = () -> for t in 1:nt
             SFC.gridded_sweep!(zeros(nb), zeros(Int, nb), SFT.L2SFType(), view(u, :, :, t), s, bins,
-                               Val(2), Val(1), Val(0), tag)
+                               Val(2), Val(1), Val(0), tag; backend = CB.SerialBackend(), workspace = ws_looped)
         end
         batch = () -> SFC.gridded_sweep_batch!(zeros(nb, nt), zeros(Int, nb, nt), SFT.L2SFType(), u, s,
-                                               bins, Val(2), Val(1), Val(0), tag)
-        looped(); batch()
-        (minimum(@elapsed(looped()) for _ in 1:3), minimum(@elapsed(batch()) for _ in 1:3))
+                                               bins, Val(2), Val(1), Val(0), tag; backend = CB.SerialBackend(),
+                                               workspace = ws_batch)
+        (best_time(looped), best_time(batch))
     end
 
     t_sphere = [pair_of_times(sphere, bins_sphere, n_lon * n_lat, nt) for nt in Ts]
@@ -939,8 +923,8 @@ function generate_slice_batch_figure()
     mids = SF.midpoints(bins_sphere)
 
     fig = CM.Figure(size = (1150, 430))
-    ax1 = CM.Axis(fig[1, 1]; xlabel = "snapshots T", ylabel = "seconds",
-                  title = "One geodesic frame per lag, not T of them")
+    ax1 = CM.Axis(fig[1, 1]; xlabel = "snapshots T", ylabel = "seconds, one thread",
+                  title = "T snapshots of one lat-lon grid")
     CM.scatterlines!(ax1, Float64.(Ts), [p[1] for p in t_sphere]; linewidth = 3, markersize = 11,
                      label = "lat-lon 120×60, one call per snapshot")
     CM.scatterlines!(ax1, Float64.(Ts), [p[2] for p in t_sphere]; linewidth = 3, markersize = 11,
@@ -949,21 +933,21 @@ function generate_slice_batch_figure()
 
     gains = [p[1] / p[2] for p in t_sphere]
     gflat = [p[1] / p[2] for p in t_flat]
-    ax2 = CM.Axis(fig[1, 2]; xlabel = "snapshots T", ylabel = "speedup over one call per snapshot",
-                  title = "The gain is the share of the work the field does not change")
+    ax2 = CM.Axis(fig[1, 2]; xlabel = "snapshots T", ylabel = "time per snapshot / time per batch",
+                  title = "Batch against one call per snapshot")
     CM.scatterlines!(ax2, Float64.(Ts), gains; linewidth = 3, markersize = 11, label = "lat-lon (frames per lag)")
     CM.scatterlines!(ax2, Float64.(Ts), gflat; linewidth = 3, markersize = 11, label = "uniform (a displacement and a bin)")
     CM.hlines!(ax2, [1.0]; color = :gray, linestyle = :dash)
     CM.axislegend(ax2; position = :lt)
 
-    ax3 = CM.Axis(fig[1, 3]; xlabel = "separation r", ylabel = "⟨δu_L²⟩",
-                  title = "and every slice is the single-slice answer")
+    ax3 = CM.Axis(fig[1, 3]; xlabel = "separation (radians)", ylabel = "⟨δu_L²⟩",
+                  title = "Each batch slice and its single-slice call")
     for t in 1:nt
-        CM.lines!(ax3, mids, ref[:, t]; linewidth = 6, color = (:steelblue, 0.35))
-        CM.lines!(ax3, mids, got[:, t]; linewidth = 2, color = :black, linestyle = :dash)
+        CM.lines!(ax3, mids, ref[:, t] ./ refc[:, t]; linewidth = 6, color = (:steelblue, 0.35))
+        CM.lines!(ax3, mids, got[:, t] ./ gotc[:, t]; linewidth = 2, color = :black, linestyle = :dash)
     end
     CM.text!(ax3, 0.04, 0.06;
-             text = "counts equal exactly, max |Δsum| / scale = " *
+             text = "counts equal: $(gotc == refc), max |Δsum| / max |sum| = " *
                     string(round(maximum(abs, got .- ref) / maximum(abs, ref); sigdigits = 1)),
              space = :relative, fontsize = 13)
 

@@ -66,18 +66,20 @@ const CU_TIMING_ROUNDS = 3
 const CU_TIMING_KEEP = 1.5
 
 """The candidate whose launch into zeroed scratch buffers like `out` and `cnt` takes the least time: every candidate is
-compiled and launched once, then timed in [`CU_TIMING_ROUNDS`](@ref) interleaved rounds, each keeping its best time
-and dropping the candidates slower than [`CU_TIMING_KEEP`](@ref) times the fastest."""
+compiled and launched, then launched once more after the last has compiled, then timed in [`CU_TIMING_ROUNDS`](@ref)
+interleaved rounds, each keeping its best time; from the second round on, the candidates slower than
+[`CU_TIMING_KEEP`](@ref) times the fastest leave the rounds. `CUDA.@elapsed` includes host time inside a launch."""
 function _cuda_fastest(launch!, candidates, out, cnt)
     s, c = fill!(similar(out), 0), fill!(similar(cnt), 0)
     foreach(plan -> launch!(plan, s, c), candidates)
+    foreach(plan -> launch!(plan, s, c), candidates)
     best = fill(Inf32, length(candidates))
     live = collect(eachindex(candidates))
-    for _ in 1:CU_TIMING_ROUNDS
+    for round in 1:CU_TIMING_ROUNDS
         for k in live
             best[k] = min(best[k], CUDA.@elapsed launch!(candidates[k], s, c))
         end
-        live = filter(k -> best[k] <= CU_TIMING_KEEP * minimum(best), live)
+        round >= 2 && (live = filter(k -> best[k] <= CU_TIMING_KEEP * minimum(best), live))
     end
     return candidates[argmin(best)]
 end

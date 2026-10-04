@@ -1,9 +1,6 @@
 # GPU benchmark results
 
-Generated benchmark JSON lives here. **Working perf notes:** `BATCH_FIXED_X_PERF.md`.
-Keep profiler dumps, local logs, and ad hoc
-database outputs out of the repository; only commit intentional, reproducible result
-snapshots.
+Benchmark output is written here.
 
 ## Release benchmark suite
 
@@ -47,7 +44,7 @@ SKIP_MICRO=1 julia --project=gpu gpu/collect_benchmark_assets.jl   # faster, ski
 julia --project=docs/generate_assets docs/generate_assets/generate_gpu_figures.jl
 ```
 
-Commit both `assets_latest.json` and updated files under `docs/src/assets/`.
+The figures read `assets_latest.json` from this directory; commit the updated files under `docs/src/assets/`.
 
 Problem definition matches [`benchmark/scaling_config.jl`](../benchmark/scaling_config.jl)
 (same N/bins/SF as CPU thread scaling in `benchmark/benchmark_scaling.jl`).

@@ -232,9 +232,6 @@ function _paired_bins(a::SFO.AbstractStructureFunction, b::SFO.AbstractStructure
     return r[keep], _take(va, keep), _take(vb, keep)
 end
 
-"""Quadrature widths of the samples `r`, as [`_quad_width`](@ref) gives each."""
-_quad_widths(r::AbstractVector) = [_quad_width(r, i) for i in eachindex(r)]
-
 """
     _kernel_transform(kernel, separations, weights, values, wavenumbers, FT)
 
@@ -248,11 +245,12 @@ function _kernel_transform(kernel, separations::AbstractVector, weights::Abstrac
     return _on(values, FT, K) * FT.(values)
 end
 
-"""`∫₀^∞ f(r) J_N(kr) r dr` at each wavenumber, by the same quadrature as [`isotropic_spectrum`](@ref)."""
+"""`∫₀^R f(r) J_N(kr) r dr` at each wavenumber by the trapezoid rule from the origin, where the integrand vanishes."""
 function _hankel(::Val{N}, separations::AbstractVector, values::AbstractVector, wavenumbers::AbstractVector) where {N}
     FT = float(promote_type(eltype(separations), eltype(values), eltype(wavenumbers)))
-    return _kernel_transform((k, r) -> bessel_kernel(Val(N), k * r) * r, separations,
-                             _quad_widths(collect(separations)), values, wavenumbers, FT)
+    r = FT.(collect(separations)) # this allocates
+    return _kernel_transform((k, r) -> bessel_kernel(Val(N), k * r) * r, r, _trapezoid_weights(r), values,
+                             wavenumbers, FT)
 end
 
 function _component_spectrum(op, r, sums, counts, wavenumbers, asymptote)
@@ -337,6 +335,9 @@ transform is confined to `k = 0`. Every returned wavenumber must therefore be no
 `asymptote` is the large-separation limit of the structure function, subtracted so the integrand
 decays; it defaults to the largest value supplied.
 
+The integral runs from zero separation, where the structure function vanishes, by the trapezoid rule
+over the separations supplied and the origin.
+
 Normalised so that integrating the density over `d^D k` returns the field's variance, which fixes
 the convention: `∫₀^∞ shell_spectrum(...) dk == var(u)`.
 """
@@ -355,11 +356,16 @@ function isotropic_spectrum(
     ))
     r = collect(separations)
     issorted(r) || throw(ArgumentError("separations must be sorted"))
+    first(r) >= 0 || throw(ArgumentError("separations must be non-negative; got $(first(r))"))
 
     FT = float(promote_type(eltype(separations), eltype(values), eltype(wavenumbers)))
     decaying = FT.(values) .- FT(asymptote)
-    acc = _kernel_transform((k, ri) -> isotropic_kernel(Val(D), k * ri) * ri^(D - 1), r, _quad_widths(r), decaying,
-                            wavenumbers, FT)
+    if first(r) > 0
+        r = vcat(zero(eltype(r)), r)
+        decaying = vcat(fill!(similar(decaying, 1), -FT(asymptote)), decaying)
+    end
+    acc = _kernel_transform((k, ri) -> isotropic_kernel(Val(D), k * ri) * ri^(D - 1), r, _trapezoid_weights(r),
+                            decaying, wavenumbers, FT)
     return acc .* (-solid_angle(Val(D)) / (2 * (2 * FT(π))^D))
 end
 
@@ -648,8 +654,8 @@ function _flux_samples(separations::AbstractVector, series::AbstractVector...)
     return float(promote_type(eltype(separations), map(eltype, series)...))
 end
 
-"""Weights of the trapezoid rule over the sorted samples `r` from the origin, where every flux integrand vanishes:
-`∫₀^R f dr ≈ Σ_i t_i f(r_i)`."""
+"""Weights of the trapezoid rule over the sorted samples `r` from the origin, the interval before the first sample a
+triangle with the integrand zero at the origin: `∫₀^R f dr ≈ Σ_i t_i f(r_i)`."""
 function _trapezoid_weights(r::AbstractVector)
     n = length(r)
     return [((i == n ? r[n] : r[i + 1]) - (i == 1 ? zero(eltype(r)) : r[i - 1])) / 2 for i in 1:n]
@@ -862,12 +868,4 @@ function shell_average(wavenumbers::NTuple{Dg, <:AbstractVector}, density::Abstr
     end
     mids = FT[(be[b] + be[b + 1]) / 2 for b in 1:nb]
     return mids, acc ./ width
-end
-
-@inline function _quad_width(r::AbstractVector, i::Integer)
-    n = length(r)
-    n == 1 && return one(eltype(r))
-    i == 1 && return r[2] - r[1]
-    i == n && return r[n] - r[n - 1]
-    return (r[i + 1] - r[i - 1]) / 2
 end

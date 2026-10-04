@@ -2,9 +2,8 @@
 using Random: Random
 using StructureFunctions: Calculations as C, StructureFunctionTypes as T, midpoints
 using ComputationalBackends: SerialBackend
-include("resources.jl")
 
-function simple_example(; n=ExampleResources.points())
+function simple_example(; n=2000)
     rng = Random.MersenneTwister(11)
     x = Random.rand(rng, 2, n)       # (coordinate, point), in metres
     u = Random.randn(rng, 2, n)      # (component, point), in metres per second

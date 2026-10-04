@@ -33,6 +33,19 @@ Test.@testset "the Helmholtz split does not depend on the unit of length" begin
                         rtol = 1e-12, atol = 1e-14)
 end
 
+Test.@testset "the Helmholtz split of a smooth solenoidal field has no divergent part" begin
+    # D_LL = r²/(1 + r²)^(2/3) is smooth at the origin and r^(2/3) far from it; D_TT = d(r D_LL)/dr makes it
+    # 2-D solenoidal. The bins start well away from zero, so the integral's segment from the origin is not negligible.
+    edges = collect(10 .^ range(log10(0.2), log10(20.0); length = 121))
+    mids = SF.midpoints(edges)
+    counts = ones(UInt32, length(mids))
+    D_LL = @. mids^2 / (1 + mids^2)^(2 / 3)
+    D_TT = @. 3mids^2 / (1 + mids^2)^(2 / 3) - (4 / 3) * mids^4 / (1 + mids^2)^(5 / 3)
+    h = SFC.helmholtz_decompose_2d(edges, D_LL, counts, D_TT, counts)
+    Test.@test maximum(abs, h.divergent_sums) < 1e-3 * maximum(D_LL)
+    Test.@test isapprox(h.rotational_sums, D_LL .+ D_TT; rtol = 1e-3)
+end
+
 Test.@testset "the tensor trace is the second-order structure function" begin
     Random.seed!(2600)
     N = 60

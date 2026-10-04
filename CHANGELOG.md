@@ -48,6 +48,13 @@ All notable changes to this project will be documented in this file.
 - Weighted single-pass calls on `DistributedBackend` and `MPIBackend` returned the unweighted result, and an explicit
   `culling` was replaced by the default there.
 - `AlwaysCulling()` on a device batch over varying positions without a workspace swept every pair instead of culling.
+- `isotropic_spectrum`, `helmholtz_spectra` and `helmholtz_decompose_2d` integrate from zero separation by the
+  trapezoid rule. `isotropic_spectrum` weighted its first sample as a whole bin and left out the separations below
+  it, which in one dimension added a constant to the spectrum at every wavenumber; `helmholtz_decompose_2d` began
+  its integral at the first bin.
+- The native CUDA plan of a call class is chosen by timing every candidate after all have compiled, and a candidate
+  leaves the timing only from its second round. A candidate's first timed launch held host time, so the plan the
+  class's first call had run could be kept over a faster one.
 
 ## [0.4.0] - 2026-09-11
 

@@ -33,9 +33,8 @@ Bühler, Callies, and Ferrari (JFM 2014):
 ``D_rot(r) = D_TT(r) + I(r)``, ``D_div(r) = D_LL(r) - I(r)``, where
 ``I(r) = ∫_0^r [D_TT(s) - D_LL(s)]/s ds``.
 
-The quadrature starts at the first bin midpoint, so ``I`` omits ``∫_0^{r_1}``. That segment is
-`D_LL(r_1)` for an ``r^{2/3}`` inertial range, so the decomposition is quantitative only for
-``r ≫ r_1``; choose a first bin well below the scales of interest.
+The integral runs from zero separation, where the integrand of a differentiable field vanishes, by
+the trapezoid rule over the bin midpoints.
 """
 function helmholtz_decompose_2d(
     distance_bins::AbstractVector{FT3},
@@ -60,7 +59,7 @@ function helmholtz_decompose_2d(
     copyto!(bin_mids, collect(OT, midpoints(distance_bins)))
     integrand = (D_TT .- D_LL) ./ bin_mids
     increments = similar(D_LL)
-    fill!(increments, zero(OT))
+    n_bins >= 1 && @views(increments[1:1] .= integrand[1:1] .* bin_mids[1:1] ./ 2)
     if n_bins >= 2
         @views increments[2:end] .= (integrand[1:end-1] .+ integrand[2:end]) .*
             (bin_mids[2:end] .- bin_mids[1:end-1]) ./ 2

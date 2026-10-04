@@ -2,9 +2,8 @@
 using Random: Random
 using StructureFunctions: Calculations as C, StructureFunctionSumsAndCounts
 using ComputationalBackends: SerialBackend
-include("resources.jl")
 
-function single_pass_example(; n=ExampleResources.points())
+function single_pass_example(; n=2000)
     rng = Random.MersenneTwister(13)
     x, u = Random.rand(rng, 2, n), Random.randn(rng, 2, n)
     bins = range(0.0, 1.5; length=7)

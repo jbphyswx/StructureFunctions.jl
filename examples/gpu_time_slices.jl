@@ -1,6 +1,4 @@
-# Calculate several snapshots with one upload of each input array.
-include("resources.jl")
-ExampleResources.require_allocation(; gpu=true, cpus=Threads.nthreads())
+# Calculate several snapshots with one upload of each input array. Run inside a GPU allocation.
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions
 using Random: Random
@@ -9,7 +7,7 @@ using StructureFunctions: Calculations as C, StructureFunctionTypes as T, Struct
 CUDA.functional() || error("This example requires a functioning allocated CUDA device")
 CUDA.allowscalar(false)
 
-function gpu_batch_example(; n=ExampleResources.points(), snapshots=3)
+function gpu_batch_example(; n=5000, snapshots=3)
     rng = Random.MersenneTwister(16)
     x, u = Random.rand(rng, Float32, 3, n, snapshots), Random.randn(rng, Float32, 3, n, snapshots)
     bins = range(0.0f0, 2.0f0; length=9)

@@ -114,9 +114,6 @@ Test.@testset "the transform reproduces an analytic spectrum" begin
     # closed-form density σ² ℓ^D exp(-k²ℓ²/2) / (2π)^(D/2) under the convention that the density
     # integrates over d^D k to the variance. Unlike a discrete line it decays, so the transform is
     # not truncation-limited and the comparison is pointwise.
-    # Resolution is set by quadrature error, which falls as 1/length(r): these sizes give ~1e-3
-    # pointwise in a quarter of a second, while a wrong kernel or a missing (2π)^D is wrong by
-    # orders of magnitude, so the assertions still discriminate with room to spare.
     σ2, ℓ = 1.7, 0.8
     for D in (1, 2, 3)
         r = collect(range(0.0, 20ℓ; length = 8_000))
@@ -125,12 +122,18 @@ Test.@testset "the transform reproduces an analytic spectrum" begin
 
         P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(D); asymptote = 2σ2)
         exact = @. σ2 * ℓ^D * exp(-kq^2 * ℓ^2 / 2) / (2π)^(D / 2)
-        Test.@test maximum(abs, P .- exact) / maximum(exact) < 3e-3
+        Test.@test maximum(abs, P .- exact) / maximum(exact) < 1e-5
         Test.@test all(>(-1e-3 * maximum(exact)), P)          # a density is non-negative
 
         # the convention: the shell spectrum integrates over k to the variance
         E = SFC.shell_spectrum(P, kq, Val(D))
         Test.@test sum(E) * (kq[2] - kq[1]) ≈ σ2 rtol = 0.10
+
+        # bin midpoints starting past zero: the integral still runs from the origin, where S₂ vanishes
+        rl = SF.midpoints(SF.LogBinEdges(1e-3, 20ℓ, 2001))
+        sl = @. 2σ2 * (1 - exp(-rl^2 / (2ℓ^2)))
+        Pl = SFC.isotropic_spectrum(SFT.S2SFType(), rl, sl, kq, Val(D); asymptote = 2σ2)
+        Test.@test maximum(abs, Pl .- exact) / maximum(exact) < 2e-5
     end
 
     # the width scales inversely, so a wider correlation is a narrower spectrum

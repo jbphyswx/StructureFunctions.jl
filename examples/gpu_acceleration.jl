@@ -1,6 +1,4 @@
-# Reuse GPU histogram scratch for repeated point-field calculations.
-include("resources.jl")
-ExampleResources.require_allocation(; gpu=true, cpus=Threads.nthreads())
+# Reuse a GPU workspace for repeated point-field calculations. Run inside a GPU allocation.
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions
 using Random: Random
@@ -9,7 +7,7 @@ using StructureFunctions: Calculations as C, StructureFunctionTypes as T, Struct
 CUDA.functional() || error("This example requires a functioning allocated CUDA device")
 CUDA.allowscalar(false)
 
-function gpu_example(; n=ExampleResources.points())
+function gpu_example(; n=20_000)
     rng = Random.MersenneTwister(15)
     x, u = CUDA.CuArray(Random.rand(rng, Float32, 3, n)), CUDA.CuArray(Random.randn(rng, Float32, 3, n))
     bins = range(0.0f0, 2.0f0; length=9)
