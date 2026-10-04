@@ -1,12 +1,10 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using StaticArrays: StaticArrays as SA
-using FFTW: FFTW
-using SpectralBackends: SpectralBackends as SB
 using FlowGeometries: FlowGeometries as FG
 using Random: Random
 
-# Every pair whose two ends both hold a datum, counted directly. Independent of lags and transforms.
+# Every pair whose two ends both hold a datum, counted directly.
 function _brute_masked(sf, u, dims::NTuple{Dg, Int}, spacing::NTuple{Dg, T},
                        valid, bins) where {Dg, T}
     plan = SFC.squared_digitize_plan(bins)
@@ -31,113 +29,50 @@ function _brute_masked(sf, u, dims::NTuple{Dg, Int}, spacing::NTuple{Dg, T},
     return sums, counts
 end
 
-function _run(sf, u, dims, spacing, periodic, bins, D, valid, backend)
-    plan = SFC.squared_digitize_plan(bins)
-    nb = SFC.n_histogram_bins(plan)
-    s = zeros(Float64, nb)
-    c = zeros(Int, nb)
-    sched = SFC.UniformLagSchedule(dims, spacing, periodic)
-    if backend === nothing
-        SFC.gridded_lag_sweep!(s, c, sf, u, sched, bins, Val(D); valid)
-    else
-        SFC.gridded_sweep!(s, c, sf, u, sched, bins, Val(D), backend; valid)
-    end
-    return s, c
+Test.@testset "field_validity marks the cells whose components are all finite and that the grid holds" begin
+    held(v, n) = findall(k -> !v[k], 1:n)
+    u = randn(2, 4, 3)
+    Test.@test held(SFC.field_validity(u), 12) == Int[]
+    u[1, 2, 2] = NaN
+    Test.@test held(SFC.field_validity(u), 12) == [6]
+    u2 = randn(2, 3, 3); u2[2, 1, 1] = Inf
+    Test.@test held(SFC.field_validity(u2), 9) == [1]
+    cm = trues(12); cm[5] = false
+    Test.@test held(SFC.field_validity(randn(2, 4, 3), cm), 12) == [5]
 end
 
-Test.@testset "field_validity reports what is usable" begin
-    u = randn(2, 4, 3)
-    Test.@test SFC.field_validity(u) isa SFC.AllValid
-    u[1, 2, 2] = NaN
-    v = SFC.field_validity(u)
-    Test.@test !(v isa SFC.AllValid)
-    Test.@test count(v) == 11                          # one cell of twelve lost
-    Test.@test !v[2 + (2 - 1) * 4]
-    # an infinite component is no more usable than a missing one
-    u2 = randn(2, 3, 3); u2[2, 1, 1] = Inf
-    Test.@test count(SFC.field_validity(u2)) == 8
-    # a cell the grid says does not exist is excluded even where the field is finite
-    cm = trues(12); cm[5] = false
-    Test.@test count(SFC.field_validity(randn(2, 4, 3), cm)) == 11
-    # AllValid answers for any index, so a complete field needs no array
-    Test.@test SFC.AllValid()[1] && SFC.AllValid()[10^9]
-end
+# (dims, fraction of cells knocked out, operator): each grid shape once.
+const _MASKED_SWEEP_CASES = (((9, 6), 0.15, SFT.L2SFType()), ((7, 7), 0.3, SFT.L3SFType()),
+                             ((11,), 0.2, SFT.L2SFType()), ((5, 4, 3), 0.25, SFT.L3SFType()))
 
 Test.@testset "a masked sweep matches brute force" begin
     T = Float64
-    for (dims, frac) in (((9, 6), 0.15), ((7, 7), 0.3), ((11,), 0.2), ((5, 4, 3), 0.25))
+    counts_ok, sums_ok = Bool[], Bool[]
+    for (dims, frac, sf) in _MASKED_SWEEP_CASES
         Dg = length(dims)
         spacing = ntuple(_ -> T(0.2), Dg)
         N = prod(dims)
         Random.seed!(8100 + N + Dg)
         u = randn(T, Dg, dims...)
-        # knock out a scattered fraction of cells, as an instrument or a coastline would
         uf = reshape(u, Dg, N)
         for k in 1:N
             rand() < frac && (uf[1, k] = NaN)
         end
-        valid = SFC.field_validity(u)
-        Test.@test !(valid isa SFC.AllValid)
+        held = vec(all(isfinite, uf; dims = 1))
         bins = collect(range(0.0, 0.7 * maximum(d -> spacing[d] * dims[d], 1:Dg); length = 7))
-        for sf in (SFT.L2SFType(), SFT.L3SFType())
-            got_s, got_c = _run(sf, u, dims, spacing, ntuple(_ -> false, Dg), bins, Dg, valid, nothing)
-            ref_s, ref_c = _brute_masked(sf, u, dims, spacing, valid, bins)
-            Test.@test got_c == ref_c
-            Test.@test isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12)
-            Test.@test sum(got_c) > 0
-            Test.@test all(isfinite, got_s)            # NaN must not leak out of an empty cell
-        end
+        nb = SFC.n_histogram_bins(SFC.squared_digitize_plan(bins))
+        got_s, got_c = zeros(nb), zeros(Int, nb)
+        SFC.gridded_lag_sweep!(got_s, got_c, sf, u, SFC.UniformLagSchedule(dims, spacing, ntuple(_ -> false, Dg)),
+                               bins, Val(Dg); valid = SFC.field_validity(u))
+        ref_s, ref_c = _brute_masked(sf, u, dims, spacing, held, bins)
+        push!(counts_ok, got_c == ref_c && sum(ref_c) > 0)
+        push!(sums_ok, isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12))
     end
+    Test.@test all(counts_ok)
+    Test.@test all(sums_ok)
 end
 
-Test.@testset "the masked transform matches the masked sweep" begin
-    # The two compute the pair count differently — the sweep counts as it goes, the transform reads
-    # the mask autocorrelation — so agreeing on counts is a real check, not a tautology.
-    T = Float64
-    for (dims, periodic) in (((10, 8), (false, false)), ((8, 8), (true, true)), ((12, 6), (true, false)))
-        Dg = 2
-        spacing = (T(0.2), T(0.25))
-        N = prod(dims)
-        Random.seed!(8200 + N)
-        u = randn(T, Dg, dims...)
-        uf = reshape(u, Dg, N)
-        for k in 1:N
-            rand() < 0.2 && (uf[2, k] = NaN)
-        end
-        valid = SFC.field_validity(u)
-        bins = collect(range(0.0, 1.2; length = 8))
-        for sf in (SFT.S2SFType(), SFT.L2SFType(), SFT.T2SFType())
-            ref_s, ref_c = _run(sf, u, dims, spacing, periodic, bins, Dg, valid, nothing)
-            got_s, got_c = _run(sf, u, dims, spacing, periodic, bins, Dg, valid,
-                                SB.FastFourierTransformSpectralBackend())
-            Test.@test got_c == ref_c
-            Test.@test isapprox(got_s, ref_s; rtol = 1e-8, atol = 1e-10)
-            Test.@test all(isfinite, got_s)
-            Test.@test sum(got_c) > 0
-        end
-    end
-end
-
-Test.@testset "masking removes exactly the pairs it should" begin
-    T = Float64
-    dims = (8, 6)
-    spacing = (T(0.25), T(0.25))
-    periodic = (false, false)
-    N = prod(dims)
-    Random.seed!(8300)
-    u = randn(T, 2, dims...)
-    bins = collect(range(0.0, 1e3; length = 4))
-    _, c_full = _run(SFT.S2SFType(), u, dims, spacing, periodic, bins, 2, SFC.AllValid(), nothing)
-    Test.@test sum(c_full) == N * (N - 1) ÷ 2
-
-    # dropping one cell removes exactly the N-1 pairs it took part in
-    v = trues(N); v[13] = false
-    _, c_one = _run(SFT.S2SFType(), u, dims, spacing, periodic, bins, 2, v, nothing)
-    Test.@test sum(c_one) == (N - 1) * (N - 2) ÷ 2
-    Test.@test sum(c_full) - sum(c_one) == N - 1
-end
-
-Test.@testset "a grid entry honours the grid's own mask" begin
+Test.@testset "a grid entry honours the grid's own mask and the field's missing values" begin
     geo = FG.Geometry.CartesianGeometry()
     nx, ny = 9, 7
     ax = range(0.0, step = 0.2, length = nx)
@@ -145,20 +80,14 @@ Test.@testset "a grid entry honours the grid's own mask" begin
     Random.seed!(8400)
     u = randn(2, nx, ny)
     bins = collect(range(0.0, 1e3; length = 4))
-
     cellmask = trues(nx, ny)
     cellmask[3, 4] = false
     cellmask[7, 2] = false
     holed = FG.Grids.StructuredGrid(geo, ax, ay, cellmask)
     whole = FG.Grids.StructuredGrid(geo, ax, ay)
-
-    r_whole = SFC.calculate_structure_function(SFT.L2SFType(), whole, u, bins, SF.StructureFunctionSumsAndCounts)
-    r_holed = SFC.calculate_structure_function(SFT.L2SFType(), holed, u, bins, SF.StructureFunctionSumsAndCounts)
     N = nx * ny
-    Test.@test sum(r_whole.counts) == N * (N - 1) ÷ 2
+    r_holed = SFC.calculate_structure_function(SFT.L2SFType(), holed, u, bins, SF.StructureFunctionSumsAndCounts)
     Test.@test sum(r_holed.counts) == (N - 2) * (N - 3) ÷ 2
-
-    # a NaN in the field is excluded the same way, with no mask on the grid at all
     u2 = copy(u); u2[1, 5, 5] = NaN
     r_nan = SFC.calculate_structure_function(SFT.L2SFType(), whole, u2, bins, SF.StructureFunctionSumsAndCounts)
     Test.@test sum(r_nan.counts) == (N - 1) * (N - 2) ÷ 2

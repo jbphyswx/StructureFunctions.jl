@@ -32,6 +32,9 @@ All notable changes to this project will be documented in this file.
 
 ### New
 
+- `equivalent_spectrum`: the spectrum from the derivative of the second-order structure function at the equivalent
+  wavenumber `b/r`, with and without the power-law bias at the local slope (Bishop et al. 2026); the bias needs
+  `Bessels`.
 - `TransformWorkspace` keeps a grid transform's buffers and plans, including non-uniform FFT plans set to a scattered
   schedule's points, from one call to the next.
 - On grids: the six single-pass invariants, by the lag sweep and by the transform; the joint histogram over the

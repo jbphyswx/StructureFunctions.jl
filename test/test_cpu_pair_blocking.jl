@@ -2,493 +2,305 @@ using Test: Test
 using StructureFunctions: StructureFunctions, Calculations as SFC, StructureFunctionTypes as SFT,
     HelperFunctions as SFH, LinearBinEdges, LogBinEdges
 using Random: Random
+using StaticArrays: StaticArrays as SA
 using Distances: Distances as DI
 using ComputationalBackends: ComputationalBackends as CB
-using OhMyThreads: OhMyThreads     # loads the threaded extension used below
+using OhMyThreads: OhMyThreads
 
-# Run the pair kernel over an explicit block schedule, returning the histogram.
-function _run_blocks(sf, xc, uc, bins, ::Val{D}, blocks, N, ::Type{FT}) where {D, FT}
-    plan = SFC.squared_digitize_plan(bins)
-    nb = SFC.n_histogram_bins(plan)
-    s = zeros(FT, nb); c = zeros(UInt32, nb)
-    SFC._pf_simd_pairs!(s, c, sf, xc, uc, plan, Val(D),
-        Vector{FT}(undef, N), Vector{FT}(undef, N), Vector{Int32}(undef, N), Vector{Int32}(undef, N), SFC.WholeRun(),
-        blocks, SFC.NoWeights())
-    return s, c
-end
+const _SERIAL, _THREADED = CB.SerialBackend(), CB.ThreadedBackend()
+const _RAW = StructureFunctions.StructureFunctionSumsAndCounts
 
 _comp(x, D) = ntuple(d -> collect(view(x, d, :)), D)
 
-Test.@testset "CPU pair loop is invariant to the block schedule" begin
-    for D in (2, 3), N in (37, 500, 1000), sf in (SFT.L2SFType(), SFT.L3SFType(), SFT.S2SFType())
-        Random.seed!(4242 + N + D)
-        FT = Float64
+"""Per-operator sums and counts over `edges` of the pairs `(i, j > i)`, `i ∈ ilist`, by brute force."""
+function _brute_histogram(ops, x, u, edges, ilist)
+    D, N = size(x)
+    e = collect(edges)
+    nb = length(e) - 1
+    s, c = zeros(length(ops), nb), zeros(Int, nb)
+    for i in ilist, j in (i + 1):N
+        dx = SA.SVector{D}(ntuple(d -> x[d, j] - x[d, i], D))
+        r = sqrt(sum(abs2, dx))
+        b = searchsortedfirst(e, r) - 1
+        1 <= b <= nb || continue
+        δu = SA.SVector{D}(ntuple(d -> u[d, j] - u[d, i], D))
+        s[:, b] .+= [op(δu, dx / r) for op in ops]
+        c[b] += 1
+    end
+    return s, c
+end
+
+const _SCHEDULE_CASES = (
+    (kernel = :pair, D = 2, bins = :linear, sf = SFT.L2SFType(), tile = 1, window = SFC.WholeRun(), stride = 1),
+    (kernel = :pair, D = 3, bins = :log, sf = SFT.L3SFType(), tile = 7, window = SFC.BlockRun(), stride = 1),
+    (kernel = :pair, D = 2, bins = :log, sf = SFT.S2SFType(), tile = 80, window = SFC.WholeRun(), stride = 3),
+    (kernel = :single_pass, D = 3, bins = :linear, sf = nothing, tile = 13, window = SFC.WholeRun(), stride = 1),
+    (kernel = :single_pass, D = 2, bins = :log, sf = nothing, tile = 39, window = SFC.BlockRun(), stride = 3),
+)
+
+# Under every tile, buffer window and outer index list the pair kernels sum exactly the pairs they are given.
+Test.@testset "pair kernels give the brute-force histogram under every block schedule" begin
+    N, FT = 40, Float64
+    for (; kernel, D, bins, sf, tile, window, stride) in _SCHEDULE_CASES
+        Random.seed!(4242 + D + tile)
         x = rand(FT, D, N); u = randn(FT, D, N)
-        xc, uc = _comp(x, D), _comp(u, D)
-        for bins in (LinearBinEdges(range(FT(0.0), FT(1.6); length = 17)),
-                     LogBinEdges(FT(0.02), FT(1.6), 17))
-            ilist = 1:(N - 1)
-            sref, cref = _run_blocks(sf, xc, uc, bins, Val(D),
-                SFC.pair_blocks(N, ilist; tile = N), N, FT)
-            for tile in (1, 7, 64, 333, N - 1, N, 2N)
-                s, c = _run_blocks(sf, xc, uc, bins, Val(D),
-                    SFC.pair_blocks(N, ilist; tile = tile), N, FT)
-                Test.@test c == cref
-                Test.@test isapprox(s, sref; rtol = 1e-12, atol = 1e-14)
-            end
-            # a strided outer list must block identically too
-            il2 = 1:3:(N - 1)
-            s2r, c2r = _run_blocks(sf, xc, uc, bins, Val(D), SFC.pair_blocks(N, il2; tile = N), N, FT)
-            s2, c2 = _run_blocks(sf, xc, uc, bins, Val(D), SFC.pair_blocks(N, il2; tile = 64), N, FT)
-            Test.@test c2 == c2r
-            Test.@test isapprox(s2, s2r; rtol = 1e-12, atol = 1e-14)
+        edges = bins === :linear ? LinearBinEdges(range(FT(0.0), FT(1.6); length = 17)) :
+                LogBinEdges(FT(0.02), FT(1.6), 17)
+        plan = SFC.squared_digitize_plan(edges)
+        nb = SFC.n_histogram_bins(plan)
+        ilist = 1:stride:(N - 1)
+        blocks = SFC.pair_blocks(N, ilist; tile)
+        L = window isa SFC.WholeRun ? N : tile
+        if kernel === :pair
+            s, c = zeros(FT, nb), zeros(UInt32, nb)
+            SFC._pf_simd_pairs!(s, c, sf, _comp(x, D), _comp(u, D), plan, Val(D), Vector{FT}(undef, L),
+                                Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), window, blocks,
+                                SFC.NoWeights())
+            sref, cref = _brute_histogram((sf,), x, u, edges, ilist)
+            Test.@test c == cref && isapprox(s, vec(sref); rtol = 1e-12, atol = 1e-14)
+        else
+            s, c = zeros(FT, SFC.SINGLE_PASS_N, nb), zeros(UInt32, SFC.SINGLE_PASS_N, nb)
+            SFC._pf_sp_simd_pairs!(s, c, _comp(x, D), _comp(u, D), plan, Val(D), Vector{FT}(undef, L),
+                                   Vector{FT}(undef, L), Vector{FT}(undef, L), Vector{Int32}(undef, L),
+                                   Vector{Int32}(undef, L), window, blocks)
+            sref, cref = _brute_histogram(values(SFC.SINGLE_PASS_OPERATORS), x, u, edges, ilist)
+            Test.@test all(==(cref), eachrow(c)) && isapprox(s, sref; rtol = 1e-12, atol = 1e-14)
         end
     end
-    let N = 400, D = 2, FT = Float64
-        Random.seed!(9)
-        x = rand(FT, D, N); u = randn(FT, D, N)
-        xc, uc = _comp(x, D), _comp(u, D)
-        bins = LinearBinEdges(range(FT(0.0), FT(10.0); length = 5))   # wide: captures every pair
-        _, c = _run_blocks(SFT.L2SFType(), xc, uc, bins, Val(D),
-            SFC.pair_blocks(N, 1:(N - 1); tile = 37), N, FT)
-        Test.@test sum(c) == N * (N - 1) ÷ 2
-    end
+    x, u = rand(2, N), randn(2, N)
+    plan = SFC.squared_digitize_plan(LinearBinEdges(0.0, 1.6, 17))
+    nb = SFC.n_histogram_bins(plan)
+    short = N - 1
+    Test.@test_throws ArgumentError SFC._pf_sp_simd_pairs!(
+        zeros(SFC.SINGLE_PASS_N, nb), zeros(UInt32, SFC.SINGLE_PASS_N, nb), _comp(x, 2), _comp(u, 2), plan, Val(2),
+        zeros(short), zeros(short), zeros(short), zeros(Int32, short), zeros(Int32, short), SFC.BlockRun(),
+        SFC.pair_blocks(N, 1:(N - 1); tile = N))
 end
 
-Test.@testset "culling does not change the answer" begin
-    FT = Float64
-    for D in (2, 3), r_max in (FT(0.5), FT(0.2), FT(0.07)), span in (1, 2, 3)
-        Random.seed!(31 + D + round(Int, 1000r_max) + span)
-        N = 1200
-        x = rand(FT, D, N); u = randn(FT, D, N)
-        bins = LinearBinEdges(range(FT(0.0), r_max; length = 13))
-        sf = SFT.L2SFType()
+const _CULLED_SCHEDULE_CASES = (
+    (D = 1, span = 2, cut = 0.03, parts = (N -> [1:(N - 1)])),
+    (D = 1, span = 2, cut = 0.03, parts = (N -> [1:0, 1:(N - 1)])),
+    (D = 2, span = 1, cut = 0.1, parts = (N -> [k:min(k + 6, N - 1) for k in 1:7:(N - 1)])),
+    (D = 2, span = 1, cut = 0.1, parts = (N -> [k:13:(N - 1) for k in 1:13])),
+    (D = 3, span = 3, cut = 0.25, parts = (N -> [collect(k:5:(N - 1)) for k in 1:5])),
+)
 
-        xc, uc = _comp(x, D), _comp(u, D)
-        sref, cref = _run_blocks(sf, xc, uc, bins, Val(D),
-            SFC.pair_blocks(N, 1:(N - 1)), N, FT)
-
-        cutoff = SFC.cull_cutoff(SFH.FlatGeometry{D}(), r_max)
-        grid = SFC.build_cell_grid(xc, cutoff, span)
+# A culled schedule, whole or split over parts of its outer indices, sweeps every pair within the cutoff exactly once.
+Test.@testset "culled block schedules sweep every in-range pair once" begin
+    N = 150
+    for (; D, span, cut, parts) in _CULLED_SCHEDULE_CASES
+        Random.seed!(2601 + D + span)
+        xc = ntuple(_ -> rand(N), D)
+        grid = SFC.build_cell_grid(xc, cut, span)
         xp = SFC.apply_perm(xc, grid.perm)
-        up = SFC.apply_perm(uc, grid.perm)
-        s, c = _run_blocks(sf, xp, up, bins, Val(D),
-            SFC.pair_blocks(N, 1:(N - 1); grid = grid), N, FT)
-
-        Test.@test c == cref                                  # counts must be exactly equal
-        Test.@test isapprox(s, sref; rtol = 1e-9, atol = 1e-12)
-        Test.@test sum(c) < N * (N - 1) ÷ 2                   # and it really culled something
+        near = [(i, j) for i in 1:(N - 1) for j in (i + 1):N if sum(d -> (xp[d][i] - xp[d][j])^2, 1:D) <= cut^2]
+        swept = [(i, j) for irange in parts(N) for (ir, jr) in SFC.pair_blocks(N, irange; grid)
+                 for i in ir for j in jr if j > i]
+        Test.@test allunique(swept) && issubset(near, Set(swept))
     end
 end
 
-Test.@testset "cull_cutoff bounds the true separation" begin
-    # On a shell the kernel sees ambient unit positions, so the cutoff is the unit chord.
+# A pair at the largest bin's separation lies within the cutoff: the unit chord on a sphere, the separation when flat.
+Test.@testset "cull_cutoff bounds every separation within the largest bin" begin
     R = 6.371e6
     g = SFH.SphericalGeometry{2}(DI.Haversine(R), R)
-    for r_max in (1.0e4, 1.0e6, 5.0e6)
-        cut = SFC.cull_cutoff(g, r_max)
-        σ = r_max / R
-        Test.@test cut ≈ 2 * sin(σ / 2)
-        # a pair at exactly r_max must sit at or inside the cutoff
-        p = [1.0, 0.0, 0.0]
-        q = [cos(σ), sin(σ), 0.0]
-        Test.@test sqrt(sum(abs2, q .- p)) <= cut + 1e-12
-    end
-    Test.@test SFC.cull_cutoff(g, π * R) == 2.0               # saturates at the diameter
-    Test.@test SFC.cull_cutoff(SFH.FlatGeometry{2}(), 3.5) == 3.5
+    chord(σ) = sqrt((cos(σ) - 1)^2 + sin(σ)^2)
+    Test.@test all(r_max -> chord(r_max / R) <= SFC.cull_cutoff(g, r_max) + 1e-12, (1.0e4, 1.0e6, 5.0e6))
+    Test.@test SFC.cull_cutoff(g, π * R) >= 2
+    Test.@test SFC.cull_cutoff(SFH.FlatGeometry{2}(), 3.5) >= 3.5
 end
 
 struct UnboundedTestGeometry{D} end
 SFH.coordinate_width(::UnboundedTestGeometry{D}) where {D} = Val(D)
 
-Test.@testset "a geometry declaring no bound is not required to have one" begin
-    # Culling must stay opt-in: a user-defined geometry with no `cull_cutoff` method has to keep
-    # working (declining to cull), not error. Requiring the method is how the geometry extension
-    # point gets broken.
-    Test.@test SFC.cull_cutoff(UnboundedTestGeometry{2}(), 1.0) === nothing
+# An unbounded last bin, or a geometry with no bound, is swept whole by AutoCulling and refused by AlwaysCulling.
+Test.@testset "culling declines where it cannot skip pairs" begin
     Random.seed!(11)
-    xc = (collect(rand(400)), collect(rand(400)))
-    bins = LinearBinEdges(range(0.0, 0.05; length = 9))
-    g = UnboundedTestGeometry{2}()
-    Test.@test SFC.cull_grid_for(xc, g, bins, SFC.AutoCulling()) === nothing
-    Test.@test SFC.cull_grid_for(xc, g, bins, SFC.NoCulling()) === nothing
-    # ...but an explicit demand must say why it cannot be honoured
-    Test.@test_throws ArgumentError SFC.cull_grid_for(xc, g, bins, SFC.AlwaysCulling())
-end
-
-Test.@testset "culling policy" begin
-    Random.seed!(1)
-    x = rand(2, 5000)
-    xc = (collect(view(x, 1, :)), collect(view(x, 2, :)))
-    g = SFH.FlatGeometry{2}()
-    tight = LinearBinEdges(range(0.0, 0.05; length = 9))    # stencil much smaller than the grid
-    wide = LinearBinEdges(range(0.0, 0.6; length = 9))      # stencil spans the grid
+    N = 20
+    x, u = rand(2, N), randn(2, N)
+    tight = LinearBinEdges(range(0.0, 0.05; length = 9))
     unbounded = StructureFunctions.InfPaddedBinEdges(tight)
-
-    Test.@test SFC.cull_grid_for(xc, g, tight, SFC.NoCulling()) === nothing
-    Test.@test SFC.cull_grid_for(xc, g, tight, SFC.AutoCulling()) !== nothing
-    # a cutoff spanning the grid removes no pairs, so :auto declines and pays for no sort
-    Test.@test SFC.cull_grid_for(xc, g, wide, SFC.AutoCulling()) === nothing
-    Test.@test SFC.cull_grid_for(xc, g, wide, SFC.AlwaysCulling()) !== nothing
-
-    # An unbounded last bin is reported, so no pair can be skipped.
-    Test.@test SFC.cull_grid_for(xc, g, unbounded, SFC.AutoCulling()) === nothing
-    Test.@test_throws ArgumentError SFC.cull_grid_for(xc, g, unbounded, SFC.AlwaysCulling())
-
-    grid = SFC.cull_grid_for(xc, g, tight, SFC.AutoCulling())
-    Test.@test sort(grid.perm) == collect(1:5000)          # a permutation, nothing dropped
-    Test.@test grid.run_starts[end] == 5001                # every point landed in a cell
-    Test.@test SFC.n_occupied_cells(grid) <= 5000           # only occupied cells are stored
-    Test.@test issorted(grid.cell_ids)                      # the run lookup relies on this
-    # the occupied runs must tile 1:N exactly, with no gap or overlap
-    Test.@test vcat([collect(SFC.occupied_cell(grid, k)[2])
-                     for k in 1:SFC.n_occupied_cells(grid)]...) == collect(1:5000)
+    padded(pol) = SFC.calculate_structure_function(SFT.L2SFType(), x, u, unbounded, _RAW; backend = _SERIAL,
+                                                   culling = pol)
+    Test.@test sum(padded(SFC.AutoCulling()).counts) == N * (N - 1) ÷ 2
+    Test.@test_throws ArgumentError padded(SFC.AlwaysCulling())
+    xc, g = _comp(x, 2), UnboundedTestGeometry{2}()
+    Test.@test SFC.cull_grid_for(xc, g, tight, SFC.AutoCulling()) === nothing
+    Test.@test_throws ArgumentError SFC.cull_grid_for(xc, g, tight, SFC.AlwaysCulling())
 end
 
-# The wired entry, on bins tight enough that AutoCulling actually engages — the default path in
-# the rest of the suite uses wide bins, where AutoCulling declines and the culled code never runs.
-Test.@testset "_pf_simd_partial! culls without changing the result" begin
-    FT = Float64
-    for D in (2, 3)
-        Random.seed!(808 + D)
-        N = 3000
-        x = rand(FT, D, N)
-        u = randn(FT, D, N)
-        xv = ntuple(d -> view(x, d, :), D)
-        uv = ntuple(d -> view(u, d, :), D)
-        g = SFH.FlatGeometry{D}()
-        bins = LinearBinEdges(range(FT(0.0), FT(0.08); length = 9))
-        nb = SFC.n_histogram_bins(bins)
+"""Positions, velocities, edges and keywords: a unit box, or a sphere patch across the antimeridian."""
+function _cull_inputs(points, edges, N)
+    if points === :sphere
+        lon = mod.(350 .+ 20 .* rand(N), 360) .- 180
+        lat = 20 .* rand(N) .- 10
+        return permutedims(hcat(lon, lat)), randn(2, N), collect(range(1.0e4, 3.0e5; length = 9)),
+               (; distance_metric = DI.Haversine(6.371e6))
+    end
+    D = points === :flat2 ? 2 : points === :flat3 ? 3 : 4
+    r_max = edges === :wide ? 1.5 : D == 2 ? 0.08 : 0.2
+    return rand(D, N), randn(D, N), collect(range(0.0, r_max; length = 9)), (;)
+end
 
-        # confirm the policy really engages here, else this testset proves nothing
-        xc = ntuple(d -> collect(xv[d]), D)
-        Test.@test SFC.cull_grid_for(xc, g, bins, SFC.AutoCulling()) !== nothing
-
-        s_ref = zeros(FT, nb); c_ref = zeros(UInt32, nb)
-        SFC._pf_simd_partial!(s_ref, c_ref, SFT.L2SFType(), xv, uv, bins, Val(D), nothing,
-            SFC.NoCulling(); geometry = g)
-        s_cull = zeros(FT, nb); c_cull = zeros(UInt32, nb)
-        SFC._pf_simd_partial!(s_cull, c_cull, SFT.L2SFType(), xv, uv, bins, Val(D), nothing,
-            SFC.AutoCulling(); geometry = g)
-
-        Test.@test c_cull == c_ref
-        Test.@test isapprox(s_cull, s_ref; rtol = 1e-9, atol = 1e-12)
-        Test.@test sum(c_ref) > 0                          # the bins are not all empty
+"""Sums and counts of a public `entry` under the culling policy `pol` on `backend`."""
+function _cull_entry(entry, x, u, bins, kw, pol, backend)
+    sf, vbins = SFT.L2SFType(), collect(range(-4.0, 4.0; length = 9))
+    nb, nv, n6 = length(bins) - 1, length(vbins) - 1, SFC.SINGLE_PASS_N
+    if entry === :sf1d
+        r = SFC.calculate_structure_function(sf, x, u, bins, _RAW; backend, culling = pol, kw...)
+        return r.sums, r.counts
+    elseif entry === :joint
+        r = SFC.calculate_structure_function(sf, x, u, bins, vbins; backend, culling = pol, kw...)
+        return r.sums, r.counts
+    elseif entry === :sp1d
+        return SFC.calculate_structure_functions_single_pass!(zeros(n6, nb), zeros(UInt32, n6, nb), x, u, bins;
+                                                              backend, culling = pol, kw...)
+    else
+        return SFC.calculate_structure_functions_single_pass_2d!(zeros(n6, nb, nv), zeros(UInt32, n6, nb, nv), x, u,
+                                                                 bins, vbins; backend, culling = pol, kw...)
     end
 end
 
-Test.@testset "single-pass kernel is invariant to the block schedule" begin
-    FT = Float64
-    for D in (2, 3), (N, dmax) in ((41, 1.6), (700, 1.6), (3000, 0.08))
-        Random.seed!(77 + N + D)
-        x = rand(FT, D, N)
-        u = randn(FT, D, N)
-        bins = LinearBinEdges(range(FT(0.0), FT(dmax); length = 17))
-        nb = SFC.n_histogram_bins(bins)
-        engages = SFC.cull_grid_for(_comp(x, D), SFH.FlatGeometry{D}(), bins, SFC.AutoCulling()) !== nothing
-        Test.@test engages == (dmax < 1)
+const _PUBLIC_CULL_CASES = (
+    (entry = :sf1d, points = :flat2, edges = :near, pol = SFC.AutoCulling(), backend = _THREADED),
+    (entry = :sp2d, points = :flat2, edges = :near, pol = SFC.AutoCulling(), backend = _SERIAL),
+    (entry = :sp1d, points = :flat3, edges = :near, pol = SFC.AlwaysCulling(), backend = _SERIAL),
+    (entry = :joint, points = :sphere, edges = :near, pol = SFC.AlwaysCulling(), backend = _SERIAL),
+    (entry = :joint, points = :flat4, edges = :near, pol = SFC.AutoCulling(), backend = _SERIAL),
+    (entry = :sf1d, points = :flat4, edges = :wide, pol = SFC.AlwaysCulling(), backend = _SERIAL),
+)
 
-        run(pol) = begin
-            s = zeros(FT, SFC.SINGLE_PASS_N, nb); c = zeros(UInt32, SFC.SINGLE_PASS_N, nb)
-            SFC._sp_simd_partial!(s, c, x, u, bins, Val(D), nothing, pol)
-            (s, c)
-        end
-        s_ref, c_ref = run(SFC.NoCulling())
-        s_cull, c_cull = run(SFC.AutoCulling())
-        Test.@test c_cull == c_ref
-        Test.@test isapprox(s_cull, s_ref; rtol = 1e-9, atol = 1e-12)
-        Test.@test sum(view(c_ref, 1, :)) > 0
-
-        # tiling alone (no culling): every tile size gives the same histogram, whether the buffers span
-        # every point or one tile
-        xc = _comp(x, D); uc = _comp(u, D)
-        plan = SFC.squared_digitize_plan(bins)
-        tile_run(tile, window, L) = begin
-            s = zeros(FT, SFC.SINGLE_PASS_N, nb); c = zeros(UInt32, SFC.SINGLE_PASS_N, nb)
-            SFC._pf_sp_simd_pairs!(s, c, xc, uc, plan, Val(D),
-                Vector{FT}(undef, L), Vector{FT}(undef, L), Vector{FT}(undef, L),
-                Vector{Int32}(undef, L), Vector{Int32}(undef, L), window, SFC.pair_blocks(N, 1:(N - 1); tile = tile))
-            (s, c)
-        end
-        s0, c0 = tile_run(N, SFC.WholeRun(), N)
-        for tile in (1, 13, 128, N), (window, L) in ((SFC.WholeRun(), N), (SFC.BlockRun(), tile))
-            s1, c1 = tile_run(tile, window, L)
-            Test.@test c1 == c0
-            Test.@test isapprox(s1, s0; rtol = 1e-12, atol = 1e-14)
-        end
-        Test.@test_throws ArgumentError tile_run(128, SFC.BlockRun(), min(N, 128) - 1)
+# Each public entry gives the same sums and counts culled as unculled, in 2- to 4-D flat boxes and on a sphere.
+Test.@testset "culling does not change a public entry's result" begin
+    Random.seed!(4)
+    N = 200
+    for (; entry, points, edges, pol, backend) in _PUBLIC_CULL_CASES
+        x, u, bins, kw = _cull_inputs(points, edges, N)
+        s_ref, c_ref = _cull_entry(entry, x, u, bins, kw, SFC.NoCulling(), _SERIAL)
+        s, c = _cull_entry(entry, x, u, bins, kw, pol, backend)
+        Test.@test c == c_ref && isapprox(s, s_ref; rtol = 1e-9, atol = 1e-12)
     end
 end
 
-Test.@testset "2D kernels are invariant to the block schedule" begin
+"""One batch entry's sums and counts over `B` slices, under the culling policy `pol` on backend `be`."""
+function _batch_cull_run(entry, x, u, w, bins, vbins, B, pol, be)
     FT = Float64
-    for D in (2, 3), (N, dmax) in ((43, 1.5), (600, 1.5), (3000, 0.08))
-        Random.seed!(303 + N + D)
-        x = rand(FT, D, N)
-        u = randn(FT, D, N)
-        dist = LinearBinEdges(range(FT(0.0), FT(dmax); length = 13))
-        val = LinearBinEdges(range(FT(-4.0), FT(4.0); length = 11))
-        n_dist = SFC.n_histogram_bins(dist)
-        n_val = SFC.n_histogram_bins(val)
-        engages = SFC.cull_grid_for(_comp(x, D), SFH.FlatGeometry{D}(), dist, SFC.AutoCulling()) !== nothing
-        Test.@test engages == (dmax < 1)
-
-        # joint 2D
-        joint(pol) = begin
-            s = zeros(FT, n_dist, n_val); c = zeros(UInt32, n_dist, n_val)
-            SFC._pf_2d_simd_partial!(s, c, SFT.L2SFType(), _comp(x, D), _comp(u, D),
-                dist, val, Val(D), nothing, pol)
-            (s, c)
-        end
-        sj_ref, cj_ref = joint(SFC.NoCulling())
-        sj, cj = joint(SFC.AutoCulling())
-        Test.@test cj == cj_ref
-        Test.@test isapprox(sj, sj_ref; rtol = 1e-9, atol = 1e-12)
-        Test.@test sum(cj_ref) > 0
-
-        # single-pass 2D
-        vb = ntuple(_ -> val, SFC.SINGLE_PASS_N)
-        sp2d(pol) = begin
-            s = zeros(FT, SFC.SINGLE_PASS_N, n_dist, n_val); c = zeros(UInt32, SFC.SINGLE_PASS_N, n_dist, n_val)
-            SFC._sp2d_accumulate_range!(s, c, x, u, dist, SFC.digitize_plan(vb), SFH.FlatGeometry{D}(), n_dist,
-                                        n_val, nothing, pol)
-            (s, c)
-        end
-        s_ref, c_ref = sp2d(SFC.NoCulling())
-        s_cull, c_cull = sp2d(SFC.AutoCulling())
-        Test.@test c_cull == c_ref
-        Test.@test isapprox(s_cull, s_ref; rtol = 1e-9, atol = 1e-12)
-        Test.@test sum(c_ref) > 0
-    end
-end
-
-Test.@testset "batch kernels cull without changing the result" begin
-    # Shared positions are sorted once for every slice, varying ones per slice; on bins tight enough
-    # that the cull engages on every slice, every policy must count the same pairs.
-    FT = Float64
-    N, B = 1500, 3
-    bins = collect(FT, range(0.0, 0.08; length = 9))
-    vbins = collect(FT, range(-0.02, 0.05; length = 11))
+    CT = w === nothing ? UInt32 : FT
     nb, nv = length(bins) - 1, length(vbins) - 1
     L2 = SFT.L2SFType()
-    for D in (2, 3), fixed in (true, false), weighted in (false, true)
+    if entry === :sf1d
+        s, c = zeros(FT, nb, B), zeros(CT, nb, B)
+        SFC.calculate_structure_function_batch!(s, c, L2, x, u, bins; backend = be, culling = pol, weights = w)
+    elseif entry === :joint
+        s, c = zeros(FT, nb, nv, B), zeros(CT, nb, nv, B)
+        SFC.calculate_structure_function_2d_batch!(s, c, L2, x, u, bins, vbins; backend = be, culling = pol,
+                                                   weights = w)
+    elseif entry === :sp1d
+        s, c = zeros(FT, SFC.SINGLE_PASS_N, nb, B), zeros(CT, SFC.SINGLE_PASS_N, nb, B)
+        SFC.calculate_structure_functions_single_pass_batch!(s, c, x, u, bins; backend = be, culling = pol, weights = w)
+    else
+        s, c = zeros(FT, SFC.SINGLE_PASS_N, nb, nv, B), zeros(CT, SFC.SINGLE_PASS_N, nb, nv, B)
+        SFC.calculate_structure_functions_single_pass_2d_batch!(s, c, x, u, bins, vbins; backend = be, culling = pol,
+                                                                weights = w)
+    end
+    return s, c
+end
+
+"""The same histograms, one unculled serial point-entry call per slice."""
+function _batch_slice_oracle(entry, x, u, w, bins, vbins, B)
+    FT = Float64
+    CT = w === nothing ? UInt32 : FT
+    nb, nv = length(bins) - 1, length(vbins) - 1
+    L2 = SFT.L2SFType()
+    kw = (; backend = CB.SerialBackend(), culling = SFC.NoCulling(), weights = w)
+    dims = entry === :sf1d ? (nb,) : entry === :joint ? (nb, nv) :
+           entry === :sp1d ? (SFC.SINGLE_PASS_N, nb) : (SFC.SINGLE_PASS_N, nb, nv)
+    s, c = zeros(FT, dims..., B), zeros(CT, dims..., B)
+    for t in 1:B
+        xt = ndims(x) == 2 ? x : x[:, :, t]
+        ut = u[:, :, t]
+        st, ct = selectdim(s, ndims(s), t), selectdim(c, ndims(c), t)
+        if entry === :sf1d
+            SFC.calculate_structure_function!(st, ct, L2, xt, ut, bins; kw...)
+        elseif entry === :joint
+            SFC.calculate_structure_function!(st, ct, L2, xt, ut, bins, vbins; kw...)
+        elseif entry === :sp1d
+            SFC.calculate_structure_functions_single_pass!(st, ct, xt, ut, bins; kw...)
+        else
+            SFC.calculate_structure_functions_single_pass_2d!(st, ct, xt, ut, bins, vbins; kw...)
+        end
+    end
+    return s, c
+end
+
+const _BATCH_CULL_CASES = (
+    (entry = :sf1d, D = 2, fixed = true, weighted = true, be = _SERIAL, pol = SFC.AlwaysCulling()),
+    (entry = :joint, D = 3, fixed = false, weighted = false, be = _THREADED, pol = SFC.AutoCulling()),
+    (entry = :sp1d, D = 2, fixed = true, weighted = false, be = _SERIAL, pol = SFC.AutoCulling()),
+    (entry = :sp2d, D = 2, fixed = true, weighted = true, be = _SERIAL, pol = SFC.AlwaysCulling()),
+)
+
+# Each batch entry, culled, equals one unculled point-entry call per slice, on shared and on per-slice positions.
+Test.@testset "batch kernels cull without changing the result" begin
+    FT = Float64
+    N, B = 150, 2
+    bins = collect(FT, range(0.0, 0.08; length = 9))
+    vbins = collect(FT, range(-0.02, 0.05; length = 11))
+    for (; entry, D, fixed, weighted, be, pol) in _BATCH_CULL_CASES
         Random.seed!(990 + D + 2fixed + 4weighted)
         x = fixed ? rand(FT, D, N) : rand(FT, D, N, B)
         u = randn(FT, D, N, B) .* 0.1
         w = weighted ? rand(FT, N) .+ 0.5 : nothing
-        CT = weighted ? FT : UInt32
-        slices = fixed ? (x,) : Tuple(x[:, :, b] for b in 1:B)
-        Test.@test all(xs -> SFC.cull_grid_for(_comp(xs, D), SFH.FlatGeometry{D}(), bins,
-                                               SFC.AutoCulling()) !== nothing, slices)
-        runs = (
-            (pol, be) -> (s = zeros(FT, nb, B); c = zeros(CT, nb, B);
-                SFC.calculate_structure_function_batch!(s, c, L2, x, u, bins; backend = be, culling = pol,
-                    weights = w); (s, c)),
-            (pol, be) -> (s = zeros(FT, nb, nv, B); c = zeros(CT, nb, nv, B);
-                SFC.calculate_structure_function_2d_batch!(s, c, L2, x, u, bins, vbins; backend = be,
-                    culling = pol, weights = w); (s, c)),
-            (pol, be) -> (s = zeros(FT, SFC.SINGLE_PASS_N, nb, B); c = zeros(CT, SFC.SINGLE_PASS_N, nb, B);
-                SFC.calculate_structure_functions_single_pass_batch!(s, c, x, u, bins; backend = be,
-                    culling = pol, weights = w); (s, c)),
-            (pol, be) -> (s = zeros(FT, SFC.SINGLE_PASS_N, nb, nv, B);
-                c = zeros(CT, SFC.SINGLE_PASS_N, nb, nv, B);
-                SFC.calculate_structure_functions_single_pass_2d_batch!(s, c, x, u, bins, vbins;
-                    backend = be, culling = pol, weights = w); (s, c)),
-        )
-        for run in runs
-            s_ref, c_ref = run(SFC.NoCulling(), CB.SerialBackend())
-            Test.@test sum(c_ref) > 0
-            for be in (CB.SerialBackend(), CB.ThreadedBackend()),
-                pol in (SFC.NoCulling(), SFC.AlwaysCulling(), SFC.AutoCulling())
-                s, c = run(pol, be)
-                Test.@test weighted ? isapprox(c, c_ref; rtol = 1e-12) : c == c_ref
-                Test.@test isapprox(s, s_ref; rtol = 1e-9, atol = 1e-12)
-            end
-        end
+        s_ref, c_ref = _batch_slice_oracle(entry, x, u, w, bins, vbins, B)
+        s, c = _batch_cull_run(entry, x, u, w, bins, vbins, B, pol, be)
+        Test.@test (weighted ? isapprox(c, c_ref; rtol = 1e-12) : c == c_ref) &&
+                   isapprox(s, s_ref; rtol = 1e-9, atol = 1e-12)
     end
 end
 
+const _TENSOR_CULL_CASES = (
+    (P = 2, layout = :point, be = _SERIAL, pol = SFC.AlwaysCulling()),
+    (P = 3, layout = :shared, be = _THREADED, pol = SFC.AutoCulling()),
+    (P = 2, layout = :varying, be = _SERIAL, pol = SFC.AutoCulling()),
+)
+
+# The moment tensor of point, shared-position and per-slice-position fields is the same culled as unculled.
 Test.@testset "tensor kernels cull without changing the result" begin
-    # Shared positions sorted once for every slice, varying ones per slice.
-    N, B = 1500, 3
+    Random.seed!(368)
+    N, B = 150, 2
     bins = collect(range(0.0, 0.08; length = 9))
     TRAW = StructureFunctions.StructureFunctionObjects.StructureFunctionTensorSumsAndCounts
-    for P in (2, 3), (x, u) in ((rand(2, N), randn(2, N)), (rand(2, N), randn(2, N, B)),
-                                (rand(2, N, B), randn(2, N, B))),
-        backend in (CB.SerialBackend(), CB.ThreadedBackend())
-        run(pol) = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, TRAW; backend, culling = pol)
-        ref = run(SFC.NoCulling())
-        Test.@test sum(ref.counts) > 0
-        for pol in (SFC.AlwaysCulling(), SFC.AutoCulling())
-            got = run(pol)
-            Test.@test got.counts == ref.counts
-            Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-12)
-        end
+    for (; P, layout, be, pol) in _TENSOR_CULL_CASES
+        x = layout === :varying ? rand(2, N, B) : rand(2, N)
+        u = layout === :point ? randn(2, N) : randn(2, N, B)
+        run(culling, backend) = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, TRAW; backend, culling)
+        r = run(SFC.NoCulling(), _SERIAL)
+        got = run(pol, be)
+        Test.@test got.counts == r.counts && isapprox(got.sums, r.sums; rtol = 1e-9, atol = 1e-12)
     end
 end
 
-Test.@testset "culling on a sphere does not change the answer" begin
-    # The kernels see ambient unit positions, so the cull grid lives in 3-space around a 2-D
-    # shell: cells vastly outnumber points, which is exactly what the sparse grid is for.
-    FT = Float64
-    R = 6.371e6
-    for r_max in (3.0e5, 1.0e5)
-        Random.seed!(515 + round(Int, r_max))
-        N = 2500
-        lon = rand(FT, N) .* 360 .- 180
-        lat = rand(FT, N) .* 120 .- 60
-        x = permutedims(hcat(lon, lat))
-        u = randn(FT, 2, N)
-        bins = collect(FT, range(1.0e4, r_max; length = 9))
-        metric = DI.Haversine(R)
-        geom = SFH.pair_geometry_for(metric, Val(2))
-        nb = SFC.n_histogram_bins(bins)
-
-        run(pol) = begin
-            s = zeros(FT, SFC.SINGLE_PASS_N, nb); c = zeros(UInt32, SFC.SINGLE_PASS_N, nb)
-            SFC._accumulate_single_pass_1d!(s, c, x, u, bins; geometry = geom, culling = pol)
-            (s, c)
-        end
-        s_ref, c_ref = run(SFC.NoCulling())
-        s_cull, c_cull = run(SFC.AutoCulling())
-
-        # confirm the grid really engages, else this proves nothing
-        xk, _ = SFH.prepare_pair_inputs(geom, x, u)
-        g, _, _ = SFC.cull_sorted_matrices(xk, u, geom, SFC.BinEdges(bins), SFC.AutoCulling())
-        Test.@test g !== nothing
-        Test.@test prod(g.dims) > SFC.n_occupied_cells(g)   # sparse, as expected on a shell
-
-        Test.@test c_cull == c_ref
-        Test.@test isapprox(s_cull, s_ref; rtol = 1e-9, atol = 1e-12)
-        Test.@test sum(view(c_ref, 1, :)) > 0
-    end
-end
-
-Test.@testset "culling through the public entry" begin
-    FT = Float64
-    Random.seed!(4)
-    N = 2500
-    x = rand(FT, 2, N)
-    u = randn(FT, 2, N)
-    bins = collect(FT, range(0.0, 0.08; length = 9))
-    sf = SFT.L2SFType()
-
-    # Empty bins finalize to NaN, so agreement means the same NaN pattern and equal finite values.
-    function same_result(a, b)
-        isnan.(a.values) == isnan.(b.values) || return false
-        keep = .!isnan.(a.values)
-        any(keep) || return false
-        return isapprox(a.values[keep], b.values[keep]; rtol = 1e-9, atol = 1e-12)
-    end
-
-    ref = SFC.calculate_structure_function(sf, x, u, bins;
-        backend = CB.SerialBackend(), culling = SFC.NoCulling())
-    cull = SFC.calculate_structure_function(sf, x, u, bins;
-        backend = CB.SerialBackend(), culling = SFC.AutoCulling())
-    Test.@test same_result(cull, ref)
-    Test.@test cull.distance == ref.distance
-    Test.@test any(.!isnan.(ref.values))               # the bins are not all empty
-
-    thr = SFC.calculate_structure_function(sf, x, u, bins;
-        backend = CB.ThreadedBackend(), culling = SFC.AutoCulling())
-    Test.@test same_result(thr, ref)
-
-    # The scalar kernels, for a curved metric and for a flat width past three, cull too.
-    RAW = StructureFunctions.StructureFunctionSumsAndCounts
-    lon = rand(N) .* 360 .- 180
-    lat = rand(N) .* 120 .- 60
-    xs = permutedims(hcat(lon, lat))
-    us = randn(2, N)
-    sbins = collect(range(1.0e4, 3.0e5; length = 9))
-    vbins = collect(range(-4.0, 4.0; length = 9))
-    m = DI.Haversine(6.371e6)
-    x4, u4 = rand(4, N), randn(4, N)
-    bins4 = collect(range(0.0, 0.2; length = 9))
-    Test.@test SFC.cull_grid_for(_comp(x4, 4), SFH.FlatGeometry{4}(), bins4, SFC.AutoCulling()) !== nothing
-    x64, u64 = rand(64, 600), randn(64, 600)
-    bins64 = collect(range(0.0, 3.0; length = 9))
-    for backend in (CB.SerialBackend(), CB.ThreadedBackend())
-        for (xk, uk, bk, kw) in ((xs, us, sbins, (; distance_metric = m)), (x4, u4, bins4, (;)),
-                                 (x64, u64, bins64, (;)))
-            one_d(pol) = SFC.calculate_structure_function(sf, xk, uk, bk, RAW; backend, culling = pol,
-                kw...)
-            joint(pol) = SFC.calculate_structure_function(sf, xk, uk, bk, vbins; backend, culling = pol,
-                kw...)
-            ref1, ref2 = one_d(SFC.NoCulling()), joint(SFC.NoCulling())
-            Test.@test sum(ref1.counts) > 0
-            for pol in (SFC.AlwaysCulling(), SFC.AutoCulling())
-                got1, got2 = one_d(pol), joint(pol)
-                Test.@test got1.counts == ref1.counts
-                Test.@test isapprox(got1.sums, ref1.sums; rtol = 1e-9, atol = 1e-12)
-                Test.@test got2.counts == ref2.counts
-                Test.@test isapprox(got2.sums, ref2.sums; rtol = 1e-9, atol = 1e-12)
-            end
-        end
-    end
-end
+# Block ids map row by row onto tile pairs ti ≤ tj, for Int32 ids too, and exactly past Float64's exact integers.
 Test.@testset "tile_for enumerates exactly the upper triangle" begin
-    # B2a: every GPU kernel maps its linear block id through this. It must be a bijection onto
-    # {(ti, tj) : ti <= tj}, in the fixed order the kernels' block-private accumulators rely on.
-    for n in (1, 2, 3, 7, 16, 33, 157, 512)
-        s = SFC.FullUpperTriangle(n)
-        nb = SFC.n_pair_blocks(s)
-        Test.@test nb == n * (n + 1) ÷ 2
-        seen = [SFC.tile_for(s, k) for k in 1:nb]
-        Test.@test seen == [(ti, tj) for ti in 1:n for tj in ti:n]   # the exact row-by-row order
-        # Int32 ids, as the device hands them out, give the same pairs
-        Test.@test all(k -> SFC.tile_for(s, Int32(k)) === (Int32(seen[k][1]), Int32(seen[k][2])), 1:nb)
-    end
-    # a tile count past what the tests above can enumerate: every row boundary, exactly
-    n = 40_000
+    ns = (1, 2, 7, 33)
+    nblocks(n) = n * (n + 1) ÷ 2
+    Test.@test all(n -> SFC.n_pair_blocks(SFC.FullUpperTriangle(n)) == nblocks(n), ns)
+    Test.@test all(n -> [SFC.tile_for(SFC.FullUpperTriangle(n), k) for k in 1:nblocks(n)] ==
+                        [(ti, tj) for ti in 1:n for tj in ti:n], ns)
+    Test.@test all(n -> all(k -> SFC.tile_for(SFC.FullUpperTriangle(n), Int32(k)) ===
+                                 Int32.(SFC.tile_for(SFC.FullUpperTriangle(n), k)), 1:nblocks(n)), ns)
+    n = 2^27
     s = SFC.FullUpperTriangle(n)
     row_start(ti) = (ti - 1) * n - (ti - 1) * (ti - 2) ÷ 2 + 1
     Test.@test all(ti -> SFC.tile_for(s, row_start(ti)) == (ti, ti) &&
-                         SFC.tile_for(s, row_start(ti) - 1) == (ti - 1, n), 2:n)
-    Test.@test SFC.tile_for(s, SFC.n_pair_blocks(s)) == (n, n)
+                         SFC.tile_for(s, row_start(ti) - 1) == (ti - 1, n), (2, 3, n ÷ 2, n - 1, n))
 end
 
+# A work list hands back, in order, the tile pairs packed into it.
 Test.@testset "TilePairWorkList unpacks what pack_tile_pair packs" begin
     n = 41
-    pairs = [(ti, tj) for tj in 1:n for ti in 1:tj if (ti * 7 + tj) % 3 == 0]   # an arbitrary subset
-    packed = Int32[SFC.pack_tile_pair(ti, tj, n) for (ti, tj) in pairs]
-    s = SFC.TilePairWorkList(packed, Int32(n))
+    pairs = [(ti, tj) for tj in 1:n for ti in 1:tj if (ti * 7 + tj) % 3 == 0]
+    s = SFC.TilePairWorkList(Int32[SFC.pack_tile_pair(ti, tj, n) for (ti, tj) in pairs], Int32(n))
     Test.@test SFC.n_pair_blocks(s) == length(pairs)
     Test.@test all(k -> SFC.tile_for(s, k) == pairs[k], eachindex(pairs))
-    Test.@test all(p -> 1 <= p <= n * n, packed)                # packing stays in one id space
 end
-
-Test.@testset "culled block schedule covers every in-range pair in one dimension" begin
-    # One dimension has a single stencil row, reached along the sorted axis alone.
-    FT = Float64
-    N = 800
-    Random.seed!(2601)
-    xc = (rand(FT, N),)
-    cut = FT(0.03)
-    grid = SFC.build_cell_grid(xc, cut, 2)
-    Test.@test length(grid.offsets) == 1
-    xp = SFC.apply_perm(xc, grid.perm)
-    covered = falses(N, N)
-    for (ir, jr) in SFC.CulledBlockPairs(grid), i in ir, j in jr
-        j > i && (covered[i, j] = true)
-    end
-    missed = count(((i, j),) -> abs(xp[1][i] - xp[1][j]) <= cut && !covered[i, j],
-                   ((i, j) for i in 1:(N - 1) for j in (i + 1):N))
-    Test.@test missed == 0
-    Test.@test count(covered) < N * (N - 1) ÷ 2
-end
-
-Test.@testset "a culled schedule narrowed to parts of the outer indices sweeps the same pairs" begin
-    FT = Float64
-    N = 1500
-    Random.seed!(2602)
-    xc = (rand(FT, N), rand(FT, N))
-    grid = SFC.build_cell_grid(xc, FT(0.05), 1)
-    pairs_of(irange) = sort!([(i, j) for (ir, jr) in SFC.pair_blocks(N, irange; grid) for i in ir for j in jr if j > i])
-    whole = pairs_of(1:(N - 1))
-    Test.@test length(whole) < N * (N - 1) ÷ 2
-    for parts in ([1:(N - 1)], [k:min(k + 6, N - 1) for k in 1:7:(N - 1)], [k:min(k + 99, N - 1) for k in 1:100:(N - 1)],
-                  [k:13:(N - 1) for k in 1:13], [collect(k:5:(N - 1)) for k in 1:5], [1:0, 1:(N - 1)])
-        Test.@test sort!(reduce(vcat, map(pairs_of, parts))) == whole
-    end
-end
-

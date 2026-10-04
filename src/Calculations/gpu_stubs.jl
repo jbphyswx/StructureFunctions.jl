@@ -168,7 +168,7 @@ function gpu_free_memory end
 """Release device buffers held by a [`GPUSFWorkspace`](@ref) (optional explicit free)."""
 function release! end
 
-"""Invalidate prepared geometry and input caches held by a [`GPUSFWorkspace`](@ref)."""
+"""Invalidate the cull grid a [`GPUSFWorkspace`](@ref) prepared from coordinates that have since been mutated in place."""
 function refresh! end
 
 """

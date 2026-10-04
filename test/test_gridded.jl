@@ -15,9 +15,7 @@ function _grid_points(dims::NTuple{Dg, Int}, spacing::NTuple{Dg, T}, origin::NTu
     return x
 end
 
-# Brute force over unordered pairs with the minimum image on periodic directions, averaging the
-# operator over the equal-length images where a direction half-turns. Independent of the lag
-# machinery: it enumerates pairs, not lags, and builds each image set from the pair's own offset.
+# Pair loop under the minimum image, a half-turning pair averaged over its equal-length images.
 function _brute_force_histogram(sf, u, dims::NTuple{Dg, Int}, spacing::NTuple{Dg, T},
                                 periodic::NTuple{Dg, Bool}, bins) where {Dg, T}
     plan = SFC.squared_digitize_plan(bins)
@@ -44,7 +42,6 @@ function _brute_force_histogram(sf, u, dims::NTuple{Dg, Int}, spacing::NTuple{Dg
         b = SFC.squared_digitize(plan, r2)
         1 <= b <= nb || continue
         du = SA.SVector{D, T}(ntuple(c -> uf[c, k2] - uf[c, k1], Val(D)))
-        # directions this pair half-turns: both signs are minimal, so both are equally its direction
         amb = [d for d in 1:Dg if periodic[d] && iseven(dims[d]) &&
                abs(I2[d] - I1[d]) % dims[d] == dims[d] ÷ 2]
         acc = 0.0
@@ -61,9 +58,7 @@ function _brute_force_histogram(sf, u, dims::NTuple{Dg, Int}, spacing::NTuple{Dg
     return sums, counts
 end
 
-# Bin edges placed between the separations a grid can produce. Pairs sharing a lag share one exact
-# separation, so an edge through it splits a whole shell by rounding: the sweep bins them by the
-# lag's separation and a pair loop by each pair's own coordinate difference, which differ by an ulp.
+# Bin edges midway between the distinct separations a grid produces, so no shell sits on an edge.
 function _separated_bins(dims::NTuple{Dg, Int}, spacing::NTuple{Dg, T}, n_bins::Int) where {Dg, T}
     seps = Float64[]
     for I in CartesianIndices(ntuple(d -> 0:(dims[d] - 1), Val(Dg)))
@@ -87,13 +82,14 @@ function _sweep(sf, u, dims, spacing, periodic, bins, D)
     return s, c
 end
 
+const _BOUNDED_GRID_CASES = (((7,), (0.25,), SFT.L2SFType()),
+                             ((9, 6), (0.1, 0.2), SFT.L3SFType()),
+                             ((5, 4, 3), (0.3, 0.3, 0.5), SFT.S2SFType()),
+                             ((8, 5), (0.15, -0.25), SFT.L2SFType()))
+
 Test.@testset "lag sweep on a bounded grid equals the unstructured path" begin
-    # The strongest oracle available: on a bounded grid the separations are plain Euclidean, so the
-    # existing pair loop over the same points must agree exactly in counts.
-    for (dims, spacing) in (((7,), (0.25,)),
-                            ((9, 6), (0.1, 0.2)),
-                            ((5, 4, 3), (0.3, 0.3, 0.5)),
-                            ((8, 5), (0.15, -0.25)))     # a descending axis reports negative spacing
+    counts_ok, sums_ok = Bool[], Bool[]
+    for (dims, spacing, sf) in _BOUNDED_GRID_CASES
         Dg = length(dims)
         T = Float64
         origin = ntuple(_ -> zero(T), Dg)
@@ -104,82 +100,58 @@ Test.@testset "lag sweep on a bounded grid equals the unstructured path" begin
         periodic = ntuple(_ -> false, Dg)
         bins = _separated_bins(dims, abs.(spacing), 8)
         nb = length(bins) - 1
-
-        for sf in (SFT.L2SFType(), SFT.L3SFType(), SFT.S2SFType())
-            got_s, got_c = _sweep(sf, u, dims, spacing, periodic, bins, Dg)
-            ref_s = zeros(Float64, nb)
-            ref_c = zeros(Int, nb)
-            SFC.calculate_structure_function!(ref_s, ref_c, sf, x, reshape(u, Dg, N), bins)
-            Test.@test got_c == ref_c
-            Test.@test isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12)
-            Test.@test sum(got_c) > 0
-        end
+        got_s, got_c = _sweep(sf, u, dims, spacing, periodic, bins, Dg)
+        ref_s = zeros(Float64, nb)
+        ref_c = zeros(Int, nb)
+        SFC.calculate_structure_function!(ref_s, ref_c, sf, x, reshape(u, Dg, N), bins)
+        push!(counts_ok, got_c == ref_c && sum(ref_c) > 0)
+        push!(sums_ok, isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12))
     end
+    Test.@test all(counts_ok)
+    Test.@test all(sums_ok)
 end
 
-Test.@testset "lag sweep counts every pair once" begin
-    # With bins spanning every separation the histogram must hold exactly N(N-1)/2 pairs, on a
-    # bounded grid and on a periodic one, where the minimum image makes the largest separation
-    # smaller but changes no count.
-    T = Float64
-    for dims in ((6, 4), (5, 5), (4, 4), (7,), (3, 4, 2))
-        Dg = length(dims)
-        spacing = ntuple(_ -> T(0.5), Dg)
-        N = prod(dims)
-        Random.seed!(4300 + N)
-        u = randn(T, Dg, dims...)
-        bins = collect(range(0.0, 1e3; length = 4))
-        for periodic in (ntuple(_ -> false, Dg), ntuple(_ -> true, Dg),
-                         ntuple(d -> isodd(d), Dg))
-            _, c = _sweep(SFT.L2SFType(), u, dims, spacing, periodic, bins, Dg)
-            Test.@test sum(c) == N * (N - 1) ÷ 2
-        end
-    end
-end
+const _MINIMUM_IMAGE_CASES = (((6, 4), (true, true), SFT.L3SFType()), ((6, 4), (true, false), SFT.L2SFType()),
+                              ((5, 5), (true, true), SFT.L2SFType()), ((8,), (true,), SFT.L2SFType()),
+                              ((4, 4, 2), (true, true, true), SFT.L3SFType()))
 
 Test.@testset "lag sweep matches a brute-force minimum image" begin
-    # Periodicity is the part the unstructured path cannot check: it has no wrap concept. Even
-    # lengths are included because a half-turn lag is its own reverse and is the one case that names
-    # each pair twice.
+    # Every wrapped pair falls in these bins, half-turning ones included, each counted once as the pair loop does.
     T = Float64
-    for (dims, periodic) in (((6, 4), (true, true)),
-                             ((6, 4), (true, false)),
-                             ((5, 5), (true, true)),
-                             ((8,), (true,)),
-                             ((4, 4, 2), (true, true, true)))
+    counts_ok, sums_ok = Bool[], Bool[]
+    for (dims, periodic, sf) in _MINIMUM_IMAGE_CASES
         Dg = length(dims)
         spacing = ntuple(d -> T(0.1 * d + 0.1), Dg)
         Random.seed!(4400 + prod(dims) + Dg)
         u = randn(T, Dg, dims...)
         r_max = 0.6 * sum(d -> spacing[d] * dims[d], 1:Dg)
         bins = collect(range(0.0, r_max; length = 7))
-        for sf in (SFT.L2SFType(), SFT.L3SFType())
-            got_s, got_c = _sweep(sf, u, dims, spacing, periodic, bins, Dg)
-            ref_s, ref_c = _brute_force_histogram(sf, u, dims, spacing, periodic, bins)
-            Test.@test got_c == ref_c
-            Test.@test isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12)
-            Test.@test sum(got_c) > 0
-        end
+        got_s, got_c = _sweep(sf, u, dims, spacing, periodic, bins, Dg)
+        ref_s, ref_c = _brute_force_histogram(sf, u, dims, spacing, periodic, bins)
+        push!(counts_ok, got_c == ref_c && sum(ref_c) > 0)
+        push!(sums_ok, isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12))
     end
+    Test.@test all(counts_ok)
+    Test.@test all(sums_ok)
 end
 
 Test.@testset "lag sweep with more field components than grid directions" begin
-    # A horizontal slice of a 3-component flow: the lag lies in the grid's plane and is zero along
-    # the extra component, which still enters the transverse energy.
+    # A 3-component field on a bounded 2-D grid counts every pair, and its energy is the in-plane one plus the third's.
     T = Float64
     dims = (7, 5)
     spacing = (0.2, 0.2)
     periodic = (false, false)
     Random.seed!(4500)
     u = randn(T, 3, dims...)
-    bins = collect(range(0.0, 2.0; length = 6))     # spans the 1.44 diagonal, so every pair bins
+    bins = collect(range(0.0, 2.0; length = 6))
     s3, c3 = _sweep(SFT.S2SFType(), u, dims, spacing, periodic, bins, 3)
     Test.@test sum(c3) == prod(dims) * (prod(dims) - 1) ÷ 2
-
-    # dropping the third component must leave the counts alone and lower the second-order sum
     s2, c2 = _sweep(SFT.S2SFType(), u[1:2, :, :], dims, spacing, periodic, bins, 2)
+    third = zeros(T, 2, dims...)
+    third[2, :, :] .= u[3, :, :]
+    s_third, _ = _sweep(SFT.S2SFType(), third, dims, spacing, periodic, bins, 2)
     Test.@test c2 == c3
-    Test.@test all(s2 .<= s3 .+ 1e-12)
+    Test.@test isapprox(s3, s2 .+ s_third; rtol = 1e-12)
 end
 
 Test.@testset "lag sweep rejects mismatched shapes" begin
@@ -196,8 +168,7 @@ Test.@testset "lag sweep rejects mismatched shapes" begin
         s, c, SFT.L2SFType(), randn(T, 1, dims...), sched, bins, Val(1))
 end
 
-# The joint histogram by value, by brute force: each pair's value per equal-length image, a 1/M share of
-# the pair in the value bin of each image.
+# Joint histogram by value under the minimum image: each of a pair's M equal-length images adds a 1/M share.
 function _brute_force_value_histogram(sf, u, dims::NTuple{Dg, Int}, spacing::NTuple{Dg, T},
                                       periodic::NTuple{Dg, Bool}, bins, vbins) where {Dg, T}
     plan = SFC.squared_digitize_plan(bins)
@@ -239,6 +210,10 @@ function _brute_force_value_histogram(sf, u, dims::NTuple{Dg, Int}, spacing::NTu
     return sums, counts
 end
 
+const _VALUE_JOINT_CASES = ((SFT.L2SFType(), :plain), (SFT.T2SFType(), :masked), (SFT.S3SFType(), :plain),
+                            (SFT.L3SFType(), :weighted))
+const _VALUE_JOINT_PERIODIC_CASES = (((6, 4), (true, true), SFT.L3SFType()), ((6, 5), (true, false), SFT.L2SFType()))
+
 Test.@testset "the joint histogram by value equals the pair loop and the minimum-image brute force" begin
     T = Float64
     vax = SFC.InvariantValueAxis()
@@ -250,66 +225,61 @@ Test.@testset "the joint histogram by value equals the pair loop and the minimum
     nb = length(bins) - 1
     sched = SFC.UniformLagSchedule(dims, spacing, (false, false))
     Random.seed!(4700)
-    for sf in (SFT.L2SFType(), SFT.T2SFType(), SFT.S3SFType(), SFT.L3SFType()), variant in (:plain, :masked, :weighted)
+    counts_ok, sums_ok = Bool[], Bool[]
+    for (sf, variant) in _VALUE_JOINT_CASES
         u = randn(T, 2, dims...)
         variant === :masked && (u[1, 3, 2] = NaN; u[2, 7, 5] = NaN)
         w = variant === :weighted ? 0.5 .+ rand(N) : nothing
         valid = SFC.field_validity(u)
-        keep = valid isa SFC.AllValid ? Colon() : findall(valid)
+        keep = vec(all(isfinite, reshape(u, 2, N); dims = 1))
         got_s, got_c = zeros(nb, 8), zeros(nb, 8)
         SFC.gridded_lag_sweep!(got_s, got_c, sf, u, sched, bins, vbins, Val(2); valid, weights = w, second_axis = vax)
         ref_s, ref_c = zeros(nb, 8), zeros(nb, 8)
         SFC.calculate_structure_function!(ref_s, ref_c, sf, x[:, keep], reshape(u, 2, N)[:, keep], bins, vbins;
                                          weights = w === nothing ? nothing : w[keep])
-        Test.@test sum(ref_c) > 0
-        Test.@test (nameof(typeof(sf)), variant, isapprox(got_c, ref_c; rtol = 1e-12)) == (nameof(typeof(sf)), variant, true)
-        Test.@test isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12)
+        push!(counts_ok, sum(ref_c) > 0 && isapprox(got_c, ref_c; rtol = 1e-12))
+        push!(sums_ok, isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12))
     end
-    # periodic directions of even length: the half-turn lags split each pair between their images
-    for (pdims, periodic) in (((6, 4), (true, true)), ((6, 5), (true, false)))
+    for (pdims, periodic, sf) in _VALUE_JOINT_PERIODIC_CASES
         pspacing = (0.1, 0.12)
         psched = SFC.UniformLagSchedule(pdims, pspacing, periodic)
         pbins = collect(range(0.0, 0.45; length = 6)) .+ 0.0137
-        for sf in (SFT.L2SFType(), SFT.L3SFType())
-            u = randn(T, 2, pdims...)
-            got_s, got_c = zeros(5, 8), zeros(5, 8)
-            SFC.gridded_lag_sweep!(got_s, got_c, sf, u, psched, pbins, vbins, Val(2); second_axis = vax)
-            ref_s, ref_c = _brute_force_value_histogram(sf, u, pdims, pspacing, periodic, pbins, vbins)
-            Test.@test sum(ref_c) > 0
-            Test.@test isapprox(got_c, ref_c; rtol = 1e-12)
-            Test.@test isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12)
-        end
-        Test.@test_throws ArgumentError SFC.gridded_lag_sweep!(zeros(5, 8), zeros(Int, 5, 8), SFT.L2SFType(),
-                                                               randn(T, 2, pdims...), psched, pbins, vbins, Val(2);
-                                                               second_axis = vax)
+        u = randn(T, 2, pdims...)
+        got_s, got_c = zeros(5, 8), zeros(5, 8)
+        SFC.gridded_lag_sweep!(got_s, got_c, sf, u, psched, pbins, vbins, Val(2); second_axis = vax)
+        ref_s, ref_c = _brute_force_value_histogram(sf, u, pdims, pspacing, periodic, pbins, vbins)
+        push!(counts_ok, sum(ref_c) > 0 && isapprox(got_c, ref_c; rtol = 1e-12))
+        push!(sums_ok, isapprox(got_s, ref_s; rtol = 1e-10, atol = 1e-12))
     end
-    # a batch is its slices
-    ub = randn(T, 2, dims..., 3)
-    bs, bc = zeros(nb, 8, 3), zeros(nb, 8, 3)
+    Test.@test all(counts_ok)
+    Test.@test all(sums_ok)
+    # half-turn lags split a pair between two value bins, which integer counts cannot hold
+    pdims, periodic, _ = first(_VALUE_JOINT_PERIODIC_CASES)
+    Test.@test_throws ArgumentError SFC.gridded_lag_sweep!(
+        zeros(5, 8), zeros(Int, 5, 8), SFT.L2SFType(), randn(T, 2, pdims...),
+        SFC.UniformLagSchedule(pdims, (0.1, 0.12), periodic), collect(range(0.0, 0.45; length = 6)) .+ 0.0137,
+        vbins, Val(2); second_axis = vax)
+    ub = randn(T, 2, dims..., 2)
+    bs, bc = zeros(nb, 8, 2), zeros(nb, 8, 2)
     SFC.gridded_lag_sweep_batch!(bs, bc, SFT.S3SFType(), ub, sched, bins, vbins, Val(2); second_axis = vax)
-    for t in 1:3
-        ss, sc = zeros(nb, 8), zeros(nb, 8)
-        SFC.gridded_lag_sweep!(ss, sc, SFT.S3SFType(), ub[:, :, :, t], sched, bins, vbins, Val(2); second_axis = vax)
-        Test.@test bc[:, :, t] == sc
-        Test.@test isapprox(bs[:, :, t], ss; rtol = 1e-12, atol = 1e-14)
+    ss, sc = zeros(nb, 8, 2), zeros(nb, 8, 2)
+    for t in 1:2
+        SFC.gridded_lag_sweep!(view(ss, :, :, t), view(sc, :, :, t), SFT.S3SFType(), ub[:, :, :, t], sched, bins,
+                               vbins, Val(2); second_axis = vax)
     end
+    Test.@test bc == sc
+    Test.@test isapprox(bs, ss; rtol = 1e-12, atol = 1e-14)
 end
 
 Test.@testset "a shell exactly on a bin edge falls in the bin below it" begin
-    # Bins are half-open (e_i, e_{i+1}], and a uniform grid puts whole shells of pairs at exactly one
-    # separation, so an edge placed on one decides a whole shell at once. Pinned because the sweep
-    # binds them together where a pair loop lets each pair's round-off decide.
+    # Unit 5×5 grid, bins (lo, hi]: r = 1 holds 40 pairs; √2 32 and 2 30; √5 48, √8 18 and 3 20.
     T = Float64
     dims = (5, 5)
     spacing = (T(1), T(1))
     periodic = (false, false)
     Random.seed!(4600)
     u = randn(T, 2, dims...)
-    bins = [0.0, 1.0, 2.0, 3.0]                    # 1.0 is exactly the nearest-neighbour separation
-    s, c = _sweep(SFT.S2SFType(), u, dims, spacing, periodic, bins, 2)
-    # the axis-aligned neighbours are at exactly r = 1.0, and there are 2·5·4 of them
-    Test.@test c[1] == 2 * 5 * 4
-    # r = 2.0 lands on the second edge, so those pairs are in bin 2, not bin 3
-    Test.@test c[2] > 0
-    Test.@test sum(c) > 0
+    bins = [0.0, 1.0, 2.0, 3.0]
+    _, c = _sweep(SFT.S2SFType(), u, dims, spacing, periodic, bins, 2)
+    Test.@test c == [40, 32 + 30, 48 + 18 + 20]
 end

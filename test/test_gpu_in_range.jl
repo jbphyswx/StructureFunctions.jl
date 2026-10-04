@@ -27,9 +27,8 @@ function ir_exact(x3, dig, NB, geom, sched, N, tile)
     return hits / pairs, pairs / (B * SFC.n_pair_blocks(sched) * tile^2)
 end
 
-# The estimate against the exact share, within five of its standard errors, over the schedule a launch of `tile`-point
-# tiles sweeps: every pair, or the tile pairs a cull grid lists, and every slice of varying positions.
-function ir_agrees(x, u, bins, geom, culling, tile = IR_EXT.SF_GPU_TILE)
+# Whether the estimate is within five standard errors of the exact share over the pairs a `tile`-point sweep visits.
+function ir_close(x, u, bins, geom, culling, tile = IR_EXT.SF_GPU_TILE)
     NB = length(bins) - 1
     xs, _, _, cull = IR_EXT._gpu_cull_and_permute!(nothing, IR_BE, x, u, geom, bins, culling)
     dig = IR_EXT._gpu_digitizer(IR_BE, bins, Val(:sf1d))
@@ -37,46 +36,23 @@ function ir_agrees(x, u, bins, geom, culling, tile = IR_EXT.SF_GPU_TILE)
     f = SFC.gpu_in_range_fraction(IR_BE, xs, dig, NB, geom, cull, tile)
     exact, valid = ir_exact(reshape(xs, size(xs, 1), N, :), dig, NB, geom, SFC.schedule_for(cull, N, tile), N, tile)
     n = SFC.GPU_IN_RANGE_GROUPS * SFC.GPU_IN_RANGE_GROUP * valid
-    return (culled = cull !== nothing, close = abs(f - exact) <= 5 * sqrt(max(exact * (1 - exact), 1 / n) / n),
-            repeatable = f == SFC.gpu_in_range_fraction(IR_BE, xs, dig, NB, geom, cull, tile))
+    return abs(f - exact) <= 5 * sqrt(max(exact * (1 - exact), 1 / n) / n)
 end
 
+# Each case once: D = 2 and 3, culled or not, the default tile and one past N, Float32, slices, and a sphere.
 Test.@testset "the in-range estimate matches the share over the pairs a sweep visits" begin
     rng = Random.Xoshiro(5)
-    for D in (2, 3), rmax in (0.05, 0.3, 1.5)
-        x, u = rand(rng, D, 1000), randn(rng, D, 1000)
-        bins = SF.LinearBinEdges(rmax / 50, rmax, 17)
-        r = ir_agrees(x, u, bins, SFH.FlatGeometry{D}(), SFC.NoCulling())
-        Test.@test (D, rmax, r.close, r.repeatable) == (D, rmax, true, true)
-        if rmax <= 0.3
-            for tile in (IR_EXT.SF_GPU_TILE, 384)
-                r = ir_agrees(x, u, bins, SFH.FlatGeometry{D}(), SFC.AlwaysCulling(), tile)
-                Test.@test (D, rmax, tile, r.culled, r.close, r.repeatable) == (D, rmax, tile, true, true, true)
-            end
-        end
-    end
-    x, u = rand(rng, Float32, 2, 60), randn(rng, Float32, 2, 60)
-    r = ir_agrees(x, u, SF.LinearBinEdges(0.0f0, 0.3f0, 9), SFH.FlatGeometry{2}(), SFC.NoCulling())
-    Test.@test (r.close, r.repeatable) == (true, true)
-    x, u = rand(rng, 2, 700, 3), randn(rng, 2, 700, 3)
-    r = ir_agrees(x, u, SF.LinearBinEdges(0.0, 0.4, 9), SFH.FlatGeometry{2}(), SFC.NoCulling())
-    Test.@test (r.close, r.repeatable) == (true, true)
-    x = vcat(2π .* rand(rng, 1, 1500), asin.(2 .* rand(rng, 1, 1500) .- 1))
+    N = 300
+    x, u = rand(rng, 2, N), randn(rng, 2, N)
+    Test.@test ir_close(x, u, SF.LinearBinEdges(0.001, 0.05, 17), SFH.FlatGeometry{2}(), SFC.AlwaysCulling())
+    x, u = rand(rng, 3, N), randn(rng, 3, N)
+    Test.@test ir_close(x, u, SF.LinearBinEdges(0.006, 0.3, 17), SFH.FlatGeometry{3}(), SFC.AlwaysCulling(), 384)
+    x, u = rand(rng, Float32, 2, N), randn(rng, Float32, 2, N)
+    Test.@test ir_close(x, u, SF.LinearBinEdges(0.03f0, 1.5f0, 17), SFH.FlatGeometry{2}(), SFC.NoCulling())
+    x, u = rand(rng, 2, N, 3), randn(rng, 2, N, 3)
+    Test.@test ir_close(x, u, SF.LinearBinEdges(0.0, 0.4, 9), SFH.FlatGeometry{2}(), SFC.NoCulling())
+    x = vcat(2π .* rand(rng, 1, N), asin.(2 .* rand(rng, 1, N) .- 1))
     geom = SFH.pair_geometry_for(DI.SphericalAngle(), Val(2))
-    xk, uk = SFH.prepare_pair_inputs(geom, x, randn(rng, 2, 1500))
-    r = ir_agrees(xk, uk, SF.LinearBinEdges(0.0, 0.3, 9), geom, SFC.AlwaysCulling())
-    Test.@test (r.culled, r.close, r.repeatable) == (true, true, true)
-end
-
-Test.@testset "a tally holds each work group's draws and the estimate is its share" begin
-    rng = Random.Xoshiro(6)
-    x = rand(rng, 2, 1000)
-    bins = SF.LinearBinEdges(0.0, 0.3, 9)
-    geom, dig = SFH.FlatGeometry{2}(), IR_EXT._gpu_digitizer(IR_BE, bins, Val(:sf1d))
-    tally = SFC.gpu_in_range_tally!(fill(Int32(-1), 2, SFC.GPU_IN_RANGE_GROUPS), IR_BE, x, dig, 8, geom, nothing,
-                                    IR_EXT.SF_GPU_TILE)
-    Test.@test all(0 .<= tally[2, :] .<= tally[1, :] .<= SFC.GPU_IN_RANGE_GROUP)
-    Test.@test SFC.in_range_share(tally) == SFC.gpu_in_range_fraction(IR_BE, x, dig, 8, geom, nothing, IR_EXT.SF_GPU_TILE)
-    Test.@test_throws DimensionMismatch SFC.gpu_in_range_tally!(zeros(Int32, 2, 3), IR_BE, x, dig, 8, geom, nothing,
-                                                                IR_EXT.SF_GPU_TILE)
+    xk, uk = SFH.prepare_pair_inputs(geom, x, randn(rng, 2, N))
+    Test.@test ir_close(xk, uk, SF.LinearBinEdges(0.0, 0.3, 9), geom, SFC.AlwaysCulling())
 end

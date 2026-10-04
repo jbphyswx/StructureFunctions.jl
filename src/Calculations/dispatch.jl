@@ -139,7 +139,7 @@ function calculate_structure_function(
 ) where {FT1, FT2}
     _validate_array_shape(x, u, distance_metric)
     min_distance, max_distance = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do _, geometry
-        _minmax_for_autobins(x, distance_metric, SFH.input_coordinate_width(geometry))
+        _minmax_for_autobins(x, geometry)
     end
     actual_bins = _auto_distance_bins(min_distance, max_distance, distance_bins, bin_spacing)
 
@@ -154,30 +154,27 @@ function calculate_structure_function(
     )
 end
 
-function _auto_distance_bins(min_distance, max_distance, distance_bins::Int, ::Type{LinearBinEdges})
-    min_distance = prevfloat(min_distance)
-    return LinearBinEdges(range(min_distance, max_distance, length = distance_bins + 1))
-end
+# Bins are `(edges[k], edges[k+1]]`, so the first edge sits just below the least separation and the last on the greatest.
+_auto_distance_bins(min_distance, max_distance, distance_bins::Int, ::Type{LinearBinEdges}) =
+    LinearBinEdges(prevfloat(min_distance), max_distance, distance_bins + 1)
 
-function _auto_distance_bins(min_distance, max_distance, distance_bins::Int, ::Type{LogBinEdges})
-    return LogBinEdges_from_log_edges(
-        range(log(prevfloat(min_distance)), log(max_distance); length = distance_bins + 1),
-    )
-end
+_auto_distance_bins(min_distance, max_distance, distance_bins::Int, ::Type{LogBinEdges}) =
+    LogBinEdges(prevfloat(min_distance), max_distance, distance_bins + 1)
 
 function _auto_distance_bins(min_distance, max_distance, distance_bins::Int, bin_spacing)
     throw(ArgumentError("bin_spacing must be LinearBinEdges or LogBinEdges; got $bin_spacing"))
 end
 
-"""Least and greatest distance under `distance_metric` between two points of `x`, positions of width `W` on axis 1,
-over every slice of a varying-position array."""
-function _minmax_for_autobins(x::AbstractArray, distance_metric, vW::Val{W}) where {W}
-    xf = reshape(x, W, size(x, 2), :)
-    FT = float(eltype(x))
+"""Least and greatest separation of two points of `x` that `geometry`'s pair frame gives, over every slice of a
+varying-position array: the separations the kernels bin."""
+function _minmax_for_autobins(x::AbstractArray, geometry)
+    xk = SFH.prepare_coordinates(geometry, x)
+    xf = reshape(xk, _val_int(SFH.coordinate_width(geometry)), size(xk, 2), :)
+    FT = float(eltype(xk))
     min_distance, max_distance = FT(Inf), FT(0)
     for b in axes(xf, 3)
         for i in axes(xf, 2)
-            lo, hi = minmax_i(i, view(xf, :, :, b), distance_metric, vW)
+            lo, hi = minmax_i(i, view(xf, :, :, b), geometry)
             min_distance = min(min_distance, lo)
             max_distance = max(max_distance, hi)
         end
@@ -186,17 +183,21 @@ function _minmax_for_autobins(x::AbstractArray, distance_metric, vW::Val{W}) whe
 end
 
 """
-    minmax_i(i, x, distance_metric, ::Val{W})
+    minmax_i(i, x, geometry)
 
-The least and greatest distance from point `i` of `x`, positions of width `W` on axis 1, to every later point.
+The least and greatest separation `geometry`'s pair frame gives from point `i` of the kernel coordinates `x` to every
+later point; pairs the frame refuses are skipped, as the kernels skip them.
 """
-function minmax_i(i::Int, x::AbstractMatrix{FT}, distance_metric, ::Val{W}) where {FT <: Number, W}
-    X1 = SA.SVector{W, FT}(ntuple(k -> x[k, i], Val(W)))
-    min_distance, max_distance = FT(Inf), FT(0)
+function minmax_i(i::Int, x::AbstractMatrix{FT}, geometry) where {FT <: Number}
+    vW = SFH.coordinate_width(geometry)
+    X1 = SA.SVector(ntuple(k -> x[k, i], vW))
+    T = Base.promote_op((a, b) -> SFH.pair_frame(geometry, a, b)[2], typeof(X1), typeof(X1))
+    min_distance, max_distance = T(Inf), zero(T)
     for j in (i + 1):size(x, 2)
-        distance = distance_metric(X1, SA.SVector{W, FT}(ntuple(k -> x[k, j], Val(W))))
-        min_distance = min(min_distance, distance)
-        max_distance = max(max_distance, distance)
+        ok, r, _ = SFH.pair_frame(geometry, X1, SA.SVector(ntuple(k -> x[k, j], vW)))
+        ok || continue
+        min_distance = min(min_distance, r)
+        max_distance = max(max_distance, r)
     end
     return min_distance, max_distance
 end

@@ -1,69 +1,68 @@
-# Post-processing a device-resident result on CUDA: spectra, covariance, fluxes, the Helmholtz split, a fit and the
-# independent-pair variance of a joint histogram, each against the same function of the result copied to the host.
+using Test: Test
 using CUDA: CUDA
 using Bessels: Bessels
 using Random: Random
-using Printf: Printf
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using ComputationalBackends: ComputationalBackends as CB
 
 const DEV = CB.GPUBackend(CUDA.CUDABackend())
 const OUT = SF.StructureFunctionSumsAndCounts
+const N = 4000
 
-failures = String[]
-
-function check(name, got, ref; on_device = true)
+"""`got` equals `ref` to 1e-10 of its largest finite value, `NaN` where `ref` is, on the device when `on_device`."""
+function check(got, ref; on_device = true)
     g = Array(got)
     nan = isnan.(ref)
-    d = isequal(isnan.(g), nan) ? maximum(abs.(ifelse.(nan, 0.0, g .- ref))) / (maximum(abs, filter(!isnan, ref)) + eps()) :
-        Inf
-    ok = d < 1e-10 && (!on_device || got isa CUDA.CuArray)
-    ok || push!(failures, name)
-    Printf.@printf("%-48s Δ=%.3e %-8s %s\n", name, d, nameof(typeof(got)), ok ? "ok" : "FAILED")
-    return ok
+    Test.@test isequal(isnan.(g), nan)
+    Test.@test maximum(abs.(ifelse.(nan, 0.0, g .- ref))) / (maximum(abs, filter(!isnan, ref)) + eps()) < 1e-10
+    on_device && Test.@test got isa CUDA.CuArray
 end
 
-println("device=", CUDA.name(CUDA.device()))
-Random.seed!(20261003)
-const N = 4000
-x = CUDA.CuArray(rand(2, N))
-u = CUDA.CuArray(randn(2, N) .+ 0.3 .* sin.(4 .* rand(2, N)))
-bins = collect(range(0.0, 0.8; length = 33))
-Ks = [1.5, 4.0, 9.0, 17.0]
+# Post-processing a device-resident result equals the same function of the result copied to the host.
+Test.@testset "post-processing device results" begin
+    Random.seed!(20261003)
+    x = CUDA.CuArray(rand(2, N))
+    u = CUDA.CuArray(randn(2, N) .+ 0.3 .* sin.(4 .* rand(2, N)))
+    bins = collect(range(0.0, 0.8; length = 33))
+    Ks = [1.5, 4.0, 9.0, 17.0]
+    result(op) = SFC.calculate_structure_function(op, x, u, bins, OUT; backend = DEV)
+    s2, s3, l3, l2, t2 = result.((SFT.S2SFType(), SFT.S3SFType(), SFT.L3SFType(), SFT.L2SFType(), SFT.T2SFType()))
+    host(r) = SF.to_host(r)
+    Test.@test s2.sums isa CUDA.CuArray
+    variance = let uh = Array(u)
+        sum(abs2, uh .- sum(uh; dims = 2) ./ N) / (N - 1)
+    end
 
-result(op) = SFC.calculate_structure_function(op, x, u, bins, OUT; backend = DEV)
-s2, s3, l3, l2, t2 = result.((SFT.S2SFType(), SFT.S3SFType(), SFT.L3SFType(), SFT.L2SFType(), SFT.T2SFType()))
-host(r) = SF.to_host(r)
-s2.sums isa CUDA.CuArray || push!(failures, "the public result is not device-resident")
-const VARIANCE = let uh = Array(u)
-    sum(abs2, uh .- sum(uh; dims = 2) ./ N) / (N - 1)
-end
-
-check("isotropic spectrum", SFC.isotropic_spectrum(s2, Ks, Val(2); variance = VARIANCE),
-      SFC.isotropic_spectrum(host(s2), Ks, Val(2); variance = VARIANCE))
-check("covariance", last(SFC.covariance(s2, VARIANCE)), last(SFC.covariance(host(s2), VARIANCE)))
-check("spectral flux from S3", SFC.spectral_flux(s3, Ks), SFC.spectral_flux(host(s3), Ks))
-check("spectral flux from L3 and S3", SFC.spectral_flux(l3, s3, Ks), SFC.spectral_flux(host(l3), host(s3), Ks))
-let d = SFC.helmholtz_spectra(l2, t2, Ks; variance = VARIANCE),
-    h = SFC.helmholtz_spectra(host(l2), host(t2), Ks; variance = VARIANCE)
-    check("Helmholtz rotational", d.rotational, h.rotational)
-    check("Helmholtz divergent", d.divergent, h.divergent)
-end
-
-k_edges = collect(range(0.5, 20.0; length = 9))
-W = fill(1e-20, length(bins) - 1)
-let d = SFC.fit_spectrum(s2, k_edges, SFC.RegularizedLeastSquares(nothing), Val(2); W),
-    h = SFC.fit_spectrum(host(s2), k_edges, SFC.RegularizedLeastSquares(nothing), Val(2); W)
-    check("fit of a device result", d.E, h.E; on_device = false)
-end
-
-vbins = collect(range(-4.0, 4.0; length = 17))
-joint = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, vbins; backend = DEV)
-check("independent pair variance", SFC.independent_pair_variance(joint), SFC.independent_pair_variance(host(joint)))
-
-if isempty(failures)
-    println("\nCUDA POSTPROCESS OK")
-else
-    println("\nFAILED: ", join(failures, ", "))
-    exit(1)
+    Test.@testset "isotropic spectrum" begin
+        check(SFC.isotropic_spectrum(s2, Ks, Val(2); variance), SFC.isotropic_spectrum(host(s2), Ks, Val(2); variance))
+    end
+    Test.@testset "covariance" begin
+        check(last(SFC.covariance(s2, variance)), last(SFC.covariance(host(s2), variance)))
+    end
+    Test.@testset "spectral flux from S3" begin
+        check(SFC.spectral_flux(s3, Ks), SFC.spectral_flux(host(s3), Ks))
+    end
+    Test.@testset "spectral flux from L3 and S3" begin
+        check(SFC.spectral_flux(l3, s3, Ks), SFC.spectral_flux(host(l3), host(s3), Ks))
+    end
+    hd = SFC.helmholtz_spectra(l2, t2, Ks; variance)
+    hh = SFC.helmholtz_spectra(host(l2), host(t2), Ks; variance)
+    Test.@testset "Helmholtz rotational" begin
+        check(hd.rotational, hh.rotational)
+    end
+    Test.@testset "Helmholtz divergent" begin
+        check(hd.divergent, hh.divergent)
+    end
+    Test.@testset "fit of a device result" begin
+        k_edges = collect(range(0.5, 20.0; length = 9))
+        W = fill(1e-20, length(bins) - 1)
+        fd = SFC.fit_spectrum(s2, k_edges, SFC.RegularizedLeastSquares(nothing), Val(2); W)
+        fh = SFC.fit_spectrum(host(s2), k_edges, SFC.RegularizedLeastSquares(nothing), Val(2); W)
+        check(fd.E, fh.E; on_device = false)
+    end
+    Test.@testset "independent pair variance" begin
+        joint = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, collect(range(-4.0, 4.0; length = 17));
+                                                 backend = DEV)
+        check(SFC.independent_pair_variance(joint), SFC.independent_pair_variance(host(joint)))
+    end
 end

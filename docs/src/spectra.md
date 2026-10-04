@@ -32,6 +32,20 @@ pairs that remain.
 
 ![The spectrum with 10, 30 and 50 % of the cells missing, and the error of a zero-filled FFT](assets/sf_missing_data.png)
 
+`equivalent_spectrum(result, Val(D))` estimates the spectrum from the structure function's derivative, with no
+transform and no variance (Bishop et al. 2026): `Ẽ(k_e) = r² S₂′(r) / 2b` at `k_e = b/r`, `b = √(2D − 2)` (`1` on a
+line), and the same divided by the bias of a power law of the local slope. `D` is the dimension of the space the
+separations are measured in. The bias needs `Bessels`.
+
+```julia
+using Bessels: Bessels
+β, A = 5 / 3, 1.0
+r = exp.(range(log(1e-2), log(10.0); length = 400))
+I3 = Bessels.gamma(3 - β) * sin(π * β / 2) / (-β * (1 - β) * (2 - β))
+e = SFC.equivalent_spectrum(SFT.S2SFType(), r, @.(2A * I3 * r^(β - 1)), Val(3))   # S₂ of A k^-β in 3-D
+maximum(abs, e.debiased[3:end-2] ./ (A .* e.wavenumber[3:end-2] .^ -β) .- 1)
+```
+
 ## The Helmholtz split
 
 In two dimensions the longitudinal and transverse second-order functions separate the rotational and divergent

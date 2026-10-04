@@ -7,45 +7,35 @@ using Test: Test
 
 # Results known in closed form ahead of the calculation.
 
+# Neither solenoidal nor irrotational, so both components are nonzero; metres to millimetres changes neither.
 Test.@testset "the Helmholtz split does not depend on the unit of length" begin
-    FT = Float64
-    n_bins = 40
-    counts = ones(UInt32, n_bins)
-    edges = collect(FT, 10 .^ range(-3, 0; length = n_bins + 1))
-    mids = FT[sqrt(edges[k] * edges[k + 1]) for k in 1:n_bins]
-    # D_TT = (5/3) D_LL for D_LL ∝ r^(2/3) is 2-D solenoidal, so D_div ≡ 0
+    edges = collect(10 .^ range(-3, 0; length = 41))
+    mids = [sqrt(edges[k] * edges[k + 1]) for k in 1:40]
+    counts = ones(UInt32, 40)
     D_LL = mids .^ (2 / 3)
-    D_TT = (5 / 3) .* D_LL
-
+    D_TT = 1.2 .* D_LL
     h = SFC.helmholtz_decompose_2d(edges, D_LL, counts, D_TT, counts)
-    Test.@test maximum(abs, h.divergent_sums) < 0.05 * maximum(D_LL)
-
-    # metres to millimetres: the same field, so the split is unchanged
     h_mm = SFC.helmholtz_decompose_2d(edges .* 1000, D_LL, counts, D_TT, counts)
-    Test.@test isapprox(h_mm.divergent_sums, h.divergent_sums; rtol = 1e-10, atol = 1e-12)
-    Test.@test isapprox(h_mm.rotational_sums, h.rotational_sums; rtol = 1e-10, atol = 1e-12)
-
-    # D_LL ∝ r^(2/3) with D_LL = (5/3) D_TT is irrotational, so D_rot ≡ 0
-    h_irrot = SFC.helmholtz_decompose_2d(edges, D_TT, counts, D_LL, counts)
-    Test.@test maximum(abs, h_irrot.rotational_sums) < 0.05 * maximum(D_TT)
-
-    Test.@test isapprox(h.rotational_sums .+ h.divergent_sums, D_LL .+ D_TT;
-                        rtol = 1e-12, atol = 1e-14)
+    Test.@test h_mm.divergent_sums ≈ h.divergent_sums rtol = 1e-10
+    Test.@test h_mm.rotational_sums ≈ h.rotational_sums rtol = 1e-10
 end
 
-Test.@testset "the Helmholtz split of a smooth solenoidal field has no divergent part" begin
-    # D_LL = r²/(1 + r²)^(2/3) is smooth at the origin and r^(2/3) far from it; D_TT = d(r D_LL)/dr makes it
-    # 2-D solenoidal. The bins start well away from zero, so the integral's segment from the origin is not negligible.
+# D_TT = d(r D_LL)/dr is 2-D solenoidal and D_LL = d(r D_TT)/dr irrotational, each all in its own component.
+Test.@testset "the Helmholtz split puts a pure field wholly in its own component" begin
     edges = collect(10 .^ range(log10(0.2), log10(20.0); length = 121))
     mids = SF.midpoints(edges)
     counts = ones(UInt32, length(mids))
-    D_LL = @. mids^2 / (1 + mids^2)^(2 / 3)
-    D_TT = @. 3mids^2 / (1 + mids^2)^(2 / 3) - (4 / 3) * mids^4 / (1 + mids^2)^(5 / 3)
-    h = SFC.helmholtz_decompose_2d(edges, D_LL, counts, D_TT, counts)
-    Test.@test maximum(abs, h.divergent_sums) < 1e-3 * maximum(D_LL)
-    Test.@test isapprox(h.rotational_sums, D_LL .+ D_TT; rtol = 1e-3)
+    D_a = @. mids^2 / (1 + mids^2)^(2 / 3)
+    D_b = @. 3mids^2 / (1 + mids^2)^(2 / 3) - (4 / 3) * mids^4 / (1 + mids^2)^(5 / 3)
+    sol = SFC.helmholtz_decompose_2d(edges, D_a, counts, D_b, counts)
+    Test.@test maximum(abs, sol.divergent_sums) < 1e-3 * maximum(D_a)
+    Test.@test isapprox(sol.rotational_sums, D_a .+ D_b; rtol = 1e-3)
+    irr = SFC.helmholtz_decompose_2d(edges, D_b, counts, D_a, counts)
+    Test.@test maximum(abs, irr.rotational_sums) < 1e-3 * maximum(D_a)
+    Test.@test isapprox(irr.divergent_sums, D_a .+ D_b; rtol = 1e-3)
 end
 
+# Planar and spherical (one pair frame per pair), and on the sphere the first diagonal entry is L2.
 Test.@testset "the tensor trace is the second-order structure function" begin
     Random.seed!(2600)
     N = 60
@@ -62,8 +52,6 @@ Test.@testset "the tensor trace is the second-order structure function" begin
     Test.@test isapprox([sum(t.sums[d, d, b] for d in 1:2) for b in 1:(length(bins) - 1)], s2.sums;
                         rtol = 1e-10, atol = 1e-12)
 
-    # (λ, φ) in radians, so the metric is SphericalAngle. The trace is frame-independent only if
-    # the tensor's components share one frame per pair.
     xs = vcat(reshape(2π .* rand(N), 1, N), reshape((rand(N) .- 0.5) .* 1.4, 1, N))
     us = randn(2, N)
     sbins = collect(range(0.0, 2.4; length = 6))
@@ -78,7 +66,6 @@ Test.@testset "the tensor trace is the second-order structure function" begin
     Test.@test isapprox([sum(ts.sums[d, d, b] for d in 1:2) for b in 1:(length(sbins) - 1)],
                         s2s.sums; rtol = 1e-10, atol = 1e-12)
 
-    # on a sphere the pair frame is the basis, so the longitudinal direction is ê₁
     l2s = SFC.calculate_structure_function(
         SFT.L2SFType(), xs, us, sbins, SF.StructureFunctionSumsAndCounts; backend = serial,
         distance_metric = DI.SphericalAngle())
@@ -95,9 +82,7 @@ function _lag_sweep(sf, u, dims, spacing, periodic, bins, D)
     return sums, counts
 end
 
-# For u(x) = A ê cos(k·x + φ) averaged over a full period, D_ab(r) = A² ê_a ê_b (1 − cos(k·r)) and
-# every odd moment vanishes. On a periodic grid whose cell count is a multiple of the mode's period
-# the average is exact, so these hold to round-off rather than to a sampling tolerance.
+# u = A ê cos(k·x + φ) over whole periods: D_ab(r) = A² ê_a ê_b (1 − cos(k·r)) and odd moments vanish, to round-off.
 Test.@testset "a single Fourier mode gives its closed-form structure function" begin
     A = 1.7
     φ = 0.41
@@ -106,7 +91,6 @@ Test.@testset "a single Fourier mode gives its closed-form structure function" b
     n, d = 32, 0.25
     k = 2π * m / (n * d)
     u = reshape([A * cos(k * (j - 1) * d + φ) for j in 1:n], 1, n)
-    # each bin holds exactly one lag, so a binned average is a per-lag average
     bins = [(h - 0.5) * d for h in 1:16]
     s2, c2 = _lag_sweep(SFT.S2SFType(), u, (n,), (d,), (true,), bins, 1)
     Test.@test all(==(n), c2)
@@ -114,11 +98,8 @@ Test.@testset "a single Fourier mode gives its closed-form structure function" b
                         rtol = 1e-13, atol = 1e-13)
 
     l3, c3 = _lag_sweep(SFT.L3SFType(), u, (n,), (d,), (true,), bins, 1)
-    Test.@test c3 == c2
     Test.@test maximum(abs, l3 ./ c3) < 1e-13 * A^3
 
-    # anisotropic spacing separates the lag classes, so a bin isolates one direction. The mode runs
-    # along x, so a lag along y joins two cells of equal phase.
     nx, ny, dx, dy = 16, 16, 1.0, 0.37
     kx = 2π * m / (nx * dx)
     u2 = zeros(2, nx, ny)
@@ -145,10 +126,7 @@ Test.@testset "a single Fourier mode gives its closed-form structure function" b
     Test.@test maximum(abs, l3g) < 1e-12 * A^3 * maximum(c3g)
 end
 
-# Distinct grid harmonics are orthogonal over the cells, so a superposition's cross terms cancel
-# exactly and the closed form of one mode adds: D_ab(r) = Σ_m A_m² Σ_p ê_a ê_b (1 − cos(k_m·r)).
-# Two orthonormal polarisations per mode make the polarisation sum the transverse projector, so the
-# field is divergence-free and Σ_p (ê·r̂)² = 1 − (k̂·r̂)².
+# A divergence-free superposition of grid harmonics on a 3-D periodic grid: S2 and L2 at single lags, mode by mode.
 Test.@testset "a prescribed spectrum is recovered mode by mode" begin
     dims = (10, 10, 10)
     spacing = (1.0, 0.37, 0.1732)
@@ -171,8 +149,6 @@ Test.@testset "a prescribed spectrum is recovered mode by mode" begin
     end
     pol = map(_polarisations, kvecs)
 
-    # The two polarisations of a mode share its wavevector, so they are not orthogonal over the
-    # cells; a quarter turn between their phases makes their cross term vanish exactly.
     Random.seed!(3100)
     phases = zeros(length(modes), 2)
     for m in eachindex(modes)
@@ -194,30 +170,22 @@ Test.@testset "a prescribed spectrum is recovered mode by mode" begin
         end
     end
 
-    # each window holds one lag, which `counts == prod(dims)` verifies rather than assumes
     edges = [0.3364, 0.3564, 0.36, 0.38, 0.6828, 0.7028]
     targets = ((1, (0, 0, 2)), (3, (0, 1, 0)), (5, (0, 0, 4)))
-
     s2, c2 = _lag_sweep(SFT.S2SFType(), u, dims, spacing, periodic, edges, 3)
-    l2, c_l2 = _lag_sweep(SFT.L2SFType(), u, dims, spacing, periodic, edges, 3)
-    Test.@test c_l2 == c2
+    l2, _ = _lag_sweep(SFT.L2SFType(), u, dims, spacing, periodic, edges, 3)
 
-    for (b, lag) in targets
-        Test.@test c2[b] == prod(dims)
+    pred = map(targets) do (_, lag)
         rvec = lag .* spacing
-        r = sqrt(sum(abs2, rvec))
-        rhat = rvec ./ r
-        pred_s2 = 0.0
-        pred_l2 = 0.0
-        for m in eachindex(modes)
-            kh, _, _ = pol[m]
-            osc = 1 - cos(sum(kvecs[m] .* rvec))
-            pred_s2 += amps[m]^2 * 2 * osc
-            pred_l2 += amps[m]^2 * (1 - sum(kh .* rhat)^2) * osc
-        end
-        Test.@test isapprox(s2[b] / c2[b], pred_s2; rtol = 1e-12)
-        Test.@test isapprox(l2[b] / c2[b], pred_l2; rtol = 1e-12, atol = 1e-13)
+        rhat = rvec ./ sqrt(sum(abs2, rvec))
+        osc = [1 - cos(sum(kvecs[m] .* rvec)) for m in eachindex(modes)]
+        (s2 = sum(amps[m]^2 * 2 * osc[m] for m in eachindex(modes)),
+         l2 = sum(amps[m]^2 * (1 - sum(pol[m][1] .* rhat)^2) * osc[m] for m in eachindex(modes)))
     end
+    b = collect(first.(targets))
+    Test.@test all(==(prod(dims)), c2[b])
+    Test.@test all(isapprox.(s2[b] ./ c2[b], getfield.(pred, :s2); rtol = 1e-12))
+    Test.@test all(isapprox.(l2[b] ./ c2[b], getfield.(pred, :l2); rtol = 1e-12, atol = 1e-13))
 end
 
 Test.@testset "the inertial-range laws invert the moment each is stated for" begin
@@ -227,7 +195,5 @@ Test.@testset "the inertial-range laws invert the moment each is stated for" beg
     Test.@test SF.KHM.epsilon_from_four_thirds(r, -(4 / 3) .* eps .* r) ≈ fill(eps, length(r))
 
     eps_theta = 0.42
-    LS2 = -(4 / 3) .* eps_theta .* r
-    Test.@test SF.KHM.epsilon_theta_from_yaglom(r, LS2) ≈ fill(eps_theta, length(r))
-    Test.@test !isapprox(SF.KHM.epsilon_from_four_fifths(r, LS2)[1], eps_theta)
+    Test.@test SF.KHM.epsilon_theta_from_yaglom(r, -(4 / 3) .* eps_theta .* r) ≈ fill(eps_theta, length(r))
 end

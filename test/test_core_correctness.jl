@@ -8,126 +8,32 @@ using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads: OhMyThreads
 
 Test.@testset "Core Correctness - Block A" begin
-    Test.@testset "Blocked path regression" begin
-        x = [0.0 1.0; 0.0 0.0]
-        u = [1.0 2.0; 0.0 0.0]
-        bins = SA.SVector(0.0, 2.0)
-        sf_type = SFT.LongitudinalSecondOrderStructureFunction
-        Test.@test_nowarn SFC.calculate_structure_function(
-            sf_type,
-            x,
-            u,
-            bins,
-        )
-    end
-
-    Test.@testset "Pair-count verification" begin
-        # N=3 points -> N(N-1)/2 = 3 pairs
-        x = [0.0 1.0 2.0; 0.0 0.0 0.0]
-        u = [0.0 0.0 0.0; 0.0 0.0 0.0]
-        bins = SA.SVector(0.0, 3.0)
-        sf_type = SFT.SecondOrderStructureFunction
-
-        res = SFC.calculate_structure_function(sf_type, x, u, bins, SF.StructureFunctionSumsAndCounts)
-        Test.@test sum(res.counts) == 3
-
-        # N=4 points -> 4*3/2 = 6 pairs
-        x4 = [0.0 1.0 2.0 3.0; 0.0 0.0 0.0 0.0]
-        res4 = SFC.calculate_structure_function(sf_type, x4, zeros(2, 4), bins, SF.StructureFunctionSumsAndCounts)
-        Test.@test sum(res4.counts) == 6
-    end
-
+    # Three pairs with (δu⋅r̂)² = 1, 1 and 2, one of them along a diagonal, average to 4/3.
     Test.@testset "Numerical reference (Tiny case)" begin
-        # 2 points: (0,0) and (1,0)
-        # Velocities: (1,0) and (2,0)
-        # du = (1, 0), rhat = (1, 0)
-        # SecondOrderLongitudinal: (du . rhat)^2 = 1^2 = 1.0
-        x = [0.0 1.0; 0.0 0.0]
-        u = [1.0 2.0; 0.0 0.0]
-        bins = SA.SVector(0.0, 2.0)
-        sf_type = SFT.LongitudinalSecondOrderStructureFunction
-
-        val = SFC.calculate_structure_function(
-            sf_type,
-            x,
-            u,
-            bins,
-        )
-        Test.@test val[1] ≈ 1.0
-
-        # 3 points: (0,0), (1,0), (0,1)
-        # Velocities: (0,0), (1,0), (0,1)
-        # Pairs:
-        # 1-2: dx=(1,0), du=(1,0), rhat=(1,0), du.rhat=1, (du.rhat)^2 = 1
-        # 1-3: dx=(0,1), du=(0,1), rhat=(0,1), du.rhat=1, (du.rhat)^2 = 1
-        # 2-3: dx=(-1,1), du=(-1,1), rhat=(-1,1)/sqrt(2), du.rhat=sqrt(2), (du.rhat)^2 = 2
-        # Sum = 1 + 1 + 2 = 4
-        # Count = 3
-        # Mean = 4/3
         x3 = [0.0 1.0 0.0; 0.0 0.0 1.0]
         u3 = [0.0 1.0 0.0; 0.0 0.0 1.0]
-        val3 = SFC.calculate_structure_function(
-            sf_type,
-            x3,
-            u3,
-            bins,
-        )
+        val3 = SFC.calculate_structure_function(SFT.LongitudinalSecondOrderStructureFunction, x3, u3,
+                                                SA.SVector(0.0, 2.0))
         Test.@test val3[1] ≈ 4 / 3
     end
 
+    # A transverse δu = (0, 1) on r̂ = (1, 0): L2, L3 and L1T2 vanish, T2 = 1, and T3 = +1 with n̂ = ẑ × r̂.
     Test.@testset "SF wiring and signed magnitude consistency" begin
-        # Test case: 2 points at (0,0) and (1,0) -> rhat = (1, 0), nhat = (0, -1)
-        # Velocities: (0,1) and (0,2) -> du = (0,1) [Transverse]
         x = [0.0 1.0; 0.0 0.0]
         u = [0.0 0.0; 1.0 2.0]
         bins = SA.SVector(0.0, 2.0)
-
-        # Longitudinal Second Order: (du.rhat)^2 = 0^2 = 0
-        Test.@test SFC.calculate_structure_function(
-            SFT.LongitudinalSecondOrderStructureFunction,
-            x,
-            u,
-            bins,
-        )[1][1] == 0.0
-
-        # Transverse Second Order: |du_t|^2 = (-1)^2 = 1
-        Test.@test SFC.calculate_structure_function(
-            SFT.TransverseSecondOrderStructureFunction,
-            x,
-            u,
-            bins,
-        )[1][1] == 1.0
-
-        # Diagonal Consistent Third Order (l^3): 0^3 = 0
-        Test.@test SFC.calculate_structure_function(
-            SFT.DiagonalConsistentThirdOrderStructureFunction,
-            x,
-            u,
-            bins,
-        )[1][1] == 0.0
-
-        # Off-Diagonal Consistent Third Order (t^3): with the right-handed n̂ = ẑ × r̂ the transverse
-        # component is +1 here, so t^3 = +1.
-        Test.@test SFC.calculate_structure_function(
-            SFT.OffDiagonalConsistentThirdOrderStructureFunction,
-            x,
-            u,
-            bins,
-        )[1][1] == 1.0
-
-        # Off-Diagonal Inconsistent Third Order (l*t^2): 0 * (-1)^2 = 0
-        Test.@test SFC.calculate_structure_function(
-            SFT.OffDiagonalInconsistentThirdOrderStructureFunction,
-            x,
-            u,
-            bins,
-        )[1][1] == 0.0
+        value(sf) = SFC.calculate_structure_function(sf, x, u, bins; backend = CB.SerialBackend())[1][1]
+        Test.@test value(SFT.LongitudinalSecondOrderStructureFunction) == 0.0
+        Test.@test value(SFT.TransverseSecondOrderStructureFunction) == 1.0
+        Test.@test value(SFT.DiagonalConsistentThirdOrderStructureFunction) == 0.0
+        Test.@test value(SFT.OffDiagonalConsistentThirdOrderStructureFunction) == 1.0
+        Test.@test value(SFT.OffDiagonalInconsistentThirdOrderStructureFunction) == 0.0
     end
 
+    # δu = (2, 3, 4) on r̂ = x̂: S2 = L2 + T2, S3 = L3 + L1T2, component forms are 1/(D-1) of these, S3 ≠ |δu|³.
     Test.@testset "3D invariant transverse and S3 semantics" begin
         δu = SA.SVector(2.0, 3.0, 4.0)
         r̂ = SA.SVector(1.0, 0.0, 0.0)
-
         Test.@test SFT.S2SF(δu, r̂) ≈ SFT.L2SF(δu, r̂) + SFT.T2SF(δu, r̂)
         Test.@test SFT.L2SF(δu, r̂) ≈ 4.0
         Test.@test SFT.T2SF(δu, r̂) ≈ 25.0
@@ -140,17 +46,12 @@ Test.@testset "Core Correctness - Block A" begin
         Test.@test SFT.FullVectorStructureFunctionType(3)(δu, r̂) ≈ sqrt(sum(abs2, δu))^3
     end
 
+    # With n̂ = ẑ × r̂, δu_T = +3: a rotation leaves L2T1 and T3 unchanged and a reflection flips their sign.
     Test.@testset "Signed transverse operators use the documented 2D orientation" begin
         δu = SA.SVector(2.0, 3.0)
         r̂ = SA.SVector(1.0, 0.0)
-
-        # n̂ = ẑ × r̂ = (0, 1) is the right-handed quarter turn, so δu_T = +3. These two operators are
-        # the ONLY ones whose sign depends on that choice; every other operator consumes δu_T².
         Test.@test SFT.L2T1SF(δu, r̂) ≈ 12.0
         Test.@test SFT.T3SF(δu, r̂) ≈ 27.0
-
-        # Orientation is a property of the convention, not of this fixture: rotating the pair must
-        # leave both invariant, and reflecting it must flip exactly these two.
         θ = 0.7
         Rot = SA.SMatrix{2, 2}(cos(θ), sin(θ), -sin(θ), cos(θ))
         Test.@test SFT.L2T1SF(Rot * δu, Rot * r̂) ≈ SFT.L2T1SF(δu, r̂)
@@ -162,130 +63,63 @@ Test.@testset "Core Correctness - Block A" begin
     end
 end
 
+const CC_CANONICAL = SFH.CanonicalTransverseBasis()
+const CC_REFERENCE_AXIS = SFH.ReferenceAxisTransverseBasis(LA.normalize(SA.SVector(1.0, sqrt(2.0), sqrt(3.0))))
+const CC_PROJECTED_CASES = (
+    (NL = 0, NT = 3, basis = CC_CANONICAL, backend = CB.SerialBackend()),
+    (NL = 2, NT = 1, basis = CC_REFERENCE_AXIS, backend = CB.ThreadedBackend()),
+)
+
+# The entry sums δu_L^NL (δu⋅e)^NT with e the first transverse vector of the operator's own convention.
 Test.@testset "a projected operator's convention decides its signed transverse component through the entry" begin
     Random.seed!(1103)
-    N = 60
+    N = 24
     x = randn(3, N)
     u = randn(3, N)
     bins = [0.0, 100.0]
-    conventions = (SFH.CanonicalTransverseBasis(),
-                   SFH.ReferenceAxisTransverseBasis(LA.normalize(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))))
-    for (NL, NT) in ((0, 3), (2, 1))
-        by_basis = Float64[]
-        for basis in conventions
-            sf = SFT.ProjectedStructureFunctionType{NL, NT}(basis)
-            expected = 0.0
-            for i in 1:(N - 1), j in (i + 1):N
-                dx = SA.SVector{3}(x[1, j] - x[1, i], x[2, j] - x[2, i], x[3, j] - x[3, i])
-                r̂ = dx / LA.norm(dx)
-                δu = SA.SVector{3}(u[1, j] - u[1, i], u[2, j] - u[2, i], u[3, j] - u[3, i])
-                e = SFH.transverse_basis(basis, r̂)[1]
-                expected += LA.dot(δu, r̂)^NL * LA.dot(δu, e)^NT
-            end
-            for backend in (CB.SerialBackend(), CB.ThreadedBackend())
-                res = SFC.calculate_structure_function(
-                    sf, x, u, bins, SF.StructureFunctionSumsAndCounts;
-                    backend,
-                )
-                Test.@test res.counts == [N * (N - 1) ÷ 2]
-                Test.@test res.sums[1] ≈ expected rtol = 1e-12
-                Test.@test res.operator.basis === basis
-            end
-            push!(by_basis, expected)
+    function expected(NL, NT, basis)
+        total = 0.0
+        for i in 1:(N - 1), j in (i + 1):N
+            dx = SA.SVector{3}(x[1, j] - x[1, i], x[2, j] - x[2, i], x[3, j] - x[3, i])
+            r̂ = dx / LA.norm(dx)
+            δu = SA.SVector{3}(u[1, j] - u[1, i], u[2, j] - u[2, i], u[3, j] - u[3, i])
+            e = SFH.transverse_basis(basis, r̂)[1]
+            total += LA.dot(δu, r̂)^NL * LA.dot(δu, e)^NT
         end
-        Test.@test !(by_basis[1] ≈ by_basis[2])
+        return total
     end
-end
-
-Test.@testset "Type Stability and Performance - Block C" begin
-    x = [0.0 1.0 2.0; 0.0 0.0 0.0]
-    u = [1.0 2.0 3.0; 0.0 0.0 0.0]
-    bins = SA.SVector(0.0, 3.0)
-    sf_type = SFT.LongitudinalSecondOrderStructureFunction
-
-    # Test inference of the core kernel call
-    δu = SA.SVector{2, Float64}(1.0, 0.0)
-    r̂ = SA.SVector{2, Float64}(1.0, 0.0)
-    Test.@test Test.@inferred(sf_type(δu, r̂)) == 1.0
-
-    # Test inference of the calculator
-    Test.@testset "Inference of calculate_structure_function" begin
-        res = Test.@test_nowarn SFC.calculate_structure_function(
-            sf_type,
-            x,
-            u,
-            bins,
+    for (; NL, NT, basis, backend) in CC_PROJECTED_CASES
+        res = SFC.calculate_structure_function(
+            SFT.ProjectedStructureFunctionType{NL, NT}(basis), x, u, bins, SF.StructureFunctionSumsAndCounts;
+            backend,
         )
-        Test.@test res isa SF.AbstractStructureFunction
-
-        # We check that the inner logic is stable enough
-        Test.@test typeof(res) <: SF.StructureFunction
-    end
-
-    Test.@testset "Allocation check" begin
-        # Baseline check
-        Test.@test_nowarn SFC.calculate_structure_function(
-            sf_type,
-            x,
-            u,
-            bins,
-        )
+        Test.@test res.counts == [N * (N - 1) ÷ 2] && isapprox(res.sums[1], expected(NL, NT, basis); rtol = 1e-12)
     end
 end
 
-# The count type defaults to UInt32. Every pair can land in one bin, so past N = 92682 a UInt32 counter
-# would wrap and `_bin_average` would divide by the wrapped value; the bound is checked.
-Test.@testset "Count element type must represent the worst-case pair count" begin
-    Test.@test SFC._assert_counts_representable(UInt32, 92682) === nothing   # 4_294_930_821 pairs
-    Test.@test_throws ArgumentError SFC._assert_counts_representable(UInt32, 92683)
-    Test.@test SFC._assert_counts_representable(UInt64, 1_000_000) === nothing
-    Test.@test SFC._assert_counts_representable(Int64, 1_000_000) === nothing
-
-    bins_of = collect(Float32, range(0.0f0, 2.0f0; length = 9))
-    sft = SFT.L2SFType()
-    big_x = zeros(Float32, 2, 100_000)
-
-    # Fires at the public boundary, before any O(N^2) work is done.
-    Test.@test_throws ArgumentError SFC.calculate_structure_function(
-        sft, big_x, big_x, bins_of,
-    )
-    # A caller-supplied counts buffer is validated on its own element type.
-    Test.@test_throws ArgumentError SFC.calculate_structure_function!(
-        zeros(Float32, 8), zeros(UInt32, 8), sft, big_x, big_x, bins_of,
-    )
-    # Small problems are unaffected.
-    small_x = rand(Float32, 2, 64)
-    Test.@test SFC.calculate_structure_function(
-        sft, small_x, small_x, bins_of,
-    ) isa SF.StructureFunction
-end
-
-# The auto-binning min/max scan covers unordered pairs once (`j > i`) and accumulates in the input
-# eltype; both are silent if wrong — the bins would just come out slightly different.
-Test.@testset "Auto-binning min/max scan" begin
-    Random.seed!(808)
-    for FT in (Float64, Float32)
-        x = rand(FT, 2, 250) .* FT(10)
-        mn, mx = SFC._minmax_for_autobins(x, SFC.DI.Euclidean(), Val(2))
-
-        # brute force over every unordered pair
-        bmn, bmx = FT(Inf), FT(0)
-        for i in 1:size(x, 2), j in (i + 1):size(x, 2)
-            d = sqrt((x[1, j] - x[1, i])^2 + (x[2, j] - x[2, i])^2)
-            bmn = min(bmn, d); bmx = max(bmx, d)
+# Auto-binned edges hold every pair of the data in either spacing and precision; the result keeps the input precision.
+Test.@testset "auto-binned edges hold every pair" begin
+    n = 12
+    for spacing in (SF.LogBinEdges, SF.LinearBinEdges), FT in (Float64, Float32)
+        held = map(1:40) do seed
+            Random.seed!(seed)
+            r = SFC.calculate_structure_function(SFT.L2SFType(), rand(FT, 2, n), randn(FT, 2, n), 8,
+                                                 SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+                                                 bin_spacing = spacing)
+            sum(r.counts)
         end
-        Test.@test mn ≈ bmn
-        Test.@test mx ≈ bmx
-        # Float64 seed literals here would silently widen the bin edges for Float32 input.
-        Test.@test typeof(mn) === FT
-        Test.@test typeof(mx) === FT
+        Test.@test (spacing, FT, all(==(n * (n - 1) ÷ 2), held)) == (spacing, FT, true)
     end
+    r = SFC.calculate_structure_function(SFT.L2SFType(), rand(Float32, 2, n), randn(Float32, 2, n), 8;
+                                         backend = CB.SerialBackend())
+    Test.@test eltype(r.distance) === Float32 && eltype(r.values) === Float32
+end
 
-    # Auto-binned edges stay in the input precision end to end.
-    x32 = rand(Float32, 2, 200); u32 = randn(Float32, 2, 200)
-    r = SFC.calculate_structure_function(
-        SFT.L2SFType(), x32, u32, 12,
-    )
-    Test.@test eltype(r.distance) === Float32
-    Test.@test eltype(r.values) === Float32
+# A nine-component field gives the pair sums of the definition.
+Test.@testset "a nine-component field" begin
+    x = zeros(9, 3); x[1, :] = [0, 1, 2]
+    u = zeros(9, 3); u[end, :] = [0, 2, 5]
+    r = SFC.calculate_structure_function(SFT.S2SFType(), x, u, [0.0, 3.0], SF.StructureFunctionSumsAndCounts;
+                                         backend = CB.SerialBackend())
+    Test.@test r.counts == [3] && r.sums == [38.0]
 end

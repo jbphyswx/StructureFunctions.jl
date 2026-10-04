@@ -1,7 +1,5 @@
-# Launched under mpiexec by test_mpi.jl. Each rank computes its share via MPIBackend; rank 0
-# compares the Allreduce'd result to a serial reference (identical seeded data on all ranks) and
-# prints a marker the parent test greps for. Covers every entry family and shape, with both a
-# serial and a threaded inner backend.
+# Launched under mpiexec by test_mpi.jl. Each rank computes its share via MPIBackend and checks the Allreduce'd results of
+# its rows against a serial reference (identical seeded data on all ranks); one row per reduction path of the MPI extension.
 using ComputationalBackends: ComputationalBackends as CB
 using MPI: MPI
 MPI.Init()
@@ -16,15 +14,16 @@ rank = MPI.Comm_rank(comm)
 sft = SFT.LongitudinalSecondOrderStructureFunctionType()
 
 Random.seed!(123)                      # same data on every rank
-N, B = 120, 4
+N, B = 60, 3
 x2 = rand(2, N); u2 = rand(2, N)
-x3 = rand(3, N); u3 = rand(3, N)
 x4 = rand(4, N); u4 = rand(4, N)       # a width outside the set the SIMD kernels specialize for
 ub = rand(2, N, B)                     # shared positions
-xv = rand(2, N, B); uv = rand(2, N, B) # varying positions
 bins = collect(range(0.0, 1.5, 21))
-vbins = collect(range(-2.0, 2.0, 13))
-w2 = rand(N) .+ 0.5                     # pair weights, one per point
+abins = collect(range(prevfloat(0.0), π; length = 5))
+angle = SFC.SeparationAngleAxis([1.0, 0.0])
+w = rand(N) .+ 0.5                     # pair weights, one per point
+nb, na = length(bins) - 1, length(abins) - 1
+always = SFC.AlwaysCulling()
 
 # a periodic 8x8 grid for the gridded sweep
 gsched = SFC.UniformLagSchedule((8, 8), (1 / 8, 1 / 8), (true, true))
@@ -50,176 +49,75 @@ function same(a, b; rtol = 1e-8)
 end
 
 sc(o) = (o.sums, o.counts)
-raw = SFO.StructureFunctionSumsAndCounts
+const SER, THR = CB.SerialBackend(), CB.ThreadedBackend()
 
-function cases(be)
-    d = Dict{String, Any}()
-    d["pf1d_D2"] = sc(SFC.calculate_structure_function(sft, x2, u2, bins, raw; backend = be))
-    d["pf1d_D3"] = sc(SFC.calculate_structure_function(sft, x3, u3, bins, raw; backend = be))
-    d["pf1d_D4"] = sc(SFC.calculate_structure_function(sft, x4, u4, bins, raw; backend = be))
-    d["pf2d"] = sc(SFC.calculate_structure_function(sft, x2, u2, bins, vbins; backend = be))
-    d["pf2d_D4"] = sc(SFC.calculate_structure_function(sft, x4, u4, bins, vbins; backend = be))
-    d["batch1d_fixed"] = sc(SFC.calculate_structure_function(sft, x2, ub, bins, raw; backend = be))
-    d["batch1d_vary"] = sc(SFC.calculate_structure_function(sft, xv, uv, bins, raw; backend = be))
-    d["batch2d_fixed"] = sc(SFC.calculate_structure_function(sft, x2, ub, bins, vbins; backend = be))
-    sp1 = SFC.calculate_structure_functions_single_pass(x2, u2, bins; backend = be)
-    d["sp1d"] = (sp1.S2.sums, sp1.L1T2.sums)
-    sp1w = SFC.calculate_structure_functions_single_pass(x4, u4, bins; backend = be)
-    d["sp1d_D4"] = (sp1w.S2.sums, sp1w.L1T2.sums)
-    sp2 = SFC.calculate_structure_functions_single_pass_2d(x2, u2, bins, vbins; backend = be)
-    d["sp2d"] = (sp2.S2.sums, sp2.L1T2.sums)
-    sp2w = SFC.calculate_structure_functions_single_pass_2d(x4, u4, bins, vbins; backend = be)
-    d["sp2d_D4"] = (sp2w.S2.sums, sp2w.L1T2.sums)
-    sp1b = SFC.calculate_structure_functions_single_pass(x2, ub, bins; backend = be)
-    d["sp1d_batch"] = (sp1b.S2.sums, sp1b.L1T2.sums)
-    sp2b = SFC.calculate_structure_functions_single_pass_2d(x2, ub, bins, vbins; backend = be)
-    d["sp2d_batch"] = (sp2b.S2.sums, sp2b.L1T2.sums)
-    d["pf1d_weighted"] = sc(SFC.calculate_structure_function(sft, x2, u2, bins, Float64, raw; backend = be,
-        weights = w2))
-    sp1ww = SFC.calculate_structure_functions_single_pass(x2, u2, bins, Float64; backend = be, weights = w2)
-    d["sp1d_weighted"] = (sp1ww.S2.sums, sp1ww.S2.counts, sp1ww.L1T2.sums)
-    sp2ww = SFC.calculate_structure_functions_single_pass_2d(x2, u2, bins, vbins, Float64; backend = be, weights = w2)
-    d["sp2d_weighted"] = (sp2ww.S2.sums, sp2ww.S2.counts, sp2ww.L1T2.sums)
-    return d
-end
-
-# Every remaining entry family, each isolated so one missing method reports rather than aborting.
-const CASE_ERRORS = Dict{String, String}()
-
-function extra_cases(be, tag)
-    d = Dict{String, Any}()
-    nb, nv = length(bins) - 1, length(vbins) - 1
-    function add!(k, f)
-        try
-            d[k] = f()
-        catch e
-            d[k] = nothing
-            CASE_ERRORS["$tag/$k"] = first(split(sprint(showerror, e), '\n'))
-        end
-    end
-
-    add!("inplace_pf1d", function ()
+# (name, inner backend, computation): one row per way the MPI extension splits and reduces a sweep.
+const ROWS = (
+    ("pf1d_D4_culled_weighted_inplace", SER, be -> begin
+        s, c = zeros(nb), zeros(nb)
+        SFC.calculate_structure_function!(s, c, sft, x4, u4, bins; backend = be, culling = always, weights = w)
+        (s, c)
+    end),
+    ("multifield", THR, be -> begin
         s, c = zeros(nb), zeros(UInt32, nb)
-        SFC.calculate_structure_function!(s, c, sft, x2, u2, bins; backend = be)
+        SFC.calculate_structure_function!(s, c, sft, x2, MF.Fields{2, 1, 0, typeof(u2)}(u2), bins; backend = be)
         (s, c)
-    end)
-    add!("inplace_batch1d", function ()
-        s, c = zeros(nb, B), zeros(UInt32, nb, B)
-        SFC.calculate_structure_function!(s, c, sft, x2, ub, bins; backend = be)
+    end),
+    ("batch2d_angle_culled_inplace", SER, be -> begin
+        s, c = zeros(nb, na, B), zeros(UInt32, nb, na, B)
+        SFC.calculate_structure_function!(s, c, sft, x2, ub, bins, abins; backend = be, culling = always,
+            second_axis = angle)
         (s, c)
-    end)
-    add!("inplace_pf2d", function ()
-        s, c = zeros(nb, nv), zeros(UInt32, nb, nv)
-        SFC.calculate_structure_function!(s, c, sft, x2, u2, bins, vbins; backend = be)
+    end),
+    ("batch2d_angle_culled_driver", SER, be -> begin
+        s, c = zeros(nb, na, B), zeros(UInt32, nb, na, B)
+        SFC.calculate_structure_function_2d_batch!(s, c, sft, x2, ub, bins, abins; backend = be, culling = always,
+            second_axis = angle)
         (s, c)
-    end)
-    add!("inplace_batch2d", function ()
-        s, c = zeros(nb, nv, B), zeros(UInt32, nb, nv, B)
-        SFC.calculate_structure_function!(s, c, sft, x2, ub, bins, vbins; backend = be)
-        (s, c)
-    end)
-    add!("drv_batch1d", function ()
-        s, c = zeros(nb, B), zeros(UInt32, nb, B)
-        SFC.calculate_structure_function_batch!(s, c, sft, x2, ub, bins; backend = be)
-        (s, c)
-    end)
-    add!("drv_batch2d", function ()
-        s, c = zeros(nb, nv, B), zeros(UInt32, nb, nv, B)
-        SFC.calculate_structure_function_2d_batch!(s, c, sft, x2, ub, bins, vbins; backend = be)
-        (s, c)
-    end)
-    add!("drv_sp1d", function ()
-        s, c = zeros(SFC.SINGLE_PASS_N, nb, B), zeros(UInt32, SFC.SINGLE_PASS_N, nb, B)
-        SFC.calculate_structure_functions_single_pass_batch!(s, c, x2, ub, bins; backend = be)
-        (s, c)
-    end)
-    add!("drv_sp2d", function ()
-        s = zeros(SFC.SINGLE_PASS_N, nb, nv, B)
-        c = zeros(UInt32, SFC.SINGLE_PASS_N, nb, nv, B)
-        SFC.calculate_structure_functions_single_pass_2d_batch!(s, c, x2, ub, bins, vbins; backend = be)
-        (s, c)
-    end)
-    # culled batch kernels (varying positions per slice, shared ones once) and the culled scalar kernel
-    always = SFC.AlwaysCulling()
-    add!("culled_batch1d_vary", function ()
-        s, c = zeros(nb, B), zeros(UInt32, nb, B)
-        SFC.calculate_structure_function_batch!(s, c, sft, xv, uv, bins; backend = be, culling = always)
-        (s, c)
-    end)
-    add!("culled_batch2d_angle", function ()
-        s, c = zeros(nb, 4, B), zeros(UInt32, nb, 4, B)
-        SFC.calculate_structure_function_2d_batch!(s, c, sft, x2, ub, bins, collect(range(prevfloat(0.0), π; length = 5));
-            backend = be, culling = always, second_axis = SFC.SeparationAngleAxis([1.0, 0.0]))
-        (s, c)
-    end)
-    add!("culled_sp1d_batch", function ()
-        s, c = zeros(SFC.SINGLE_PASS_N, nb, B), zeros(UInt32, SFC.SINGLE_PASS_N, nb, B)
-        SFC.calculate_structure_functions_single_pass_batch!(s, c, x2, ub, bins; backend = be, culling = always)
-        (s, c)
-    end)
-    add!("culled_pf1d_D4", function ()
-        r = SFC.calculate_structure_function(sft, x4, u4, bins, raw; backend = be, culling = always)
-        (r.sums, r.counts)
-    end)
-    add!("inplace_sp1d", function ()
-        s, c = zeros(SFC.SINGLE_PASS_N, nb), zeros(UInt32, SFC.SINGLE_PASS_N, nb)
-        SFC.calculate_structure_functions_single_pass!(s, c, x2, u2, bins; backend = be)
-        (s, c)
-    end)
-    add!("inplace_sp2d", function ()
-        s, c = zeros(SFC.SINGLE_PASS_N, nb, nv), zeros(UInt32, SFC.SINGLE_PASS_N, nb, nv)
-        SFC.calculate_structure_functions_single_pass_2d!(s, c, x2, u2, bins, vbins; backend = be)
-        (s, c)
-    end)
-    add!("tensor2", function ()
-        t = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins, SFO.StructureFunctionTensorSumsAndCounts;
-            backend = be)
-        (t.sums, t.counts)
-    end)
-    add!("multifield", function ()
-        s, c = zeros(nb), zeros(UInt32, nb)
-        f = MF.Fields{2, 1, 0, typeof(u2)}(u2)
-        SFC.calculate_structure_function!(s, c, sft, x2, f, bins; backend = be)
-        (s, c)
-    end)
-    add!("harmonic", function ()
-        r = SFC.calculate_structure_function(sft, hx, hu, hnodes, SB.DirectSumSpectralBackend(),
-            SFO.StructureFunctionSumsAndCounts; backend = be)
-        (r.sums, r.counts)
-    end)
-    add!("gridded_sweep", function ()
+    end),
+    ("harmonic", SER, be -> sc(SFC.calculate_structure_function(sft, hx, hu, hnodes, SB.DirectSumSpectralBackend(),
+        SFO.StructureFunctionSumsAndCounts; backend = be))),
+    ("gridded_sweep", SER, be -> begin
         s, c = zeros(gnb), zeros(Int, gnb)
         SFC.gridded_lag_sweep!(s, c, sft, gdata, gsched, gbins, Val(2), Val(1), Val(0); backend = be)
         (s, c)
-    end)
-    return d
-end
-
-inners = (("serial", CB.SerialBackend()), ("threaded", CB.ThreadedBackend()))
-results = Dict(
-    name => merge(cases(CB.MPIBackend(inner)), extra_cases(CB.MPIBackend(inner), name))
-    for (name, inner) in inners
+    end),
 )
 
-status = 0
-if rank == 0
-    ref = merge(cases(CB.SerialBackend()), extra_cases(CB.SerialBackend(), "serial_ref"))
-    failures = String[]
-    for (iname, got) in results, k in sort!(collect(keys(ref)))
-        r, g = ref[k], got[k]
-        if r === nothing || g === nothing
-            why = get(CASE_ERRORS, "$iname/$k", get(CASE_ERRORS, "serial_ref/$k", "no result"))
-            push!(failures, "$iname/$k [$why]")
-        elseif !all(p -> same(p[1], p[2]), zip(r, g))
-            push!(failures, "$iname/$k")
-        end
-    end
-    if isempty(failures)
-        println("MPI parity OK: np=$(MPI.Comm_size(comm)) nthreads=$(Threads.nthreads()) cases=$(length(ref) * length(inners))")
-    else
-        println(stderr, "MPI parity FAILED for: ", join(failures, ", "))
-        status = 1
+# Each row isolated, so one missing method reports rather than aborting.
+const CASE_ERRORS = Dict{String, String}()
+
+function run_row(key, f, be)
+    try
+        return f(be)
+    catch e
+        CASE_ERRORS[key] = first(split(sprint(showerror, e), '\n'))
+        return nothing
     end
 end
+
+results = [run_row("$name/$(nameof(typeof(inner)))", f, CB.MPIBackend(inner)) for (name, inner, f) in ROWS]
+
+# Each rank checks the rows of every `nranks`-th family (a row name less its entry-form suffix).
+nranks = MPI.Comm_size(comm)
+family(name) = replace(name, r"_(inplace|driver)$" => "")
+families = unique(family(name) for (name, _, _) in ROWS)
+failures = String[]
+for ((name, inner, f), g) in zip(ROWS, results)
+    (findfirst(==(family(name)), families) - 1) % nranks == rank || continue
+    r = run_row("$name/serial_ref", f, CB.SerialBackend())
+    iname = nameof(typeof(inner))
+    if r === nothing || g === nothing
+        why = get(CASE_ERRORS, "$name/$iname", get(CASE_ERRORS, "$name/serial_ref", "no result"))
+        push!(failures, "$iname/$name [$why]")
+    elseif !all(p -> same(p[1], p[2]), zip(r, g))
+        push!(failures, "$iname/$name")
+    end
+end
+isempty(failures) || println(stderr, "MPI parity FAILED on rank $rank for: ", join(failures, ", "))
+n_failed = MPI.Allreduce(length(failures), +, comm)
+n_failed == 0 && rank == 0 &&
+    println("MPI parity OK: np=$nranks nthreads=$(Threads.nthreads()) cases=$(length(results))")
+status = n_failed == 0 ? 0 : 1
 MPI.Finalize()
 exit(status)

@@ -862,7 +862,13 @@ function _threaded_tensor_pairs!(
     sums, counts, order::Val, shape, x, u, distance_bins, share; geometry,
     axis = nothing, culling::SFC.CullingPolicy = SFC.AutoCulling(), weights = SFC.NoWeights(),
 )
-    s = SFC._tensor_setup(order, shape, sums, counts, x, u, distance_bins, geometry, axis, weights, culling)
+    _threaded_tensor_run!(sums, counts, order,
+                          SFC._tensor_setup(order, shape, sums, counts, x, u, distance_bins, geometry, axis, weights,
+                                            culling), share)
+    return nothing
+end
+
+function _threaded_tensor_run!(sums, counts, order::Val, s, share)
     ls, lc = _greedy_reduce(_hist_add,
         () -> begin
             a = (zeros(eltype(sums), size(sums)), zeros(eltype(counts), size(counts)))

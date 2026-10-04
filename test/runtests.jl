@@ -1,190 +1,29 @@
 using Test: Test
-using StructureFunctions: StructureFunctions as SF
 
-include("test_synthetic_data.jl")
-using .SyntheticData: SyntheticData
+const TEST_FILES = (
+    "test_result_buffers.jl", "test_helpers.jl", "test_bin_edges.jl",
+    "test_bin_constructors.jl", "test_core_correctness.jl", "test_cpu_pair_blocking.jl", "test_gridded.jl",
+    "test_gridded_flowgeometries.jl", "test_gridded_fft.jl", "test_gridded_masked.jl", "test_gridded_moments.jl",
+    "test_gridded_zonal.jl", "test_gridded_separable.jl", "test_gridded_device.jl", "test_gridded_batch.jl",
+    "test_gridded_single_pass.jl", "test_gridded_weights.jl", "test_pair_weights.jl", "test_scattered_modes.jl",
+    "test_sorted_line.jl", "test_spectra_lagspace.jl", "test_harmonic_sphere.jl", "test_directional.jl",
+    "test_multifields.jl", "test_operator_contract.jl", "test_pair_value.jl", "test_single_pass.jl",
+    "test_single_pass_2d.jl", "test_e2e.jl", "test_stability.jl", "test_shorthands.jl", "test_shape_contract.jl",
+    "test_spherical_geometry.jl", "test_gpu_shape_contract.jl", "test_gpu_culling.jl", "test_gpu_in_range.jl",
+    "test_tensor_khm.jl", "test_known_truth.jl", "test_transforms.jl", "test_fits.jl", "test_fit_numerics.jl",
+    "test_cpu_workspace.jl", "test_no_silent_fallback.jl", "test_dispatch_axes.jl",
+    "test_allocations.jl", "test_capability_matrix.jl", "test_parallel_equivalence.jl", "test_mpi.jl",
+    "test_gpu_parity.jl", "test_gpu_tiled_parity.jl", "test_gpu_single_pass_tiled.jl", "test_gpu_sp2d_strategy.jl",
+    "test_gpu_sp2d_3d.jl", "test_gpu_joint2d_smem.jl", "test_gpu_workspace.jl", "test_gpu_script_hygiene.jl",
+    "test_batch_matrix.jl", "test_2d_binning.jl", "test_inplace.jl", "test_aqua.jl", "test_jet.jl",
+)
 
+# Each file in its own module, named after the file, so no file sees another's definitions.
 Test.@testset "StructureFunctions.jl" begin
-    include("test_repair_regressions.jl")
-    include("test_examples.jl")
-    include("test_result_buffers.jl")
-    println("--- Running Baseline Correctness Test ---")
-    include("baseline_correctness.jl")
-
-    println("--- Running Helpers Test ---")
-    include("test_helpers.jl")
-
-    println("--- Running BinEdges Test ---")
-    include("test_bin_edges.jl")
-    include("test_bin_constructors.jl")
-
-    println("--- Running Core Correctness Test ---")
-    include("test_core_correctness.jl")
-
-    println("--- Running CPU Pair Blocking Test ---")
-    include("test_cpu_pair_blocking.jl")
-
-    println("--- Running Gridded Lag Sweep Test ---")
-    include("test_gridded.jl")
-
-    println("--- Running Gridded FlowGeometries Adapter Test ---")
-    include("test_gridded_flowgeometries.jl")
-
-    println("--- Running Gridded FFT Test ---")
-    include("test_gridded_fft.jl")
-
-    println("--- Running Gridded Masked Test ---")
-    include("test_gridded_masked.jl")
-
-    println("--- Running Gridded Moments Test ---")
-    include("test_gridded_moments.jl")
-
-    println("--- Running Gridded Lat-Lon Test ---")
-    include("test_gridded_zonal.jl")
-
-    println("--- Running Gridded Separable Schedules Test ---")
-    include("test_gridded_separable.jl")
-    println("--- Running Gridded Device Engine Test ---")
-    include("test_gridded_device.jl")
-    println("--- Running Gridded Slice Batch Test ---")
-    include("test_gridded_batch.jl")
-    println("--- Running Gridded Single-Pass Test ---")
-    include("test_gridded_single_pass.jl")
-    println("--- Running Pair Weights Test ---")
-    include("test_gridded_weights.jl")
-    println("--- Running Pair Weights Across Routes Test ---")
-    include("test_pair_weights.jl")
-    println("--- Running Scattered Modes (NUFFT) Test ---")
-    include("test_scattered_modes.jl")
-    println("--- Running Sorted Line Route Test ---")
-    include("test_sorted_line.jl")
-
-    println("--- Running Lag-Space Spectra Test ---")
-    include("test_spectra_lagspace.jl")
-
-    println("--- Running Spherical Harmonic Route Test ---")
-    include("test_harmonic_sphere.jl")
-
-    println("--- Running Directional Test ---")
-    include("test_directional.jl")
-
-    println("--- Running Multi-Field Fields Test ---")
-    include("test_multifields.jl")
-
-    println("--- Running Operator Polynomial Contract Test ---")
-    include("test_operator_contract.jl")
-
-    println("--- Running Pair Value Test ---")
-    include("test_pair_value.jl")
-
-    println("--- Running Single-Pass & Helmholtz Test ---")
-    include("test_single_pass.jl")
-
-    println("--- Running Single-Pass 2D Test ---")
-    include("test_single_pass_2d.jl")
-
-    println("--- Running E2E Test ---")
-    include("test_e2e.jl")
-
-    println("--- Running Stability & Inference Test ---")
-    include("test_stability.jl")
-
-    println("--- Running Shorthands Test ---")
-    include("test_shorthands.jl")
-
-    println("--- Running Shape Contract Test ---")
-    include("test_shape_contract.jl")
-
-    println("--- Running Spherical Geometry Test ---")
-    include("test_spherical_geometry.jl")
-
-    println("--- Running GPU Shape Contract Test ---")
-    include("test_gpu_shape_contract.jl")
-
-    println("--- Running GPU Culling Test ---")
-    include("test_gpu_culling.jl")
-
-    println("--- Running GPU In-Range Fraction Test ---")
-    include("test_gpu_in_range.jl")
-
-    println("--- Running Tensor and KHM Test ---")
-    include("test_tensor_khm.jl")
-
-    println("--- Running Known Truth Test ---")
-    include("test_known_truth.jl")
-
-    println("--- Running Transforms Test ---")
-    include("test_transforms.jl")
-
-    println("--- Running Regularised Fits Test ---")
-    include("test_fits.jl")
-    include("test_fit_numerics.jl")
-
-    println("--- Running Triangle Outer Chunks Test ---")
-    include("test_triangle_outer_chunks.jl")
-
-    println("--- Running CPU Workspace Test ---")
-    include("test_cpu_workspace.jl")
-
-    println("--- Running No Silent Fallback Test ---")
-    include("test_no_silent_fallback.jl")
-
-
-    println("--- Running Dispatch Axis Coverage Test ---")
-    include("test_dispatch_axes.jl")
-
-    println("--- Running Allocation Scaling Test ---")
-    include("test_allocations.jl")
-
-    println("--- Running Capability Matrix Test ---")
-    include("test_capability_matrix.jl")
-
-    println("--- Running README Sample Test ---")
-    include("test_readme.jl")
-
-    # Enable Parallel/Distributed Test
-    println("--- Running Parallel Equivalence Test ---")
-    include("test_parallel_equivalence.jl")
-
-    println("--- Running MPI Backend Test ---")
-    include("test_mpi.jl")
-
-    println("--- Running GPU Parity Test ---")
-    include("test_gpu_parity.jl")
-
-    println("--- Running GPU Tiled Parity Test ---")
-    include("test_gpu_tiled_parity.jl")
-
-    println("--- Running GPU Single-Pass Tiled Parity Test ---")
-    include("test_gpu_single_pass_tiled.jl")
-
-    println("--- Running GPU sp2d Accumulation Strategy Test ---")
-    include("test_gpu_sp2d_strategy.jl")
-
-    println("--- Running GPU sp2d 3D Test ---")
-    include("test_gpu_sp2d_3d.jl")
-
-    println("--- Running GPU joint2d smem Test ---")
-    include("test_gpu_joint2d_smem.jl")
-
-    println("--- Running GPU Workspace & Slice Batch Test ---")
-    include("test_gpu_workspace.jl")
-
-    println("--- Running GPU Script Hygiene Test ---")
-    include("test_gpu_script_hygiene.jl")
-
-    println("--- Running Batch Matrix Parity Test ---")
-    include("test_batch_matrix.jl")
-
-    println("--- Running 2D Joint-Probability Binning Test ---")
-    include("test_2d_binning.jl")
-
-    println("--- Running Pre-allocated In-place Buffer Test ---")
-    include("test_inplace.jl")
-
-    println("--- Running Aqua Test ---")
-    include("test_aqua.jl")
-
-    println("--- Running JET Test ---")
-    include("test_jet.jl")
+    Test.@testset "$file" for file in TEST_FILES
+        name, path = Symbol(first(splitext(file))), joinpath(@__DIR__, file)
+        @eval Main module $name
+            include($path)
+        end
+    end
 end

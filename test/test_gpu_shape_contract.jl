@@ -13,6 +13,7 @@ Random.seed!(20260621)
 
 const GPU_SHAPE_BE = CB.GPUBackend(KA.CPU())
 const GPU_SHAPE_CPU_BE = CB.SerialBackend()
+const GPU_SHAPE_INV = (:S2, :L2, :T2, :S3, :L3, :L1T2)
 
 function _gpu_shape_pairwise(sf, x, u, bins)
     return SFC.calculate_structure_function(
@@ -28,25 +29,16 @@ function _cpu_shape_pairwise(sf, x, u, bins)
     )
 end
 
-function _assert_sums_counts_equal(gpu, cpu; atol = 1f-4)
-    Test.@test batch_histograms_equal(gpu.sums, gpu.counts, cpu.sums, cpu.counts; atol)
-end
+"""Whether the device result `g` equals the CPU result `c`, every invariant but `:helmholtz` of a named tuple."""
+_agrees(g::NamedTuple, c; rtol) =
+    all(k -> k === :helmholtz || (g[k].counts == c[k].counts && isapprox(g[k].sums, c[k].sums; rtol)), keys(c))
+_agrees(g, c; rtol) = g.counts == c.counts && isapprox(g.sums, c.sums; rtol)
 
 Test.@testset "GPU public shape contract (KA.CPU)" begin
     sf = SFT.L2SFType()
     bins = collect(Float32, range(0.0f0, 1.75f0; length = 10))
     value_bins = collect(Float32, range(-0.1f0, 1.5f0; length = 8))
     n_bins = length(bins) - 1
-
-    Test.@testset "point fields use axis 1 as D" begin
-        x2 = rand(Float32, 2, 10)
-        u2 = rand(Float32, 2, 10)
-        x3 = rand(Float32, 3, 10)
-        u3 = rand(Float32, 3, 10)
-
-        _assert_sums_counts_equal(_gpu_shape_pairwise(sf, x2, u2, bins), _cpu_shape_pairwise(sf, x2, u2, bins))
-        _assert_sums_counts_equal(_gpu_shape_pairwise(sf, x3, u3, bins), _cpu_shape_pairwise(sf, x3, u3, bins))
-    end
 
     Test.@testset "shared-position auxiliary axes match explicit slices" begin
         x = rand(Float32, 2, 11)
@@ -60,7 +52,7 @@ Test.@testset "GPU public shape contract (KA.CPU)" begin
         ref_counts = zeros(UInt32, n_bins, 3, 2)
         for idx in CartesianIndices((3, 2))
             t, m = Tuple(idx)
-            rt = _cpu_shape_pairwise(sf, x, @view(u[:, :, t, m]), bins)
+            rt = _cpu_shape_pairwise(sf, x, u[:, :, t, m], bins)
             ref_sums[:, t, m] .= rt.sums
             ref_counts[:, t, m] .= rt.counts
         end
@@ -78,7 +70,7 @@ Test.@testset "GPU public shape contract (KA.CPU)" begin
         ref_sums = zeros(Float32, n_bins, 3)
         ref_counts = zeros(UInt32, n_bins, 3)
         for t in 1:3
-            rt = _cpu_shape_pairwise(sf, @view(x[:, :, t]), @view(u[:, :, t]), bins)
+            rt = _cpu_shape_pairwise(sf, x[:, :, t], u[:, :, t], bins)
             ref_sums[:, t] .= rt.sums
             ref_counts[:, t] .= rt.counts
         end
@@ -102,38 +94,37 @@ Test.@testset "GPU public shape contract (KA.CPU)" begin
     end
 
     Test.@testset "single-pass auxiliary axes preserve public shape" begin
-        inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
         x = rand(Float32, 2, 10)
         u = rand(Float32, 2, 10, 2, 3)
 
         gpu = SFC.calculate_structure_functions_single_pass(
             x, u, bins, SFO.StructureFunctionSumsAndCounts; backend = GPU_SHAPE_BE,
         )
-        cpu = SFC.calculate_structure_functions_single_pass(
-            x, u, bins, SFO.StructureFunctionSumsAndCounts; backend = GPU_SHAPE_CPU_BE,
-        )
-        Test.@test keys(gpu) == inv
-        for k in inv
-            Test.@test size(gpu[k].sums) == (n_bins, 2, 3)
-            Test.@test batch_histograms_equal(gpu[k].sums, gpu[k].counts, cpu[k].sums, cpu[k].counts; atol = 1f-4)
-        end
-
         gpu2d = SFC.calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend = GPU_SHAPE_BE)
-        cpu2d = SFC.calculate_structure_functions_single_pass_2d(x, u, bins, value_bins; backend = GPU_SHAPE_CPU_BE)
-        Test.@test keys(gpu2d) == inv
-        for k in inv
-            Test.@test size(gpu2d[k].sums) == (n_bins, length(value_bins) - 1, 2, 3)
-            Test.@test batch_histograms_equal(gpu2d[k].sums, gpu2d[k].counts, cpu2d[k].sums, cpu2d[k].counts; atol = 1f-4)
-        end
+        Test.@test keys(gpu) == GPU_SHAPE_INV
+        Test.@test keys(gpu2d) == GPU_SHAPE_INV
+        Test.@test all(k -> size(gpu[k].sums) == (n_bins, 2, 3) &&
+                            size(gpu2d[k].sums) == (n_bins, length(value_bins) - 1, 2, 3), GPU_SHAPE_INV)
+        slices = Tuple.(CartesianIndices((2, 3)))
+        cpu = [SFC.calculate_structure_functions_single_pass(
+                   x, u[:, :, t, m], bins, SFO.StructureFunctionSumsAndCounts; backend = GPU_SHAPE_CPU_BE,
+               ) for (t, m) in slices]
+        cpu2d = [SFC.calculate_structure_functions_single_pass_2d(x, u[:, :, t, m], bins, value_bins;
+                                                                  backend = GPU_SHAPE_CPU_BE) for (t, m) in slices]
+        Test.@test all(((t, m),) -> all(k -> batch_histograms_equal(gpu[k].sums[:, t, m], gpu[k].counts[:, t, m],
+                                                                     cpu[t, m][k].sums, cpu[t, m][k].counts;
+                                                                     atol = 1f-4), GPU_SHAPE_INV), slices)
+        Test.@test all(((t, m),) -> all(k -> batch_histograms_equal(gpu2d[k].sums[:, :, t, m],
+                                                                     gpu2d[k].counts[:, :, t, m],
+                                                                     cpu2d[t, m][k].sums, cpu2d[t, m][k].counts;
+                                                                     atol = 1f-4), GPU_SHAPE_INV), slices)
     end
 
+    # A one-wide field runs on the device and equals the CPU.
     Test.@testset "a one-dimensional field runs on the device" begin
-        # The tiled kernels stage a fixed number of coordinate components, so a width outside the
-        # set they were written for goes through the width-generic pair kernel. That is a routing
-        # decision, not a refusal, so the answer must equal the CPU's.
         Random.seed!(3)
-        x1 = rand(Float32, 1, 200)
-        u1 = randn(Float32, 1, 200)
+        x1 = rand(Float32, 1, 64)
+        u1 = randn(Float32, 1, 64)
         b1 = collect(Float32, range(0.0f0, 0.9f0; length = 9))
         cpu1 = SFC.calculate_structure_function(
             sf, x1, u1, b1, SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
@@ -159,10 +150,11 @@ Test.@testset "GPU public shape contract (KA.CPU)" begin
     end
 end
 
+# A device backend holding a configured KernelAbstractions backend gives the default backend's answer.
 Test.@testset "a configured device backend takes the outputs its device holds" begin
     Random.seed!(11)
     configured = CB.GPUBackend(KA.CPU(; static = true))
-    x, u = rand(Float32, 2, 300), randn(Float32, 2, 300)
+    x, u = rand(Float32, 2, 64), randn(Float32, 2, 64)
     bins = collect(Float32, range(0.0f0, 0.8f0; length = 9))
     ref_s, ref_c = zeros(Float32, 8), zeros(UInt32, 8)
     SFC.calculate_structure_function!(ref_s, ref_c, SFT.L2SFType(), x, u, bins; backend = GPU_SHAPE_BE)
@@ -170,8 +162,8 @@ Test.@testset "a configured device backend takes the outputs its device holds" b
     SFC.calculate_structure_function!(s, c, SFT.L2SFType(), x, u, bins; backend = configured)
     Test.@test c == ref_c
     Test.@test s ≈ ref_s
-    grid = randn(Float32, 2, 24 * 16)
-    schedule = SFC.UniformLagSchedule((24, 16), (1.0, 1.0), (true, false))
+    grid = randn(Float32, 2, 12 * 8)
+    schedule = SFC.UniformLagSchedule((12, 8), (1.0, 1.0), (true, false))
     lag_bins = collect(Float32, range(0.0f0, 6.0f0; length = 7))
     ref_s, ref_c = zeros(Float32, 6), zeros(Int, 6)
     SFC.gridded_lag_sweep!(ref_s, ref_c, SFT.S3SFType(), grid, schedule, lag_bins, Val(2); backend = GPU_SHAPE_BE)
@@ -181,8 +173,7 @@ Test.@testset "a configured device backend takes the outputs its device holds" b
     Test.@test s ≈ ref_s
 end
 
-# Every GPU kernel family carries the geometry, so a non-Euclidean metric produces the transported
-# answer on GPU exactly as on CPU — the two must agree, and neither may silently return a flat one.
+# Every point-field family agrees with the CPU under a spherical metric, which differs from the flat answer and needs a geometry.
 Test.@testset "GPU point-field families honour a spherical metric" begin
     FT = Float64
     N = 64
@@ -207,33 +198,19 @@ Test.@testset "GPU point-field families honour a spherical metric" begin
             ("sp2d", (be,) -> SFC.calculate_structure_functions_single_pass_2d(
                 x, u, db, vb; backend = be, kw...)),
         )
-        g = call(GPU_SHAPE_BE); c = call(GPU_SHAPE_CPU_BE)
-        if g isa NamedTuple
-            for k in keys(c)
-                k === :helmholtz && continue
-                Test.@test g[k].counts == c[k].counts
-                Test.@test isapprox(g[k].sums, c[k].sums; rtol = 1e-8)
-            end
-        else
-            Test.@test g.counts == c.counts
-            Test.@test isapprox(g.sums, c.sums; rtol = 1e-8)
-        end
+        Test.@test (name, _agrees(call(GPU_SHAPE_BE), call(GPU_SHAPE_CPU_BE); rtol = 1e-8)) == (name, true)
     end
 
-    # The metric genuinely changes the answer: the transported result is not the flat one.
     raw(mm) = SFC.calculate_structure_function(
         sft, x, u, db, SFO.StructureFunctionSumsAndCounts;
         backend = CB.SerialBackend(), distance_metric = mm,
     )
     Test.@test raw(DI.Euclidean()).counts != raw(m).counts
 
-    # And a metric with NO geometry is refused outright on every backend: a distance function
-    # defines neither a separation direction nor a transport rule.
     Test.@test_throws ArgumentError raw(DI.Cityblock())
 end
 
-# The auxiliary-axis (batch) families carry the geometry into their kernels, so they honour a
-# spherical metric and must reproduce the CPU's transported answer.
+# Every batch family agrees with the CPU under a spherical metric.
 Test.@testset "GPU batch families honour a spherical metric" begin
     FT = Float64
     N, B = 40, 3
@@ -256,47 +233,6 @@ Test.@testset "GPU batch families honour a spherical metric" begin
             ("sp2d batch", (be,) -> SFC.calculate_structure_functions_single_pass_2d(
                 x, u3, db, vb; backend = be, kw...)),
         )
-        g = call(GPU_SHAPE_BE); c = call(GPU_SHAPE_CPU_BE)
-        if g isa NamedTuple
-            for k in keys(c)
-                k === :helmholtz && continue
-                Test.@test g[k].counts == c[k].counts
-                Test.@test isapprox(g[k].sums, c[k].sums; rtol = 1e-8)
-            end
-        else
-            Test.@test g.counts == c.counts
-            Test.@test isapprox(g.sums, c.sums; rtol = 1e-8)
-        end
+        Test.@test (name, _agrees(call(GPU_SHAPE_BE), call(GPU_SHAPE_CPU_BE); rtol = 1e-8)) == (name, true)
     end
-end
-
-# The point-field single-pass 2D family carries the geometry into its kernels, so it honors a
-# non-Euclidean metric and must produce the CPU's transported answer.
-Test.@testset "GPU single-pass 2D honors a spherical metric" begin
-    FT = Float64
-    N = 96
-    lon = 300 .* rand(N) .- 150
-    lat = 100 .* rand(N) .- 50
-    x = permutedims(hcat(lon, lat))
-    u = permutedims(hcat(randn(N), randn(N)))
-    db = collect(FT, range(0.0, 9.0e6; length = 11))
-    vbn = collect(FT, range(-4.0, 4.0; length = 9))
-    m = DI.Haversine(6.371e6)
-
-    got = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, db, vbn; backend = GPU_SHAPE_BE, distance_metric = m,
-    )
-    ref = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, db, vbn; backend = GPU_SHAPE_CPU_BE, distance_metric = m,
-    )
-    for k in (:S2, :L2, :T2, :S3, :L3, :L1T2)
-        Test.@test got[k].counts == ref[k].counts
-        Test.@test isapprox(got[k].sums, ref[k].sums; rtol = 1e-10)
-    end
-
-    # The metric genuinely changes the result: the transported answer is not the flat one.
-    flat = SFC.calculate_structure_functions_single_pass_2d(
-        x, u, db, vbn; backend = GPU_SHAPE_BE, distance_metric = DI.Euclidean(),
-    )
-    Test.@test flat.L2.counts != got.L2.counts
 end

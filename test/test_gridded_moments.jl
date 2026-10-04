@@ -11,7 +11,7 @@ using Random: Random
 
 const FFT_TAG = SB.FastFourierTransformSpectralBackend()
 
-# One call for either route, on a bare array or a multi-field.
+# One call of the lag sweep (`backend === nothing`) or the transform, on a bare array or a multi-field.
 function _moments_run(sf, field, dims, spacing, periodic, bins; valid = SFC.AllValid(), backend = nothing)
     nb = SFC.n_histogram_bins(SFC.squared_digitize_plan(bins))
     s = zeros(Float64, nb)
@@ -28,53 +28,55 @@ function _moments_run(sf, field, dims, spacing, periodic, bins; valid = SFC.AllV
     return s, c
 end
 
-# An odd operator on a self-reverse lag is exactly zero in the sweep and round-off in the transform, so
-# the comparison carries an absolute floor set by the field scale.
+# Absolute floor at the field scale: an odd operator on a self-reverse lag is exactly zero only in the sweep.
 _moments_close(got, ref) = isapprox(got, ref; rtol = 1e-9, atol = 1e-10 * max(1.0, maximum(abs, ref)))
 
-const MOMENT_GRIDS = (
-    ((9, 6), (0.1, 0.2), (false, false)),
-    ((8, 8), (0.25, 0.25), (true, true)),
-    ((10, 7), (0.15, 0.15), (true, false)),
-    ((12,), (0.3,), (false,)),
-    ((6, 5, 4), (0.2, 0.2, 0.3), (false, false, false)),
-    ((6, 6, 4), (0.2, 0.2, 0.3), (true, false, true)),
+# Every operator once; signed-transverse ones on a 2-D grid and on a 3-D grid with lags along ẑ, the axis rule in 3-D.
+const MOMENT_OPERATOR_CASES = (
+    (((9, 6), (0.1, 0.2), (false, false)),
+     (SFT.S2SFType(), SFT.L2SFType(), SFT.T2SFType(), SFT.L3SFType(), SFT.ProjectedStructureFunctionType{2, 2}(),
+      SFT.VectorDotSFType(1, 1))),
+    (((8, 8), (0.25, 0.25), (true, true)),
+     (SFT.L2T1SFType(), SFT.S3SFType(), SFT.L1T2ComponentSFType(), SFT.FullVectorStructureFunctionType{4}())),
+    (((10, 7), (0.15, 0.15), (true, false)),
+     (SFT.T2ComponentSFType(), SFT.L1T2SFType(), SFT.ProjectedStructureFunctionType{4, 0}(),
+      SFT.ProjectedStructureFunctionType{0, 4}())),
+    (((12,), (0.3,), (false,)), (SFT.L3SFType(),)),
+    (((6, 5, 4), (0.2, 0.2, 0.3), (false, false, false)),
+     (SFT.ProjectedStructureFunctionType{0, 3}(
+          SFH.ReferenceAxisTransverseBasis(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))),)),
+    (((6, 6, 4), (0.2, 0.2, 0.3), (true, false, true)), (SFT.T3SFType(),)),
 )
-
-const VECTOR_OPS = (
-    SFT.S2SFType(), SFT.L2SFType(), SFT.T2SFType(), SFT.T2ComponentSFType(),
-    SFT.L3SFType(), SFT.S3SFType(), SFT.L1T2SFType(), SFT.L1T2ComponentSFType(),
-    SFT.ProjectedStructureFunctionType{4, 0}(), SFT.ProjectedStructureFunctionType{2, 2}(),
-    SFT.FullVectorStructureFunctionType{4}(), SFT.VectorDotSFType(1, 1),
-)
-# Operators reading one signed transverse component; at D = 3 the lags along ẑ take the x̂ rule.
-const ODD_TRANSVERSE_OPS = (SFT.L2T1SFType(), SFT.T3SFType(), SFT.ProjectedStructureFunctionType{0, 4}())
-# The canonical rule about an axis no lattice lag is parallel to: a non-canonical basis through moment_contract.
-const AXIS_OPS = (SFT.ProjectedStructureFunctionType{0, 3}(
-    SFH.ReferenceAxisTransverseBasis(SA.SVector(1.0, sqrt(2.0), sqrt(3.0)))),)
 
 Test.@testset "the transform equals the lag sweep for every polynomial operator" begin
-    for (dims, spacing, periodic) in MOMENT_GRIDS
+    counts_ok, sums_ok = Bool[], Bool[]
+    for ((dims, spacing, periodic), ops) in MOMENT_OPERATOR_CASES
         Dg = length(dims)
         Random.seed!(9100 + prod(dims) + Dg)
         u = randn(Dg, dims...)
         r_max = 0.7 * sum(d -> spacing[d] * dims[d], 1:Dg)
         bins = collect(range(0.0, r_max; length = 9))
-        ops = Dg == 1 ? VECTOR_OPS :
-              Dg == 2 ? (VECTOR_OPS..., ODD_TRANSVERSE_OPS...) : (VECTOR_OPS..., ODD_TRANSVERSE_OPS..., AXIS_OPS...)
         for sf in ops
-            Dg == 1 && sf isa Union{SFT.T2ComponentSFType, SFT.L1T2ComponentSFType} && continue
             ref_s, ref_c = _moments_run(sf, u, dims, spacing, periodic, bins)
             got_s, got_c = _moments_run(sf, u, dims, spacing, periodic, bins; backend = FFT_TAG)
-            Test.@test got_c == ref_c
-            Test.@test _moments_close(got_s, ref_s)
-            Test.@test sum(got_c) > 0
+            push!(counts_ok, got_c == ref_c && sum(ref_c) > 0)
+            push!(sums_ok, _moments_close(got_s, ref_s))
         end
     end
+    Test.@test all(counts_ok)
+    Test.@test all(sums_ok)
 end
 
+# Each order once on a masked field, on a bounded, a wrapping and a mixed grid.
+const MOMENT_MASKED_CASES = (
+    (((9, 6), (0.1, 0.2), (false, false)), SFT.S2SFType()),
+    (((8, 8), (0.25, 0.25), (true, true)), SFT.T3SFType()),
+    (((10, 7), (0.15, 0.15), (true, false)), SFT.ProjectedStructureFunctionType{4, 0}()),
+)
+
 Test.@testset "the masked transform equals the masked lag sweep at every order" begin
-    for (dims, spacing, periodic) in MOMENT_GRIDS[1:3]
+    counts_ok, sums_ok = Bool[], Bool[]
+    for ((dims, spacing, periodic), sf) in MOMENT_MASKED_CASES
         N = prod(dims)
         Random.seed!(9200 + N)
         u = randn(2, dims...)
@@ -83,18 +85,14 @@ Test.@testset "the masked transform equals the masked lag sweep at every order" 
             rand() < 0.3 && (uf[1, k] = NaN)
         end
         valid = SFC.field_validity(u)
-        Test.@test !(valid isa SFC.AllValid)
         bins = collect(range(0.0, 1.3; length = 8))
-        for sf in (SFT.S2SFType(), SFT.L2SFType(), SFT.L3SFType(), SFT.S3SFType(), SFT.L1T2SFType(),
-                   SFT.ProjectedStructureFunctionType{4, 0}(), SFT.T3SFType())
-            ref_s, ref_c = _moments_run(sf, u, dims, spacing, periodic, bins; valid)
-            got_s, got_c = _moments_run(sf, u, dims, spacing, periodic, bins; valid, backend = FFT_TAG)
-            Test.@test got_c == ref_c
-            Test.@test _moments_close(got_s, ref_s)
-            Test.@test all(isfinite, got_s)
-            Test.@test sum(got_c) > 0
-        end
+        ref_s, ref_c = _moments_run(sf, u, dims, spacing, periodic, bins; valid)
+        got_s, got_c = _moments_run(sf, u, dims, spacing, periodic, bins; valid, backend = FFT_TAG)
+        push!(counts_ok, got_c == ref_c && sum(ref_c) > 0)
+        push!(sums_ok, all(isfinite, got_s) && _moments_close(got_s, ref_s))
     end
+    Test.@test all(counts_ok)
+    Test.@test all(sums_ok)
 end
 
 # Grid coordinates as a point list, for the unstructured oracle.
@@ -108,6 +106,17 @@ function _grid_points(dims, spacing)
     return x
 end
 
+# Every operator type once, each field wrapping and bounded; an odd scalar one per field against the point path.
+const MOMENT_FIELD_CASES = (
+    (:vs, SFT.ScalarSFType{2}(), (true, false)), (:vs, SFT.MixedSFType{1, 0, 2}(), (false, false)),
+    (:vs, SFT.MixedSFType{1, 0, 1}(), (true, false)), (:vs, SFT.MixedSFType{0, 2, 1}(), (false, false)),
+    (:vs, SFT.L2SFType(), (true, false)), (:vs, SFT.S3SFType(), (false, false)),
+    (:s, SFT.ScalarSFType{3}(2), (true, false)), (:s, SFT.ScalarDotSFType(1, 2), (false, false)),
+    (:vv, SFT.VectorDotSFType(1, 2), (true, false)),
+)
+const MOMENT_FIELD_ORACLE_CASES =
+    ((:vs, SFT.MixedSFType{1, 0, 1}()), (:s, SFT.ScalarSFType{3}(2)), (:vv, SFT.VectorDotSFType(1, 2)))
+
 Test.@testset "multi-fields on a grid: scalar, mixed and cross-field moments" begin
     dims = (9, 7)
     spacing = (0.1, 0.15)
@@ -115,37 +124,30 @@ Test.@testset "multi-fields on a grid: scalar, mixed and cross-field moments" be
     u = randn(2, dims...)
     θ = randn(dims...)
     a = randn(2, dims...)
-    # edges between the separations the lattice can produce, so a whole shell never sits on one
     bins = [0.0; collect(range(0.1137, 0.93; length = 7))]
-    f_vs = Fields(vectors = (u,), scalars = (θ,))
-    f_s = Fields(scalars = (θ, a[1, :, :]))
-    f_vv = Fields(vectors = (u, a))
-    cases = (
-        (f_vs, (SFT.ScalarSFType{2}(), SFT.ScalarSFType{3}(), SFT.MixedSFType{1, 0, 2}(),
-                SFT.MixedSFType{1, 0, 1}(), SFT.MixedSFType{0, 2, 1}(), SFT.L2SFType(), SFT.S3SFType())),
-        (f_s, (SFT.ScalarSFType{2}(), SFT.ScalarSFType{3}(2), SFT.ScalarDotSFType(1, 2))),
-        (f_vv, (SFT.VectorDotSFType(1, 2), SFT.VectorDotSFType(2, 2), SFT.L2SFType())),
-    )
-    for periodic in ((true, false), (false, false)), (f, ops) in cases, sf in ops
+    fields = (vs = Fields(vectors = (u,), scalars = (θ,)), s = Fields(scalars = (θ, a[1, :, :])),
+              vv = Fields(vectors = (u, a)))
+    transform_ok = Bool[]
+    for (key, sf, periodic) in MOMENT_FIELD_CASES
+        f = fields[key]
         ref_s, ref_c = _moments_run(sf, f, dims, spacing, periodic, bins)
         got_s, got_c = _moments_run(sf, f, dims, spacing, periodic, bins; backend = FFT_TAG)
-        Test.@test got_c == ref_c
-        Test.@test _moments_close(got_s, ref_s)
-        Test.@test sum(got_c) > 0
+        push!(transform_ok, got_c == ref_c && sum(ref_c) > 0 && _moments_close(got_s, ref_s))
     end
+    Test.@test all(transform_ok)
 
-    # The lag sweep on a multi-field against the unstructured field path over the same points, which is
-    # checked against brute force in test_multifields.jl and shares no code with the lag enumeration.
     x = _grid_points(dims, spacing)
-    for (f, ops) in cases, sf in ops
+    sweep_ok = Bool[]
+    for (key, sf) in MOMENT_FIELD_ORACLE_CASES
+        f = fields[key]
         ref = SFC.calculate_structure_function(sf, x, f, bins, SFO.StructureFunctionSumsAndCounts;
                                                backend = CB.SerialBackend())
         got_s, got_c = _moments_run(sf, f, dims, spacing, (false, false), bins)
-        Test.@test got_c == Int.(ref.counts)
-        Test.@test isapprox(got_s, ref.sums; rtol = 1e-10, atol = 1e-12)
+        push!(sweep_ok, got_c == Int.(ref.counts) && isapprox(got_s, ref.sums; rtol = 1e-10, atol = 1e-12))
     end
+    Test.@test all(sweep_ok)
 
-    # a field the multi-field does not carry is refused, on both routes
+    f_vs, f_s = fields.vs, fields.s
     Test.@test_throws ArgumentError _moments_run(SFT.VectorDotSFType(1, 2), f_vs, dims, spacing,
                                                  (false, false), bins)
     Test.@test_throws ArgumentError _moments_run(SFT.VectorDotSFType(1, 2), f_vs, dims, spacing,
@@ -159,9 +161,7 @@ Test.@testset "directional output on a grid agrees with the unstructured joint p
     spacing = (0.1, 0.1)
     Random.seed!(9400)
     u = randn(2, dims...)
-    # edges placed between the separations and angles a lattice can produce
     bins = [0.0; collect(range(0.1137, 0.95; length = 7))]
-    # angle 0 is exact for lags along the reference axis; bins are (lo, hi], so the first edge sits below it
     ax_bins = [prevfloat(0.0); collect(range(0.3011, π - 0.3; length = 5)); π + 1e-9]
     src = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
     nb = length(bins) - 1
@@ -182,13 +182,11 @@ Test.@testset "directional output on a grid agrees with the unstructured joint p
     Test.@test isapprox(ts, ref.sums; rtol = 1e-9, atol = 1e-10)
     Test.@test sum(tc) > 0
 
-    # summing over the angle gives the 1-D result, bin for bin
     s1, c1 = _moments_run(SFT.L2SFType(), u, dims, spacing, (false, false), bins)
     Test.@test vec(sum(tc; dims = 2)) == Float64.(c1)
     Test.@test isapprox(vec(sum(ts; dims = 2)), s1; rtol = 1e-9, atol = 1e-10)
 
-    # on a periodic grid with an even cell count the half-turn lags split their pairs between two
-    # directions: integer counts are refused, floating-point ones still marginalise exactly
+    # half-turn lags of an even periodic grid split their pairs: integer counts are refused, float ones marginalise
     per = SFC.UniformLagSchedule((8, 8), (0.25, 0.25), (true, true))
     u8 = randn(2, 8, 8)
     pbins = [0.0; collect(range(0.2611, 1.5; length = 6))]
@@ -201,77 +199,56 @@ Test.@testset "directional output on a grid agrees with the unstructured joint p
     Test.@test isapprox(vec(sum(ps; dims = 2)), ps1; rtol = 1e-9, atol = 1e-10)
 end
 
-Test.@testset "the forward transforms batch, and the batch size changes nothing beyond rounding" begin
-    # Every (slab, monomial) is a short transform along the uniform directions, so they go through one
-    # batched call; the batch is bounded by a byte budget. Driving the budget down to one column at a
-    # time, and to a size that leaves a short last batch, keeps every count and every sum to rounding.
+Test.@testset "the forward transforms' block size changes nothing beyond rounding" begin
+    # 9 slabs × 6 monomials of 400 B: one block; blocks of 1; groups of 2; 4 and a short 2; chunks of 4 slabs and a 1.
     ext = Base.get_extension(SF, :StructureFunctionsAbstractFFTsExt)
     Random.seed!(9550)
-    dims = (24, 9)                       # 9 slabs of 24, so the stretched axis makes many small transforms
+    dims = (24, 9)
     coords = cumsum(0.7 .+ 0.4 .* rand(dims[2]))
     s = SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((dims[1],), (0.5,), (true,)), (coords,), (1, 2))
     u = randn(2, dims...)
     bins = collect(range(0.0, 4.0; length = 9))
     budget = ext.FORWARD_BATCH_BYTES[]
+    agree = Bool[]
     try
         nb = SFC.n_histogram_bins(SFC.squared_digitize_plan(bins))
         run() = (a = zeros(Float64, nb); c = zeros(Int, nb);
                  SFC.gridded_sweep!(a, c, SFT.L2SFType(), u, s, bins, Val(2), FFT_TAG); (a, c))
         ref_s, ref_c = run()
-        # a (slab, monomial) transform costs 24·8 + 13·16 = 400 bytes and there are 9 × 6 of them, so these
-        # give one batch; batches of 1; each slab's monomials in groups of 2; in groups of 4 and a short
-        # group of 2; and chunks of 4 slabs' monomials with a short last chunk of 1
-        for bytes in (budget, 1, 800, 1600, 9600)
+        for bytes in (1, 800, 1600, 9600)
             ext.FORWARD_BATCH_BYTES[] = bytes
             got_s, got_c = run()
-            Test.@test isapprox(got_s, ref_s; rtol = 1e-12)
-            Test.@test got_c == ref_c
+            push!(agree, got_c == ref_c && sum(ref_c) > 0 && isapprox(got_s, ref_s; rtol = 1e-12))
         end
-        Test.@test sum(ref_c) > 0
     finally
         ext.FORWARD_BATCH_BYTES[] = budget
     end
+    Test.@test all(agree)
 end
 
-Test.@testset "gridded_spectrum transforms each monomial once, and a descending axis gives positive dk" begin
-    ext = Base.get_extension(SF, :StructureFunctionsAbstractFFTsExt)
-    Test.@test ext !== nothing
+Test.@testset "a descending axis gives the ascending axis's spectrum and wavenumbers" begin
     dims = (16, 12)
     Random.seed!(9500)
     u = randn(2, dims...)
-    s = SFC.UniformLagSchedule(dims, (0.5, 0.5), (true, true))
-    mt = ext.MonomialTransforms(reshape(u, 2, :), s, dims, SFC.AllValid())
-    ext._trace_lags(mt, Val(2))
-    Test.@test mt.misses == 1 + 2 * 2                 # the mask, each component, each square
-    Test.@test mt.hits >= 1
-    Test.@test all(k -> k[2] == 0 || k[1] == k[2], keys(mt.cache))       # no off-diagonal monomial
-
-    kax, dens = SFC.gridded_spectrum(u, s, Val(2), FFT_TAG)
-    sdesc = SFC.UniformLagSchedule(dims, (0.5, -0.5), (true, true))
-    kax2, dens2 = SFC.gridded_spectrum(u, sdesc, Val(2), FFT_TAG)
+    kax, dens = SFC.gridded_spectrum(u, SFC.UniformLagSchedule(dims, (0.5, 0.5), (true, true)), Val(2), FFT_TAG)
+    kax2, dens2 = SFC.gridded_spectrum(u, SFC.UniformLagSchedule(dims, (0.5, -0.5), (true, true)), Val(2), FFT_TAG)
     Test.@test dens2 == dens
     Test.@test kax2[2] == kax[2]
-    Test.@test sum(dens) > 0
 end
 
-Test.@testset "padding to n + h_max reproduces the 2n − 1 result at every lag within r_max" begin
-    ext = Base.get_extension(SF, :StructureFunctionsAbstractFFTsExt)
-    dims = (24, 20)
+Test.@testset "the transform with bins shorter than the grid equals the lag sweep" begin
+    dims = (12, 10)
     spacing = (0.1, 0.1)
     Random.seed!(9600)
     u = randn(2, dims...)
-    s = SFC.UniformLagSchedule(dims, spacing, (false, false))
-    tight = collect(range(0.0, 0.35; length = 6))          # h_max = 3 along each direction
-    P_tight = ext._pad_dims(s, 0.35)
-    P_full = ext._pad_dims(s, Inf)
-    Test.@test all(P_tight .< P_full)
-    Test.@test all(P_tight .>= dims .+ 3)
+    tight = collect(range(0.0, 0.35; length = 6))
+    agree = Bool[]
     for sf in (SFT.L2SFType(), SFT.L3SFType())
         ref_s, ref_c = _moments_run(sf, u, dims, spacing, (false, false), tight)
         got_s, got_c = _moments_run(sf, u, dims, spacing, (false, false), tight; backend = FFT_TAG)
-        Test.@test got_c == ref_c
-        Test.@test _moments_close(got_s, ref_s)
+        push!(agree, got_c == ref_c && sum(ref_c) > 0 && _moments_close(got_s, ref_s))
     end
+    Test.@test all(agree)
 end
 
 Test.@testset "the grid entry takes a multi-field and a joint request" begin

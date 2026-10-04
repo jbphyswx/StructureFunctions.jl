@@ -1,12 +1,3 @@
-"""
-    test_cuda_parity.jl
-
-CUDA device parity: compare `gpu_calculate_structure_function` on `CUDABackend`
-against the serial CPU reference.
-
-Included by `runtests.jl`; not run from the main `test/` suite.
-"""
-
 using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using CUDA: CUDA
@@ -35,7 +26,6 @@ Test.@testset "CUDA structure-function parity" begin
         sft, x_cpu, u_cpu, bin_edges, SFO.StructureFunctionSumsAndCounts,
     )
 
-    # The GPU 1D entry returns sums and counts unconditionally.
     res_cuda = SF.to_host(SFC.gpu_calculate_structure_function(
         sft, CUDA.CUDABackend(), x_gpu, u_gpu, bin_edges, UInt32; geometry = SFH.FlatGeometry{2}(),
     ))
@@ -43,10 +33,7 @@ Test.@testset "CUDA structure-function parity" begin
     Test.@test res_cuda.counts ≈ res_ref.counts atol = 0.0
 
     max_Δ = maximum(abs, res_cuda.sums .- res_ref.sums)
-    # Float32 GPU path uses atomic adds; order differs from serial CPU → small drift.
     Test.@test max_Δ < 0.05f0
-
-    println("CUDA linear parity OK  max |Δ sums| = ", max_Δ)
 end
 
 Test.@testset "CUDA log-spaced bin parity" begin
@@ -73,7 +60,6 @@ Test.@testset "CUDA log-spaced bin parity" begin
     Test.@test res_cuda.counts ≈ res_ref.counts atol = 0.0
     max_Δ = maximum(abs, res_cuda.sums .- res_ref.sums)
     Test.@test max_Δ < 0.05f0
-    println("CUDA log-bin parity OK  max |Δ sums| = ", max_Δ)
 end
 
 Test.@testset "CUDA joint 2D structure-function parity" begin
@@ -99,7 +85,6 @@ Test.@testset "CUDA joint 2D structure-function parity" begin
     Test.@test gpu.counts ≈ ref.counts atol = 0.0
     max_Δ = maximum(abs, gpu.sums .- ref.sums)
     Test.@test max_Δ < 0.05f0
-    println("CUDA joint 2D linear parity OK  max |Δ sums| = ", max_Δ)
 end
 
 Test.@testset "CUDA joint 2D log distance bins" begin
@@ -126,10 +111,9 @@ Test.@testset "CUDA joint 2D log distance bins" begin
     Test.@test gpu.counts ≈ ref.counts atol = 0.0
     max_Δ = maximum(abs, gpu.sums .- ref.sums)
     Test.@test max_Δ < 0.05f0
-    println("CUDA joint 2D log-distance parity OK  max |Δ sums| = ", max_Δ)
 end
 
-"""Wide synthetic value-bin edges (matches test/test_single_pass_2d.jl)."""
+"""Six columns of value-bin edges over `[-1, 2]`, each with an infinite edge at both ends."""
 function _cuda_synthetic_value_bins_ntuple(n_bins::Int, ::Type{FT}) where {FT}
     edges = collect(FT, range(-1.0, 2.0; length = n_bins + 1))
     template = vcat(FT(-Inf), edges, FT(Inf))
@@ -165,5 +149,4 @@ Test.@testset "CUDA single-pass 2D parity" begin
         max_Δ = max(max_Δ, maximum(abs, sp_gpu[k].sums .- sums_ref[t, :, :]))
     end
     Test.@test max_Δ < 0.1f0
-    println("CUDA single-pass 2D parity OK  max |Δ sums| = ", max_Δ)
 end

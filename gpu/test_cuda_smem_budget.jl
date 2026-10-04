@@ -1,11 +1,5 @@
-# Static shared memory of every tiled kernel family on CUDA, as `ptxas` reports it: each kernel a call
-# compiles is compared with the byte function its launcher decides by. Portable kernels are launched
-# through their launcher's portable half, at the widest configuration the byte function admits and one
-# past it; native kernels through the public entry, at the plan the native plan function returns. Every
-# call agrees with the serial answer.
 using CUDA: CUDA
 using Random: Random
-using Printf: Printf
 using Logging: Logging
 using Test: Test
 using StructureFunctions: StructureFunctions as SF
@@ -26,14 +20,6 @@ const RAW = SFO.StructureFunctionSumsAndCounts
 const N = 300
 const B = 3
 const F64 = Float64
-
-failures = String[]
-
-function check(name, ok::Bool)
-    ok || push!(failures, name)
-    Printf.@printf("%-86s %s\n", name, ok ? "ok" : "FAILED")
-    return ok
-end
 
 """The call's result and the static shared bytes `ptxas` reports for each kernel entry it compiled."""
 function compiled_smem(f)
@@ -76,17 +62,12 @@ parts(r::SFO.HelmholtzDecomposition2D) = Any[Array(r.rotational_sums), Array(r.r
                                              Array(r.divergent_sums), Array(r.divergent_counts)]
 parts(r) = Any[Array(r.sums), Array(r.counts)]
 
-"""Whether every array of `got` equals `ref`'s: exactly for integer counts, to `rtol` otherwise (an
-empty bin's `NaN` equals `NaN`). A value-binned histogram may have `moved` pairs in a neighbouring
-value bin, since the device and the host round a pair's value independently: each moves a count of at
-most `mass` and a sum of at most `mass * value`. `parts` alternates sums and counts. Prints the largest
-difference of each array that disagrees."""
+"""Whether each array of `got` equals `ref`'s, integers exactly, up to `moved` pairs changing value bin."""
 function agrees(got, ref; rtol = 1e-10, moved = 0, value = 0.0, mass = 1.0)
     g, r = parts(got), parts(ref)
     length(g) == length(r) || return false
-    ok = true
     for (k, (a, b)) in enumerate(zip(g, r))
-        size(a) == size(b) || (println("    array $k: size $(size(a)) against $(size(b))"); return false)
+        size(a) == size(b) || return false
         same = if moved == 0
             eltype(a) <: Integer ? a == b : isapprox(a, b; rtol, atol = rtol, nans = true)
         else
@@ -94,63 +75,57 @@ function agrees(got, ref; rtol = 1e-10, moved = 0, value = 0.0, mass = 1.0)
             d = abs.(Float64.(a) .- Float64.(b))
             sum(x -> isnan(x) ? 0.0 : x, d) <= rtol * sum(x -> isnan(x) ? 0.0 : abs(x), Float64.(b)) + 2 * moved * unit
         end
-        if !same
-            d = maximum(abs.(Float64.(a) .- Float64.(b)); init = 0.0)
-            Printf.@printf("    array %d of %d (%s): max |Δ| = %.3e, max |ref| = %.3e\n", k, length(g),
-                    eltype(a), d, maximum(abs.(Float64.(b)); init = 0.0))
-            ok = false
-        end
+        same || return false
     end
-    return ok
+    return true
 end
 
-"""A tiled row: its kernel compiled at `predicted` bytes (at most `slack` more than `ptxas` reports),
-within the budget, and the call agrees with serial."""
+"""A tiled case: `pattern` compiled at `predicted` bytes, at most `slack` over `ptxas`, within budget, as serial."""
 function tiled_row(name, pattern, predicted, run, ref_run; slack = 0, kw...)
-    got, smem = compiled_smem(run)
-    measured = entry_bytes(smem, pattern)
-    check("$name: $pattern compiled", measured !== nothing)
-    if measured !== nothing
-        check("$name: ptxas $measured B, predicted $predicted B",
-              measured <= predicted <= measured + slack && predicted <= BUDGET)
+    Test.@testset "$name" begin
+        got, smem = compiled_smem(run)
+        measured = entry_bytes(smem, pattern)
+        Test.@test measured !== nothing
+        measured === nothing || Test.@test measured <= predicted <= measured + slack
+        Test.@test predicted <= BUDGET
+        Test.@test agrees(got, ref_run(); kw...)
     end
-    check("$name: agrees with serial", agrees(got, ref_run(); kw...))
-    return nothing
 end
 
-"""A row one past the fit: the tiled kernel `pattern` is not compiled and the call agrees with serial."""
+"""A case one past the fit: the tiled kernel `pattern` is not compiled and the call agrees with serial."""
 function past_row(name, pattern, run, ref_run; kw...)
-    got, smem = compiled_smem(run)
-    check("$name: $pattern not compiled", entry_bytes(smem, pattern) === nothing)
-    check("$name: agrees with serial", agrees(got, ref_run(); kw...))
-    return nothing
+    Test.@testset "$name" begin
+        got, smem = compiled_smem(run)
+        Test.@test entry_bytes(smem, pattern) === nothing
+        Test.@test agrees(got, ref_run(); kw...)
+    end
 end
 
-"""A row past every staged fit: the wide kernel `pattern` is compiled with no shared memory, no tiled
-kernel is, and the call agrees with serial."""
+"""A case past every staged fit: the wide kernel `pattern` at 0 bytes, no tiled kernel, agreeing with serial."""
 function wide_row(name, pattern, run, ref_run; kw...)
-    got, smem = compiled_smem(run)
-    check("$name: $pattern compiled, 0 B", entry_bytes(smem, pattern) == 0)
-    check("$name: no tiled kernel compiled", !any(k -> occursin("tiled", k), keys(smem)))
-    check("$name: agrees with serial", agrees(got, ref_run(); kw...))
-    return nothing
+    Test.@testset "$name" begin
+        got, smem = compiled_smem(run)
+        Test.@test entry_bytes(smem, pattern) == 0
+        Test.@test !any(k -> occursin("tiled", k), keys(smem))
+        Test.@test agrees(got, ref_run(); kw...)
+    end
 end
 
 pts(::Type{FT}, D) where {FT} = rand(FT, D, N)
 weights(::Type{FT}) where {FT} = FT(0.5) .+ rand(FT, N)
 edges(::Type{FT}, hi, n) where {FT} = collect(range(FT(0), FT(hi); length = n + 1))
 geom(D) = SF.HelperFunctions.FlatGeometry{D}()
-# A value-binned row over value bins in [-1, 1] with pair weights below 1.5 each.
+# A value-binned case over value bins in [-1, 1] with pair weights below 1.5 each.
 const VALUE_BINNED = (; moved = 2, value = 1.0, mass = 2.25)
 widest_width(fits) = maximum(D for D in 2:64 if fits(D))
 
-"""`_sf_launch_1d_batch_portable!` on `x` `(D, N)` (shared positions) or `(D, N, B)` and `u`
-`(D, N, B)`, weighted: `(NMOM, NB, B)` device sums and counts of `F64`."""
+"""`(NMOM, NB, B)` device sums and counts of `_sf_launch_1d_batch_portable!`, weighted, `x` shared when a matrix."""
 function portable_1d(x, u, w, bins, NMOM)
     D, Np, Bu = size(u, 1), size(u, 2), size(u, 3)
     NB = length(bins) - 1
     out, cnt = CUDA.zeros(F64, NMOM, NB, Bu), CUDA.zeros(F64, NMOM, NB, Bu)
-    GE._sf_launch_1d_batch_portable!(BE, out, cnt, CUDA.CuArray(x), CUDA.CuArray(u), NMOM == 1 ? OP : SFT.SinglePassInvariants(),
+    GE._sf_launch_1d_batch_portable!(BE, out, cnt, CUDA.CuArray(x), CUDA.CuArray(u),
+        NMOM == 1 ? OP : SFT.SinglePassInvariants(),
         GE._gpu_digitizer(BE, bins, Val(NMOM == 1 ? :sf1d : :single_pass)), Np, NB, Bu,
         ndims(x) == 2, geom(D); weights = CUDA.CuArray(w))
     CUDA.synchronize()
@@ -162,7 +137,8 @@ function portable_2d_batch(x, u, w, bins, vb, NMOM)
     D, Np, Bu = size(u, 1), size(u, 2), size(u, 3)
     nd, nv = length(bins) - 1, length(vb) - 1
     out, cnt = CUDA.zeros(F64, NMOM, nd, nv, Bu), CUDA.zeros(F64, NMOM, nd, nv, Bu)
-    GE._sf_launch_2d_batch_portable!(BE, out, cnt, CUDA.CuArray(x), CUDA.CuArray(u), NMOM == 1 ? OP : SFT.SinglePassInvariants(),
+    GE._sf_launch_2d_batch_portable!(BE, out, cnt, CUDA.CuArray(x), CUDA.CuArray(u),
+        NMOM == 1 ? OP : SFT.SinglePassInvariants(),
         GE._gpu_digitizer(BE, bins, Val(NMOM == 1 ? :joint2d : :single_pass_2d)),
         GE._value_digitizer(nothing, BE, vb), Np, nd, nv, Bu, ndims(x) == 2, geom(D),
         SFC.InvariantValueAxis(); weights = CUDA.CuArray(w))
@@ -188,122 +164,7 @@ function serial_sp_batch(x, u, bins, w)
     return Raw(s, c)
 end
 
-println("device=", CUDA.name(CUDA.device()), "  static budget=", BUDGET, " B  warp=", CAPS.warp)
-Random.seed!(20260925)
-
-# --- 1-D, per-slice positions: sf_tiled_1d_varying! at the widest width it fits, then past it ---
-let bytes_v = (D, R) -> GE._sf_1d_varying_smem_bytes(F64, F64, F64, F64, D, D, 1, R)
-    Dstar = widest_width(D -> SFC.gpu_static_smem_fits(CAPS, bytes_v(D, 1)))
-    for D in (Dstar, Dstar + 1)
-        x, u, w, bins = pts(F64, D), pts(F64, D), weights(F64), edges(F64, sqrt(D), 16)
-        run = () -> Raw(map(vec, portable_1d(reshape(x, D, N, 1), reshape(u, D, N, 1), w, bins, 1))...)
-        ref = () -> SFC.calculate_structure_function(OP, x, u, bins, F64, RAW; backend = SER, weights = w)
-        if D == Dstar
-            R = GE._sf_fitting_width(r -> bytes_v(D, r), CAPS, 2)
-            tiled_row("1d varying D=$D R=$R", "sf_tiled_1d_varying", bytes_v(D, R), run, ref)
-        else
-            wide_row("1d varying D=$D", "sf_wide_1d", run, ref)
-        end
-    end
-end
-
-# --- 1-D, shared positions: sf_tiled_1d_fixed! at each strip width the ladder reaches, then past it ---
-let bytes_f = (D, W) -> GE._sf_1d_fixed_smem_bytes(F64, F64, F64, F64, D, D, 1, W)
-    D4 = widest_width(D -> SFC.gpu_static_smem_fits(CAPS, bytes_f(D, 4)))
-    D1 = widest_width(D -> SFC.gpu_static_smem_fits(CAPS, bytes_f(D, 1)))
-    for D in unique((D4, D4 + 1, D1, D1 + 1))
-        x, u, w, bins = pts(F64, D), rand(F64, D, N, B), weights(F64), edges(F64, sqrt(D), 16)
-        run = () -> Raw(map(a -> reshape(a, 16, B), portable_1d(x, u, w, bins, 1))...)
-        ref = () -> SFC.calculate_structure_function(OP, x, u, bins, F64, RAW; backend = SER, weights = w)
-        W = GE._sf_fitting_width(v -> bytes_f(D, v), CAPS, 4)
-        if W > 0
-            tiled_row("1d fixed batch D=$D W=$W", "sf_tiled_1d_fixed", bytes_f(D, W), run, ref)
-        else
-            wide_row("1d fixed batch D=$D", "sf_wide_1d", run, ref)
-        end
-    end
-    x, u, w, bins = pts(F64, 3), rand(F64, 3, N, B), weights(F64), edges(F64, 2, 16)
-    tiled_row("single pass fixed batch D=3", "sf_tiled_1d_fixed",
-        GE._sf_1d_fixed_smem_bytes(F64, F64, F64, F64, 3, 3, 6, 1),
-        () -> Raw(portable_1d(x, u, w, bins, 6)...), () -> serial_sp_batch(x, u, bins, w))
-end
-
-# --- single-pass 1-D tiled kernel ---
-for D in (2, 3)
-    x, u, w, bins = pts(F64, D), pts(F64, D), weights(F64), edges(F64, sqrt(D), 32)
-    run = () -> begin
-        out, cnt = CUDA.zeros(F64, SFC.SINGLE_PASS_N, 32), CUDA.zeros(F64, SFC.SINGLE_PASS_N, 32)
-        GE._launch_single_pass_portable!(BE, 64, out, cnt, CUDA.CuArray(x), CUDA.CuArray(u),
-            GE._gpu_digitizer(BE, bins, Val(:single_pass)), N, 33, geom(D); weights = CUDA.CuArray(w))
-        CUDA.synchronize()
-        Raw(out, cnt)
-    end
-    ref = () -> Raw(values(SFC._dispatch_single_pass(SER, SFC.PointField{D}(), x, u, bins, F64; weights = w,
-                                                     geometry = geom(D)))...)
-    tiled_row("single pass point D=$D", "_sf6_single_pass_kernel_tiled128", GE._sp1d_tiled_smem_bytes(F64, F64, D, D),
-              run, ref)
-end
-
-# --- joint 2-D point: the widest histogram joint2d_smem_max admits, one value bin past it ---
-let nd = 10, widest = SFC.joint2d_smem_max(BE, 2, 2, F64, F64, F64)
-    nv = widest ÷ nd
-    x, u, w, bins = pts(F64, 2), pts(F64, 2), weights(F64), edges(F64, 1.5, nd)
-    for n in (nv, nv + 1)
-        vb = collect(range(F64(-1), F64(1); length = n + 1))
-        run = () -> portable_joint(x, u, w, bins, vb)
-        ref = () -> SFC.calculate_structure_function(OP, x, u, bins, vb, F64; backend = SER, weights = w)
-        if n == nv
-            tiled_row("joint point $(nd)x$n (widest $widest)", "_sf2d_kernel_tiled128",
-                      GE._joint2d_tiled_smem_bytes(F64, F64, F64, 2, 2, nd * n), run, ref; VALUE_BINNED...)
-        else
-            past_row("joint point $(nd)x$n", "_sf2d_kernel_tiled128", run, ref; VALUE_BINNED...)
-        end
-    end
-    x32, u32, w32 = rand(Float32, 2, N), rand(Float32, 2, N), weights(Float32)
-    b100, v100 = edges(Float32, 1.5, 100), collect(range(-1.0f0, 1.0f0; length = 101))
-    past_row("joint point 100x100 Float32", "_sf2d_kernel_tiled128",
-        () -> portable_joint(x32, u32, w32, b100, v100),
-        () -> SFC.calculate_structure_function(OP, x32, u32, b100, v100, Float32; backend = SER, weights = w32);
-        rtol = 1e-4, VALUE_BINNED...)
-end
-
-# --- joint 2-D batch: the shared histogram at its widest, then the staged global-atomic kernels ---
-let nd = 10, bytes_s = nc -> GE._sf_2d_shared_smem_bytes(F64, F64, F64, F64, 2, 2, 1, nc)
-    nv = GE._smem_max_cells(bytes_s, BUDGET, 2 * sizeof(F64)) ÷ nd
-    xf, xv, u, w, bins = pts(F64, 2), rand(F64, 2, N, B), rand(F64, 2, N, B), weights(F64), edges(F64, 1.5, nd)
-    for n in (nv, nv + 1), (label, x) in (("fixed", xf), ("varying", xv))
-        vb = collect(range(F64(-1), F64(1); length = n + 1))
-        run = () -> Raw(map(a -> reshape(a, nd, n, B), portable_2d_batch(x, u, w, bins, vb, 1))...)
-        ref = () -> SFC.calculate_structure_function(OP, x, u, bins, vb, F64; backend = SER, weights = w)
-        if n == nv
-            tiled_row("joint $label batch $(nd)x$n", "sf_tiled_2d_shared", bytes_s(nd * n), run, ref; VALUE_BINNED...)
-        elseif label == "fixed"
-            W = GE._sf_tiled_2d_fixed_strip(CAPS, F64, F64, 2, 2)
-            tiled_row("joint fixed batch $(nd)x$n W=$W", "sf_tiled_2d_fixed",
-                      GE._sf_2d_fixed_smem_bytes(F64, F64, 2, 2, W), run, ref; VALUE_BINNED...)
-        else
-            tiled_row("joint varying batch $(nd)x$n", "sf_tiled_2d_varying",
-                      GE._sf_2d_varying_smem_bytes(F64, F64, 2, 2), run, ref; VALUE_BINNED...)
-        end
-    end
-    Dref = minimum(D for D in 2:64 if !SFC.gpu_static_smem_fits(CAPS, GE._sf_2d_varying_smem_bytes(F64, F64, D, D)))
-    xr, xrf, ur = rand(F64, Dref, N, B), pts(F64, Dref), rand(F64, Dref, N, B)
-    br, vr = edges(F64, sqrt(Dref), 8), collect(range(F64(-1), F64(1); length = 5))
-    check("joint varying batch D=$Dref: no native plan",
-          CE._cuda_2d_plan(CAPS, F64, F64, F64, F64, CUDA.CuArray(w), geom(Dref), OP, 8, 4) === nothing)
-    for (label, x) in (("varying", xr), ("fixed", xrf))
-        ref = () -> SFC.calculate_structure_function(OP, x, ur, br, vr, F64; backend = SER, weights = w)
-        wide_row("joint $label batch D=$Dref", "sf_wide_2d",
-                 () -> Raw(map(a -> reshape(a, 8, 4, B), portable_2d_batch(x, ur, w, br, vr, 1))...), ref;
-                 VALUE_BINNED...)
-        check("joint $label batch D=$Dref: public entry agrees with serial",
-              agrees(SFC.calculate_structure_function(OP, x, ur, br, vr, F64; backend = DEV, weights = w), ref();
-                     VALUE_BINNED...))
-    end
-end
-
-# --- single-pass 2-D, weighted: every accumulation mode, the shared → typeplane boundary, and a histogram
-# no on-chip mode holds, which takes the global-atomic kernel ---
+"""A weighted portable single-pass 2-D case on its accumulation strategy's kernel, or the global-atomic one."""
 function sp2d_row(nd, nv, D, w)
     cfg = GE._sp2d_accumulation_strategy(CAPS, nd, nv, D, D, F64, F64, F64)
     x, u, bins = pts(F64, D), pts(F64, D), edges(F64, sqrt(D), nd)
@@ -334,99 +195,224 @@ function sp2d_row(nd, nv, D, w)
     return nothing
 end
 
-let w = weights(F64)
-    mode_of = nv -> (cfg = GE._sp2d_accumulation_strategy(CAPS, 10, nv, 2, 2, F64, F64, F64);
-                     cfg === nothing ? nothing : cfg.accum_mode)
-    nv_shared = maximum(nv for nv in 2:200 if mode_of(nv) === :shared)
-    check("sp2d 10x$(nv_shared) is the widest shared histogram", mode_of(nv_shared + 1) !== :shared)
-    for (nd, nv, D) in ((10, nv_shared, 2), (10, nv_shared + 1, 2), (10, 8, 2), (30, 30, 2), (30, 30, 3), (60, 60, 2))
-        sp2d_row(nd, nv, D, w)
-    end
-end
-
-# --- 1-D shared-position batch, unweighted and two-wide: the field-strip kernel and its merges, through their
-# launcher (a device with a native plan takes the native kernel at the public entry) ---
-for (k, FTb) in enumerate((Float32, Float64))
-    SW = GE._batch_usmem_strip_w(CAPS, FTb)
-    Bs = 4SW + 1
-    x, u, bins = rand(FTb, 2, N), rand(FTb, 2, N, Bs), edges(FTb, 1.5, 32)
-    run = () -> begin
-        s, c = CUDA.zeros(FTb, 32, Bs), CUDA.zeros(UInt32, 32, Bs)
-        xd, ud = GE._stage_batch_device(BE, x, u; fixed_x = true)
-        GE._launch_batch_fixed_x_sf!(BE, s, c, xd, ud, OP, N, Bs, GE._gpu_digitizer(BE, bins, Val(:sf1d)), 32, geom(2))
-        Raw(s, c)
-    end
-    ref = () -> SFC.calculate_structure_function(OP, x, u, bins, UInt32, RAW; backend = SER)
-    got, smem = compiled_smem(run)
-    rows = [("_batch_fixed_x_usmem_priv", GE._batch_fixed_x_smem_bytes(FTb, SW)),
-            ("_batch_merge_usmem_sums_grouped", SFC.gpu_localmem_bytes(FTb, GE.SF_GPU_TILED_WS))]
-    k == 1 && push!(rows, ("_batch_merge_usmem_cnts_grouped", SFC.gpu_localmem_bytes(UInt32, GE.SF_GPU_TILED_WS)))
-    for (pattern, predicted) in rows
-        check("fixed batch $FTb SW=$SW: $pattern at $predicted B", entry_bytes(smem, pattern) == predicted)
-    end
-    check("fixed batch $FTb SW=$SW: agrees with serial", agrees(got, ref(); rtol = FTb == Float32 ? 1e-5 : 1e-10))
-end
-
-# --- native CUDA 1-D: the public point entry at the plan the native plan function returns ---
 plan_params(::CE.CUDA1DPlan{W, F, M, T, R, S, H, C, Q}) where {W, F, M, T, R, S, H, C, Q} =
     (; TILE = T, S, H, CST = C, Q, kernel = Q == 0 ? "_cuda_sf_1d_kernel" : "_cuda_sf_1d_queued_kernel")
 plan_params(::CE.CUDA2DPlan{W, F, M, T, C, NP}) where {W, F, M, T, C, NP} =
     (; TILE = T, CST = C, NP, kernel = "_cuda_sf_2d_kernel")
-plan_params(::CE.CUDA2DGlobalPlan{W, F, M, T}) where {W, F, M, T} = (; TILE = T, NP = 0, kernel = "_cuda_sf_2d_global_kernel")
+plan_params(::CE.CUDA2DGlobalPlan{W, F, M, T}) where {W, F, M, T} =
+    (; TILE = T, NP = 0, kernel = "_cuda_sf_2d_global_kernel")
 
-for (D, weighted) in ((2, false), (3, false), (3, true), (5, false), (6, false))
-    x, u, bins = pts(F64, D), pts(F64, D), edges(F64, sqrt(D), 64)
-    w = weighted ? weights(F64) : nothing
-    CT = weighted ? F64 : UInt32
-    kw = weighted ? (; weights = w) : (;)
-    run = () -> SFC.calculate_structure_function(OP, x, u, bins, CT, RAW; backend = DEV, kw...)
-    ref = () -> SFC.calculate_structure_function(OP, x, u, bins, CT, RAW; backend = SER, kw...)
-    choice = CE._cuda_1d_plan(CAPS, F64, F64, F64, CT, weighted ? CUDA.CuArray(w) : SFC.NoWeights(), geom(D), 64, OP)
-    tag = weighted ? " weighted" : ""
-    if choice === nothing
-        past_row("native 1d D=$D$tag, no plan", "_cuda_sf_1d_kernel", run, ref)
-    else
-        check("native 1d D=$D$tag: too small to sample or time", N * (N - 1) ÷ 2 < choice.choose_from)
+# (fit side of the joint batch, positions)
+const JOINT_BATCH_CASES = ((:fit, "fixed"), (:past, "fixed"), (:past, "varying"))
+# (distance bins, value bins, width): the widest shared histogram, one past it, and one no on-chip mode holds
+const SP2D_CASES = ((10, :widest_shared, 2), (10, :past_shared, 2), (60, 60, 2))
+# (width, weighted)
+const NATIVE_1D_CASES = ((2, false), (3, true))
+# (element type, width)
+const NATIVE_SP1D_CASES = ((Float32, 2), (F64, 3))
+# (element type, width, weighted)
+const NATIVE_2D_CASES = ((Float32, 2, false), (F64, 3, true))
+
+Test.@testset "static shared memory against ptxas" begin
+    Random.seed!(20260925)
+
+    # The portable 1-D kernel for per-slice positions at the widest width it fits, then past it.
+    Test.@testset "1-D varying" begin
+        bytes_v = (D, R) -> GE._sf_1d_varying_smem_bytes(F64, F64, F64, F64, D, D, 1, R)
+        Dstar = widest_width(D -> SFC.gpu_static_smem_fits(CAPS, bytes_v(D, 1)))
+        for D in (Dstar, Dstar + 1)
+            x, u, w, bins = pts(F64, D), pts(F64, D), weights(F64), edges(F64, sqrt(D), 16)
+            run = () -> Raw(map(vec, portable_1d(reshape(x, D, N, 1), reshape(u, D, N, 1), w, bins, 1))...)
+            ref = () -> SFC.calculate_structure_function(OP, x, u, bins, F64, RAW; backend = SER, weights = w)
+            if D == Dstar
+                R = GE._sf_fitting_width(r -> bytes_v(D, r), CAPS, 2)
+                tiled_row("1d varying D=$D R=$R", "sf_tiled_1d_varying", bytes_v(D, R), run, ref)
+            else
+                wide_row("1d varying D=$D", "sf_wide_1d", run, ref)
+            end
+        end
+    end
+
+    # The portable 1-D kernel for shared positions at each strip width the ladder reaches, then past it.
+    Test.@testset "1-D fixed" begin
+        bytes_f = (D, W) -> GE._sf_1d_fixed_smem_bytes(F64, F64, F64, F64, D, D, 1, W)
+        D4 = widest_width(D -> SFC.gpu_static_smem_fits(CAPS, bytes_f(D, 4)))
+        D1 = widest_width(D -> SFC.gpu_static_smem_fits(CAPS, bytes_f(D, 1)))
+        for D in unique((D4, D4 + 1, D1, D1 + 1))
+            x, u, w, bins = pts(F64, D), rand(F64, D, N, B), weights(F64), edges(F64, sqrt(D), 16)
+            run = () -> Raw(map(a -> reshape(a, 16, B), portable_1d(x, u, w, bins, 1))...)
+            ref = () -> SFC.calculate_structure_function(OP, x, u, bins, F64, RAW; backend = SER, weights = w)
+            W = GE._sf_fitting_width(v -> bytes_f(D, v), CAPS, 4)
+            if W > 0
+                tiled_row("1d fixed batch D=$D W=$W", "sf_tiled_1d_fixed", bytes_f(D, W), run, ref)
+            else
+                wide_row("1d fixed batch D=$D", "sf_wide_1d", run, ref)
+            end
+        end
+        x, u, w, bins = pts(F64, 3), rand(F64, 3, N, B), weights(F64), edges(F64, 2, 16)
+        tiled_row("single pass fixed batch D=3", "sf_tiled_1d_fixed",
+            GE._sf_1d_fixed_smem_bytes(F64, F64, F64, F64, 3, 3, 6, 1),
+            () -> Raw(portable_1d(x, u, w, bins, 6)...), () -> serial_sp_batch(x, u, bins, w))
+    end
+
+    # The portable single-pass 1-D tiled kernel.
+    Test.@testset "single-pass 1-D" begin
+        D = 3
+        x, u, w, bins = pts(F64, D), pts(F64, D), weights(F64), edges(F64, sqrt(D), 32)
+        run = () -> begin
+            out, cnt = CUDA.zeros(F64, SFC.SINGLE_PASS_N, 32), CUDA.zeros(F64, SFC.SINGLE_PASS_N, 32)
+            GE._launch_single_pass_portable!(BE, 64, out, cnt, CUDA.CuArray(x), CUDA.CuArray(u),
+                GE._gpu_digitizer(BE, bins, Val(:single_pass)), N, 33, geom(D); weights = CUDA.CuArray(w))
+            CUDA.synchronize()
+            Raw(out, cnt)
+        end
+        ref = () -> Raw(values(SFC._dispatch_single_pass(SER, SFC.PointField{D}(), x, u, bins, F64; weights = w,
+                                                         geometry = geom(D)))...)
+        tiled_row("single pass point D=$D", "_sf6_single_pass_kernel_tiled128",
+                  GE._sp1d_tiled_smem_bytes(F64, F64, D, D), run, ref)
+    end
+
+    # The portable joint 2-D point kernel at the widest histogram `joint2d_smem_max` admits, then one value bin past it.
+    Test.@testset "joint 2-D point" begin
+        nd, widest = 10, SFC.joint2d_smem_max(BE, 2, 2, F64, F64, F64)
+        nv = widest ÷ nd
+        x, u, w, bins = pts(F64, 2), pts(F64, 2), weights(F64), edges(F64, 1.5, nd)
+        for n in (nv, nv + 1)
+            vb = collect(range(F64(-1), F64(1); length = n + 1))
+            run = () -> portable_joint(x, u, w, bins, vb)
+            ref = () -> SFC.calculate_structure_function(OP, x, u, bins, vb, F64; backend = SER, weights = w)
+            if n == nv
+                tiled_row("joint point $(nd)x$n (widest $widest)", "_sf2d_kernel_tiled128",
+                          GE._joint2d_tiled_smem_bytes(F64, F64, F64, 2, 2, nd * n), run, ref; VALUE_BINNED...)
+            else
+                past_row("joint point $(nd)x$n", "_sf2d_kernel_tiled128", run, ref; VALUE_BINNED...)
+            end
+        end
+    end
+
+    # The portable joint 2-D batch kernels: shared histogram at its widest, staged global atomics past it, then wide.
+    Test.@testset "joint 2-D batch" begin
+        nd = 10
+        bytes_s = nc -> GE._sf_2d_shared_smem_bytes(F64, F64, F64, F64, 2, 2, 1, nc)
+        nv = GE._smem_max_cells(bytes_s, BUDGET, 2 * sizeof(F64)) ÷ nd
+        xf, xv, u, w, bins = pts(F64, 2), rand(F64, 2, N, B), rand(F64, 2, N, B), weights(F64), edges(F64, 1.5, nd)
+        for (side, label) in JOINT_BATCH_CASES
+            n = side === :fit ? nv : nv + 1
+            x = label == "fixed" ? xf : xv
+            vb = collect(range(F64(-1), F64(1); length = n + 1))
+            run = () -> Raw(map(a -> reshape(a, nd, n, B), portable_2d_batch(x, u, w, bins, vb, 1))...)
+            ref = () -> SFC.calculate_structure_function(OP, x, u, bins, vb, F64; backend = SER, weights = w)
+            if side === :fit
+                tiled_row("joint $label batch $(nd)x$n", "sf_tiled_2d_shared", bytes_s(nd * n), run, ref;
+                          VALUE_BINNED...)
+            elseif label == "fixed"
+                W = GE._sf_tiled_2d_fixed_strip(CAPS, F64, F64, 2, 2)
+                tiled_row("joint fixed batch $(nd)x$n W=$W", "sf_tiled_2d_fixed",
+                          GE._sf_2d_fixed_smem_bytes(F64, F64, 2, 2, W), run, ref; VALUE_BINNED...)
+            else
+                tiled_row("joint varying batch $(nd)x$n", "sf_tiled_2d_varying",
+                          GE._sf_2d_varying_smem_bytes(F64, F64, 2, 2), run, ref; VALUE_BINNED...)
+            end
+        end
+        Dref = minimum(D for D in 2:64 if !SFC.gpu_static_smem_fits(CAPS, GE._sf_2d_varying_smem_bytes(F64, F64, D, D)))
+        xr, ur = rand(F64, Dref, N, B), rand(F64, Dref, N, B)
+        br, vr = edges(F64, sqrt(Dref), 8), collect(range(F64(-1), F64(1); length = 5))
+        Test.@test CE._cuda_2d_plan(CAPS, F64, F64, F64, F64, CUDA.CuArray(w), geom(Dref), OP, 8, 4) === nothing
+        ref = () -> SFC.calculate_structure_function(OP, xr, ur, br, vr, F64; backend = SER, weights = w)
+        wide_row("joint varying batch D=$Dref", "sf_wide_2d",
+                 () -> Raw(map(a -> reshape(a, 8, 4, B), portable_2d_batch(xr, ur, w, br, vr, 1))...), ref;
+                 VALUE_BINNED...)
+        Test.@test agrees(SFC.calculate_structure_function(OP, xr, ur, br, vr, F64; backend = DEV, weights = w), ref();
+                          VALUE_BINNED...)
+    end
+
+    # The weighted portable single-pass 2-D kernels across the shared, type-plane and global-atomic modes.
+    Test.@testset "single-pass 2-D" begin
+        w = weights(F64)
+        mode_of = nv -> (cfg = GE._sp2d_accumulation_strategy(CAPS, 10, nv, 2, 2, F64, F64, F64);
+                         cfg === nothing ? nothing : cfg.accum_mode)
+        nv_shared = maximum(nv for nv in 2:200 if mode_of(nv) === :shared)
+        Test.@test mode_of(nv_shared + 1) !== :shared
+        for (nd, nv, D) in SP2D_CASES
+            n = nv === :widest_shared ? nv_shared : nv === :past_shared ? nv_shared + 1 : nv
+            sp2d_row(nd, n, D, w)
+        end
+    end
+
+    # The fixed-position field-strip batch kernel and its merges, through their launcher.
+    Test.@testset "1-D shared-position strip batch $FTb" for (k, FTb) in enumerate((Float32, Float64))
+        SW = GE._batch_usmem_strip_w(CAPS, FTb)
+        Bs = 4SW + 1
+        x, u, bins = rand(FTb, 2, N), rand(FTb, 2, N, Bs), edges(FTb, 1.5, 32)
+        run = () -> begin
+            s, c = CUDA.zeros(FTb, 32, Bs), CUDA.zeros(UInt32, 32, Bs)
+            xd, ud = GE._stage_batch_device(BE, x, u; fixed_x = true)
+            GE._launch_batch_fixed_x_sf!(BE, s, c, xd, ud, OP, N, Bs, GE._gpu_digitizer(BE, bins, Val(:sf1d)), 32,
+                                         geom(2))
+            Raw(s, c)
+        end
+        ref = () -> SFC.calculate_structure_function(OP, x, u, bins, UInt32, RAW; backend = SER)
+        got, smem = compiled_smem(run)
+        rows = [("_batch_fixed_x_usmem_priv", GE._batch_fixed_x_smem_bytes(FTb, SW)),
+                ("_batch_merge_usmem_sums_grouped", SFC.gpu_localmem_bytes(FTb, GE.SF_GPU_TILED_WS))]
+        k == 1 && push!(rows, ("_batch_merge_usmem_cnts_grouped", SFC.gpu_localmem_bytes(UInt32, GE.SF_GPU_TILED_WS)))
+        for (pattern, predicted) in rows
+            Test.@test (pattern, entry_bytes(smem, pattern)) == (pattern, predicted)
+        end
+        Test.@test agrees(got, ref(); rtol = FTb == Float32 ? 1e-5 : 1e-10)
+    end
+
+    # The native 1-D kernel through the public point entry at the plan the native plan function returns.
+    Test.@testset "native 1-D D=$D weighted=$weighted" for (D, weighted) in NATIVE_1D_CASES
+        x, u, bins = pts(F64, D), pts(F64, D), edges(F64, sqrt(D), 64)
+        w = weighted ? weights(F64) : nothing
+        CT = weighted ? F64 : UInt32
+        kw = weighted ? (; weights = w) : (;)
+        run = () -> SFC.calculate_structure_function(OP, x, u, bins, CT, RAW; backend = DEV, kw...)
+        ref = () -> SFC.calculate_structure_function(OP, x, u, bins, CT, RAW; backend = SER, kw...)
+        choice = CE._cuda_1d_plan(CAPS, F64, F64, F64, CT, weighted ? CUDA.CuArray(w) : SFC.NoWeights(), geom(D), 64,
+                                  OP)
+        if choice === nothing
+            past_row("no plan", "_cuda_sf_1d_kernel", run, ref)
+        else
+            Test.@test N * (N - 1) ÷ 2 < choice.choose_from
+            p = plan_params(first(choice.candidates(N, 1, false, N * (N - 1) ÷ 2, 1.0)))
+            tiled_row("TILE=$(p.TILE) S=$(p.S) Q=$(p.Q)", p.kernel,
+                CE._cuda_1d_smem_bytes(F64, F64, F64, p.CST, D, D, 1, p.TILE, p.S, p.H, p.Q), run, ref)
+        end
+    end
+
+    # The native 1-D kernel of six moments: a call too small to estimate takes its group's unestimated plan.
+    Test.@testset "native 1-D single pass $FT D=$D" for (FT, D) in NATIVE_SP1D_CASES
+        x, u, bins = pts(FT, D), pts(FT, D), edges(FT, sqrt(D), 64)
+        run = () -> SFC.calculate_structure_functions_single_pass(x, u, bins, UInt32, RAW; backend = DEV)
+        ref = () -> SFC.calculate_structure_functions_single_pass(x, u, bins, UInt32, RAW; backend = SER)
+        choice = CE._cuda_1d_plan(CAPS, FT, FT, FT, UInt32, SFC.NoWeights(), geom(D), 64, SFT.SinglePassInvariants())
+        Test.@test N * (N - 1) ÷ 2 < choice.choose_from
         p = plan_params(first(choice.candidates(N, 1, false, N * (N - 1) ÷ 2, 1.0)))
-        tiled_row("native 1d D=$D$tag TILE=$(p.TILE) S=$(p.S) Q=$(p.Q)", p.kernel,
-            CE._cuda_1d_smem_bytes(F64, F64, F64, p.CST, D, D, 1, p.TILE, p.S, p.H, p.Q), run, ref)
+        tiled_row("TILE=$(p.TILE) S=$(p.S) Q=$(p.Q)", p.kernel,
+            CE._cuda_1d_smem_bytes(FT, FT, FT, p.CST, D, D, 6, p.TILE, p.S, p.H, p.Q), run, ref;
+            rtol = FT == Float32 ? 1e-5 : 1e-10)
+    end
+
+    # The native 2-D kernel: a call too small to estimate takes its group's unestimated plan, staged at its tile.
+    Test.@testset "native joint $FT D=$D weighted=$weighted" for (FT, D, weighted) in NATIVE_2D_CASES
+        x, u, bins = rand(FT, D, N), rand(FT, D, N), edges(FT, sqrt(D), 16)
+        vb = collect(range(FT(-1), FT(1); length = 11))
+        w = weighted ? weights(FT) : nothing
+        CT = weighted ? FT : UInt32
+        kw = weighted ? (; weights = w) : (;)
+        run = () -> SFC.calculate_structure_function(OP, x, u, bins, vb, CT; backend = DEV, kw...)
+        ref = () -> SFC.calculate_structure_function(OP, x, u, bins, vb, CT; backend = SER, kw...)
+        plan = CE._cuda_2d_plan(CAPS, FT, FT, FT, CT, weighted ? CUDA.CuArray(w) : SFC.NoWeights(), geom(D), OP, 16, 10)
+        tol = FT == Float32 ? (; rtol = 1e-5, moved = 2, value = 1.0) : VALUE_BINNED
+        if plan === nothing
+            past_row("no plan", "_cuda_sf_2d_kernel", run, ref; tol...)
+        else
+            Test.@test N * (N - 1) ÷ 2 < plan.choose_from
+            p = plan_params(first(plan.candidates(N, 1, false, N * (N - 1) ÷ 2, 1.0)))
+            tiled_row("TILE=$(p.TILE) NP=$(p.NP)", p.kernel, 4 * SFC.gpu_localmem_bytes(FT, D * p.TILE), run, ref;
+                      tol...)
+        end
     end
 end
-
-# --- native CUDA 1-D, six moments: a call too small to estimate takes its group's unestimated plan ---
-for (FT, D) in ((Float32, 2), (F64, 2), (F64, 3))
-    x, u, bins = pts(FT, D), pts(FT, D), edges(FT, sqrt(D), 64)
-    run = () -> SFC.calculate_structure_functions_single_pass(x, u, bins, UInt32, RAW; backend = DEV)
-    ref = () -> SFC.calculate_structure_functions_single_pass(x, u, bins, UInt32, RAW; backend = SER)
-    choice = CE._cuda_1d_plan(CAPS, FT, FT, FT, UInt32, SFC.NoWeights(), geom(D), 64, SFT.SinglePassInvariants())
-    check("native 1d single pass $FT D=$D: too small to sample or time", N * (N - 1) ÷ 2 < choice.choose_from)
-    p = plan_params(first(choice.candidates(N, 1, false, N * (N - 1) ÷ 2, 1.0)))
-    tiled_row("native 1d single pass $FT D=$D TILE=$(p.TILE) S=$(p.S) Q=$(p.Q)", p.kernel,
-        CE._cuda_1d_smem_bytes(FT, FT, FT, p.CST, D, D, 6, p.TILE, p.S, p.H, p.Q), run, ref;
-        rtol = FT == Float32 ? 1e-5 : 1e-10)
-end
-
-# --- native CUDA 2-D: a call too small to estimate takes its group's unestimated plan, staged at its tile ---
-for (FT, D, weighted) in ((Float32, 2, false), (F64, 3, true), (F64, 6, false), (F64, 7, false))
-    x, u, bins = rand(FT, D, N), rand(FT, D, N), edges(FT, sqrt(D), 16)
-    vb = collect(range(FT(-1), FT(1); length = 11))
-    w = weighted ? weights(FT) : nothing
-    CT = weighted ? FT : UInt32
-    kw = weighted ? (; weights = w) : (;)
-    run = () -> SFC.calculate_structure_function(OP, x, u, bins, vb, CT; backend = DEV, kw...)
-    ref = () -> SFC.calculate_structure_function(OP, x, u, bins, vb, CT; backend = SER, kw...)
-    plan = CE._cuda_2d_plan(CAPS, FT, FT, FT, CT, weighted ? CUDA.CuArray(w) : SFC.NoWeights(), geom(D), OP, 16, 10)
-    tag = "$FT D=$D$(weighted ? " weighted" : "")"
-    tol = FT == Float32 ? (; rtol = 1e-5, moved = 2, value = 1.0) : VALUE_BINNED
-    if plan === nothing
-        past_row("native joint $tag, no plan", "_cuda_sf_2d_kernel", run, ref; tol...)
-    else
-        check("native joint $tag: too small to sample or time", N * (N - 1) ÷ 2 < plan.choose_from)
-        p = plan_params(first(plan.candidates(N, 1, false, N * (N - 1) ÷ 2, 1.0)))
-        tiled_row("native joint $tag TILE=$(p.TILE) NP=$(p.NP)", p.kernel,
-            4 * SFC.gpu_localmem_bytes(FT, D * p.TILE), run, ref; tol...)
-    end
-end
-
-isempty(failures) || error("shared-memory budget: $(length(failures)) rows failed:\n  " * join(failures, "\n  "))
-println("SMEM_BUDGET_OK")

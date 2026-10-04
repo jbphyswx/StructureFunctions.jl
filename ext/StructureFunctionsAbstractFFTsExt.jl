@@ -262,20 +262,24 @@ SFC._release_plan!(p::AbstractFFTs.ScaledPlan) = SFC._release_plan!(p.p)
 SFC._release_plan!(p::AbstractFFTs.Plan) = finalize(p)
 
 """
-    _lent_forward(workspace, lent)
+    _lent_forward(workspace)
 
 The `forward` source of an executor sweeping one slice at a time: one slice's spectra borrowed from `workspace`'s
-pool, recorded in `lent[]` for [`_return_forward!`](@ref).
+pool, which [`_return_forward!`](@ref) takes back.
 """
-_lent_forward(workspace, lent::Base.RefValue) = (dp, FT, lay) -> begin
-    sizes = (:forward, _array_family(dp), FT, lay.blk, lay.nchunks, lay.ngroups)
-    set = SFC._borrow!(workspace, sizes, () -> _kept_forward(nothing, 1, 1)(dp, FT, lay))
-    lent[] = sizes => set
-    set
+_lent_forward(workspace) = (dp, FT, lay) -> begin
+    whole = SFC._borrow!(workspace, _forward_sizes(FT, lay),
+                         () -> similar(parent(dp), Complex{FT}, lay.blk, lay.nchunks, lay.ngroups, 1))
+    (view(whole, :, :, :, 1), whole)
 end
 
-_return_forward!(workspace, lent::Base.RefValue) =
-    lent[] === nothing || SFC._give_back!(workspace, first(lent[]), last(lent[]))
+"""The pool key of one slice's forward spectra of element type `Complex{FT}` in layout `lay`."""
+_forward_sizes(FT, lay) = (:forward, FT, lay.blk, lay.nchunks, lay.ngroups)
+
+"""Give one slice's forward spectra `whole`, of layout `lay`, back to `workspace`'s pool; a non-uniform FFT has none."""
+_return_forward!(workspace, whole::AbstractArray, lay) =
+    SFC._give_back!(workspace, _forward_sizes(real(eltype(whole)), lay), whole)
+_return_forward!(workspace, ::Nothing, ::Nothing) = nothing
 
 """Bytes each block of forward spectra starts on: the widest alignment an FFT library plans a transform for."""
 const SPECTRA_ALIGNMENT = 64
@@ -837,13 +841,9 @@ end
 
 function _slice_sweep!(sums, counts, sf, data, s, dist_be, plan, nb, vD, vV, vK, valid, weights, tag, axis,
                        workspace, backend)
-    lent = Ref{Any}(nothing)
-    try
-        _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, vD, vV, vK, valid,
-                          weights, tag, axis, workspace; forward = _lent_forward(workspace, lent))
-    finally
-        _return_forward!(workspace, lent)
-    end
+    eng = _transform_sweep!(sums, counts, backend, sf, data, s, dist_be, plan, nb, vD, vV, vK, valid, weights, tag,
+                            axis, workspace; forward = _lent_forward(workspace))
+    _return_forward!(workspace, eng.spectra, eng.layout)
     return nothing
 end
 
@@ -1137,7 +1137,7 @@ function _transform_tensor_lags!(
 end
 
 # The CPU engine: one inverse per slab pair, the lags of each read on the host. `forward` is where the field's
-# spectra go (see `_transform_prepare`).
+# spectra go (see `_transform_prepare`); returns the engine.
 function _transform_sweep!(
     sums, counts, backend::CB.AbstractExecutionBackend, sf, data, s, dist_be, plan, nb, ::Val{D}, ::Val{V},
     ::Val{K}, valid, weights, tag, axis, workspace; forward = _kept_forward(workspace, 1, 1),
@@ -1151,7 +1151,7 @@ function _transform_sweep!(
     finally
         done()
     end
-    return nothing
+    return eng
 end
 
 function _transform_pairs!(sums, counts, backend, sf, eng, plan, nb, axis, make_scratch, workspace, ::Val{D},

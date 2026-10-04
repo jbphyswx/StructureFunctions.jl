@@ -93,7 +93,8 @@ Each is a `gpu/` script with a `run_*.sh` wrapper where one exists.
 
 - `gpu/test_cuda_2d_parity.jl` — 2D kernel parity, CUDA against `KernelAbstractions.CPU()`.
 - `gpu/test_cuda_1d_parity.jl` — 1D kernel parity.
-- `gpu/test_e2e_2d_cuda.jl`, `gpu/test_slices_e2e.jl` — public-API parity against the serial CPU.
+- `gpu/test_cuda_batch_contract.jl`, `gpu/test_cuda_widths.jl`, `gpu/test_cuda_pair_weights.jl` — public-API parity
+  against the serial CPU.
 
 ## 7. References
 

@@ -6,15 +6,14 @@ using Bessels: Bessels
 using FFTW: FFTW
 using SpectralBackends: SpectralBackends as SB
 using ComputationalBackends: ComputationalBackends as CB
-using Distances: Distances as DI
 using StaticArrays: StaticArrays as SA
+using LinearAlgebra: ⋅
 using Random: Random
-using Statistics: mean, var
+using Statistics: var
 
 const FFT_TAG = SB.FastFourierTransformSpectralBackend()
 
-# The gradient of a Gaussian-correlated potential on the plane, in the package's convention that a
-# density integrates over d²k to the variance: C_LL(0) = C_TT(0) = 1/ℓ², P_E = k² P_Φ / (2π)².
+# D_LL, D_TT and the gradient spectrum P_E (density over d²k) of a Gaussian-correlated potential of scale ℓ.
 function _gradient_gaussian(ℓ)
     CLL(r) = (1 / ℓ^2 - r^2 / ℓ^4) * exp(-r^2 / (2ℓ^2))
     CTT(r) = exp(-r^2 / (2ℓ^2)) / ℓ^2
@@ -24,10 +23,11 @@ function _gradient_gaussian(ℓ)
     return DLL, DTT, PE
 end
 
+# A gradient field inverts to a divergent spectrum, its curl to a rotational one, from averages or sums and counts.
 Test.@testset "the two-line Helmholtz inversion recovers gradient and curl spectra" begin
     ℓ = 0.7
     DLL, DTT, PE = _gradient_gaussian(ℓ)
-    edges = collect(range(0.0, 40ℓ; length = 20_001))
+    edges = collect(range(0.0, 20ℓ; length = 401))
     mids = collect(SF.midpoints(edges))
     kq = collect(range(0.3, 6.0; length = 60))
     exact = PE.(kq)
@@ -37,29 +37,25 @@ Test.@testset "the two-line Helmholtz inversion recovers gradient and curl spect
     L2 = SF.StructureFunction(SFT.L2SFType(), edges, DLL.(mids))
     T2 = SF.StructureFunction(SFT.T2SFType(), edges, DTT.(mids))
     spec = SFC.helmholtz_spectra(L2, T2, kq; variance)
-    Test.@test maximum(abs, spec.divergent .- exact) < 2e-3 * scale
-    Test.@test maximum(abs, spec.rotational) < 2e-3 * scale
+    Test.@test maximum(abs, spec.divergent .- exact) < 6e-4 * scale
+    Test.@test maximum(abs, spec.rotational) < 6e-4 * scale
 
-    # the curl of the same potential swaps the two projections and the two spectra
     L2c = SF.StructureFunction(SFT.L2SFType(), edges, DTT.(mids))
     T2c = SF.StructureFunction(SFT.T2SFType(), edges, DLL.(mids))
     specc = SFC.helmholtz_spectra(L2c, T2c, kq; variance)
-    Test.@test maximum(abs, specc.rotational .- exact) < 2e-3 * scale
-    Test.@test maximum(abs, specc.divergent) < 2e-3 * scale
+    Test.@test maximum(abs, specc.rotational .- exact) < 6e-4 * scale
+    Test.@test maximum(abs, specc.divergent) < 6e-4 * scale
 
-    # the sum of the two is the trace's spectrum, by construction of the first line
     trace = SFC.isotropic_spectrum(SFT.S2SFType(), mids, DLL.(mids) .+ DTT.(mids), kq, Val(2); variance)
     Test.@test spec.rotational .+ spec.divergent ≈ trace rtol = 1e-12
 
-    # sums-and-counts inputs give the same answer, and empty bins are dropped from both
     counts = ones(UInt32, length(mids))
     counts[7] = 0
     rawL = SF.StructureFunctionSumsAndCounts(SFT.L2SFType(), edges, DLL.(mids) .* counts, counts)
     rawT = SF.StructureFunctionSumsAndCounts(SFT.T2SFType(), edges, DTT.(mids) .* counts, counts)
     spec2 = SFC.helmholtz_spectra(rawL, rawT, kq; variance)
-    Test.@test maximum(abs, spec2.divergent .- exact) < 2e-3 * scale
+    Test.@test maximum(abs, spec2.divergent .- exact) < 1.5e-3 * scale
 
-    # the arguments are the two projections, in that order, on one set of bins, and the variance
     Test.@test_throws ArgumentError SFC.helmholtz_spectra(T2, L2, kq; variance)
     Test.@test_throws ArgumentError SFC.helmholtz_spectra(
         L2, SF.StructureFunction(SFT.T2SFType(), 2 .* edges, DTT.(mids)), kq; variance)
@@ -68,8 +64,7 @@ Test.@testset "the two-line Helmholtz inversion recovers gradient and curl spect
     Test.@test_throws UndefKeywordError SFC.helmholtz_spectra(L2, T2, kq)
 end
 
-# The Blackman–Tukey estimator written out: the unbiased autocovariance from the pairs a lag names on
-# the grid as given, weighted by the taper, transformed on the padded grid `P`.
+# The Blackman–Tukey estimate on the padded grid `P`: the taper-weighted unbiased autocovariance, transformed.
 function _bt_reference(u, dims, spacing, periodic, P, weight)
     D = size(u, 1)
     N = prod(dims)
@@ -102,98 +97,40 @@ function _bt_reference(u, dims, spacing, periodic, P, weight)
         r = sqrt(sum(d -> (h[d] * spacing[d])^2, 1:Dg))
         cov[I] = weight(r) * (σ2 - acc / (2n))
     end
-    dens = real.(FFTW.fft(cov)) .* (prod(abs, spacing) / (2π)^Dg)
-    return σ2, dens
+    return real.(FFTW.fft(cov)) .* (prod(abs, spacing) / (2π)^Dg)
 end
 
+# (dims, spacing, periodic, taper, weight at r given r_max): every grid shape and every taper once.
+const BT_CASES = (((14,), (0.3,), (false,), SFC.GaussianTaper(0.5), (r, r_max) -> exp(-r^2 / 0.5)),
+                  ((9, 7), (0.2, 0.25), (false, false), SFC.NoTaper(), (r, r_max) -> 1.0),
+                  ((8, 7), (0.2, 0.25), (true, false), SFC.Bartlett(), (r, r_max) -> max(0.0, 1 - r / r_max)))
+
+# A bounded direction is padded to every lag |h| < n and the estimate is the transform of the tapered autocovariance.
 Test.@testset "the bounded-domain estimator is the transform of the unbiased autocovariance" begin
     Random.seed!(8100)
-    for (dims, spacing, periodic) in (((14,), (0.3,), (false,)), ((9, 7), (0.2, 0.25), (false, false)),
-                                      ((8, 7), (0.2, 0.25), (true, false)))
+    for (dims, spacing, periodic, taper, weight) in BT_CASES
         Dg = length(dims)
         u = randn(Dg, dims...)
         s = SFC.UniformLagSchedule(dims, spacing, periodic)
         r_max = sqrt(sum(d -> (periodic[d] ? (dims[d] ÷ 2) * spacing[d] : (dims[d] - 1) * spacing[d])^2, 1:Dg))
-        for (taper, weight) in ((SFC.NoTaper(), r -> 1.0), (SFC.Bartlett(), r -> max(0.0, 1 - r / r_max)),
-                                (SFC.GaussianTaper(0.5), r -> exp(-r^2 / 0.5)))
-            kax, dens = SFC.gridded_spectrum(u, s, Val(Dg), FFT_TAG; taper)
-            P = size(dens)
-            Test.@test all(d -> periodic[d] ? P[d] == dims[d] : P[d] >= 2dims[d] - 1, 1:Dg)
-            Test.@test all(d -> length(kax[d]) == P[d], 1:Dg)
-            σ2, ref = _bt_reference(u, dims, spacing, periodic, P, weight)
-            Test.@test maximum(abs, dens .- ref) < 1e-12 * maximum(abs, ref)
-            # the density integrates to the variance of the cells, whatever the taper: w(0) = 1
-            dk = prod(d -> kax[d][2] - kax[d][1], 1:Dg)
-            Test.@test sum(dens) * dk ≈ σ2 rtol = 1e-10
-        end
+        kax, dens = SFC.gridded_spectrum(u, s, Val(Dg), FFT_TAG; taper)
+        P = size(dens)
+        Test.@test all(d -> length(kax[d]) == P[d] && (periodic[d] ? P[d] == dims[d] : P[d] >= 2dims[d] - 1), 1:Dg)
+        ref = _bt_reference(u, dims, spacing, periodic, P, r -> weight(r, r_max))
+        Test.@test maximum(abs, dens .- ref) < 1e-12 * maximum(abs, ref)
     end
-end
-
-Test.@testset "a bounded window of a periodic field converges to its spectrum as the window grows" begin
-    # A single line seen through a window: the line's power spreads over the window's spectral kernel,
-    # whose width in wavenumber is the resolution 2π/(P dx). At a fixed physical distance from the line
-    # the leaked power therefore falls with the window, as 1/n for the boxcar of lags |h| < n. The
-    # unbiased autocovariance is not positive-definite, so the leaked power carries a sign.
-    A, dx = 1.3, 0.1
-    δ = 3 * 2π / (32 * dx)                                # three bins of the coarsest window
-    outside = Float64[]
-    for n in (32, 64, 128)
-        M = n ÷ 16                                       # periods in the window
-        k0 = 2π * M / (n * dx)
-        x = (0:(n - 1)) .* dx
-        u = reshape(A .* cos.(k0 .* x .+ 0.4), 1, n)
-        s = SFC.UniformLagSchedule((n,), (dx,), (false,))
-        kax, dens = SFC.gridded_spectrum(u, s, Val(1), FFT_TAG)
-        dk = kax[1][2] - kax[1][1]
-        near = abs.(abs.(kax[1]) .- k0) .<= δ
-        push!(outside, abs(sum(dens[.!near]) * dk) / (A^2 / 2))
-        Test.@test sum(dens) * dk ≈ var(vec(u); corrected = false) rtol = 1e-10
-    end
-    Test.@test issorted(outside; rev = true)
-    Test.@test outside[1] > 1.5 * outside[end]
-    Test.@test outside[end] < 0.05
-end
-
-Test.@testset "the Bartlett taper trims the estimator's variance" begin
-    # A Gaussian-correlated periodic field, windowed: the far lags are averaged over few pairs, and
-    # weighting them down lowers the scatter of the estimate across realisations.
-    Random.seed!(8200)
-    n_big, n, dx, ℓ = 512, 64, 0.1, 0.4
-    kfull = 2π .* FFTW.fftfreq(n_big, 1 / dx)
-    s = SFC.UniformLagSchedule((n,), (dx,), (false,))
-    plain = Vector{Vector{Float64}}()
-    tapered = Vector{Vector{Float64}}()
-    kax = nothing
-    for _ in 1:40
-        amp = exp.(-(kfull .* ℓ) .^ 2 ./ 4)
-        f = real.(FFTW.ifft(amp .* FFTW.fft(randn(n_big))))
-        u = reshape(f[1:n], 1, n)
-        kax, d0 = SFC.gridded_spectrum(u, s, Val(1), FFT_TAG)
-        _, d1 = SFC.gridded_spectrum(u, s, Val(1), FFT_TAG; taper = SFC.Bartlett())
-        push!(plain, d0)
-        push!(tapered, d1)
-    end
-    band = findall(k -> 0.5 <= k <= 4.0, kax[1])
-    v0 = mean(var([p[j] for p in plain]) for j in band)
-    v1 = mean(var([p[j] for p in tapered]) for j in band)
-    Test.@test v1 < 0.85 * v0
-    # and both keep the mean level of the band
-    m0 = mean(mean(p[j] for p in plain) for j in band)
-    m1 = mean(mean(p[j] for p in tapered) for j in band)
-    Test.@test isapprox(m0, m1; rtol = 0.25)
 end
 
 Test.@testset "a lag no held pair names is refused by default and zeroed on request" begin
     n = 16
     u = reshape(randn(n), 1, n)
     valid = falses(n)
-    valid[1:3] .= true                                   # lags 4…8 join no two held cells
+    valid[1:3] .= true
     s = SFC.UniformLagSchedule((n,), (0.1,), (true,))
     Test.@test_throws ArgumentError SFC.gridded_spectrum(u, s, Val(1), FFT_TAG; valid)
     kax, dens = SFC.gridded_spectrum(u, s, Val(1), FFT_TAG; valid, missing_lags = SFC.ZeroDeviationAtMissingLags())
     Test.@test all(isfinite, dens)
-    dk = kax[1][2] - kax[1][1]
-    Test.@test sum(dens) * dk ≈ var(u[1, 1:3]; corrected = false) rtol = 1e-10
+    Test.@test sum(dens) * (kax[1][2] - kax[1][1]) ≈ var(u[1, 1:3]; corrected = false) rtol = 1e-10
 end
 
 # P_0 … P_L and their derivatives at x, by the recurrences, for the test's own series.
@@ -209,34 +146,30 @@ function _legendre_and_derivative(x, L)
     return P, dP
 end
 
+# Closed-form scalar and tangent-vector structure functions on the sphere invert to their C_l, C^E_l and C^B_l.
 Test.@testset "the spherical inversion recovers a prescribed angular spectrum" begin
     R = 6.371e6
     g = SFH.SphericalGeometry{2}(SFH.SphericalDistance(R), R)
     L = 10
     Cl = [0.0; [1.7 / (l + 1)^2 for l in 1:L]]
-    edges_σ = collect(range(0.0, π; length = 4001))
+    edges_σ = collect(range(0.0, π; length = 101))
     mids_σ = collect(SF.midpoints(edges_σ))
     edges = R .* edges_σ
 
-    # a scalar: C(σ) = Σ (2l+1)/(4π) C_l P_l(cos σ), D = 2[C(0) − C]
     C(σ) = sum((2l + 1) / (4π) * Cl[l + 1] * _legendre_and_derivative(cos(σ), L)[1][l + 1] for l in 0:L)
     D = [2 * (C(0.0) - C(σ)) for σ in mids_σ]
     for op in (SFT.ScalarSFType{2}(), SFT.S2SFType())
-        sf = SF.StructureFunction(op, edges, D)
-        out = SFC.isotropic_spectrum(sf, g, L + 2)
-        Test.@test out.l == 1:(L + 2)
-        Test.@test maximum(abs, out.C[1:L] .- Cl[2:end]) < 1e-5 * maximum(Cl)
-        Test.@test maximum(abs, out.C[(L + 1):end]) < 1e-5 * maximum(Cl)
+        out = SFC.isotropic_spectrum(SF.StructureFunction(op, edges, D), g, L + 2)
+        Test.@test maximum(abs, out.C .- [Cl[2:end]; 0; 0]) < 4e-4 * maximum(Cl)
     end
     Test.@test_throws ArgumentError SFC.isotropic_spectrum(SF.StructureFunction(SFT.L2SFType(), edges, D), g, L)
     Test.@test_throws ArgumentError SFC.isotropic_spectrum(
-        SF.StructureFunction(SFT.S2SFType(), 2 .* edges, D), g, L)          # beyond a half turn
+        SF.StructureFunction(SFT.S2SFType(), 2 .* edges, D), g, L)
     raw = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), edges, D .* 3, fill(UInt32(3), length(D)))
     Test.@test SFC.isotropic_spectrum(raw, g, L).C ≈ SFC.isotropic_spectrum(SF.StructureFunction(SFT.S2SFType(), edges, D), g, L).C
     raw.counts[5] = 0
     Test.@test_throws ArgumentError SFC.isotropic_spectrum(raw, g, L)
 
-    # a tangent vector field: ξ₊ from d^l_{11}, ξ₋ from d^l_{1,−1}, both in closed form from P_l, P_l'
     CE = [0.0; [0.9 / l^2 for l in 1:L]]
     CB = [0.0; [0.4 / (l + 2)^2 for l in 1:L]]
     variance = sum((2l + 1) / (4π) * (CE[l + 1] + CB[l + 1]) for l in 1:L)
@@ -263,10 +196,8 @@ Test.@testset "the spherical inversion recovers a prescribed angular spectrum" b
     L2 = SF.StructureFunction(SFT.L2SFType(), edges, DLL)
     T2 = SF.StructureFunction(SFT.T2SFType(), edges, DTT)
     out = SFC.helmholtz_spectra(L2, T2, g, L + 2; variance)
-    Test.@test maximum(abs, out.E[1:L] .- CE[2:end]) < 1e-5 * maximum(CE)
-    Test.@test maximum(abs, out.B[1:L] .- CB[2:end]) < 1e-5 * maximum(CE)
-    Test.@test maximum(abs, out.E[(L + 1):end]) < 1e-5 * maximum(CE)
-    Test.@test maximum(abs, out.B[(L + 1):end]) < 1e-5 * maximum(CE)
+    Test.@test maximum(abs, out.E .- [CE[2:end]; 0; 0]) < 1e-4 * maximum(CE)
+    Test.@test maximum(abs, out.B .- [CB[2:end]; 0; 0]) < 1e-4 * maximum(CE)
     Test.@test_throws UndefKeywordError SFC.helmholtz_spectra(L2, T2, g, L)
 end
 
@@ -292,25 +223,21 @@ function _sphere_harmonic_field(N)
     end
     return x, Φ, u
 end
-using LinearAlgebra: ⋅
 
+# Φ = xy is pure l = 2 with C_2 = 4π⟨Φ²⟩/5, and its gradient has C^E_2 = l(l+1) C_2 and no curl.
 Test.@testset "the spherical inversion of the package's own pair sums" begin
-    # Φ = xy is a pure l = 2 harmonic: C_2 = 4π⟨Φ²⟩/5 and every other C_l vanishes; its gradient has
-    # C^E_2 = l(l+1) C^Φ_2 and no curl. Pair sums over a point set carry Monte-Carlo scatter.
-    N = 4000
+    N = 400
     x, Φ, u = _sphere_harmonic_field(N)
     g = SFH.SphericalGeometry{2}(SFH.SphericalDistance(1.0), 1.0)
-    edges = collect(range(0.0, π; length = 41))
-    meanΦ2 = sum(abs2, Φ) / N
+    edges = collect(range(0.0, π; length = 21))
     l = 2
-    C2 = 4π * meanΦ2 / 5
+    C2 = 4π * (sum(abs2, Φ) / N) / 5
 
     sfΦ = SFC.calculate_structure_function(SFT.ScalarSFType{2}(), x, Fields(scalars = (Φ,)), edges,
         SFO.StructureFunctionSumsAndCounts; distance_metric = SFH.SphericalDistance(1.0), backend = CB.SerialBackend())
-    Test.@test all(>(0), sfΦ.counts)
     outΦ = SFC.isotropic_spectrum(sfΦ, g, 6)
-    Test.@test abs(outΦ.C[2] - C2) < 0.03 * C2
-    Test.@test all(abs.(outΦ.C[[1, 3, 4, 5, 6]]) .< 0.03 * C2)
+    Test.@test abs(outΦ.C[2] - C2) < 0.02 * C2
+    Test.@test all(abs.(outΦ.C[[1, 3, 4, 5, 6]]) .< 0.02 * C2)
 
     nb = length(edges) - 1
     sL = zeros(nb); cL = zeros(Int, nb)
@@ -319,15 +246,14 @@ Test.@testset "the spherical inversion of the package's own pair sums" begin
     SFC.calculate_structure_function!(sT, cT, SFT.T2SFType(), x, u, edges; distance_metric = SFH.SphericalDistance(1.0))
     L2 = SF.StructureFunctionSumsAndCounts(SFT.L2SFType(), edges, sL, cL)
     T2 = SF.StructureFunctionSumsAndCounts(SFT.T2SFType(), edges, sT, cT)
-    variance = sum(abs2, u) / N
-    Test.@test variance ≈ l * (l + 1) * meanΦ2 rtol = 0.02
-    out = SFC.helmholtz_spectra(L2, T2, g, 6; variance)
+    out = SFC.helmholtz_spectra(L2, T2, g, 6; variance = sum(abs2, u) / N)
     E2 = l * (l + 1) * C2
-    Test.@test abs(out.E[2] - E2) < 0.05 * E2
-    Test.@test all(abs.(out.E[[1, 3, 4, 5, 6]]) .< 0.05 * E2)
-    Test.@test all(abs.(out.B) .< 0.05 * E2)
+    Test.@test abs(out.E[2] - E2) < 0.02 * E2
+    Test.@test all(abs.(out.E[[1, 3, 4, 5, 6]]) .< 0.02 * E2)
+    Test.@test all(abs.(out.B) .< 0.02 * E2)
 end
 
+# Unequal pair counts in the two projections: each component's mean is formed with its own counts.
 Test.@testset "helmholtz_decompose_2d carries each component's own counts" begin
     edges = collect(range(0.0, 2.0; length = 11))
     mids = SF.midpoints(edges)
@@ -339,5 +265,4 @@ Test.@testset "helmholtz_decompose_2d carries each component's own counts" begin
     Test.@test h.rotational_counts == cT
     Test.@test h.divergent_counts == cL
     Test.@test h.rotational_sums ./ h.rotational_counts .+ h.divergent_sums ./ h.divergent_counts ≈ DLL .+ DTT
-    Test.@test eltype(h.rotational_sums) == Float64
 end

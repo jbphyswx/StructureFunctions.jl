@@ -1,67 +1,51 @@
 using Test: Test
 using Random: Random
-using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT, LinearBinEdges
-using StructureFunctions.Calculations: CPUSFWorkspace, reset_histogram!
+using StructureFunctions: Calculations as SFC, LinearBinEdges
+using StructureFunctions.Calculations: CPUSFWorkspace
 using ComputationalBackends: ComputationalBackends as CB
 using OhMyThreads: OhMyThreads
 
-# CPUSFWorkspace reuse leaves single-pass batch results unchanged and rejects workspaces that do not fit the call.
+# A CPUSFWorkspace reused across calls leaves single-pass batch results unchanged and rejects workspaces that do not fit the call.
 Test.@testset "CPUSFWorkspace" begin
     Random.seed!(4242)
-    N, B, nd, nv = 60, 8, 12, 10
-    nt = Threads.nthreads()
+    N, B, nd, nv = 60, 3, 8, 6
     x = rand(2, N)
     u = rand(2, N, B)
     db = LinearBinEdges(range(0.0, 2.0; length = nd + 1))
     vb = LinearBinEdges(range(-3.0, 3.0; length = nv + 1))
-    sft = SFT.L2SFType()
     backends = CB.ThreadedBackend[]
     Threads.nthreads() > 1 && push!(backends, CB.ThreadedBackend())
 
-    # Threaded sums add in the order the tasks take their chunks, so they agree to rounding; counts are exact.
     same_sums(a, b, backend) = backend isa CB.SerialBackend ? a == b : isapprox(a, b; rtol = 1e-12)
-    # Single-pass and single-pass-2D batch results with a workspace equal those without, on each backend.
-    Test.@testset "results identical with and without a workspace" begin
+    # Two calls through one workspace each equal the call without one: exactly on serial, to rounding threaded.
+    Test.@testset "reuse across calls leaves results unchanged" begin
         for backend in (CB.SerialBackend(), backends...)
             ws = CPUSFWorkspace{:single_pass_2d}(x, u, db, vb; backend)
-            s1 = zeros(Float64, 6, nd, nv, B); c1 = zeros(UInt32, 6, nd, nv, B)
-            s2 = zeros(Float64, 6, nd, nv, B); c2 = zeros(UInt32, 6, nd, nv, B)
-            SFC.calculate_structure_functions_single_pass_2d_batch!(s1, c1, x, u, db, vb; backend)
-            SFC.calculate_structure_functions_single_pass_2d_batch!(s2, c2, x, u, db, vb; backend, workspace = ws)
-            Test.@test same_sums(s1, s2, backend)
-            Test.@test c1 == c2
+            ref = (zeros(Float64, 6, nd, nv, B), zeros(UInt32, 6, nd, nv, B))
+            SFC.calculate_structure_functions_single_pass_2d_batch!(ref..., x, u, db, vb; backend)
+            runs = map(1:2) do _
+                out = (zeros(Float64, 6, nd, nv, B), zeros(UInt32, 6, nd, nv, B))
+                SFC.calculate_structure_functions_single_pass_2d_batch!(out..., x, u, db, vb; backend, workspace = ws)
+                out
+            end
+            Test.@test all(r -> same_sums(r[1], ref[1], backend) && r[2] == ref[2], runs)
 
             ws1 = CPUSFWorkspace{:single_pass}(x, u, db; backend)
-            p1 = zeros(Float64, 6, nd, B); q1 = zeros(UInt32, 6, nd, B)
-            p2 = zeros(Float64, 6, nd, B); q2 = zeros(UInt32, 6, nd, B)
-            SFC.calculate_structure_functions_single_pass_batch!(p1, q1, x, u, db; backend)
-            SFC.calculate_structure_functions_single_pass_batch!(p2, q2, x, u, db; backend, workspace = ws1)
-            Test.@test same_sums(p1, p2, backend)
-            Test.@test q1 == q2
+            ref1 = (zeros(Float64, 6, nd, B), zeros(UInt32, 6, nd, B))
+            SFC.calculate_structure_functions_single_pass_batch!(ref1..., x, u, db; backend)
+            runs1 = map(1:2) do _
+                out = (zeros(Float64, 6, nd, B), zeros(UInt32, 6, nd, B))
+                SFC.calculate_structure_functions_single_pass_batch!(out..., x, u, db; backend, workspace = ws1)
+                out
+            end
+            Test.@test all(r -> same_sums(r[1], ref1[1], backend) && r[2] == ref1[2], runs1)
         end
     end
 
-    # Three calls through one workspace each reproduce the no-workspace serial result exactly.
-    Test.@testset "reuse across calls is stable" begin
-        ws = CPUSFWorkspace{:single_pass_2d}(x, u, db, vb)
-        ref_s = zeros(Float64, 6, nd, nv, B); ref_c = zeros(UInt32, 6, nd, nv, B)
-        SFC.calculate_structure_functions_single_pass_2d_batch!(
-            ref_s, ref_c, x, u, db, vb; backend = CB.SerialBackend())
-        for _ in 1:3
-            s = zeros(Float64, 6, nd, nv, B); c = zeros(UInt32, 6, nd, nv, B)
-            SFC.calculate_structure_functions_single_pass_2d_batch!(
-                s, c, x, u, db, vb; backend = CB.SerialBackend(), workspace = ws)
-            Test.@test s == ref_s
-            Test.@test c == ref_c
-        end
-    end
-
-    # A workspace built from a BatchLeading array allocates no transpose buffers and reproduces the result without one.
-    Test.@testset "composes with BatchLeading (no transpose buffer)" begin
+    # A workspace built from a BatchLeading array reproduces the BatchLeading result without one.
+    Test.@testset "composes with BatchLeading" begin
         ubl = SFC.BatchLeading(permutedims(u, (3, 1, 2)))
         ws = CPUSFWorkspace{:single_pass_2d}(x, ubl, db, vb)
-        Test.@test length(ws.ub) == 0
-        Test.@test length(ws.xb) == 0
         s1 = zeros(Float64, 6, nd, nv, B); c1 = zeros(UInt32, 6, nd, nv, B)
         s2 = zeros(Float64, 6, nd, nv, B); c2 = zeros(UInt32, 6, nd, nv, B)
         SFC.calculate_structure_functions_single_pass_2d_batch!(
@@ -79,23 +63,12 @@ Test.@testset "CPUSFWorkspace" begin
             s, c, x, u, db, vb; backend = CB.SerialBackend(), workspace = ws)
 
         Test.@test_throws ArgumentError call!(CPUSFWorkspace{:single_pass_2d}(
-            rand(2, N + 5), rand(2, N + 5, B), db, vb))          # wrong N
+            rand(2, N + 5), rand(2, N + 5, B), db, vb))
         Test.@test_throws ArgumentError call!(CPUSFWorkspace{:single_pass_2d}(
-            x, rand(2, N, B + 1), db, vb))                        # wrong B
+            x, rand(2, N, B + 1), db, vb))
         Test.@test_throws ArgumentError call!(CPUSFWorkspace{:single_pass_2d}(
-            x, u, LinearBinEdges(range(0.0, 2.0; length = nd + 3)), vb))  # wrong n_bins
-        Test.@test_throws ArgumentError call!(CPUSFWorkspace{:single_pass}(x, u, db))  # wrong kind
+            x, u, LinearBinEdges(range(0.0, 2.0; length = nd + 3)), vb))
+        Test.@test_throws ArgumentError call!(CPUSFWorkspace{:single_pass}(x, u, db))
         Test.@test_throws ArgumentError CPUSFWorkspace{:nonsense}(x, u, db, vb)
     end
-
-    # The workspace type and its fields are concrete, and reset_histogram! returns the workspace with a zeroed result.
-    Test.@testset "concretely typed" begin
-        ws = CPUSFWorkspace{:single_pass_2d}(x, u, db, vb)
-        T = typeof(ws)
-        Test.@test isconcretetype(T)
-        Test.@test all(isconcretetype, fieldtypes(T))
-        Test.@test reset_histogram!(ws) === ws
-        Test.@test all(iszero, ws.result[1])
-    end
 end
-

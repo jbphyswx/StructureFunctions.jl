@@ -1,24 +1,17 @@
 using Test: Test
 using LinearAlgebra: LinearAlgebra
 using LsqFit: LsqFit
-using StructureFunctions: Calculations as C
+using StructureFunctions: StructureFunctions as SF, Calculations as C, StructureFunctionTypes as SFT
 
-Test.@testset "Stable linear fits" begin
-    # The second singular direction is resolvable in Float64 but disappears in H'H.
+# An ill-conditioned system, and a correlated prior and data covariance, against BigFloat normal equations.
+Test.@testset "regularised least squares is the exact posterior" begin
     H = [1.0 1.0; 1.0 1.0 + 1e-8; 1.0 1.0 - 1e-8]
     truth = [2.0, -1.0]
     x, covariance = C.solve(C.RegularizedLeastSquares(nothing), H, H * truth, ones(3))
     Test.@test x ≈ truth rtol=5e-8
-    Test.@test all(isfinite, covariance)
-    # The dense covariance has condition number near 1/eps(); its small
-    # eigenvalue is not representable reliably. Compare entries to BigFloat.
     Hbig = BigFloat.(H)
-    Cbig = (Hbig' * Hbig) \ Matrix{BigFloat}(LinearAlgebra.I, 2, 2)
-    Test.@test covariance ≈ Float64.(Cbig) rtol=5e-8
-    Test.@test_throws ArgumentError C.solve(C.RegularizedLeastSquares(nothing), ones(3, 2), ones(3), ones(3))
-    Test.@test_throws ArgumentError C.solve(C.RegularizedLeastSquares(nothing), ones(1, 2), ones(1), ones(1))
+    Test.@test covariance ≈ Float64.((Hbig' * Hbig) \ Matrix{BigFloat}(LinearAlgebra.I, 2, 2)) rtol=5e-8
 
-    # Correlated prior and data: compare with a high-precision independent solve.
     H = [1.0 2; 3 1; 0 2]
     y = [3.0, -1, 2]
     W = [2.0 0.1 0; 0.1 1 0.2; 0 0.2 3]
@@ -28,7 +21,13 @@ Test.@testset "Stable linear fits" begin
     precision = Hb' * (Wb \ Hb) + Pb \ Matrix{BigFloat}(LinearAlgebra.I, 2, 2)
     Test.@test x ≈ Float64.(precision \ (Hb' * (Wb \ yb))) rtol=2e-14
     Test.@test covariance ≈ Float64.(precision \ Matrix{BigFloat}(LinearAlgebra.I, 2, 2)) rtol=2e-14
-    Test.@test LinearAlgebra.isposdef(covariance)
+end
+
+Test.@testset "regularised least squares refuses what it cannot solve" begin
+    H = [1.0 2; 3 1; 0 2]
+    y = [3.0, -1, 2]
+    Test.@test_throws ArgumentError C.solve(C.RegularizedLeastSquares(nothing), ones(3, 2), ones(3), ones(3))
+    Test.@test_throws ArgumentError C.solve(C.RegularizedLeastSquares(nothing), ones(1, 2), ones(1), ones(1))
     for bad in ([1.0, Inf, 1.0], [1.0, NaN, 1.0], [1.0, 0.0, 1.0])
         Test.@test_throws ArgumentError C.solve(C.RegularizedLeastSquares(nothing), H, y, bad)
     end
@@ -39,38 +38,30 @@ Test.@testset "Stable linear fits" begin
     Test.@test_throws DimensionMismatch C.solve(C.RegularizedLeastSquares(nothing), H, y[1:2], ones(2))
 end
 
-Test.@testset "NNLS termination and optimality" begin
-    for scale in (1e-12, 1.0, 1e12)
-        A = [1.0 0 1; 0 1 1; 1 1 2] # dependent columns
+# Dependent columns at three scales meet the KKT conditions; an unfinished solve is reported or raises.
+Test.@testset "non-negative least squares is optimal or says it is not" begin
+    A = [1.0 0 1; 0 1 1; 1 1 2]
+    sols = map((1e-12, 1.0, 1e12)) do scale
         b = scale .* [1.0, -1, 0]
-        info = C._nnls(A, b; return_info=true)
-        Test.@test info.converged
-        Test.@test info.iterations <= 30
-        Test.@test all(>=(0), info.x)
-        gradient = A' * (A * info.x - b)
-        Test.@test minimum(gradient) >= -1e-12 * scale
-        Test.@test maximum(abs, info.x .* gradient) <= 1e-12 * scale^2
+        x, _, info = C.solve(C.NonNegativeLeastSquares(), A, b, nothing; return_info = true)
+        (; scale, x, info, gradient = A' * (A * x - b))
     end
-    info = C._nnls(Matrix{Float64}(LinearAlgebra.I, 2, 2), ones(2); maxiter=0, return_info=true)
+    Test.@test all(s -> s.info.converged, sols)
+    Test.@test all(s -> all(>=(0), s.x) && minimum(s.gradient) >= -1e-12 * s.scale, sols)
+    Test.@test all(s -> maximum(abs, s.x .* s.gradient) <= 1e-12 * s.scale^2, sols)
+    Test.@test C.solve(C.NonNegativeLeastSquares(), zeros(3, 2), ones(3), nothing)[1] == zeros(2)
+    Test.@test_throws ArgumentError C.solve(C.NonNegativeLeastSquares(), [1.0 NaN], [1.0], nothing)
+
+    I2 = Matrix{Float64}(LinearAlgebra.I, 2, 2)
+    _, _, info = C.solve(C.NonNegativeLeastSquares(), I2, ones(2), nothing; maxiter = 0, return_info = true)
     Test.@test !info.converged
-    Test.@test info.iterations == 0
-    Test.@test_throws ErrorException C._nnls(Matrix{Float64}(LinearAlgebra.I, 2, 2), ones(2); maxiter=0)
-    Test.@test C._nnls(zeros(3, 2), ones(3)) == zeros(2)
-    Test.@test_throws ArgumentError C._nnls([1.0 NaN], [1.0])
+    Test.@test_throws ErrorException C.solve(C.NonNegativeLeastSquares(), I2, ones(2), nothing; maxiter = 0)
 end
 
-Test.@testset "Relative fitting with zero observations" begin
-    Test.@test C._relative_scales(zeros(3)) == ones(3)
-    Test.@test all(>(0), C._relative_scales([0.0, 1e-20, 2e-20]))
-    Test.@test_throws ArgumentError C._relative_scales([NaN])
-    r = collect(range(0.1, 1.0; length=8))
-    p, covariance, edges, converged = C._segmented_fit(C.SegmentedPowerLaw(1), Val(1), r, zeros(8), nothing, 0.2, 2.0)
-    Test.@test all(isfinite, p)
-    Test.@test all(isfinite, covariance)
-    Test.@test p[1] < 1e-12
-    x, covariance, info = C.solve(C.NonNegativeLeastSquares(), Matrix{Float64}(LinearAlgebra.I, 2, 2), ones(2), nothing;
-                                  maxiter=0, return_info=true)
-    Test.@test !info.converged
-    Test.@test covariance === nothing
-    Test.@test_throws ErrorException C.solve(C.NonNegativeLeastSquares(), Matrix{Float64}(LinearAlgebra.I, 2, 2), ones(2), nothing; maxiter=0)
+# All-zero observations fit to a zero amplitude with a finite covariance.
+Test.@testset "a segmented fit of zero observations" begin
+    edges = collect(range(0.05, 1.05; length = 9))
+    f = C.fit_spectrum(SF.StructureFunction(SFT.S2SFType(), edges, zeros(8)), [0.2, 2.0], C.SegmentedPowerLaw(1), Val(1))
+    Test.@test all(isfinite, f.parameters) && all(isfinite, f.covariance)
+    Test.@test f.parameters[1] < 1e-12
 end

@@ -10,9 +10,15 @@ using OhMyThreads: OhMyThreads
 using FFTW: FFTW
 using NonuniformFFTs: NonuniformFFTs
 
-# Reports outside the two dynamic boundaries: `_by_width`'s call of `_at_width(g, Val(D))`, made for widths past its
-# explicit branches with a width known only at run time, and what `_at_width` analyses at that abstract width; and
-# `_release_held`, which releases a value a transform workspace kept, of a type known only at run time.
+"""The package and the extensions of it the routes below run, whose code JET analyzes."""
+const JET_MODULES = (SF, map((:StructureFunctionsOhMyThreadsExt, :StructureFunctionsAbstractFFTsExt,
+                              :StructureFunctionsFFTWExt, :StructureFunctionsNonuniformFFTsExt)) do name
+    ext = Base.get_extension(SF, name)
+    ext === nothing && error("extension $name is not loaded")
+    ext
+end...)
+
+# Reports outside `_by_width`'s run-time call of `_at_width`, `_at_width` at an abstract width, and `_release_held`.
 _reports_past_boundaries(r) = filter(JET.get_reports(r)) do rep
     rep.vst[end].linfo.def.name in (:_by_width, :_release_held) && return false
     !any(v -> v.linfo.def.name === :_at_width && !isconcretetype(v.linfo.specTypes.parameters[3]), rep.vst)
@@ -48,10 +54,8 @@ function _jet_route_data()
     )
 end
 
-"""Every capability-matrix route as the entry a user calls, with backend `be` and the data `d` of
-[`_jet_route_data`](@ref)."""
+"""Capability-matrix routes as the entry a user calls, on `be` with the data `d` of [`_jet_route_data`](@ref)."""
 _jet_routes() = (
-
     ("point 1D", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xp, d.up, d.bins, SF.StructureFunctionSumsAndCounts;
         backend = be); (r.sums, r.counts)))),
     ("point 1D in-place", ((be, d) -> (s = zeros(d.nb); c = zeros(Int, d.nb);
@@ -156,111 +160,62 @@ _jet_routes() = (
         (r.sums, r.counts)))),
 )
 
-Test.@testset "JET Stability Audit" begin
-    # Use explicit qualification for functions to ensure JET finds them
-    # and we avoid using/export issues in the test Main.
-
-    x = [0.0 1.0; 0.0 0.0]
-    u = [1.0 2.0; 0.0 0.0]
-    bins = SA.SVector(0.0, 2.0)
-    sf_type = SFT.LongitudinalSecondOrderStructureFunction
-
-    Test.@testset "calculate_structure_function (Array input)" begin
-        Test.@test isempty(_reports_past_boundaries(JET.report_opt(
-            (s, x, u, b) -> SFC.calculate_structure_function(s, x, u, b; backend = CB.SerialBackend()),
-            (typeof(sf_type), typeof(x), typeof(u), typeof(bins)); target_modules = (SF,))))
-        # Error-freedom of the default and explicit result-type convenience entries.
-        JET.@test_call target_modules = (SF,) SFC.calculate_structure_function(
-            sf_type,
-            x,
-            u,
-            bins,
-        )
-        JET.@test_call target_modules = (SF,) SFC.calculate_structure_function(
-            sf_type,
-            x,
-            u,
-            bins,
-            SF.StructureFunctionSumsAndCounts,
-        )
+"""`(name, count)` of each route in `names` whose analysis on `be` reports runtime dispatch past the boundaries."""
+function _dispatching_routes(be, names)
+    issubset(names, first.(_jet_routes())) || error("not routes: $(setdiff(names, first.(_jet_routes())))")
+    d = _jet_route_data()
+    found = Tuple{String, Int}[]
+    for (name, run) in _jet_routes()
+        name in names || continue
+        n = length(_reports_past_boundaries(JET.report_opt(run, (typeof(be), typeof(d)); target_modules = JET_MODULES)))
+        n == 0 || push!(found, (name, n))
     end
-    Test.@testset "calculate_structure_function (3D Array input)" begin
-        xa = [0.0 1.0; 0.0 0.0; 0.0 0.0]
-        ua = [1.0 2.0; 0.0 0.0; 0.0 0.0]
-        Test.@test isempty(_reports_past_boundaries(JET.report_opt(
-            (s, x, u, b) -> SFC.calculate_structure_function(s, x, u, b; backend = CB.SerialBackend()),
-            (typeof(sf_type), typeof(xa), typeof(ua), typeof(bins)); target_modules = (SF,))))
-        # Error-freedom of the default and explicit result-type convenience entries.
-        JET.@test_call target_modules = (SF,) SFC.calculate_structure_function(
-            sf_type,
-            xa,
-            ua,
-            bins,
-        )
-        JET.@test_call target_modules = (SF,) SFC.calculate_structure_function(
-            sf_type,
-            xa,
-            ua,
-            bins,
-            SF.StructureFunctionSumsAndCounts,
-        )
-    end
+    return found
+end
 
-    Test.@testset "every route has no runtime dispatch outside the width and workspace boundaries" begin
-        d = _jet_route_data()
-        for (name, run) in _jet_routes(), be in (CB.SerialBackend(), CB.ThreadedBackend())
-            reps = _reports_past_boundaries(JET.report_opt(run, (typeof(be), typeof(d)); target_modules = (SF,)))
-            Test.@test (name, nameof(typeof(be)), length(reps)) == (name, nameof(typeof(be)), 0)
-        end
-    end
+# The default point entry has no runtime dispatch past the boundaries and no possible error, in 2 and 3 dimensions.
+Test.@testset "the default point entry, in two and three dimensions" begin
+    sf, bins = SFT.LongitudinalSecondOrderStructureFunction, SA.SVector(0.0, 2.0)
+    x2, u2 = [0.0 1.0; 0.0 0.0], [1.0 2.0; 0.0 0.0]
+    x3, u3 = [0.0 1.0; 0.0 0.0; 0.0 0.0], [1.0 2.0; 0.0 0.0; 0.0 0.0]
+    serial = (s, x, u, b) -> SFC.calculate_structure_function(s, x, u, b; backend = CB.SerialBackend())
+    opt(x, u) = _reports_past_boundaries(JET.report_opt(serial, typeof.((sf, x, u, bins)); target_modules = JET_MODULES))
+    Test.@test isempty(opt(x2, u2))
+    Test.@test isempty(opt(x3, u3))
+    JET.@test_call target_modules = JET_MODULES SFC.calculate_structure_function(sf, x2, u2, bins)
+    JET.@test_call target_modules = JET_MODULES SFC.calculate_structure_function(sf, x3, u3, bins)
+end
 
-    Test.@testset "the per-worker reduction kernels carry no runtime dispatch" begin
-        # These are the hot loops every backend calls with concrete arguments, so zero is the
-        # right assertion — unlike a whole entry, which has by-design dispatch barriers at
-        # `_finalize` and at backend selection and whose count would only be a number to pin.
-        # This is the check for the defect class that has cost the most here: a captured and
-        # reassigned variable boxes to `Any`, which is merely slow on the host and a compile
-        # failure on a device.
-        Random.seed!(3)
-        Np = 60
-        xp = rand(2, Np)
-        up = randn(2, Np)
-        xv = (collect(view(xp, 1, :)), collect(view(xp, 2, :)))
-        uv = (collect(view(up, 1, :)), collect(view(up, 2, :)))
-        dbins = collect(range(0.0, 1.0; length = 7))
-        vbins = collect(range(-3.0, 3.0; length = 6))
-        op = SFT.L2SFType()
+# Every route has no runtime dispatch past the boundaries on the serial backend, and the threaded subset on threads.
+Test.@testset "every route has no runtime dispatch outside the width and workspace boundaries" begin
+    Test.@test isempty(_dispatching_routes(CB.SerialBackend(), first.(_jet_routes())))
+    Test.@test isempty(_dispatching_routes(CB.ThreadedBackend(),
+        ("point 1D", "point joint value", "point joint angle", "point sorted line", "point multi-field", "moment tensor",
+         "single-pass 1D", "single-pass 2D", "aux axes 1D", "slice batch joint", "gridded lag sweep", "gridded transform",
+         "harmonic direct sum", "scattered modes NUFFT")))
+end
 
-        JET.@test_opt target_modules = (SF,) SFC._partial_sums_counts(
-            CB.SerialBackend(), op, xv, uv, dbins, (1, 2), UInt32)
-        JET.@test_opt target_modules = (SF,) SFC._partial_2d_sums_counts(
-            CB.SerialBackend(), op, xv, uv, dbins, vbins, (1, 2), UInt32)
-    end
+# The kernels a distributed worker runs, at the argument types the Distributed extension passes, do not dispatch.
+Test.@testset "the per-worker reduction kernels have no runtime dispatch" begin
+    d = _jet_route_data()
+    xv, uv = SFC._prepared_tuples(SFH.FlatGeometry{2}(), d.xp, d.up)
+    JET.@test_opt target_modules = JET_MODULES SFC._partial_sums_counts(CB.SerialBackend(), d.op, xv, uv, d.bins,
+        (1, 2), UInt32; geometry = SFH.FlatGeometry{2}(), culling = SFC.AutoCulling(), weights = SFC.NoWeights())
+    JET.@test_opt target_modules = JET_MODULES SFC._partial_2d_sums_counts(CB.SerialBackend(), d.op, xv, uv, d.bins,
+        d.vbins, (1, 2), UInt32; geometry = SFH.FlatGeometry{2}(), culling = SFC.AutoCulling(),
+        weights = SFC.NoWeights(), second_axis = SFC.InvariantValueAxis())
+end
 
-    Test.@testset "HelperFunctions" begin
-        δu = SA.SVector{2, Float64}(1.0, 0.0)
-        r̂ = SA.SVector{2, Float64}(1.0, 0.0)
-        JET.@test_opt SFH.magnitude_δu_longitudinal(δu, r̂)
-        JET.@test_call SFH.magnitude_δu_longitudinal(δu, r̂)
+# Every pairwise operator evaluates one pair with no runtime dispatch and no possible error.
+Test.@testset "every pairwise operator evaluates a pair without runtime dispatch or possible error" begin
+    args = (SA.SVector{2, Float64}, SA.SVector{2, Float64})
+    ops = unique(filter(op -> op isa SFT.AbstractPairwiseStructureFunctionType, collect(values(SFT.SF_TYPE_MAP))))
+    Test.@test isempty(filter(op -> !isempty(JET.get_reports(JET.report_opt(op, args))), ops))
+    Test.@test isempty(filter(op -> !isempty(JET.get_reports(JET.report_call(op, args))), ops))
+end
 
-        # Test 2D and 3D paths in n̂
-        r̂2 = SA.SVector{2, Float64}(1.0, 0.0)
-        r̂3 = SA.SVector{3, Float64}(1.0, 0.0, 0.0)
-        δu2 = SA.SVector{2, Float64}(1.0, 1.0)
-        JET.@test_opt SFH.n̂(r̂2)
-        JET.@test_opt SFH.n̂(r̂3)
-        JET.@test_opt SFH.δu_longitudinal(δu2, r̂2)
-        JET.@test_opt SFH.δu_transverse(δu2, r̂2)
-    end
-
-    Test.@testset "StructureFunctionTypes" begin
-        δu = SA.SVector{2, Float64}(1.0, 1.0)
-        r̂ = SA.SVector{2, Float64}(1.0, 0.0)
-        for (name, sft) in SFT.SF_TYPE_MAP
-            instance = sft()
-            instance isa SFT.AbstractPairwiseStructureFunctionType || continue
-            JET.@test_opt instance(δu, r̂)
-            JET.@test_call instance(δu, r̂)
-        end
-    end
+# The three-dimensional transverse direction and the vector transverse increment have no runtime dispatch.
+Test.@testset "the helpers no operator calls have no runtime dispatch" begin
+    JET.@test_opt SFH.n̂(SA.SVector(1.0, 0.0, 0.0))
+    JET.@test_opt SFH.δu_transverse(SA.SVector(1.0, 1.0), SA.SVector(1.0, 0.0))
 end

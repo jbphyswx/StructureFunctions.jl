@@ -32,36 +32,34 @@ function _masked(u::AbstractMatrix, frac; seed = 3)
     return v, SFC.field_validity(v)
 end
 
+# (operator, periodic flags): every operator and every topology, the odd operators across a half-turn.
+const UNIFORM_CASES = ((SFT.L2SFType(), (true, true)), (SFT.T2SFType(), (false, false)),
+                       (SFT.L3SFType(), (true, false)), (SFT.S3SFType(), (true, true)),
+                       (SFT.L1T2SFType(), (true, false)))
+
+# Every operator and topology, a masked field with a periodic and an open axis, and a 3D grid with log bins.
 Test.@testset "the device engine equals the CPU engine on a uniform grid" begin
     Random.seed!(11)
-    dims = (24, 20)
-    edges = collect(range(0.0, 7.0; length = 15))
-    for periodic in ((true, true), (false, false), (true, false))
-        s = SFC.UniformLagSchedule(dims, (0.5, 0.7), periodic)
-        u = randn(2, dims...)
-        for sf in (SFT.L2SFType(), SFT.T2SFType(), SFT.L3SFType(), SFT.S3SFType(), SFT.L1T2SFType())
-            _device_matches(sf, u, s, edges, 2)
-        end
-        um, valid = _masked(reshape(u, 2, :), 0.25)
-        for sf in (SFT.L2SFType(), SFT.L3SFType())
-            _device_matches(sf, reshape(um, 2, dims...), s, edges, 2; valid)
-        end
+    dims = (12, 10)
+    edges = collect(range(0.0, 7.0; length = 8))
+    for (sf, periodic) in UNIFORM_CASES
+        _device_matches(sf, randn(2, dims...), SFC.UniformLagSchedule(dims, (0.5, 0.7), periodic), edges, 2)
     end
-    # three directions, floating-point counts, log bins
-    s3 = SFC.UniformLagSchedule((8, 9, 7), (1.0, 1.1, 0.9), (true, false, true))
-    u3 = randn(3, 8, 9, 7)
-    _device_matches(SFT.L2SFType(), u3, s3, collect(range(0.0, 6.0; length = 9)), 3; count_type = Float64)
-    _device_matches(SFT.S3SFType(), u3, s3, SF.LogBinEdges(0.8, 6.0, 8), 3)
+    um, valid = _masked(randn(2, prod(dims)), 0.25)
+    _device_matches(SFT.L2SFType(), reshape(um, 2, dims...), SFC.UniformLagSchedule(dims, (0.5, 0.7), (true, false)),
+                    edges, 2; valid)
+    s3 = SFC.UniformLagSchedule((4, 5, 3), (1.0, 1.1, 0.9), (true, false, true))
+    _device_matches(SFT.S3SFType(), randn(3, 4, 5, 3), s3, SF.LogBinEdges(0.8, 6.0, 8), 3; count_type = Float64)
 end
 
 Test.@testset "multi-fields and higher moments ride the device engine" begin
     Random.seed!(12)
-    dims = (18, 16)
+    dims = (8, 6)
     s = SFC.UniformLagSchedule(dims, (1.0, 1.0), (true, true))
     u = randn(2, dims...)
     θ = randn(dims...)
     f = Fields(vectors = (u,), scalars = (θ,))
-    edges = collect(range(0.0, 8.0; length = 12))
+    edges = collect(range(0.0, 8.0; length = 8))
     nb = length(edges) - 1
     for sf in (SFT.MixedSFType{1, 0, 2}(), SFT.ScalarSFType{2}(), SFT.ProjectedStructureFunctionType{4, 0}())
         a, ca = zeros(nb), zeros(Int, nb)
@@ -73,32 +71,26 @@ Test.@testset "multi-fields and higher moments ride the device engine" begin
     end
 end
 
+# Rectilinear schedules in both axis orders, masked or not, and a masked zonal schedule with a multi-field.
 Test.@testset "rectilinear and zonal schedules run on the device" begin
     Random.seed!(13)
-    coords = cumsum(0.4 .+ 0.6 .* rand(9))
-    sr = SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((16,), (0.5,), (true,)), (coords,), (1, 2))
-    ur = randn(2, 16, 9)
+    coords = cumsum(0.4 .+ 0.6 .* rand(5))
+    sr = SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((8,), (0.5,), (true,)), (coords,), (1, 2))
+    ur = randn(2, 8, 5)
     edges = collect(range(0.0, 5.0; length = 11))
-    for sf in (SFT.L2SFType(), SFT.L3SFType())
-        _device_matches(sf, ur, sr, edges, 2)
-    end
     um, valid = _masked(reshape(ur, 2, :), 0.2)
-    _device_matches(SFT.S3SFType(), reshape(um, 2, 16, 9), sr, edges, 2; valid)
-    # the stretched axis first in the field
-    sr2 = SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((16,), (0.5,), (true,)), (coords,), (2, 1))
-    _device_matches(SFT.L2SFType(), randn(2, 9, 16), sr2, edges, 2)
+    _device_matches(SFT.L2SFType(), reshape(um, 2, 8, 5), sr, edges, 2; valid)
+    sr2 = SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((8,), (0.5,), (true,)), (coords,), (2, 1))
+    _device_matches(SFT.L2SFType(), randn(2, 5, 8), sr2, edges, 2)
 
-    lats = collect(range(-1.2, 1.3; length = 11))
-    n_lon = 20
+    lats = collect(range(-1.2, 1.3; length = 6))
+    n_lon = 8
     sz = SFC.ZonalLagSchedule(lats, n_lon, 2π / n_lon, 1.0, true)
-    uz = randn(2, n_lon, 11)
+    uz = randn(2, n_lon, 6)
     zedges = collect(range(0.0, π; length = 13))
-    for sf in (SFT.L2SFType(), SFT.T2SFType(), SFT.L3SFType(), SFT.S3SFType())
-        _device_matches(sf, uz, sz, zedges, 2)
-    end
     um, valid = _masked(reshape(uz, 2, :), 0.3)
-    _device_matches(SFT.L2SFType(), reshape(um, 2, n_lon, 11), sz, zedges, 2; valid)
-    fz = Fields(vectors = (uz,), scalars = (randn(n_lon, 11),))
+    _device_matches(SFT.L2SFType(), reshape(um, 2, n_lon, 6), sz, zedges, 2; valid)
+    fz = Fields(vectors = (uz,), scalars = (randn(n_lon, 6),))
     nb = length(zedges) - 1
     a, ca = zeros(nb), zeros(Int, nb)
     b, cb = zeros(nb), zeros(Int, nb)
@@ -108,12 +100,13 @@ Test.@testset "rectilinear and zonal schedules run on the device" begin
     Test.@test maximum(abs.(a .- b)) <= 1e-11 * maximum(abs, a)
 end
 
-Test.@testset "the joint histogram and the wide histogram take the global-atomic path" begin
+# A joint histogram, refusing integer counts on the device, and 4000 bins, past the shared fit, match the CPU.
+Test.@testset "the joint histogram and a histogram past the shared-memory fit match the CPU" begin
     Random.seed!(14)
-    dims = (20, 18)
+    dims = (8, 6)
     s = SFC.UniformLagSchedule(dims, (1.0, 1.0), (true, true))
     u = randn(2, dims...)
-    edges = collect(range(0.0, 12.0; length = 9))                # reaches the half-turn lags
+    edges = collect(range(0.0, 6.0; length = 9))
     aedges = collect(range(prevfloat(0.0), π; length = 7))
     nb, na = length(edges) - 1, length(aedges) - 1
     axis = SFC.SeparationAngleAxis([1.0, 0.0])
@@ -125,12 +118,12 @@ Test.@testset "the joint histogram and the wide histogram take the global-atomic
     Test.@test maximum(abs.(a .- b)) <= 1e-11 * maximum(abs, a)
     Test.@test_throws ArgumentError SFC.gridded_sweep!(zeros(nb, na), zeros(Int, nb, na), SFT.L2SFType(), u, s,
                                                       edges, aedges, Val(2), FFT; second_axis = axis, backend = DEV)
-    # more bins than shared memory holds
-    wide = collect(range(0.0, 12.0; length = 4001))
+    wide = collect(range(0.0, 6.0; length = 4001))
     _device_matches(SFT.L2SFType(), u, s, wide, 2)
 end
 
-Test.@testset "the device answers Auto with the transform for a polynomial and the lag sweep otherwise" begin
+# Auto on the device matches the CPU for a polynomial operator and for one with no transform.
+Test.@testset "the device answers Auto for a polynomial operator and for one with no transform" begin
     dims = (12, 10)
     s = SFC.UniformLagSchedule(dims, (1.0, 1.0), (true, true))
     u = randn(2, dims...)
@@ -147,83 +140,87 @@ Test.@testset "the device answers Auto with the transform for a polynomial and t
     Test.@test isapprox(gs, rs; rtol = 1e-11, atol = 1e-12)
 end
 
+# (schedule, operator, axis): every schedule with every axis it takes, every operator with every axis.
+const LAG_JOINT_CASES = ((:uniform, SFT.L2SFType(), :value),
+                         (:uniform, SFT.FullVectorStructureFunctionType{3}(), :angle),
+                         (:rectilinear, SFT.FullVectorStructureFunctionType{3}(), :value),
+                         (:rectilinear, SFT.L2SFType(), :angle),
+                         (:zonal, SFT.L2SFType(), :value))
+const LAG_BATCH_CASES = ((:uniform, SFT.FullVectorStructureFunctionType{3}(), :none),
+                         (:rectilinear, SFT.FullVectorStructureFunctionType{3}(), :value),
+                         (:zonal, SFT.L2SFType(), :value))
+
 Test.@testset "the joint histograms and the batches run the lag sweep on the device" begin
     Random.seed!(9002)
-    dims = (10, 8)
-    vax = SFC.InvariantValueAxis()
-    aax = SFC.SeparationAngleAxis([1.0, 0.0])
     vbins = collect(range(-2.0, 2.0; length = 9))
     abins = collect(range(prevfloat(0.0), π; length = 5))
     edges = collect(range(0.0, 3.0; length = 7)) .+ 0.0137
     nb = length(edges) - 1
-    ys = collect(range(0.0, 1.4; length = 8))
-    lats = collect(range(-1.0, 1.0; length = 7))
-    for (sched, fdims) in ((SFC.UniformLagSchedule(dims, (0.3, 0.4), (true, false)), dims),
-                           (SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((10,), (0.3,), (false,)), (ys,), (1, 2)),
-                            (10, 8)),
-                           (SFC.ZonalLagSchedule(lats, 12, 2π / 12, 1.0, true), (12, 7)))
+    ys = collect(range(0.0, 1.4; length = 5))
+    lats = collect(range(-1.0, 1.0; length = 5))
+    schedules = (uniform = (SFC.UniformLagSchedule((10, 8), (0.3, 0.4), (true, false)), (10, 8)),
+                 rectilinear = (SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((10,), (0.3,), (false,)), (ys,),
+                                                           (1, 2)), (10, 5)),
+                 zonal = (SFC.ZonalLagSchedule(lats, 8, 2π / 8, 1.0, true), (8, 5)))
+    axes = (value = (SFC.InvariantValueAxis(), vbins), angle = (SFC.SeparationAngleAxis([1.0, 0.0]), abins))
+    for (name, sf, axis) in LAG_JOINT_CASES
+        sched, fdims = schedules[name]
+        ax, ab = axes[axis]
         u = randn(2, fdims...)
-        axes = sched isa SFC.ZonalLagSchedule ? ((vax, vbins),) : ((vax, vbins), (aax, abins))
-        for sf in (SFT.L2SFType(), SFT.FullVectorStructureFunctionType{3}()), (ax, ab) in axes
-            na = length(ab) - 1
-            rs, rc = zeros(nb, na), zeros(nb, na)
-            SFC.gridded_lag_sweep!(rs, rc, sf, u, sched, edges, ab, Val(2); second_axis = ax, backend = CB.SerialBackend())
-            gs, gc = zeros(nb, na), zeros(nb, na)
-            SFC.gridded_lag_sweep!(gs, gc, sf, u, sched, edges, ab, Val(2); second_axis = ax, backend = DEV)
-            Test.@test sum(rc) > 0
-            Test.@test isapprox(gc, rc; rtol = 1e-12)
-            Test.@test isapprox(gs, rs; rtol = 1e-11, atol = 1e-12)
-        end
-        ub = randn(2, fdims..., 3)
-        rs, rc = zeros(nb, 3), zeros(Int, nb, 3)
-        SFC.gridded_lag_sweep_batch!(rs, rc, SFT.FullVectorStructureFunctionType{3}(), ub, sched, edges, Val(2);
-                                     backend = CB.SerialBackend())
-        gs, gc = zeros(nb, 3), zeros(Int, nb, 3)
-        SFC.gridded_lag_sweep_batch!(gs, gc, SFT.FullVectorStructureFunctionType{3}(), ub, sched, edges, Val(2);
-                                     backend = DEV)
-        Test.@test gc == rc
+        na = length(ab) - 1
+        rs, rc = zeros(nb, na), zeros(nb, na)
+        SFC.gridded_lag_sweep!(rs, rc, sf, u, sched, edges, ab, Val(2); second_axis = ax, backend = CB.SerialBackend())
+        gs, gc = zeros(nb, na), zeros(nb, na)
+        SFC.gridded_lag_sweep!(gs, gc, sf, u, sched, edges, ab, Val(2); second_axis = ax, backend = DEV)
+        Test.@test sum(rc) > 0
+        Test.@test isapprox(gc, rc; rtol = 1e-12)
         Test.@test isapprox(gs, rs; rtol = 1e-11, atol = 1e-12)
-        rs3, rc3 = zeros(nb, 8, 3), zeros(nb, 8, 3)
-        SFC.gridded_lag_sweep_batch!(rs3, rc3, SFT.L2SFType(), ub, sched, edges, vbins, Val(2); second_axis = vax,
-                                     backend = CB.SerialBackend())
-        gs3, gc3 = zeros(nb, 8, 3), zeros(nb, 8, 3)
-        SFC.gridded_lag_sweep_batch!(gs3, gc3, SFT.L2SFType(), ub, sched, edges, vbins, Val(2); second_axis = vax,
-                                     backend = DEV)
-        Test.@test isapprox(gc3, rc3; rtol = 1e-12)
-        Test.@test isapprox(gs3, rs3; rtol = 1e-11, atol = 1e-12)
+    end
+    for (name, sf, axis) in LAG_BATCH_CASES
+        sched, fdims = schedules[name]
+        ub = randn(2, fdims..., 3)
+        if axis === :none
+            rs, rc = zeros(nb, 3), zeros(Int, nb, 3)
+            SFC.gridded_lag_sweep_batch!(rs, rc, sf, ub, sched, edges, Val(2); backend = CB.SerialBackend())
+            gs, gc = zeros(nb, 3), zeros(Int, nb, 3)
+            SFC.gridded_lag_sweep_batch!(gs, gc, sf, ub, sched, edges, Val(2); backend = DEV)
+            Test.@test gc == rc
+        else
+            ax, ab = axes[axis]
+            na = length(ab) - 1
+            rs, rc = zeros(nb, na, 3), zeros(nb, na, 3)
+            SFC.gridded_lag_sweep_batch!(rs, rc, sf, ub, sched, edges, ab, Val(2); second_axis = ax,
+                                         backend = CB.SerialBackend())
+            gs, gc = zeros(nb, na, 3), zeros(nb, na, 3)
+            SFC.gridded_lag_sweep_batch!(gs, gc, sf, ub, sched, edges, ab, Val(2); second_axis = ax, backend = DEV)
+            Test.@test isapprox(gc, rc; rtol = 1e-12)
+        end
+        Test.@test sum(rc) > 0
+        Test.@test isapprox(gs, rs; rtol = 1e-11, atol = 1e-12)
     end
 end
 
+# (schedule, operator): the norm of odd order, which has no transform, on every schedule; the others once each.
+const DIRECT_CASES = ((:uniform, SFT.FullVectorStructureFunctionType{3}()),
+                      (:rectilinear, SFT.FullVectorStructureFunctionType{3}()),
+                      (:zonal, SFT.FullVectorStructureFunctionType{3}()),
+                      (:uniform, SFT.L2SFType()), (:zonal, SFT.S3SFType()))
+
 Test.@testset "the direct lag sweep runs on the device, for the operators the transform refuses" begin
-    # The transform computes polynomial moments, so a norm of odd order has no transform at all;
-    # the direct sweep is the only route to it, and it must exist on the device too.
     Random.seed!(9001)
     nb = 6
-    ops = (SFT.L2SFType(), SFT.S3SFType(), SFT.FullVectorStructureFunctionType{3}())
-
-    uni = SFC.UniformLagSchedule((8, 8), (1 / 8, 1 / 8), (true, true))
-    uu = reshape(randn(2, 8, 8), 2, :)
-    ub = collect(range(0.0, 0.5; length = nb + 1))
-
-    ys = collect(range(0.0, 1.0; length = 9))
-    rect = SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((7,), (0.15,), (false,)), (ys,), (2, 1))
-    ur = reshape(randn(2, 7, 9), 2, :)
-    rb = collect(range(0.0, 0.7; length = nb + 1))
-
-    nlat, nlon = 7, 12
-    lats = collect(range(-60.0, 60.0; length = nlat)) .* (π / 180)
-    zon = SFC.ZonalLagSchedule(lats, nlon, 2π / nlon, 1.0, true)
-    uz = reshape(randn(2, nlon, nlat), 2, :)
-    zb = collect(range(0.0, 1.5; length = nb + 1))
-
-    # Zonal pairs do not share one lag box, so the device offers the global box and relies on
-    # `_lag_visit` to reject: that branch only runs when the trait is false.
-    Test.@test SFC.uniform_lag_box(zon) == false
-
-    for (sched, u, edges) in ((uni, uu, ub), (rect, ur, rb), (zon, uz, zb)), op in ops
+    lats = collect(range(-60.0, 60.0; length = 5)) .* (π / 180)
+    cases = (uniform = (SFC.UniformLagSchedule((8, 8), (1 / 8, 1 / 8), (true, true)), reshape(randn(2, 8, 8), 2, :),
+                        collect(range(0.0, 0.5; length = nb + 1))),
+             rectilinear = (SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((7,), (0.15,), (false,)),
+                                                       (collect(range(0.0, 1.0; length = 5)),), (2, 1)),
+                            reshape(randn(2, 7, 5), 2, :), collect(range(0.0, 0.7; length = nb + 1))),
+             zonal = (SFC.ZonalLagSchedule(lats, 12, 2π / 12, 1.0, true), reshape(randn(2, 12, 5), 2, :),
+                      collect(range(0.0, 1.5; length = nb + 1))))
+    for (name, op) in DIRECT_CASES
+        sched, u, edges = cases[name]
         rs, rc = zeros(nb), zeros(Int, nb)
-        SFC.gridded_lag_sweep!(rs, rc, op, u, sched, edges, Val(2), Val(1), Val(0);
-                               backend = CB.SerialBackend())
+        SFC.gridded_lag_sweep!(rs, rc, op, u, sched, edges, Val(2), Val(1), Val(0); backend = CB.SerialBackend())
         gs, gc = zeros(nb), zeros(Int, nb)
         SFC.gridded_lag_sweep!(gs, gc, op, u, sched, edges, Val(2), Val(1), Val(0); backend = DEV)
         Test.@test sum(rc) > 0

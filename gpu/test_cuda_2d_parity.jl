@@ -1,101 +1,88 @@
-# =============================================================================
-# Parity + timing for the CUDA fast 2D kernel (StructureFunctionsCUDAExt) vs the
-# portable KA unified kernel run on KA.CPU() (the validated reference). Exercises
-# the kernel through the same chokepoint the public API uses (_sf_launch_2d_batch!),
-# for NMOM ∈ {1 (joint), 6 (single-pass)} × fixed/varying × bin sizes.
-#   julia --project=gpu gpu/test_cuda_2d_parity.jl
-# =============================================================================
-using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH
-import KernelAbstractions as KA
+using Test: Test
 using CUDA: CUDA
-using StaticArrays: StaticArrays
-using Printf: Printf
-using Statistics: Statistics
+import KernelAbstractions as KA
 using Random: Random
+using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+
 const GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-const FT = Float32
-
-const N = parse(Int, get(ENV, "SF_T_N", "3000"))
-const B = parse(Int, get(ENV, "SF_T_B", "8"))
+const CE = Base.get_extension(SF, :StructureFunctionsCUDAExt)
+const BE = CUDA.CUDABackend()
+const CAPS = SFC.gpu_device_caps(BE)
+const FT = Float64
 const D = 2
-const sf2 = SFT.SecondOrderStructureFunctionType()
+const N = 300
+const B = 3
 const GEOM = SF.HelperFunctions.FlatGeometry{D}()
-moments(NMOM) = NMOM == 1 ? sf2 : SFT.SinglePassInvariants()
+const AXIS = SFC.InvariantValueAxis()
+moments(NMOM) = NMOM == 1 ? SFT.SecondOrderStructureFunctionType() : SFT.SinglePassInvariants()
+kind(NMOM) = Val(NMOM == 1 ? :joint2d : :single_pass_2d)
+dist_bins(n) = collect(FT, range(0.05, 2.0; length = n + 1))
+value_bins(n) = collect(FT, range(-5.0, 5.0; length = n + 1))
 
-# Reference: the portable kernels on KA.CPU(), which has no native plan.
-function ka_cpu_2d(x, u, ddig_cpu, vplan_cpu, N, n_dist, n_val, B, NMOM, fixed_x)
-    out = zeros(FT, NMOM, n_dist, n_val, B)
-    cnt = zeros(UInt32, NMOM, n_dist, n_val, B)
-    GE._sf_launch_2d_batch!(KA.CPU(), out, cnt, x, u, moments(NMOM), ddig_cpu, vplan_cpu,
-                            N, n_dist, n_val, B, fixed_x, GEOM, SFC.InvariantValueAxis())
+plan_kind(::CE.CUDA2DPlan{W, F, M, T, C, NP}) where {W, F, M, T, C, NP} = NP == M ? :shared : :planes
+plan_kind(::CE.CUDA2DGlobalPlan) = :global
+
+"""`(NMOM, n_dist, n_val, B)` sums and counts of the portable kernels on `KA.CPU()`; `x` is `(D, N)` when `fixed`."""
+function reference(x, u, bins, vb, NMOM, fixed)
+    nd, nv, b = length(bins) - 1, length(vb) - 1, size(u, 3)
+    out, cnt = zeros(FT, NMOM, nd, nv, b), zeros(UInt32, NMOM, nd, nv, b)
+    GE._sf_launch_2d_batch!(KA.CPU(), out, cnt, x, u, moments(NMOM), GE._gpu_digitizer(KA.CPU(), bins, kind(NMOM)),
+                            GE._gpu_digitizer(KA.CPU(), vb, Val(:value)), size(u, 2), nd, nv, b, fixed, GEOM, AXIS)
     KA.synchronize(KA.CPU())
     return out, cnt
 end
 
-function cuda_2d(xd, ud, ddig, vplan, N, n_dist, n_val, B, NMOM, fixed_x)
-    out = CUDA.zeros(FT, NMOM, n_dist, n_val, B)
-    cnt = CUDA.zeros(UInt32, NMOM, n_dist, n_val, B)
-    plan = SFC.gpu_native_2d_plan(CUDA.CUDABackend(), FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, moments(NMOM),
-                                  n_dist, n_val, vplan)
-    handled = plan !== nothing
-    handled && GE._sf_launch_2d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, moments(NMOM), ddig, vplan,
-                                       N, n_dist, n_val, B, fixed_x, GEOM, SFC.InvariantValueAxis())
-    CUDA.synchronize()
-    return out, cnt, handled
+"""Host copies of the native launch of `plan`, a plan or a plan choice whose portable candidate is `portable!`."""
+function device(plan, x, u, bins, vb, NMOM, fixed)
+    n, nd, nv, b = size(u, 2), length(bins) - 1, length(vb) - 1, size(u, 3)
+    out, cnt = CUDA.zeros(FT, NMOM, nd, nv, b), CUDA.zeros(UInt32, NMOM, nd, nv, b)
+    xd, ud = CUDA.CuArray(x), CUDA.CuArray(u)
+    ddig, vplan = GE._gpu_digitizer(BE, bins, kind(NMOM)), GE._gpu_digitizer(BE, vb, Val(:value))
+    portable!(o, c) = GE._sf_launch_2d_batch_portable!(BE, o, c, xd, ud, moments(NMOM), ddig, vplan, n, nd, nv, b,
+                                                       fixed, GEOM, AXIS)
+    SFC.gpu_native_launch_2d!(plan, out, cnt, xd, ud, SFC.NoWeights(), moments(NMOM), ddig, vplan, n, nd, nv, b, fixed,
+                              GEOM, AXIS, nothing, portable!)
+    return Array(out), Array(cnt)
 end
 
-println("CUDA 2D fast-kernel parity vs KA.CPU() reference — N=$N B=$B D=$D\n")
-println("| NMOM | fixed_x | bins | handled | max relΔ sums | pairs in a different value bin | TILE-fit |")
-for NMOM in (1, 6)
-    for fixed_x in (true, false)
-        for (n_dist, n_val) in ((16, 8), (20, 20), (50, 50))
-            # A fixed draw per case, so a row is reproducible and a change in it is attributable to the
-            # code. The criterion below is a bound that holds for any draw.
-            Random.seed!(20260916 + 1000 * NMOM + 100 * Int(fixed_x) + n_dist + n_val)
-            x_h = fixed_x ? rand(FT, D, N) : rand(FT, D, N, B)
-            u_h = randn(FT, D, N, B)
-            dist_bins = collect(FT, range(0.05f0, 2.0f0, length = n_dist + 1))
-            vb = collect(FT, range(-5.0f0, 5.0f0, length = n_val + 1))
-            kind = Val(NMOM == 1 ? :joint2d : :single_pass_2d)
-            ddig_cpu = GE._gpu_digitizer(KA.CPU(), dist_bins, kind)
-            vplan_cpu = GE._gpu_digitizer(KA.CPU(), vb, Val(:value))
-            ddig = GE._gpu_digitizer(CUDA.CUDABackend(), dist_bins, kind)
-            vplan = GE._gpu_digitizer(CUDA.CUDABackend(), vb, Val(:value))
-            xd = CUDA.CuArray(x_h)
-            ud = CUDA.CuArray(u_h)
+# (plan kind, moments, shared positions, plan spec, distance bins, value bins)
+const PLANS = (
+    (:shared, 1, true, (128, 1), 16, 8),
+    (:shared, 6, false, (128, 6), 30, 30),
+    (:planes, 6, true, (128, 2), 16, 8),
+    (:global, 1, false, (128, 0), 16, 8),
+    (:global, 6, true, (128, 0), 20, 20),
+)
 
-            o_ref, c_ref = ka_cpu_2d(x_h, u_h, ddig_cpu, vplan_cpu, N, n_dist, n_val, B, NMOM, fixed_x)
-            o_cu, c_cu, handled = cuda_2d(xd, ud, ddig, vplan, N, n_dist, n_val, B, NMOM, fixed_x)
-            oc = Array(o_cu); cc = Array(c_cu)
-            rel = maximum(abs.(oc .- o_ref) ./ max.(abs.(o_ref), 1f-3))
-            # A pair is placed by its value, and in Float32 a value within an ulp of a value-bin edge
-            # digitizes differently under the two devices' rounding, so one bin's count is not an invariant
-            # of the pair set. The invariant is that every pair is placed: the measure is the misplaced
-            # share of the total.
-            moved = sum(abs.(Int.(cc) .- Int.(c_ref))) ÷ 2
-            total = sum(Int.(c_ref)) ÷ max(NMOM, 1)
-            Printf.@printf("| %d | %s | %dx%d | %s | %.2e | %d / %d = %.1e | %s |\n",
-                    NMOM, fixed_x, n_dist, n_val, handled, rel, moved, total, moved / max(total, 1), handled)
+Test.@testset "native 2-D kernels against KA.CPU()" begin
+    # Every native 2-D plan kind, launched as planned.
+    Test.@testset "$k NMOM=$NMOM shared=$fixed $(nd)x$(nv)" for (i, (k, NMOM, fixed, spec, nd, nv)) in enumerate(PLANS)
+        Random.seed!(20260916 + i)
+        x = fixed ? rand(FT, D, N) : rand(FT, D, N, B)
+        u = randn(FT, D, N, B)
+        bins, vb = dist_bins(nd), value_bins(nv)
+        plan = CE._cuda_2d_fit(CAPS, FT, FT, FT, UInt32, D, D, NMOM, nd, nv, spec)
+        Test.@test plan_kind(plan) === k
+        o, c = device(plan, x, u, bins, vb, NMOM, fixed)
+        ro, rc = reference(x, u, bins, vb, NMOM, fixed)
+        Test.@test c == rc
+        Test.@test isapprox(o, ro; rtol = 1e-10)
+    end
+
+    # A call that samples its in-range share takes the first candidate, and its class's second call times them all.
+    Test.@testset "plan choice" begin
+        Random.seed!(20260917)
+        n, b, nd, nv = 1000, 4, 16, 8
+        Test.@test (n * (n - 1) ÷ 2) * b >= CE.CU_2D_CHOOSE_FROM[2]
+        x, u = rand(FT, D, n), randn(FT, D, n, b)
+        bins, vb = dist_bins(nd), value_bins(nv)
+        choice = CE._cuda_2d_plan(CAPS, FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, moments(6), nd, nv)
+        ro, rc = reference(x, u, bins, vb, 6, true)
+        for _ in 1:2
+            o, c = device(choice, x, u, bins, vb, 6, true)
+            Test.@test c == rc
+            Test.@test isapprox(o, ro; rtol = 1e-10)
         end
+        Test.@test !isempty(choice.chosen)
     end
 end
-
-# ---- timing the user's headline case: SP2D 50x50, fixed-x, at this B ----
-println("\n--- timing SP2D 50x50 fixed-x (extrapolate to B=8064) ---")
-let n_dist = 50, n_val = 50, NMOM = 6, fixed_x = true
-    x_h = rand(FT, D, N); u_h = randn(FT, D, N, B)
-    dist_bins = collect(FT, range(0.05f0, 2.0f0, length = n_dist + 1))
-    vb = collect(FT, range(-5.0f0, 5.0f0, length = n_val + 1))
-    ddig = GE._gpu_digitizer(CUDA.CUDABackend(), dist_bins, Val(:single_pass_2d))
-    vplan = GE._gpu_digitizer(CUDA.CUDABackend(), vb, Val(:value))
-    xd = CUDA.CuArray(x_h); ud = CUDA.CuArray(u_h)
-    out = CUDA.zeros(FT, NMOM, n_dist, n_val, B); cnt = CUDA.zeros(UInt32, NMOM, n_dist, n_val, B)
-    f() = (CUDA.fill!(out, 0f0); CUDA.fill!(cnt, UInt32(0));
-           GE._sf_launch_2d_batch!(CUDA.CUDABackend(), out, cnt, xd, ud, SFT.SinglePassInvariants(), ddig, vplan,
-                                   N, n_dist, n_val, B, true, GEOM, SFC.InvariantValueAxis());
-           CUDA.synchronize())
-    f(); f(); ts = Float64[]; for _ in 1:5; t = time_ns(); f(); push!(ts, (time_ns()-t)/1e9); end
-    t = Statistics.median(ts); bapps = (N*(N-1)/2)*B/t/1e9
-    Printf.@printf("  N=%d B=%d: %.3f s  (%.2f bapps)  → B=8064 ≈ %.1f s\n", N, B, t, bapps, t*8064/B)
-end
-println("\nDONE_PARITY")

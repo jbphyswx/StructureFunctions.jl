@@ -1,78 +1,44 @@
 using Test: Test
-using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
-using StaticArrays: StaticArrays as SA
-using Random: Random
+using StructureFunctions: Calculations as SFC, StructureFunctionTypes as SFT
 
-
+include(joinpath(@__DIR__, "test_synthetic_data.jl"))
+using .SyntheticData: SyntheticData
 
 Test.@testset "E2E: Structure Function E2E Suite" begin
-    # Base Settings
-    N_side = 16
-    L = 10.0
     xs, ys, _ = SyntheticData.generate_nonuniform_domain(
-        N_side;
+        16;
         R_mask = 0.0,
         lat_range = (0.0, 5.0),
         lon_range = (0.0, 10.0),
     )
-
-    # Generate vector field (u, v)
-    dk = 2π / L
-    peaks_u = [(dk * 2, dk * 1, 1.0)]
-    peaks_v = [(dk * 1, dk * 2, 0.5)]
-    u = real.(SyntheticData.generate_spectral_field(xs, ys; peaks = peaks_u))
-    v = real.(SyntheticData.generate_spectral_field(xs, ys; peaks = peaks_v))
-
+    dk = 2π / 10.0
+    u = real.(SyntheticData.generate_spectral_field(xs, ys; peaks = [(2dk, dk, 1.0)]))
+    v = real.(SyntheticData.generate_spectral_field(xs, ys; peaks = [(dk, 2dk, 0.5)]))
     pos = vcat(vec(xs)', vec(ys)')
     vals = vcat(vec(u)', vec(v)')
-
-    # Target binning
     r_bins = collect(0.1 .+ (0:5) .* 0.4)
+    sf64 = SFC.calculate_structure_function(SFT.SecondOrderStructureFunction, pos, vals, r_bins)
 
-    Test.@testset "Basic Execution" begin
-        sf_type = SFT.SecondOrderStructureFunction
-        Test.@test_nowarn SFC.calculate_structure_function(
-            sf_type,
-            pos,
-            vals,
-            r_bins,
-        )
+    # Every pair of a 256-point non-uniform domain, binned on [lo, hi) and averaged directly.
+    Test.@testset "the second-order structure function is the pair average" begin
+        N = size(pos, 2)
+        sums, counts = zeros(5), zeros(Int, 5)
+        for i in 1:(N - 1), j in (i + 1):N
+            b = searchsortedlast(r_bins, sqrt(sum(abs2, pos[:, j] .- pos[:, i])))
+            1 <= b <= 5 || continue
+            sums[b] += sum(abs2, vals[:, j] .- vals[:, i])
+            counts[b] += 1
+        end
+        Test.@test sf64.values ≈ sums ./ counts rtol = 1e-12
     end
 
-    Test.@testset "Multi-field Execution" begin
-        sf_type = SFT.SecondOrderStructureFunction
-        res = SFC.calculate_structure_function(
-            sf_type,
-            pos,
-            vals,
-            r_bins,
-        )
-        Test.@test length(res) == 5
-        Test.@test all(res .>= 0)
-    end
-
-    Test.@testset "Mixed Precision (Float32)" begin
-        xs32 = Float32.(xs)
-        ys32 = Float32.(ys)
-        u32 = Float32.(u)
-        v32 = Float32.(v)
-        # Use exact bin types
-        r32 = Float32.(r_bins)
-
-        sf64 = SFC.calculate_structure_function(
-            SFT.SecondOrderStructureFunction,
-            pos,
-            vals,
-            r_bins,
-        )
+    Test.@testset "Float32 input gives the Float64 result to single precision" begin
         sf32 = SFC.calculate_structure_function(
             SFT.SecondOrderStructureFunction,
-            vcat(vec(xs32)', vec(ys32)'),
-            vcat(vec(u32)', vec(v32)'),
-            r32,
+            Float32.(pos),
+            Float32.(vals),
+            Float32.(r_bins),
         )
-
         Test.@test sf32 ≈ Float32.(sf64) rtol = 1e-5
     end
 end

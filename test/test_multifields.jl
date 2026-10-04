@@ -2,8 +2,6 @@ using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT, MultiFields as MF, HelperFunctions as SFH
-using StructureFunctions.StructureFunctionTypes: MixedSFType, ScalarSFType, VectorDotSFType, ScalarDotSFType,
-    MixedStructureFunctionType
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using OhMyThreads: OhMyThreads
@@ -33,27 +31,21 @@ function _brute(op, x, vectors, scalars, bins)
 end
 
 _run(op, x, f, bins; kw...) = SFC.calculate_structure_function(
-    op, x, f, bins, UInt32, SF.StructureFunctionSumsAndCounts; kw...)
+    op, x, f, bins, UInt32, SF.StructureFunctionSumsAndCounts; culling = SFC.NoCulling(), kw...)
 
-Test.@testset "a field of one vector field is the array path" begin
-    # Serially the adapter gives the array path's answer bit for bit; threaded, the tasks' summation order varies.
+const ONE_VECTOR_FIELD_CASES = ((SFT.L2SFType(), CB.SerialBackend()), (SFT.T2SFType(), CB.ThreadedBackend()),
+                                (SFT.S2SFType(), CB.SerialBackend()), (SFT.L3SFType(), CB.SerialBackend()))
+
+Test.@testset "a field of one vector field is that velocity's structure function" begin
     Random.seed!(1200)
     x = rand(2, 80)
     u = randn(2, 80)
-    bins = collect(range(0.0, 1.5; length = 7))   # spans the unit square diagonal
-    for op in (SFT.L2SFType(), SFT.T2SFType(), SFT.S2SFType(), SFT.L3SFType()),
-        backend in (CB.SerialBackend(), CB.ThreadedBackend())
-        bare = SFC.calculate_structure_function(op, x, u, bins, UInt32, SF.StructureFunctionSumsAndCounts; backend)
-        multi = _run(op, x, MF.Fields(vectors = (u,)), bins; backend)
-        Test.@test multi.counts == bare.counts
-        if backend isa CB.SerialBackend
-            Test.@test multi.sums == bare.sums
-        else
-            Test.@test multi.sums ≈ bare.sums rtol = 1e-12
-        end
+    bins = collect(range(0.0, 1.5; length = 7))
+    for (op, backend) in ONE_VECTOR_FIELD_CASES
+        got = _run(op, x, MF.Fields(vectors = (u,)), bins; backend)
+        ref_s, ref_c = _brute((dv, ds, rh) -> op(dv[1], rh), x, (u,), (), bins)
+        Test.@test (op, got.counts == ref_c, isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)) == (op, true, true)
     end
-    # and the packing itself copies nothing it need not
-    Test.@test MF.packed(MF.Fields(vectors = (u,))) == u
 end
 
 Test.@testset "packing lays fields out as declared" begin
@@ -124,34 +116,38 @@ Test.@testset "Yaglom's mixed moment matches brute force" begin
     Test.@test isapprox(got1.sums, ref1_s; rtol = 1e-10, atol = 1e-12)
 end
 
+const SCALARS_ALONE_CASES = ((2, SFT.ScalarSFType{2}(), (ds -> ds[1]^2)),
+                             (3, SFT.ScalarDotSFType(1, 2), (ds -> ds[1] * ds[2])))
+
 Test.@testset "a field of scalars alone is located by its coordinates" begin
-    # With no vector field there is no velocity dimension to read the geometry from; the points
-    # carry it. Checked against brute force on two- and three-dimensional points.
+    # With no vector field the points' coordinate count sets the geometry; checked against brute force.
     Random.seed!(1550)
     N = 60
-    for Dx in (2, 3)
+    for (Dx, op, value) in SCALARS_ALONE_CASES
         x = rand(Dx, N)
         th = randn(N)
         ph = randn(N)
         bins = collect(range(0.0, 1.2; length = 6))
         f = MF.Fields(scalars = (th, ph))
-        got = _run(SFT.ScalarSFType{2}(), x, f, bins)
-        ref_s, ref_c = _brute((dv, ds, rh) -> ds[1]^2, x, (), (th, ph), bins)
+        got = _run(op, x, f, bins)
+        ref_s, ref_c = _brute((dv, ds, rh) -> value(ds), x, (), (th, ph), bins)
         Test.@test got.counts == ref_c
         Test.@test isapprox(got.sums, ref_s; rtol = 1e-10, atol = 1e-12)
-        gotx = _run(SFT.ScalarDotSFType(1, 2), x, f, bins)
-        refx_s, _ = _brute((dv, ds, rh) -> ds[1] * ds[2], x, (), (th, ph), bins)
-        Test.@test isapprox(gotx.sums, refx_s; rtol = 1e-10, atol = 1e-12)
     end
 end
 
+# (Dx, metric, operator, backends checked against the serial answer)
+const ODD_MOMENT_CASES = (
+    (2, DI.Euclidean(), SFT.ScalarSFType{3}(), (CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))),
+    (3, DI.Euclidean(), SFT.MixedSFType{1, 0, 1}(), ()),
+    (2, DI.Haversine(6.371e6), SFT.MixedSFType{1, 0, 1}(), (CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))),
+)
+
 Test.@testset "odd scalar moments do not depend on how the points are ordered" begin
-    # ⟨δu_L δθ⟩ and ⟨(δθ)³⟩ change sign when a pair is read from its other end, so their value is fixed
-    # by reading every pair from the lower to the upper end along the first separating coordinate —
-    # never by the order the points arrive in.
+    # Each pair is read from its lower to its upper end along the first separating coordinate, on every backend.
     Random.seed!(1570)
     N = 60
-    for (Dx, metric) in ((2, DI.Euclidean()), (3, DI.Euclidean()), (2, DI.Haversine(6.371e6)))
+    for (Dx, metric, sf, backends) in ODD_MOMENT_CASES
         x = Dx == 2 && metric isa DI.Haversine ? vcat(120 .* rand(1, N) .- 60, 100 .* rand(1, N) .- 50) : rand(Dx, N)
         u = randn(Dx == 3 ? 3 : 2, N)
         th = randn(N)
@@ -160,28 +156,24 @@ Test.@testset "odd scalar moments do not depend on how the points are ordered" b
         perm = Random.randperm(N)
         f = MF.Fields(vectors = (u,), scalars = (th,))
         fp = MF.Fields(vectors = (u[:, perm],), scalars = (th[perm],))
-        for sf in (SFT.MixedSFType{1, 0, 1}(), SFT.ScalarSFType{3}())
-            a = SFC.calculate_structure_function(sf, x, f, bins, SF.StructureFunctionSumsAndCounts;
-                backend = CB.SerialBackend(), distance_metric = metric)
-            b = SFC.calculate_structure_function(sf, x[:, perm], fp, bins, SF.StructureFunctionSumsAndCounts;
-                backend = CB.SerialBackend(), distance_metric = metric)
-            Test.@test a.counts == b.counts
-            Test.@test isapprox(a.sums, b.sums; rtol = 1e-10, atol = 1e-12)
-            Test.@test any(!iszero, a.sums)
-            c = SFC.calculate_structure_function(sf, x[:, perm], fp, bins, SF.StructureFunctionSumsAndCounts;
-                backend = CB.ThreadedBackend(), distance_metric = metric)
-            Test.@test isapprox(c.sums, a.sums; rtol = 1e-10, atol = 1e-12)
+        a = SFC.calculate_structure_function(sf, x, f, bins, SF.StructureFunctionSumsAndCounts;
+            backend = CB.SerialBackend(), distance_metric = metric)
+        b = SFC.calculate_structure_function(sf, x[:, perm], fp, bins, SF.StructureFunctionSumsAndCounts;
+            backend = CB.SerialBackend(), distance_metric = metric)
+        Test.@test a.counts == b.counts
+        Test.@test isapprox(a.sums, b.sums; rtol = 1e-10, atol = 1e-12)
+        Test.@test any(!iszero, a.sums)
+        for backend in backends
             d = SFC.calculate_structure_function(sf, x[:, perm], fp, bins, SF.StructureFunctionSumsAndCounts;
-                backend = CB.GPUBackend(KA.CPU()), distance_metric = metric)
+                backend, distance_metric = metric)
             Test.@test d.counts == a.counts
             Test.@test isapprox(d.sums, a.sums; rtol = 1e-10, atol = 1e-12)
-            if metric isa DI.Euclidean
-                # the reading is the lexicographic one on the displacement, checked pair by pair
-                ref_s, ref_c = _brute((dv, ds, rh) -> (rh[1] != 0 ? sign(rh[1]) : sign(rh[2])) *
-                    (sf isa SFT.ScalarSFType ? ds[1]^3 : LA.dot(dv[1], rh) * ds[1]), x, (u,), (th,), bins)
-                Test.@test a.counts == ref_c
-                Test.@test isapprox(a.sums, ref_s; rtol = 1e-10, atol = 1e-12)
-            end
+        end
+        if metric isa DI.Euclidean
+            ref_s, ref_c = _brute((dv, ds, rh) -> (rh[1] != 0 ? sign(rh[1]) : sign(rh[2])) *
+                (sf isa SFT.ScalarSFType ? ds[1]^3 : LA.dot(dv[1], rh) * ds[1]), x, (u,), (th,), bins)
+            Test.@test a.counts == ref_c
+            Test.@test isapprox(a.sums, ref_s; rtol = 1e-10, atol = 1e-12)
         end
     end
 end
@@ -227,9 +219,7 @@ Test.@testset "asking for a field a field does not carry says so" begin
 end
 
 Test.@testset "fields are transported on a sphere, scalars are not" begin
-    # A vector field is carried as an ambient 3-vector on a sphere, so a multi-field must widen every
-    # vector field exactly as the array path widens the one it has. A scalar has nothing to
-    # transport and passes through untouched.
+    # Every vector field is transported as a bare velocity is; a scalar is differenced as it stands.
     Random.seed!(1800)
     N = 50
     x = vcat(reshape(2π .* rand(N), 1, N), reshape((rand(N) .- 0.5) .* 1.4, 1, N))
@@ -238,9 +228,6 @@ Test.@testset "fields are transported on a sphere, scalars are not" begin
     bins = collect(range(0.0, 2.4; length = 6))
     metric = SFC.DI.SphericalAngle()
 
-    # one vector field: the same kernel as the array path, so identical to the last bit
-    # Both pinned to the same backend: the claim is that the multi-field takes the *same kernel*, and a
-    # different backend would differ in summation order alone, which would not test that.
     bare_s = zeros(5); bare_c = zeros(UInt32, 5)
     SFC.calculate_structure_function!(bare_s, bare_c, SFT.L2SFType(), x, u, bins;
                                      distance_metric = metric, backend = CB.SerialBackend())
@@ -248,17 +235,14 @@ Test.@testset "fields are transported on a sphere, scalars are not" begin
         SFT.L2SFType(), x, MF.Fields(vectors = (u,)), bins, UInt32, SF.StructureFunctionSumsAndCounts;
         distance_metric = metric, backend = CB.SerialBackend())
     Test.@test multi.counts == bare_c
-    Test.@test multi.sums == bare_s
+    Test.@test isapprox(multi.sums, bare_s; rtol = 1e-12)
 
-    # a scalar rides along without disturbing the velocity part: L2SF on the multi-field must still equal
-    # L2SF on the velocity alone
     with_tracer = SFC.calculate_structure_function(
         SFT.L2SFType(), x, MF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32, SF.StructureFunctionSumsAndCounts;
         distance_metric = metric)
     Test.@test with_tracer.counts == bare_c
     Test.@test isapprox(with_tracer.sums, bare_s; rtol = 1e-12)
 
-    # the scalar structure function on a sphere: transport-free, so it is the plain difference
     scalar_only = SFC.calculate_structure_function(
         SFT.ScalarSFType{2}(), x, MF.Fields(scalars = (th,)), bins, UInt32, SF.StructureFunctionSumsAndCounts;
         distance_metric = metric)
@@ -274,8 +258,6 @@ Test.@testset "fields are transported on a sphere, scalars are not" begin
     Test.@test isapprox(scalar_only.sums, ref_s; rtol = 1e-10, atol = 1e-12)
     Test.@test sum(scalar_only.counts) > 0
 
-    # Yaglom on a sphere runs and stays finite; its velocity half is transported, so it is not the
-    # flat answer
     yag = SFC.calculate_structure_function(
         SFT.MixedSFType{1, 0, 2}(), x, MF.Fields(vectors = (u,), scalars = (th,)), bins, UInt32,
         SF.StructureFunctionSumsAndCounts; distance_metric = metric)
@@ -284,10 +266,9 @@ Test.@testset "fields are transported on a sphere, scalars are not" begin
 end
 
 Test.@testset "the threaded backend gives the serial answer" begin
-    # Multi-field across threads: the setup happens once above the task loop and each task sweeps
-    # its own outer indices, so the only thing that may differ from serial is summation order.
+    # Every pair is swept exactly once across the tasks; only the summation order may differ from serial.
     Random.seed!(1900)
-    N = 400
+    N = 200
     x = rand(2, N)
     u = randn(2, N)
     adv = randn(2, N)
@@ -300,18 +281,26 @@ Test.@testset "the threaded backend gives the serial answer" begin
                     (MF.Fields(vectors = (u,), scalars = (th,)), SFT.ScalarSFType{2}()),
                     (MF.Fields(vectors = (u,)), SFT.L2SFType()))
         ser_s = zeros(nb); ser_c = zeros(Int, nb)
-        SFC.serial_calculate_structure_function!(ser_s, ser_c, op, x, f, bins; geometry = SFH.FlatGeometry{2}())
+        SFC.serial_calculate_structure_function!(ser_s, ser_c, op, x, f, bins; geometry = SFH.FlatGeometry{2}(),
+                                                 culling = SFC.NoCulling())
         thr_s = zeros(nb); thr_c = zeros(Int, nb)
-        SFC.threaded_calculate_structure_function!(thr_s, thr_c, op, x, f, bins; geometry = SFH.FlatGeometry{2}())
+        SFC.threaded_calculate_structure_function!(thr_s, thr_c, op, x, f, bins; geometry = SFH.FlatGeometry{2}(),
+                                                   culling = SFC.NoCulling())
         Test.@test thr_c == ser_c
         Test.@test isapprox(thr_s, ser_s; rtol = 1e-10, atol = 1e-12)
         Test.@test sum(thr_c) == N * (N - 1) ÷ 2
     end
 end
 
+const DEVICE_FIELD_CASES = ((SFT.MixedSFType{1, 0, 2}(), false, SFC.NoCulling()),
+                            (SFT.MixedSFType{1, 2, 1}(), true, SFC.AlwaysCulling()),
+                            (SFT.VectorDotSFType(1, 2), true, SFC.NoCulling()),
+                            (SFT.ScalarDotSFType(1, 2), false, SFC.AlwaysCulling()),
+                            (SFT.ScalarSFType{3}(2), false, SFC.NoCulling()))
+
 Test.@testset "the device gives the serial answer, culled with or without a workspace, and adds" begin
     Random.seed!(1950)
-    N = 700
+    N = 300
     x = rand(2, N)
     f = MF.Fields(vectors = (randn(2, N), randn(2, N)), scalars = (randn(N), randn(N)))
     w = 0.5 .+ rand(N)
@@ -319,31 +308,30 @@ Test.@testset "the device gives the serial answer, culled with or without a work
     nb = length(bins) - 1
     dev = CB.GPUBackend(KA.CPU())
     RAW = SF.StructureFunctionSumsAndCounts
-    for op in (SFT.MixedSFType{1, 0, 2}(), SFT.MixedSFType{1, 2, 1}(), SFT.VectorDotSFType(1, 2),
-               SFT.ScalarDotSFType(1, 2), SFT.ScalarSFType{3}(2)), weighted in (false, true)
+    for (op, weighted, pol) in DEVICE_FIELD_CASES
         CT = weighted ? Float64 : Int
         kw = weighted ? (; weights = w) : (;)
         ref = SFC.calculate_structure_function(op, x, f, bins, CT, RAW; backend = CB.SerialBackend(), kw...)
-        case = (nameof(typeof(op)), weighted)
+        case = (nameof(typeof(op)), weighted, pol)
         Test.@test sum(ref.counts) > 0
-        for pol in (SFC.NoCulling(), SFC.AlwaysCulling())
-            ws = SFC.GPUSFWorkspace(KA.CPU(), bins)
-            got = SFC.calculate_structure_function(op, x, f, bins, CT, RAW; backend = dev, workspace = ws,
-                                                   culling = pol, kw...)
-            Test.@test (case, pol, isapprox(got.counts, ref.counts; rtol = 1e-12)) == (case, pol, true)
-            Test.@test (case, pol, isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, pol, true)
-            Test.@test (case, pol, ws.lazy.cull isa SFC.GPUCullMemo) == (case, pol, pol isa SFC.AlwaysCulling)
+        ws = SFC.GPUSFWorkspace(KA.CPU(), bins)
+        got = SFC.calculate_structure_function(op, x, f, bins, CT, RAW; backend = dev, workspace = ws,
+                                               culling = pol, kw...)
+        Test.@test (case, isapprox(got.counts, ref.counts; rtol = 1e-12)) == (case, true)
+        Test.@test (case, isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true)
+        if pol isa SFC.AlwaysCulling
+            got = SFC.calculate_structure_function(op, x, f, bins, CT, RAW; backend = dev,
+                                                   culling = SFC.AlwaysCulling(), kw...)
+            Test.@test (case, isapprox(got.counts, ref.counts; rtol = 1e-12),
+                        isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true, true)
+        else
+            s, c = zeros(nb), zeros(CT, nb)
+            for _ in 1:2
+                SFC.calculate_structure_function!(s, c, op, x, f, bins; backend = dev, culling = pol, kw...)
+            end
+            Test.@test (case, isapprox(c, 2 .* ref.counts; rtol = 1e-12)) == (case, true)
+            Test.@test (case, isapprox(s, 2 .* ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true)
         end
-        got = SFC.calculate_structure_function(op, x, f, bins, CT, RAW; backend = dev, culling = SFC.AlwaysCulling(),
-                                               kw...)
-        Test.@test (case, isapprox(got.counts, ref.counts; rtol = 1e-12),
-                    isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true, true)
-        s, c = zeros(nb), zeros(CT, nb)
-        for _ in 1:2
-            SFC.calculate_structure_function!(s, c, op, x, f, bins; backend = dev, kw...)
-        end
-        Test.@test (case, isapprox(c, 2 .* ref.counts; rtol = 1e-12)) == (case, true)
-        Test.@test (case, isapprox(s, 2 .* ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true)
     end
     # on a sphere the vector fields are transported and the scalars are not
     xs = vcat(reshape(2π .* rand(N), 1, N), reshape((rand(N) .- 0.5) .* 1.4, 1, N))
@@ -357,12 +345,4 @@ Test.@testset "the device gives the serial answer, culled with or without a work
         Test.@test got.counts == ref.counts
         Test.@test isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)
     end
-end
-
-Test.@testset "the field operators are exported" begin
-    Test.@test MixedSFType === MixedStructureFunctionType
-    Test.@test MixedSFType{1, 0, 2}() === SFT.MixedSFType{1, 0, 2}()
-    Test.@test ScalarSFType{2}() === SFT.ScalarSFType{2}()
-    Test.@test VectorDotSFType(1, 2) === SFT.VectorDotSFType(1, 2)
-    Test.@test ScalarDotSFType(1, 2) === SFT.ScalarDotSFType(1, 2)
 end

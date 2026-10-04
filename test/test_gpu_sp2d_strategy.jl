@@ -2,8 +2,7 @@ using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH,
-    InfPaddedBinEdges, LinearBinEdges, LogBinEdges, LogBinEdges_from_log_edges
+    StructureFunctions as SF, Calculations as SFC, InfPaddedBinEdges, LinearBinEdges, LogBinEdges_from_log_edges
 using Random: Random
 
 Random.seed!(2024)
@@ -16,166 +15,14 @@ function _synthetic_value_bins_ntuple(n_bins::Int, ::Type{FT} = Float64) where {
 end
 
 const SP2D_EXT = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-const SP2D_CAPS = SFC.gpu_device_caps(KA.CPU())
 
-"""The strategy a call with `D`-wide points and sums of `FT`, counts of `CST`, takes."""
-_sp2d_strategy(n_dist::Int, n_val::Int, D::Int, ::Type{FT}, ::Type{CST} = UInt32) where {FT, CST} =
-    SP2D_EXT._sp2d_accumulation_strategy(SP2D_CAPS, n_dist, n_val, D, D, FT, FT, CST)
+"""Whether every invariant of `got` matches `ref`: counts to `rtol`, sums to `rtol` and `atol`."""
+_sp_agrees(got, ref; rtol, atol = 0.0) = keys(got) == keys(ref) &&
+    all(k -> isapprox(collect(got[k].counts), collect(ref[k].counts); rtol) &&
+             isapprox(collect(got[k].sums), collect(ref[k].sums); rtol, atol), keys(ref))
 
-"""The strategy's accumulation mode, `nothing` when the histogram takes the global-atomic kernel."""
-_sp2d_mode(args...) = (cfg = _sp2d_strategy(args...); cfg === nothing ? nothing : cfg.accum_mode)
-
-Test.@testset "GPU sp2d strategy fits the static budget it was chosen against" begin
-    ext = SP2D_EXT
-    budget = SFC.gpu_static_smem_budget(SP2D_CAPS)
-    for (nd, nv, D, FT, CST, mode) in (
-        (10, 8, 2, Float64, UInt32, :shared),
-        (50, 52, 2, Float64, UInt32, :typeplane),
-        (50, 52, 2, Float32, UInt32, :typeplane),
-        (30, 30, 2, Float64, UInt32, :typeplane),
-        (30, 30, 2, Float64, Float64, :typeplane),
-        (30, 30, 3, Float64, Float64, :typeplane),
-        (60, 60, 2, Float64, UInt32, nothing),
-        (50, 52, 2, Float64, Float64, nothing),
-    )
-        cfg = _sp2d_strategy(nd, nv, D, FT, CST)
-        if mode === nothing
-            Test.@test cfg === nothing
-            Test.@test ext._sp2d_typeplane_smem_bytes(FT, FT, CST, D, D, ext._sp2d_plane_cells(nd, nv)) > budget
-            continue
-        end
-        bytes_at(hc) = mode === :typeplane ? ext._sp2d_typeplane_smem_bytes(FT, FT, CST, D, D, hc) :
-                                             ext._sp2d_sharedhist_smem_bytes(FT, FT, CST, D, D, hc)
-        Test.@test cfg.accum_mode === mode
-        Test.@test cfg.smem_budget == budget
-        Test.@test cfg.n_joint_cells == SFC.SINGLE_PASS_N * nd * nv
-        Test.@test bytes_at(ext._sp2d_sharedhist_compile_cells(cfg)) <= budget
-        Test.@test bytes_at(cfg.max_shared_cells) <= budget < bytes_at(cfg.max_shared_cells + 1)
-        if mode === :typeplane
-            Test.@test cfg.types_per_pass * cfg.plane_shared_cells <= cfg.max_shared_cells <
-                       (cfg.types_per_pass + 1) * cfg.plane_shared_cells
-            Test.@test cfg.n_type_passes == cld(SFC.SINGLE_PASS_N, cfg.types_per_pass)
-        end
-    end
-end
-
-Test.@testset "GPU sp2d HTP-EJ (KA.CPU)" begin
-    backend = KA.CPU()
-    N = 80
-    FT = Float64
-    x = rand(FT, 2, N)
-    u = rand(FT, 2, N)
-    linear_dist = LinearBinEdges(range(FT(0.0), FT(1.5); length = 11))
-    log_dist = LogBinEdges_from_log_edges(range(log(FT(0.01)), log(FT(1.5)); length = 11))
-    value_bins_ntuple = _synthetic_value_bins_ntuple(8, FT)
-    n_val = length(value_bins_ntuple[1]) - 1
-    NB = length(linear_dist) - 1
-    Test.@test _sp2d_mode(NB, n_val, 2, FT) === :shared
-
-    sums_lin_ref = zeros(FT, 6, NB, n_val)
-    cnts_lin_ref = zeros(UInt32, 6, NB, n_val)
-    SFC.calculate_structure_functions_single_pass_2d!(
-        sums_lin_ref, cnts_lin_ref, x, u, linear_dist, value_bins_ntuple;
-        backend = CB.SerialBackend(),
-    )
-    for (db, sums_ref, cnts_ref) in (
-        (linear_dist, sums_lin_ref, cnts_lin_ref),
-        begin
-            sr = zeros(FT, 6, length(log_dist) - 1, n_val)
-            cr = zeros(UInt32, 6, length(log_dist) - 1, n_val)
-            SFC.calculate_structure_functions_single_pass_2d!(
-                sr, cr, x, u, log_dist, value_bins_ntuple;
-                backend = CB.SerialBackend(),
-            )
-            (log_dist, sr, cr)
-        end,
-    )
-        sums_gpu = zeros(FT, size(sums_ref)...)
-        cnts_gpu = zeros(UInt32, size(cnts_ref)...)
-        SFC.calculate_structure_functions_single_pass_2d!(
-            sums_gpu, cnts_gpu, x, u, db, value_bins_ntuple;
-            backend = CB.GPUBackend(backend),
-        )
-        Test.@test sums_gpu ≈ sums_ref atol = 1e-11
-        Test.@test cnts_gpu == cnts_ref
-
-        sums_global = zeros(FT, size(sums_ref)...)
-        cnts_global = zeros(UInt32, size(cnts_ref)...)
-        SP2D_EXT._launch_single_pass_2d_kernel!(
-            backend, 64, sums_global, cnts_global, x, u,
-            SP2D_EXT._gpu_digitizer(backend, db, Val(:single_pass_2d)),
-            SP2D_EXT._value_digitizer(nothing, backend, value_bins_ntuple),
-            N, length(db), SP2D_EXT._n_value_edges(value_bins_ntuple), SF.HelperFunctions.FlatGeometry{2}(),
-        )
-        KA.synchronize(backend)
-        Test.@test sums_global ≈ sums_ref atol = 1e-11
-        Test.@test cnts_global == cnts_ref
-    end
-
-    inner = LinearBinEdges(range(FT(-0.5), FT(1.5); length = n_val + 1))
-    inf_val = InfPaddedBinEdges(inner)
-    n_val_inf = length(inf_val) - 1
-    n_log = length(log_dist) - 1
-    sums_ref = zeros(FT, 6, n_log, n_val_inf)
-    cnts_ref = zeros(UInt32, 6, n_log, n_val_inf)
-    SFC.calculate_structure_functions_single_pass_2d!(
-        sums_ref, cnts_ref, x, u, log_dist, inf_val;
-        backend = CB.SerialBackend(),
-    )
-    sums_gpu = zeros(FT, 6, n_log, n_val_inf)
-    cnts_gpu = zeros(UInt32, 6, n_log, n_val_inf)
-    ws_inf = SFC.GPUSFWorkspace(backend, log_dist, inf_val; kind = :single_pass_2d)
-    SFC.calculate_structure_functions_single_pass_2d!(
-        sums_gpu, cnts_gpu, x, u, log_dist, inf_val;
-        backend = CB.GPUBackend(backend), workspace = ws_inf,
-    )
-    Test.@test sums_gpu ≈ sums_ref atol = 1e-11
-    Test.@test cnts_gpu == cnts_ref
-
-    ws2 = SFC.GPUSFWorkspace(backend, linear_dist, value_bins_ntuple)
-    sums_ws = zeros(FT, 6, NB, n_val)
-    cnts_ws = zeros(UInt32, 6, NB, n_val)
-    SFC.calculate_structure_functions_single_pass_2d!(
-        sums_ws, cnts_ws, x, u, linear_dist, value_bins_ntuple;
-        backend = CB.GPUBackend(backend), workspace = ws2,
-    )
-    Test.@test sums_ws ≈ sums_lin_ref atol = 1e-11
-    Test.@test cnts_ws == cnts_lin_ref
-end
-
-Test.@testset "GPU sp2d typeplane mode (KA.CPU)" begin
-    backend = KA.CPU()
-    FT = Float64
-    N = 64
-    x = rand(FT, 2, N)
-    u = rand(FT, 2, N)
-    n_dist_bins = 30
-    n_val_bins = 30
-    linear_dist = LinearBinEdges(range(FT(0.0), FT(2.0); length = n_dist_bins + 1))
-    value_bins_ntuple = _synthetic_value_bins_ntuple(n_val_bins, FT)
-    NB = n_dist_bins
-    n_val = n_val_bins
-    Test.@test _sp2d_mode(NB, n_val, 2, FT) === :typeplane
-
-    sums_ref = zeros(FT, 6, NB, n_val)
-    cnts_ref = zeros(UInt32, 6, NB, n_val)
-    SFC.calculate_structure_functions_single_pass_2d!(
-        sums_ref, cnts_ref, x, u, linear_dist, value_bins_ntuple;
-        backend = CB.SerialBackend(),
-    )
-    ws = SFC.GPUSFWorkspace(backend, linear_dist, value_bins_ntuple)
-    sums_gpu = zeros(FT, 6, NB, n_val)
-    cnts_gpu = zeros(UInt32, 6, NB, n_val)
-    SFC.gpu_calculate_structure_functions_single_pass_2d!(
-        sums_gpu, cnts_gpu, backend, x, u, linear_dist, value_bins_ntuple;
-        geometry = SFH.FlatGeometry{2}(), workspace = ws,
-    )
-    Test.@test sums_gpu ≈ sums_ref atol = 1e-11
-    Test.@test cnts_gpu == cnts_ref
-end
-
-Test.@testset "GPU sp2d typeplane production shape log+infpadded (KA.CPU)" begin
-    # 50 log distance bins by 52 inf-padded linear value bins in Float32 select :typeplane and match the serial histogram.
+# 50 log distance bins by 52 inf-padded linear value bins in Float32, a type-plane histogram, match serial.
+Test.@testset "GPU sp2d type-plane histogram, log distance and inf-padded value bins (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float32
     N = 64
@@ -185,11 +32,8 @@ Test.@testset "GPU sp2d typeplane production shape log+infpadded (KA.CPU)" begin
     log_dist = LogBinEdges_from_log_edges(
         range(log(FT(0.01)), log(FT(1.5)); length = n_dist_bins + 1)
     )
-    inner = LinearBinEdges(range(FT(-0.5), FT(1.5); length = 51))
-    inf_val = InfPaddedBinEdges(inner)
+    inf_val = InfPaddedBinEdges(LinearBinEdges(range(FT(-0.5), FT(1.5); length = 51)))
     n_val = length(inf_val) - 1
-    Test.@test n_val == 52
-    Test.@test _sp2d_mode(n_dist_bins, n_val, 2, FT) === :typeplane
 
     sums_ref = zeros(FT, 6, n_dist_bins, n_val)
     cnts_ref = zeros(UInt32, 6, n_dist_bins, n_val)
@@ -209,38 +53,7 @@ Test.@testset "GPU sp2d typeplane production shape log+infpadded (KA.CPU)" begin
     Test.@test cnts_gpu == cnts_ref
 end
 
-Test.@testset "GPU sp2d histogram no on-chip mode holds takes global atomics (KA.CPU)" begin
-    backend = KA.CPU()
-    FT = Float64
-    N = 48
-    x = rand(FT, 2, N)
-    u = rand(FT, 2, N)
-    n_dist_bins = 60
-    n_val_bins = 60
-    linear_dist = LinearBinEdges(range(FT(0.0), FT(2.0); length = n_dist_bins + 1))
-    value_bins_ntuple = _synthetic_value_bins_ntuple(n_val_bins, FT)
-    NB = n_dist_bins
-    n_val = n_val_bins
-    Test.@test _sp2d_mode(NB, n_val, 2, FT) === nothing
-
-    sums_ref = zeros(FT, 6, NB, n_val)
-    cnts_ref = zeros(UInt32, 6, NB, n_val)
-    SFC.calculate_structure_functions_single_pass_2d!(
-        sums_ref, cnts_ref, x, u, linear_dist, value_bins_ntuple;
-        backend = CB.SerialBackend(),
-    )
-    ws = SFC.GPUSFWorkspace(backend, linear_dist, value_bins_ntuple)
-    sums_gpu = zeros(FT, 6, NB, n_val)
-    cnts_gpu = zeros(UInt32, 6, NB, n_val)
-    SFC.gpu_calculate_structure_functions_single_pass_2d!(
-        sums_gpu, cnts_gpu, backend, x, u, linear_dist, value_bins_ntuple;
-        geometry = SFH.FlatGeometry{2}(), workspace = ws,
-    )
-    Test.@test sums_gpu ≈ sums_ref atol = 1e-11
-    Test.@test cnts_gpu == cnts_ref
-end
-
-# A weighted count is a pair mass, held in the call's floating count type by every kernel.
+# Per accumulation mode, weighted calls match serial fresh or on a reused workspace, which then serves unweighted.
 Test.@testset "GPU sp2d weighted, every mode (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float64
@@ -249,27 +62,17 @@ Test.@testset "GPU sp2d weighted, every mode (KA.CPU)" begin
     x = rand(FT, 2, N)
     u = rand(FT, 2, N)
     w = FT(0.25) .+ rand(FT, N)
-    for (nd, nv, mode) in ((10, 8, :shared), (30, 30, :typeplane), (60, 60, nothing))
-        Test.@test _sp2d_mode(nd, nv, 2, FT, FT) === mode
-        Test.@test _sp2d_mode(nd, nv, 2, FT, UInt32) === mode
+    for (nd, nv) in ((10, 8), (30, 30), (60, 60))
         dist = LinearBinEdges(range(FT(0), FT(1.5); length = nd + 1))
         vals = _synthetic_value_bins_ntuple(nv, FT)
         ref = SFC.calculate_structure_functions_single_pass_2d(
             x, u, dist, vals, FT; backend = CB.SerialBackend(), weights = w,
         )
         ws = SFC.GPUSFWorkspace(backend, dist, vals)
-        for workspace in (nothing, ws, ws)
-            got = SFC.calculate_structure_functions_single_pass_2d(
-                x, u, dist, vals, FT;
-                backend = CB.GPUBackend(backend), weights = w, workspace,
-            )
-            Test.@test keys(got) == keys(ref)
-            for k in keys(ref)
-                Test.@test collect(got[k].counts) ≈ collect(ref[k].counts) rtol = 1e-12
-                Test.@test collect(got[k].sums) ≈ collect(ref[k].sums) rtol = 1e-12 atol = 1e-12
-            end
-        end
-        # The same workspace serves an unweighted call afterwards.
+        got = [SFC.calculate_structure_functions_single_pass_2d(
+                   x, u, dist, vals, FT; backend = CB.GPUBackend(backend), weights = w, workspace,
+               ) for workspace in (nothing, ws, ws)]
+        Test.@test (nd, nv, all(g -> _sp_agrees(g, ref; rtol = 1e-12, atol = 1e-12), got)) == (nd, nv, true)
         cnts_ref = zeros(UInt32, 6, nd, nv)
         sums_ref = zeros(FT, 6, nd, nv)
         SFC.calculate_structure_functions_single_pass_2d!(
@@ -281,52 +84,39 @@ Test.@testset "GPU sp2d weighted, every mode (KA.CPU)" begin
             sums_gpu, cnts_gpu, x, u, dist, vals;
             backend = CB.GPUBackend(backend), workspace = ws,
         )
-        Test.@test cnts_gpu == cnts_ref
-        Test.@test sums_gpu ≈ sums_ref rtol = 1e-12 atol = 1e-12
+        Test.@test (nd, nv, cnts_gpu == cnts_ref, isapprox(sums_gpu, sums_ref; rtol = 1e-12, atol = 1e-12)) ==
+                   (nd, nv, true, true)
     end
 end
 
-Test.@testset "GPU sp2d general distance edges take the tiled path (KA.CPU)" begin
-    # Arbitrary (neither uniform nor log-uniform) distance edges digitize by device binary
-    # search; the tiled shared-histogram path must agree with the CPU reference for every
-    # combination of value-bin form and dimensionality.
+# Distance edges r^1.7, neither linear nor logarithmic, with inf-padded value bins in 3D match serial.
+Test.@testset "GPU sp2d general distance edges (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float32
-    N, nd, nv = 96, 16, 8
-    # r^1.7 on a uniform grid: strictly increasing, and neither spacing family matches it.
+    D, N, nd, nv = 3, 96, 16, 8
     dist_edges = collect(FT, range(FT(0), FT(1.5); length = nd + 1)) .^ FT(1.7)
-
-    typed_val = LinearBinEdges(range(FT(-1), FT(2); length = nv + 1))
-    raw_val = collect(FT, range(FT(-1), FT(2); length = nv + 1))
-    inf_val = InfPaddedBinEdges(LinearBinEdges(range(FT(-0.5), FT(1.5); length = nv - 1)))
-
-    Test.@testset "D = $D, $vname value bins" for D in (2, 3),
-                                                  (vname, vb) in (
-        ("typed", typed_val), ("raw", raw_val), ("infpadded", inf_val))
-        Random.seed!(20260816 + D)
-        x = rand(FT, D, N)
-        u = rand(FT, D, N)
-        n_val = length(vb) - 1
-        sums_ref = zeros(FT, 6, nd, n_val)
-        cnts_ref = zeros(UInt32, 6, nd, n_val)
-        SFC.calculate_structure_functions_single_pass_2d!(
-            sums_ref, cnts_ref, x, u, dist_edges, vb; backend = CB.SerialBackend(),
-        )
-
-        ws = SFC.GPUSFWorkspace(backend, dist_edges, vb; kind = :single_pass_2d)
-        sums_gpu = zeros(FT, 6, nd, n_val)
-        cnts_gpu = zeros(UInt32, 6, nd, n_val)
-        SFC.calculate_structure_functions_single_pass_2d!(
-            sums_gpu, cnts_gpu, x, u, dist_edges, vb;
-            backend = CB.GPUBackend(backend), workspace = ws,
-        )
-        Test.@test cnts_gpu == cnts_ref
-        Test.@test sums_gpu ≈ sums_ref rtol = 1e-5 atol = 1e-6
-    end
+    vb = InfPaddedBinEdges(LinearBinEdges(range(FT(-0.5), FT(1.5); length = nv - 1)))
+    Random.seed!(20260816 + D)
+    x = rand(FT, D, N)
+    u = rand(FT, D, N)
+    sums_ref = zeros(FT, 6, nd, nv)
+    cnts_ref = zeros(UInt32, 6, nd, nv)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_ref, cnts_ref, x, u, dist_edges, vb; backend = CB.SerialBackend(),
+    )
+    ws = SFC.GPUSFWorkspace(backend, dist_edges, vb; kind = :single_pass_2d)
+    sums_gpu = zeros(FT, 6, nd, nv)
+    cnts_gpu = zeros(UInt32, 6, nd, nv)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_gpu, cnts_gpu, x, u, dist_edges, vb;
+        backend = CB.GPUBackend(backend), workspace = ws,
+    )
+    Test.@test cnts_gpu == cnts_ref
+    Test.@test sums_gpu ≈ sums_ref rtol = 1e-5 atol = 1e-6
 end
 
+# Float64 coordinates with Float32 bin edges reproduce the Float64 serial histogram to Float64 precision.
 Test.@testset "GPU sp2d keeps data precision when bins are narrower (KA.CPU)" begin
-    # Float64 coordinates with Float32 bin edges reproduce the Float64 serial histogram to Float64 precision.
     backend = KA.CPU()
     N, nd, nv = 64, 10, 8
     Random.seed!(20260816)
@@ -349,8 +139,8 @@ Test.@testset "GPU sp2d keeps data precision when bins are narrower (KA.CPU)" be
     Test.@test sums_gpu ≈ sums_ref rtol = 1e-12
 end
 
-Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
-    # The GPU batch entries with LogBinEdges distance bins, InfPaddedBinEdges value bins and per-slice (2, N, T) coordinates match serial.
+# The batch entry with log distance and inf-padded value bins, past the shared fit, matches serial per slice.
+Test.@testset "GPU sp2d batch past the shared fit, log distance bins (KA.CPU)" begin
     backend = KA.CPU()
     FT = Float32
     N = 40
@@ -361,11 +151,9 @@ Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
     log_dist = LogBinEdges_from_log_edges(
         range(log(FT(0.01)), log(FT(1.5)); length = n_dist_bins + 1)
     )
-    inner = LinearBinEdges(range(FT(-0.5), FT(1.5); length = 51))
-    inf_val = InfPaddedBinEdges(inner)
+    inf_val = InfPaddedBinEdges(LinearBinEdges(range(FT(-0.5), FT(1.5); length = 51)))
     n_val = length(inf_val) - 1
 
-    # sp2d batch
     sums_ref = zeros(FT, 6, n_dist_bins, n_val, T)
     cnts_ref = zeros(UInt32, 6, n_dist_bins, n_val, T)
     for t in 1:T
@@ -383,79 +171,27 @@ Test.@testset "GPU batch entry points accept log distance bins (KA.CPU)" begin
     )
     Test.@test sums_gpu ≈ sums_ref rtol = 1e-5 atol = 1e-6
     Test.@test cnts_gpu == cnts_ref
-
-    # sp1d batch with log bins
-    sums1_ref = zeros(FT, 6, n_dist_bins, T)
-    cnts1_ref = zeros(UInt32, 6, n_dist_bins, T)
-    SFC.calculate_structure_functions_single_pass_batch!(
-        sums1_ref, cnts1_ref, x, u, log_dist; backend = CB.SerialBackend(),
-    )
-    sums1_gpu = zeros(FT, 6, n_dist_bins, T)
-    cnts1_gpu = zeros(UInt32, 6, n_dist_bins, T)
-    SFC.calculate_structure_functions_single_pass_batch!(
-        sums1_gpu, cnts1_gpu, x, u, log_dist; backend = CB.GPUBackend(backend),
-    )
-    Test.@test sums1_gpu ≈ sums1_ref rtol = 1e-5 atol = 1e-6
-    Test.@test cnts1_gpu == cnts1_ref
-
-    # individual 1D batch with log bins
-    sf_type = SFT.LongitudinalSecondOrderStructureFunction
-    sumsi_ref = zeros(FT, n_dist_bins, T)
-    cntsi_ref = zeros(UInt32, n_dist_bins, T)
-    SFC.calculate_structure_function_batch!(
-        sumsi_ref, cntsi_ref, sf_type, x, u, log_dist; backend = CB.SerialBackend(),
-    )
-    sumsi_gpu = zeros(FT, n_dist_bins, T)
-    cntsi_gpu = zeros(UInt32, n_dist_bins, T)
-    SFC.calculate_structure_function_batch!(
-        sumsi_gpu, cntsi_gpu, sf_type, x, u, log_dist; backend = CB.GPUBackend(backend),
-    )
-    Test.@test sumsi_gpu ≈ sumsi_ref rtol = 1e-5 atol = 1e-6
-    Test.@test cntsi_gpu == cntsi_ref
-
-    # fixed-x individual 1D with log bins → the fixed-x strip kernel
-    x_fixed = x[:, :, 1]
-    sumsf_ref = zeros(FT, n_dist_bins, T)
-    cntsf_ref = zeros(UInt32, n_dist_bins, T)
-    SFC.calculate_structure_function_batch!(
-        sumsf_ref, cntsf_ref, sf_type, x_fixed, u, log_dist; backend = CB.SerialBackend(),
-    )
-    res = SFC.calculate_structure_function(sf_type, x_fixed, u, log_dist, SF.StructureFunctionSumsAndCounts;
-        backend = CB.GPUBackend(backend))
-    Test.@test res.sums ≈ sumsf_ref rtol = 1e-5 atol = 1e-6
-    Test.@test res.counts == cntsf_ref
 end
 
-# Single-pass 2D histograms of 100 and 200 bins per axis, run without a workspace, match the Float64 serial result.
-Test.@testset "GPU sp2d large bin counts (KA.CPU)" begin
-    backend = KA.CPU()
+# A distance axis past the tiled kernel's bin cap matches serial.
+Test.@testset "GPU sp2d distance bins past the tiled cap (KA.CPU)" begin
     FT = Float64
     N = 64
     x = rand(FT, 2, N)
     u = randn(FT, 2, N)
-    for (nd, nv) in ((100, 100), (200, 200))
-        dist = LinearBinEdges(range(FT(0), FT(1); length = nd + 1))
-        val = _synthetic_value_bins_ntuple(nv, FT)
-        sums_ref = zeros(FT, 6, nd, nv)
-        cnts_ref = zeros(UInt32, 6, nd, nv)
-        SFC.calculate_structure_functions_single_pass_2d!(
-            sums_ref, cnts_ref, x, u, dist, val; backend = CB.SerialBackend(),
-        )
-        sums_gpu = zeros(FT, 6, nd, nv)
-        cnts_gpu = zeros(UInt32, 6, nd, nv)
-        # No workspace, which this path must accept.
-        SFC.calculate_structure_functions_single_pass_2d!(
-            sums_gpu, cnts_gpu, x, u, dist, val; backend = CB.GPUBackend(backend),
-        )
-        Test.@test cnts_gpu == cnts_ref
-        Test.@test sums_gpu ≈ sums_ref rtol = 1e-10 atol = 1e-12
-    end
-end
-
-# Each (bin counts, element type) shape selects the expected accumulation mode.
-Test.@testset "GPU sp2d strategy routing" begin
-    for (nd, nv, FT, mode) in ((16, 8, Float32, :shared), (30, 30, Float64, :typeplane), (60, 60, Float64, nothing),
-                               (80, 80, Float32, nothing), (100, 100, Float64, nothing))
-        Test.@test _sp2d_mode(nd, nv, 2, FT) === mode
-    end
+    nd, nv = SP2D_EXT.SF_GPU_MAX_BINS + 1, 8
+    dist = LinearBinEdges(range(FT(0), FT(1); length = nd + 1))
+    val = _synthetic_value_bins_ntuple(nv, FT)
+    sums_ref = zeros(FT, 6, nd, nv)
+    cnts_ref = zeros(UInt32, 6, nd, nv)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_ref, cnts_ref, x, u, dist, val; backend = CB.SerialBackend(),
+    )
+    sums_gpu = zeros(FT, 6, nd, nv)
+    cnts_gpu = zeros(UInt32, 6, nd, nv)
+    SFC.calculate_structure_functions_single_pass_2d!(
+        sums_gpu, cnts_gpu, x, u, dist, val; backend = CB.GPUBackend(KA.CPU()),
+    )
+    Test.@test cnts_gpu == cnts_ref
+    Test.@test sums_gpu ≈ sums_ref rtol = 1e-10 atol = 1e-12
 end

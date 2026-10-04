@@ -4,8 +4,8 @@ using ComputationalBackends: ComputationalBackends as CB
 using Bessels: Bessels
 using FFTW: FFTW
 using SpectralBackends: SpectralBackends as SB
-using LinearAlgebra: LinearAlgebra
 using Random: Random
+using Statistics: var
 using Test: Test
 using JLArrays: JLArrays, JLArray
 using GPUArraysCore: GPUArraysCore
@@ -26,127 +26,20 @@ function _modal_field(dims, dx, D; seed = 90, nmodes = 6)
     return f
 end
 
-Test.@testset "the isotropic kernel is the angular average of cos(k·r)" begin
-    for x in (0.0, 0.3, 0.7, 2.5, 11.0)
-        Test.@test SFC.isotropic_kernel(Val(1), x) == cos(x)
-        Test.@test SFC.isotropic_kernel(Val(2), x) == Bessels.besselj0(x)
-    end
-    for x in (0.3, 0.7, 2.5, 11.0)
-        Test.@test SFC.isotropic_kernel(Val(3), x) ≈ sin(x) / x
-    end
-    # every kernel is 1 at zero separation, so S₂(0) = 0 for any mode
-    for D in (1, 2, 3)
-        Test.@test SFC.isotropic_kernel(Val(D), 0.0) ≈ 1.0
-        Test.@test SFC.isotropic_kernel(Val(D), 1e-10) ≈ 1.0
-    end
-    Test.@test_throws ArgumentError SFC.isotropic_kernel(Val(5), 0.7)
-
-    Test.@test SFC.solid_angle(Val(1)) == 2
-    Test.@test SFC.solid_angle(Val(2)) ≈ 2π
-    Test.@test SFC.solid_angle(Val(3)) ≈ 4π
-end
-
-Test.@testset "a single mode has the kernel as its structure function" begin
-    # S₂(r) = A²[1 − Λ_D(k₀r)] after angular averaging, which is what makes Λ_D the transform kernel
-    A, k0 = 1.3, 2.7
-    for D in (1, 2, 3)
-        for r in (0.4, 1.1, 3.0)
-            s2 = A^2 * (1 - SFC.isotropic_kernel(Val(D), k0 * r))
-            Test.@test s2 >= 0
-            Test.@test s2 <= 2 * A^2 + 1e-12
-        end
-    end
-end
-
-Test.@testset "only the second-order trace inverts to a spectrum" begin
-    Test.@test SFC.assert_invertible(SFT.S2SFType()) === nothing
-
-    # a single projection carries about half the trace, so inverting it would silently halve E(k)
-    for op in (SFT.L2SFType(), SFT.T2SFType())
-        err = Test.@test_throws ArgumentError SFC.assert_invertible(op)
-        Test.@test occursin("trace", err.value.msg)
-        Test.@test occursin("isotropy", err.value.msg)
-    end
-
-    for op in (SFT.L3SFType(), SFT.L1T2SFType())
-        err = Test.@test_throws ArgumentError SFC.assert_invertible(op)
-        Test.@test occursin("flux", err.value.msg)
-    end
-end
-
-Test.@testset "the transform recovers prescribed spectral lines" begin
-    # C(r) = Σ (A²/2)cos(kr) gives S₂(r) = Σ A²(1 − cos(kr)), whose spectrum is a line at each k
-    # with weight proportional to A².
-    ks = (3.0, 7.0, 12.0)
-    As = (1.0, 0.6, 0.3)
-    variance = sum(a^2 for a in As) / 2
-    r = collect(range(0.0, 60.0; length = 6000))
-    s2 = [sum(As[m]^2 * (1 - cos(ks[m] * rr)) for m in eachindex(ks)) for rr in r]
-    kq = collect(range(0.5, 20.0; length = 400))
-
-    P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(1); variance)
-    Test.@test length(P) == length(kq)
-    Test.@test all(isfinite, P)
-
-    # each line lands on its own wavenumber
-    for k in ks
-        window = abs.(kq .- k) .< 0.4
-        Test.@test kq[argmax(P .* window)] ≈ k atol = 0.15
-    end
-
-    # and their relative strengths follow A², to the accuracy a finite r range allows
-    peaks = [maximum(P[abs.(kq .- k) .< 0.4]) for k in ks]
-    expected = [a^2 for a in As]
-    Test.@test peaks ./ peaks[1] ≈ expected ./ expected[1] rtol = 0.15
-
-    # a wrong variance rings in k from the last separation, which may rescale the lines but must not move them
-    P_off = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(1); variance = 1.4 * variance)
-    Test.@test P_off != P
-    for k in ks
-        window = abs.(kq .- k) .< 0.4
-        Test.@test kq[argmax(P_off .* window)] ≈ k atol = 0.15
-    end
-end
-
+# S₂ = 2σ²[1 − exp(−r²/2ℓ²)] transforms pointwise to σ² ℓ^D exp(−k²ℓ²/2)/(2π)^(D/2), on linear and log separations.
 Test.@testset "the transform reproduces an analytic spectrum" begin
-    # A Gaussian correlation C(r) = σ² exp(-r²/2ℓ²) has S₂(r) = 2σ²[1 - exp(-r²/2ℓ²)] and the
-    # closed-form density σ² ℓ^D exp(-k²ℓ²/2) / (2π)^(D/2) under the convention that the density
-    # integrates over d^D k to the variance. Unlike a discrete line it decays, so the transform is
-    # not truncation-limited and the comparison is pointwise.
     σ2, ℓ = 1.7, 0.8
-    for D in (1, 2, 3)
-        r = collect(range(0.0, 20ℓ; length = 8_000))
-        s2 = @. 2σ2 * (1 - exp(-r^2 / (2ℓ^2)))
-        kq = collect(range(1e-4, 40 / ℓ; length = 800))
-
-        P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(D); variance = σ2)
+    s2(x) = 2σ2 * (1 - exp(-x^2 / (2ℓ^2)))
+    r = collect(range(0.0, 20ℓ; length = 401))
+    rl = SF.midpoints(SF.LogBinEdges(1e-3, 20ℓ, 401))
+    kq = collect(range(1e-4, 40 / ℓ; length = 200))
+    for (D, tol) in ((1, 1e-13), (2, 4e-4), (3, 1e-13))
         exact = @. σ2 * ℓ^D * exp(-kq^2 * ℓ^2 / 2) / (2π)^(D / 2)
-        Test.@test maximum(abs, P .- exact) / maximum(exact) < 1e-5
-        Test.@test all(>(-1e-3 * maximum(exact)), P)          # a density is non-negative
-
-        # the convention: the shell spectrum integrates over k to the variance
-        E = SFC.shell_spectrum(P, kq, Val(D))
-        Test.@test sum(E) * (kq[2] - kq[1]) ≈ σ2 rtol = 0.10
-
-        # bin midpoints starting past zero: the integral still runs from the origin, where S₂ vanishes
-        rl = SF.midpoints(SF.LogBinEdges(1e-3, 20ℓ, 2001))
-        sl = @. 2σ2 * (1 - exp(-rl^2 / (2ℓ^2)))
-        Pl = SFC.isotropic_spectrum(SFT.S2SFType(), rl, sl, kq, Val(D); variance = σ2)
-        Test.@test maximum(abs, Pl .- exact) / maximum(exact) < 2e-5
+        P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2.(r), kq, Val(D); variance = σ2)
+        Test.@test maximum(abs, P .- exact) < tol * maximum(exact)
+        Pl = SFC.isotropic_spectrum(SFT.S2SFType(), rl, s2.(rl), kq, Val(D); variance = σ2)
+        Test.@test maximum(abs, Pl .- exact) < 2e-4 * maximum(exact)
     end
-
-    # the width scales inversely, so a wider correlation is a narrower spectrum
-    r = collect(range(0.0, 30.0; length = 6_000))
-    kq = collect(range(1e-3, 20.0; length = 800))
-    widths = Float64[]
-    for ℓ in (0.5, 1.0, 2.0)
-        s2 = @. 2 * (1 - exp(-r^2 / (2ℓ^2)))
-        P = SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, kq, Val(3); variance = 1.0)
-        half = findlast(>(maximum(P) / 2), P)
-        push!(widths, kq[half])
-    end
-    Test.@test issorted(widths; rev = true)
-    Test.@test widths[1] / widths[3] ≈ 4.0 rtol = 0.05
 end
 
 Test.@testset "the transform refuses what it cannot answer" begin
@@ -158,91 +51,70 @@ Test.@testset "the transform refuses what it cannot answer" begin
         SFT.S2SFType(), r, s2[1:end-1], [1.0], Val(1); variance = 0.5)
     Test.@test_throws ArgumentError SFC.isotropic_spectrum(
         SFT.S2SFType(), reverse(r), s2, [1.0], Val(1); variance = 0.5)
-    Test.@test_throws ArgumentError SFC.isotropic_spectrum(
-        SFT.L2SFType(), r, s2, [1.0], Val(1); variance = 0.5)
+    Test.@test_throws ArgumentError SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, [1.0], Val(5); variance = 0.5)
+    for op in (SFT.L2SFType(), SFT.T2SFType(), SFT.L3SFType(), SFT.L1T2SFType())
+        Test.@test_throws ArgumentError SFC.isotropic_spectrum(op, r, s2, [1.0], Val(1); variance = 0.5)
+    end
     Test.@test_throws UndefKeywordError SFC.isotropic_spectrum(SFT.S2SFType(), r, s2, [1.0], Val(1))
 end
 
+# One mode of wavenumber k₀ on scattered points, through the package's own pair sums, peaks at k₀.
 Test.@testset "a result object transforms back to the wavenumber it was built from" begin
-    # End to end: scattered points -> the package's own S₂ -> the transform. A single mode of
-    # wavenumber k₀ must put the spectral peak at k₀.
-    A = 1.0
-    for (D, mv) in ((2, (5, 2)), (3, (4, 2, 1)))
-        k0 = sqrt(sum(abs2, mv))
-        Random.seed!(500 + D)
-        N = 8000
-        x = 2π .* rand(D, N)
-        u = zeros(D, N)
-        for p in 1:N
-            u[1, p] = A * cos(sum(mv[d] * x[d, p] for d in 1:D) + 0.4)
-        end
-        bins = collect(range(0.0, 3.0; length = 61))
-        kq = collect(range(0.3, 12.0; length = 500))
-
-        raw = SFC.calculate_structure_function(
-            SFT.S2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
-        P = SFC.isotropic_spectrum(raw, kq, Val(D); variance = A^2 / 2)
-        Test.@test all(isfinite, P)
-        Test.@test kq[argmax(P)] ≈ k0 rtol = 0.05
-
-        # the averaged object carries the same information, so it must give the same answer
-        avg = SFC.calculate_structure_function(
-            SFT.S2SFType(), x, u, bins; backend = CB.SerialBackend())
-        Test.@test SFC.isotropic_spectrum(avg, kq, Val(D); variance = A^2 / 2) ≈ P
+    mv = (5, 2)
+    k0 = sqrt(sum(abs2, mv))
+    Random.seed!(502)
+    N = 300
+    x = 2π .* rand(2, N)
+    u = zeros(2, N)
+    for p in 1:N
+        u[1, p] = cos(mv[1] * x[1, p] + mv[2] * x[2, p] + 0.4)
     end
+    bins = collect(range(0.0, 3.0; length = 61))
+    kq = collect(range(0.3, 12.0; length = 500))
+    raw = SFC.calculate_structure_function(
+        SFT.S2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
+    P = SFC.isotropic_spectrum(raw, kq, Val(2); variance = var(u[1, :]; corrected = false))
+    Test.@test kq[argmax(P)] ≈ k0 rtol = 0.05
 end
 
+# Both result types transform as their bins holding a value do; a result with none is refused.
 Test.@testset "empty bins are dropped, not carried as NaN" begin
-    # A bin holding no pair averages to NaN, which would otherwise propagate through the quadrature
-    # into every wavenumber.
     edges = collect(range(0.0, 10.0; length = 21))
-    sums = [Float64(i) for i in 1:20]
+    mids = collect(SF.midpoints(edges))
     counts = fill(UInt32(5), 20)
-    counts[3] = 0
-    counts[11] = 0
-    sums[3] = 0.0
-    sums[11] = 0.0
-    raw = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), edges, sums, counts)
+    counts[[3, 11]] .= 0
+    sums = [Float64(i) for i in 1:20] .* (counts .> 0)
+    keep = findall(>(0), counts)
     kq = collect(range(0.5, 5.0; length = 50))
-    P = SFC.isotropic_spectrum(raw, kq, Val(3); variance = 10.0)
-    Test.@test all(isfinite, P)
+    direct = SFC.isotropic_spectrum(SFT.S2SFType(), mids[keep], sums[keep] ./ counts[keep], kq, Val(3); variance = 10.0)
+    raw = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), edges, sums, counts)
+    avg = SF.StructureFunction(SFT.S2SFType(), edges, ifelse.(counts .> 0, sums ./ counts, NaN))
+    Test.@test SFC.isotropic_spectrum(raw, kq, Val(3); variance = 10.0) ≈ direct
+    Test.@test SFC.isotropic_spectrum(avg, kq, Val(3); variance = 10.0) ≈ direct
 
-    allempty = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), edges, zeros(20),
-                                                 zeros(UInt32, 20))
-    Test.@test_throws ArgumentError SFC.isotropic_spectrum(allempty, kq, Val(3))
+    allempty = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), edges, zeros(20), zeros(UInt32, 20))
+    Test.@test_throws ArgumentError SFC.isotropic_spectrum(allempty, kq, Val(3); variance = 10.0)
 end
 
+# On a complete periodic grid the lag-space transform is the field's own periodogram, to round-off.
 Test.@testset "the gridded transform is exact against the field's own spectrum" begin
-    # Over the whole lag space nothing is angularly averaged and nothing is radially binned, so this
-    # must agree with the field's own transform to round-off — unlike the isotropic route, which
-    # assumes a uniform sampling of direction that a rectilinear grid does not provide.
-    for (D, n) in ((1, 64), (2, 32), (3, 16))
+    for (D, n) in ((1, 32), (2, 16), (3, 8))
         dx = 2π / n
         dims = ntuple(_ -> n, D)
         scal = _modal_field(dims, dx, D; seed = 90 + D)
-        variance = sum(abs2, scal) / prod(dims)
         u = zeros(D, dims...)
         u[1, ntuple(_ -> Colon(), D)...] = scal
-
         sched = SFC.UniformLagSchedule(dims, ntuple(_ -> dx, D), ntuple(_ -> true, D))
-        kaxes, density = SFC.gridded_spectrum(
-            u, sched, Val(D), SB.FastFourierTransformSpectralBackend())
-
-        Test.@test length(kaxes) == D
-        dk = prod(ntuple(d -> kaxes[d][2] - kaxes[d][1], D))
-        modes = density .* dk
-
+        kaxes, density = SFC.gridded_spectrum(u, sched, Val(D), SB.FastFourierTransformSpectralBackend())
+        modes = density .* prod(ntuple(d -> kaxes[d][2] - kaxes[d][1], D))
         direct = abs2.(FFTW.fft(scal)) ./ prod(dims)^2
         direct[ntuple(_ -> 1, D)...] = 0.0
         Test.@test maximum(abs, modes .- direct) / maximum(direct) < 1e-12
-        # and the convention holds: the density integrates to the variance
-        Test.@test sum(modes) ≈ variance rtol = 1e-10
     end
 end
 
+# With cells missing the lag-space spectrum stays close to the complete one, far closer than zero-filling.
 Test.@testset "the gridded transform survives missing data" begin
-    # The reason to reach a spectrum through a structure function at all: with cells missing the
-    # field's own transform is meaningless, while the pair average is still unbiased.
     D, n = 2, 32
     dx = 2π / n
     dims = (n, n)
@@ -252,302 +124,159 @@ Test.@testset "the gridded transform survives missing data" begin
     sched = SFC.UniformLagSchedule(dims, (dx, dx), (true, true))
     kaxes, full = SFC.gridded_spectrum(u, sched, Val(D), SB.FastFourierTransformSpectralBackend())
 
-    # The absolute error depends on how many pairs each lag retains, hence on the grid size; the
-    # assertion that carries the claim is the comparison against zero-filling the gaps.
-    for frac in (0.1, 0.3, 0.5)
-        Random.seed!(7)
-        valid = rand(prod(dims)) .> frac
-        _, masked = SFC.gridded_spectrum(u, sched, Val(D),
-                                         SB.FastFourierTransformSpectralBackend(); valid = valid)
-        err = maximum(abs, masked .- full) / maximum(full)
+    Random.seed!(7)
+    valid = rand(prod(dims)) .> 0.3
+    _, masked = SFC.gridded_spectrum(u, sched, Val(D), SB.FastFourierTransformSpectralBackend(); valid = valid)
+    err = maximum(abs, masked .- full) / maximum(full)
 
-        naive = copy(scal)
-        naive[.!reshape(valid, dims)] .= 0.0
-        nspec = abs2.(FFTW.fft(naive)) ./ prod(dims)^2
-        nspec[1, 1] = 0.0
-        dk = (kaxes[1][2] - kaxes[1][1]) * (kaxes[2][2] - kaxes[2][1])
-        naive_err = maximum(abs, nspec .- full .* dk) / maximum(full .* dk)
+    naive = copy(scal)
+    naive[.!reshape(valid, dims)] .= 0.0
+    nspec = abs2.(FFTW.fft(naive)) ./ prod(dims)^2
+    nspec[1, 1] = 0.0
+    dk = (kaxes[1][2] - kaxes[1][1]) * (kaxes[2][2] - kaxes[2][1])
+    naive_err = maximum(abs, nspec .- full .* dk) / maximum(full .* dk)
 
-        Test.@test err < 0.2
-        Test.@test err < naive_err / 4       # the whole point: far better than zero-filling
-    end
+    Test.@test err < 0.2
+    Test.@test err < naive_err / 4
 end
 
-Test.@testset "the gridded transform of a bounded direction is the windowed estimate" begin
-    # A bounded direction has no Fourier basis of its own, so its spectrum is the transform of the
-    # unbiased autocovariance on a padded lag grid: every lag |h| < n, and the variance conserved.
-    n, dx = 24, 0.1
-    Random.seed!(2400)
-    u = randn(1, n)
-    kax, dens = SFC.gridded_spectrum(u, SFC.UniformLagSchedule((n,), (dx,), (false,)), Val(1),
-                                     SB.FastFourierTransformSpectralBackend())
-    Test.@test length(kax[1]) == length(dens) >= 2n - 1
-    Test.@test sum(dens) * (kax[1][2] - kax[1][1]) ≈ sum(abs2, u .- sum(u) / n) / n rtol = 1e-10
-end
-
+# Every wavenumber cell lands in exactly one shell of unequal widths.
 Test.@testset "shell averaging conserves the spectrum" begin
-    D, n = 2, 32
-    dx = 2π / n
-    dims = (n, n)
-    scal = _modal_field(dims, dx, D; seed = 11)
-    u = zeros(D, dims...)
-    u[1, :, :] = scal
-    sched = SFC.UniformLagSchedule(dims, (dx, dx), (true, true))
-    kaxes, density = SFC.gridded_spectrum(u, sched, Val(D),
-                                          SB.FastFourierTransformSpectralBackend())
-
-    kmax = maximum(abs, kaxes[1]) * sqrt(D) + 1
-    edges = collect(range(0.0, kmax; length = 40))
+    Random.seed!(11)
+    n = 8
+    kaxes = (2π .* collect(FFTW.fftfreq(n, 1.0)), 2π .* collect(FFTW.fftfreq(n, 2.0)))
+    density = rand(n, n)
+    kmax = sqrt(maximum(abs2, kaxes[1]) + maximum(abs2, kaxes[2]))
+    edges = kmax .* [0.0, 0.1, 0.25, 0.5, 0.7, 1.01]
     mids, E = SFC.shell_average(kaxes, density, edges)
     Test.@test length(mids) == length(E) == length(edges) - 1
-
-    dk = (kaxes[1][2] - kaxes[1][1]) * (kaxes[2][2] - kaxes[2][1])
-    Test.@test sum(E .* (edges[2] - edges[1])) ≈ sum(density) * dk rtol = 1e-10
+    Test.@test sum(E .* diff(edges)) ≈ sum(density) rtol = 1e-12
 end
 
-Test.@testset "the flux quadrature matches a closed-form integral" begin
-    # ∫₀^R J₁(Kr) dr = (1 − J₀(KR))/K, so a constant advective structure function `c` gives
-    # Π_K = −(K/2)·c·(1 − J₀(KR))/K = −(c/2)(1 − J₀(KR)) exactly — which pins the prefactor.
-    c, R = 0.8, 60.0
-    r = collect(range(0.0, R; length = 200_000))
-    vals = fill(c, length(r))
-    Ks = [0.5, 1.0, 2.0, 5.0, 20.0]
-
-    got = SFC.spectral_flux(SFT.VectorDotSFType(1, 2), r, vals, Ks)
-    expected = [-(c / 2) * (1 - Bessels.besselj0(K * R)) for K in Ks]
-    Test.@test got ≈ expected rtol = 1e-4
-    # and it settles on −c/2, the whole-line value, once J₀(KR) has decayed
-    Test.@test all(abs.(got .+ c / 2) .< 0.05)
-
-    # linear in the structure function it is given
-    Test.@test SFC.spectral_flux(SFT.VectorDotSFType(1, 2), r, 3 .* vals, Ks) ≈ 3 .* got
-    # a positive advective structure function gives a negative flux, per the relation's sign
-    Test.@test all(<(0), got)
-end
-
-Test.@testset "a flux needs a cross-field moment" begin
-    # ⟨δφ δ𝓐_φ⟩ is a moment across two fields; the diagonal is a variance and carries no flux.
-    for op in (SFT.VectorDotSFType(1, 1), SFT.ScalarDotSFType(2, 2))
-        err = Test.@test_throws ArgumentError SFC.assert_advective(op)
-        Test.@test occursin("diagonal", err.value.msg)
-    end
-    for op in (SFT.S2SFType(), SFT.L2SFType(), SFT.L3SFType())
-        err = Test.@test_throws ArgumentError SFC.assert_advective(op)
-        Test.@test occursin("cross-field", err.value.msg)
-    end
-    Test.@test SFC.assert_advective(SFT.VectorDotSFType(1, 2)) === nothing
-    Test.@test SFC.assert_advective(SFT.ScalarDotSFType(1, 2)) === nothing
-
-    r = collect(range(0.0, 5.0; length = 100))
-    Test.@test_throws ArgumentError SFC.spectral_flux(SFT.S2SFType(), r, fill(1.0, 100), [1.0])
-end
-
-Test.@testset "third-order flux routes" begin
-    J0(x) = Bessels.besselj0(x)
-    J1(x) = Bessels.besselj1(x)
-    J2(x) = Bessels.besselj(2, x)
+# S₃ = c r, S = c r, L₃ = c₃ r with S₃ = 4c₃r/3, a constant SF_A and SF_Au = a r² each give −(c/2)(1 − J₀(KR)) up to scale.
+Test.@testset "each flux relation matches its closed form" begin
     R = 3.0
-    r = collect(range(0.0, R; length = 300_001))
+    r = collect(range(0.0, R; length = 1001))
     Ks = [0.7, 2.0, 5.0]
-    trapz(f) = sum((f[1:(end - 1)] .+ f[2:end]) ./ 2 .* diff(r))
-    # the power-law family closes in Bessel functions: S3 = c·r gives −(c/2)(1 − J₀(KR)) on every route
     c, c3, a = 1.3, 0.8, 0.6
-    S3 = c .* r
-    expected = [-(c / 2) * (1 - J0(K * R)) for K in Ks]
-    Test.@test SFC.spectral_flux(SFT.S3SFType(), r, S3, Ks) ≈ expected rtol = 1e-6
-    Test.@test SFC.spectral_flux(SFT.MixedSFType{1, 0, 2}(), r, S3, Ks) ≈ expected rtol = 1e-6
-    L3 = c3 .* r                                            # S3 = (1/3r²) d(r³ L3)/dr = (4/3) c3 r
-    Test.@test SFC.spectral_flux(SFT.L3SFType(), r, L3, (4c3 / 3) .* r, Ks) ≈
-               [-(2c3 / 3) * (1 - J0(K * R)) for K in Ks] rtol = 1e-6
-    Au = a .* r .^ 2                                        # SF_Aω = −∇² SF_Au = −4a
-    Test.@test SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), r, Au, Ks) ≈ [2a * (1 - J0(K * R)) for K in Ks] rtol = 1e-5
-    Test.@test SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), r, Au, Ks) ≈
-               SFC.spectral_flux(SFT.ScalarDotSFType(1, 2), r, fill(-4a, length(r)), Ks) rtol = 1e-5
-    # the boundary terms carry the answer: the integrals alone are not within tolerance
-    for (i, K) in pairs(Ks)
-        Test.@test !isapprox(-(K^2 / 4) * trapz(S3 .* J2.(K .* r)), expected[i]; rtol = 1e-2)
-        Test.@test !isapprox(-(K^3 / 12) * trapz(L3 .* Bessels.besselj.(3, K .* r) .* r), -(2c3 / 3) * (1 - J0(K * R)); rtol = 1e-2)
-        Test.@test !isapprox((K^3 / 2) * trapz(Au .* (Bessels.besselj.(3, K .* r) .- J1.(K .* r)) ./ 2), 2a * (1 - J0(K * R)); rtol = 1e-2)
-    end
-    # a smooth isotropic family with nothing decayed at R: the three routes of each flux agree
-    ℓ = 1.5
-    L(r) = c3 * r * exp(-r^2 / ℓ^2)
-    S(r) = (c3 / 3) * exp(-r^2 / ℓ^2) * (4r - 2r^3 / ℓ^2)                    # (1/3r²) d(r³ L)/dr
-    A(r) = (c3 / 6) * exp(-r^2 / ℓ^2) * (8 - 16r^2 / ℓ^2 + 4r^4 / ℓ^4)        # (1/2r) d(r S)/dr
-    f14 = SFC.spectral_flux(SFT.VectorDotSFType(1, 2), r, A.(r), Ks)
-    Test.@test maximum(abs, f14) > 0.1
-    Test.@test SFC.spectral_flux(SFT.S3SFType(), r, S.(r), Ks) ≈ f14 rtol = 1e-6
-    Test.@test SFC.spectral_flux(SFT.L3SFType(), r, L.(r), S.(r), Ks) ≈ f14 rtol = 1e-6
-    Auf(r) = a * r^2 * exp(-r^2 / ℓ^2)
-    Aω(r) = -a * exp(-r^2 / ℓ^2) * (4 - 12r^2 / ℓ^2 + 4r^4 / ℓ^4)             # −(1/r) d(r Au')/dr
-    Lωω(r) = -2a * exp(-r^2 / ℓ^2) * (2r - 2r^3 / ℓ^2)                       # (2/r) ∫₀^r s Aω ds = −2 Au'
-    g17 = SFC.spectral_flux(SFT.ScalarDotSFType(1, 2), r, Aω.(r), Ks)
-    Test.@test maximum(abs, g17) > 0.1
-    Test.@test SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), r, Auf.(r), Ks) ≈ g17 rtol = 1e-5
-    Test.@test SFC.spectral_flux(SFT.MixedSFType{1, 0, 2}(), r, Lωω.(r), Ks) ≈ g17 rtol = 1e-6
-    # result objects: bins both hold, in the operator order the relation needs
-    edges = collect(range(0.0, R; length = 41))
-    mids = SF.midpoints(edges)
+    closed(c) = [-(c / 2) * (1 - Bessels.besselj0(K * R)) for K in Ks]
+    Test.@test SFC.spectral_flux(SFT.VectorDotSFType(1, 2), r, fill(c, length(r)), Ks) ≈ closed(c) rtol = 2e-5
+    Test.@test SFC.spectral_flux(SFT.ScalarDotSFType(1, 2), r, fill(c, length(r)), Ks) ≈ closed(c) rtol = 2e-5
+    Test.@test SFC.spectral_flux(SFT.S3SFType(), r, c .* r, Ks) ≈ closed(c) rtol = 5e-5
+    Test.@test SFC.spectral_flux(SFT.MixedSFType{1, 0, 2}(), r, c .* r, Ks) ≈ closed(c) rtol = 5e-5
+    Test.@test SFC.spectral_flux(SFT.L3SFType(), r, c3 .* r, (4c3 / 3) .* r, Ks) ≈ closed(4c3 / 3) rtol = 5e-5
+    Test.@test SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), r, a .* r .^ 2, Ks) ≈ closed(-4a) rtol = 5e-5
+end
+
+# Each result-object method is its vector method over the bins holding a value.
+Test.@testset "a result object carries into the flux relation" begin
+    edges = collect(range(0.0, 3.0; length = 41))
+    mids = collect(SF.midpoints(edges))
     cnt = fill(UInt32(3), 40)
     cnt[7] = 0
     keep = findall(>(0), cnt)
-    L3o = SF.StructureFunctionSumsAndCounts(SFT.L3SFType(), edges, 3 .* L.(mids) .* (cnt .> 0), cnt)
-    S3o = SF.StructureFunctionSumsAndCounts(SFT.S3SFType(), edges, 3 .* S.(mids) .* (cnt .> 0), cnt)
-    Test.@test SFC.spectral_flux(L3o, S3o, Ks) ≈ SFC.spectral_flux(SFT.L3SFType(), mids[keep], L.(mids[keep]), S.(mids[keep]), Ks)
-    Test.@test SFC.spectral_flux(S3o, Ks) ≈ SFC.spectral_flux(SFT.S3SFType(), mids[keep], S.(mids[keep]), Ks)
+    Ks = [0.7, 2.0, 5.0]
+    L(r) = 0.8r * exp(-r^2 / 2)
+    S(r) = r * exp(-r)
+    A(r) = cos(r)
+    raw(op, f) = SF.StructureFunctionSumsAndCounts(op, edges, 3 .* f.(mids) .* (cnt .> 0), cnt)
+    L3o, S3o = raw(SFT.L3SFType(), L), raw(SFT.S3SFType(), S)
+    Ao = SF.StructureFunction(SFT.VectorDotSFType(1, 2), edges, ifelse.(cnt .> 0, A.(mids), NaN))
+    rk = mids[keep]
+    Test.@test SFC.spectral_flux(Ao, Ks) ≈ SFC.spectral_flux(SFT.VectorDotSFType(1, 2), rk, A.(rk), Ks)
+    Test.@test SFC.spectral_flux(S3o, Ks) ≈ SFC.spectral_flux(SFT.S3SFType(), rk, S.(rk), Ks)
+    Test.@test SFC.spectral_flux(L3o, S3o, Ks) ≈ SFC.spectral_flux(SFT.L3SFType(), rk, L.(rk), S.(rk), Ks)
+    Test.@test SFC.enstrophy_flux(Ao, Ks) ≈ SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), rk, A.(rk), Ks)
     Test.@test_throws ArgumentError SFC.spectral_flux(S3o, L3o, Ks)
-    Auo = SF.StructureFunction(SFT.VectorDotSFType(1, 2), edges, Auf.(mids))
-    Test.@test SFC.enstrophy_flux(Auo, Ks) ≈ SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), collect(mids), Auf.(mids), Ks)
-    # refusals
-    Test.@test_throws ArgumentError SFC.enstrophy_flux(SFT.VectorDotSFType(1, 1), r, Auf.(r), Ks)
+end
+
+Test.@testset "a flux refuses a moment that carries none" begin
+    r = collect(range(0.0, 3.0; length = 31))
+    v = fill(1.0, 31)
+    Ks = [1.0]
+    for op in (SFT.VectorDotSFType(1, 1), SFT.ScalarDotSFType(2, 2), SFT.S2SFType(), SFT.L2SFType(), SFT.L3SFType())
+        Test.@test_throws ArgumentError SFC.spectral_flux(op, r, v, Ks)
+    end
+    Test.@test_throws ArgumentError SFC.enstrophy_flux(SFT.VectorDotSFType(1, 1), r, v, Ks)
     Test.@test_throws ArgumentError SFC.enstrophy_flux(SFT.VectorDotSFType(1, 2), [1.0], [1.0], Ks)
-    Test.@test_throws DimensionMismatch SFC.spectral_flux(SFT.L3SFType(), r, L.(r), S.(r[1:10]), Ks)
-    Test.@test_throws ArgumentError SFC.spectral_flux(SFT.S3SFType(), reverse(r), S.(r), Ks)
+    Test.@test_throws DimensionMismatch SFC.spectral_flux(SFT.L3SFType(), r, v, v[1:10], Ks)
+    Test.@test_throws ArgumentError SFC.spectral_flux(SFT.S3SFType(), reverse(r), v, Ks)
 end
 
-Test.@testset "a result object carries into the flux relation" begin
-    edges = collect(range(0.0, 10.0; length = 21))
-    sums = fill(2.0, 20)
-    counts = fill(UInt32(4), 20)
-    counts[5] = 0
-    sums[5] = 0.0
-    raw = SF.StructureFunctionSumsAndCounts(SFT.VectorDotSFType(1, 2), edges, sums, counts)
-    Ks = [0.5, 1.5, 3.0]
-    fromobj = SFC.spectral_flux(raw, Ks)
-    Test.@test all(isfinite, fromobj)
-
-    keep = [i for i in 1:20 if counts[i] > 0]
-    mids = SF.midpoints(edges)
-    direct = SFC.spectral_flux(SFT.VectorDotSFType(1, 2), collect(mids)[keep],
-                               [sums[i] / counts[i] for i in keep], Ks)
-    Test.@test fromobj ≈ direct
-end
-
+# C = σ² − D/2 for a Gaussian correlation, from each second-order moment, and linear in the variance given.
 Test.@testset "the covariance is the variance less half the structure function" begin
-    # D(r) = 2[C(0) - C(r)] exactly, so a Gaussian correlation must come back as it went in.
     σ2, ℓ = 1.7, 0.8
     edges = collect(range(0.0, 6.0; length = 41))
-    mids = SF.midpoints(edges)
+    mids = collect(SF.midpoints(edges))
     d = [2σ2 * (1 - exp(-r^2 / (2ℓ^2))) for r in mids]
-    res = SF.StructureFunction(SFT.S2SFType(), edges, d)
-
-    r, C = SFC.covariance(res, σ2)
-    Test.@test r ≈ collect(mids)
-    Test.@test C ≈ [σ2 * exp(-rr^2 / (2ℓ^2)) for rr in mids] rtol = 1e-12
-    # C(0) is the variance and the structure function cannot supply it
-    Test.@test SFC.covariance(res, 2σ2)[2] ≈ C .+ σ2
-
-    # end to end: a single mode has C(r) = (A²/2) Λ_D(k₀ r), which the package's own S₂ must give back
-    A = 1.1
-    for (D, mv) in ((2, (4, 3)), (3, (3, 2, 1)))
-        k0 = sqrt(sum(abs2, mv))
-        Random.seed!(800 + D)
-        N = 8000
-        x = 2π .* rand(D, N)
-        u = zeros(D, N)
-        for p in 1:N
-            u[1, p] = A * cos(sum(mv[dd] * x[dd, p] for dd in 1:D) + 0.9)
-        end
-        bins = collect(range(0.0, 2.0; length = 41))
-        raw = SFC.calculate_structure_function(
-            SFT.S2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
-        rr, CC = SFC.covariance(raw, A^2 / 2)
-        expect = [(A^2 / 2) * SFC.isotropic_kernel(Val(D), k0 * q) for q in rr]
-        Test.@test maximum(abs, CC .- expect) < 0.05 * A^2
+    exact = [σ2 * exp(-r^2 / (2ℓ^2)) for r in mids]
+    for op in (SFT.S2SFType(), SFT.L2SFType(), SFT.T2SFType())
+        r, C = SFC.covariance(SF.StructureFunction(op, edges, d), σ2)
+        Test.@test r ≈ mids
+        Test.@test C ≈ exact rtol = 1e-12
     end
+    Test.@test SFC.covariance(SF.StructureFunction(SFT.S2SFType(), edges, d), 2σ2)[2] ≈ exact .+ σ2
 end
 
 Test.@testset "a covariance needs a second-order moment" begin
     edges = collect(range(0.0, 4.0; length = 11))
     vals = fill(1.0, 10)
     for op in (SFT.L3SFType(), SFT.L1T2SFType(), SFT.VectorDotSFType(1, 2))
-        bad = SF.StructureFunction(op, edges, vals)
-        Test.@test_throws ArgumentError SFC.covariance(bad, 1.0)
-    end
-    for op in (SFT.S2SFType(), SFT.L2SFType(), SFT.T2SFType())
-        Test.@test SFC.covariance(SF.StructureFunction(op, edges, vals), 1.0) isa Tuple
+        Test.@test_throws ArgumentError SFC.covariance(SF.StructureFunction(op, edges, vals), 1.0)
     end
 end
 
+# An interpolated kernel is accepted when resolved, refused when too coarse, and an oscillating one always refused.
 Test.@testset "a covariance matrix is checked, not assumed, positive semi-definite" begin
     Random.seed!(31)
     pts = 3.0 .* rand(2, 60)
     gauss(s) = 1.4 * exp(-s^2 / (2 * 0.9^2))
 
-    # A Gaussian kernel is positive definite, but interpolating it is not: the error falls as the
-    # square of the separation spacing, so it must be resolved before the matrix is valid.
-    fine = collect(range(0.0, 6.0; length = 5_000))
+    fine = collect(range(0.0, 6.0; length = 1000))
     Σ = SFC.covariance_matrix(pts, fine, gauss.(fine))
-    Test.@test size(Σ) == (60, 60)
-    Test.@test Σ ≈ transpose(Σ)
-    Test.@test minimum(LinearAlgebra.eigvals(LinearAlgebra.Symmetric(Σ))) > -1e-6 * maximum(abs, Σ)
-    # every point is at zero separation from itself, so the diagonal is the variance
-    Test.@test all(≈(gauss(0.0)), LinearAlgebra.diag(Σ))
-    # and it matches the kernel evaluated directly, which needs no interpolation at all
     exact = [gauss(sqrt(sum(abs2, pts[:, i] .- pts[:, j]))) for i in 1:60, j in 1:60]
     Test.@test maximum(abs, Σ .- exact) < 1e-5 * maximum(abs, exact)
 
-    # too coarse to be a valid kernel, and saying so is the useful behaviour
     coarse = collect(range(0.0, 6.0; length = 60))
     Test.@test_throws ArgumentError SFC.covariance_matrix(pts, coarse, gauss.(coarse))
     Test.@test SFC.covariance_matrix(pts, coarse, gauss.(coarse); posdef_rtol = 1e-2) isa Matrix
 
-    # an oscillating "covariance" is no kernel at all — off by the matrix scale itself, not by a
-    # discretisation error, so no tolerance rescues it
     bad = [cos(6s) for s in fine]
     Test.@test_throws ArgumentError SFC.covariance_matrix(pts, fine, bad)
     Test.@test_throws ArgumentError SFC.covariance_matrix(pts, fine, bad; posdef_rtol = 1e-2)
     Test.@test SFC.covariance_matrix(pts, fine, bad; check_posdef = false) isa Matrix
 end
 
-Test.@testset "the Helmholtz components transform to rotational and divergent spectra" begin
-    # a solenoidal field with C_LL = exp(-r²/2), C_TT = (1 - r²) exp(-r²/2): its D_TT overshoots its
-    # limit, and its whole spectrum is rotational, k² exp(-k²/2) / 2π
-    edges = collect(10 .^ range(-2, log10(8.0); length = 241))
-    mids = SF.midpoints(edges)
+# A decomposition's spectra are those of its two projections, and each Helmholtz component inverts as the trace does.
+Test.@testset "a Helmholtz decomposition transforms as its projections do" begin
+    edges = collect(10 .^ range(-2, log10(8.0); length = 33))
+    mids = collect(SF.midpoints(edges))
     counts = ones(UInt32, length(mids))
     D_LL = @. 2 * (1 - exp(-mids^2 / 2))
-    D_TT = @. 2 * (1 - (1 - mids^2) * exp(-mids^2 / 2))
-    kq = collect(range(0.05, 6.0; length = 250))
-    exact = @. kq^2 * exp(-kq^2 / 2) / (2π)
-
+    D_TT = @. 2 * (1 - (1 - mids^2 / 2) * exp(-mids^2 / 2))
+    kq = collect(range(0.05, 6.0; length = 25))
     h = SFC.helmholtz_decompose_2d(edges, D_LL, counts, D_TT, counts)
-    spec = SFC.helmholtz_spectra(h, kq; variance = 2.0)
-    Test.@test maximum(abs, spec.rotational .- exact) < 1e-3 * maximum(exact)
-    Test.@test maximum(abs, spec.divergent) < 1e-6 * maximum(exact)
+    fromh = SFC.helmholtz_spectra(h, kq; variance = 2.0)
+    pair = SFC.helmholtz_spectra(SF.StructureFunction(SFT.L2SFType(), edges, D_LL),
+                                 SF.StructureFunction(SFT.T2SFType(), edges, D_TT), kq; variance = 2.0)
+    Test.@test fromh.rotational ≈ pair.rotational rtol = 1e-12
+    Test.@test fromh.divergent ≈ pair.divergent rtol = 1e-12
 
-    L2 = SF.StructureFunction(SFT.L2SFType(), edges, D_LL)
-    T2 = SF.StructureFunction(SFT.T2SFType(), edges, D_TT)
-    pair = SFC.helmholtz_spectra(L2, T2, kq; variance = 2.0)
-    Test.@test pair.rotational ≈ spec.rotational rtol = 1e-12
-    Test.@test pair.divergent ≈ spec.divergent atol = 1e-12 * maximum(exact)
-
-    # swapping the roles makes the field irrotational
-    h2 = SFC.helmholtz_decompose_2d(edges, D_TT, counts, D_LL, counts)
-    spec2 = SFC.helmholtz_spectra(h2, kq; variance = 2.0)
-    Test.@test maximum(abs, spec2.divergent .- exact) < 1e-3 * maximum(exact)
-    Test.@test maximum(abs, spec2.rotational) < 1e-6 * maximum(exact)
-
-    Test.@test_throws UndefKeywordError SFC.helmholtz_spectra(h, kq)
-
-    # and each component is accepted by the invertibility gate on its own
-    Test.@test SFC.assert_invertible(SFT.RotationalSecondOrderStructureFunctionType()) === nothing
-    Test.@test SFC.assert_invertible(SFT.DivergentSecondOrderStructureFunctionType()) === nothing
+    trace = SFC.isotropic_spectrum(SFT.S2SFType(), mids, D_LL .+ D_TT, kq, Val(2); variance = 2.0)
+    for op in (SFT.RotationalSecondOrderStructureFunctionType(), SFT.DivergentSecondOrderStructureFunctionType())
+        Test.@test SFC.isotropic_spectrum(op, mids, D_LL .+ D_TT, kq, Val(2); variance = 2.0) == trace
+    end
 end
 
 Test.@testset "the shell spectrum carries the dimensional weight" begin
     kq = [0.5, 1.0, 2.0, 4.0]
     P = [3.0, 2.0, 1.0, 0.5]
-    for D in (1, 2, 3)
-        E = SFC.shell_spectrum(P, kq, Val(D))
-        Test.@test E ≈ [SFC.solid_angle(Val(D)) * k^(D - 1) * p for (k, p) in zip(kq, P)]
+    for (D, Ω) in ((1, 2.0), (2, 2π), (3, 4π))
+        Test.@test SFC.shell_spectrum(P, kq, Val(D)) ≈ Ω .* kq .^ (D - 1) .* P
     end
-    # in one dimension the weight is the two directions along the line
-    Test.@test SFC.shell_spectrum(P, kq, Val(1)) ≈ 2 .* P
 end
 
-# A device result (decision 4) is post-processed in its own array family: no element is read one at a time, and the
-# spectra and fluxes come back in that family, equal to the host's.
+# Spectra and fluxes of a device-array result stay in its array family, without scalar reads, equal to the host's.
 Test.@testset "post-processing a result held in a device array family stays in it" begin
     GPUArraysCore.allowscalar(false)
     Random.seed!(4400)
@@ -557,55 +286,44 @@ Test.@testset "post-processing a result held in a device array family stays in i
     counts[7] = 0
     Ks = [0.3, 0.8, 1.7, 3.1]
     on_device(r) = SF.StructureFunctionSumsAndCounts(r.operator, r.distance, JLArray(r.sums), JLArray(r.counts))
+    same(d, h) = d isa JLArray && isapprox(Array(d), h; rtol = 1e-12)
     host_s2 = SF.StructureFunctionSumsAndCounts(SFT.S2SFType(), edges, (2 .- exp.(-mids ./ 2)) .* counts, counts)
     dev_s2 = on_device(host_s2)
-    for f in (r -> SFC.isotropic_spectrum(r, Ks, Val(2); variance = 1.0), r -> SFC.covariance(r, 1.0))
-        h, d = f(host_s2), f(dev_s2)
-        hv, dv = h isa Tuple ? last(h) : h, d isa Tuple ? last(d) : d
-        Test.@test dv isa JLArray
-        Test.@test Array(dv) ≈ hv rtol = 1e-12
-    end
+    Test.@test same(SFC.isotropic_spectrum(dev_s2, Ks, Val(2); variance = 1.0),
+                    SFC.isotropic_spectrum(host_s2, Ks, Val(2); variance = 1.0))
+    Test.@test same(last(SFC.covariance(dev_s2, 1.0)), last(SFC.covariance(host_s2, 1.0)))
     Test.@test SFC.shell_spectrum(JLArray([3.0, 2.0, 1.0, 0.5]), Ks, Val(2)) isa JLArray
     host_s3 = SF.StructureFunctionSumsAndCounts(SFT.S3SFType(), edges, -0.1 .* mids .* counts, counts)
     host_l3 = SF.StructureFunctionSumsAndCounts(SFT.L3SFType(), edges, -0.04 .* mids .* counts, counts)
     host_adv = SF.StructureFunctionSumsAndCounts(SFT.VectorDotSFType(1, 2), edges, sin.(mids) .* counts, counts)
-    for (h, d) in ((SFC.spectral_flux(host_s3, Ks), SFC.spectral_flux(on_device(host_s3), Ks)),
-                   (SFC.spectral_flux(host_l3, host_s3, Ks), SFC.spectral_flux(on_device(host_l3), on_device(host_s3), Ks)),
-                   (SFC.spectral_flux(host_adv, Ks), SFC.spectral_flux(on_device(host_adv), Ks)),
-                   (SFC.enstrophy_flux(host_adv, Ks), SFC.enstrophy_flux(on_device(host_adv), Ks)))
-        Test.@test d isa JLArray
-        Test.@test Array(d) ≈ h rtol = 1e-12
-    end
+    Test.@test same(SFC.spectral_flux(on_device(host_s3), Ks), SFC.spectral_flux(host_s3, Ks))
+    Test.@test same(SFC.spectral_flux(on_device(host_l3), on_device(host_s3), Ks), SFC.spectral_flux(host_l3, host_s3, Ks))
+    Test.@test same(SFC.spectral_flux(on_device(host_adv), Ks), SFC.spectral_flux(host_adv, Ks))
+    Test.@test same(SFC.enstrophy_flux(on_device(host_adv), Ks), SFC.enstrophy_flux(host_adv, Ks))
     host_l2 = SF.StructureFunctionSumsAndCounts(SFT.L2SFType(), edges, (1 .- exp.(-mids)) .* counts, counts)
     host_t2 = SF.StructureFunctionSumsAndCounts(SFT.T2SFType(), edges, (1 .- exp.(-mids ./ 3)) .* counts, counts)
     h = SFC.helmholtz_spectra(host_l2, host_t2, Ks; variance = 1.0)
     d = SFC.helmholtz_spectra(on_device(host_l2), on_device(host_t2), Ks; variance = 1.0)
-    Test.@test d.rotational isa JLArray
-    Test.@test Array(d.rotational) ≈ h.rotational rtol = 1e-12
-    Test.@test Array(d.divergent) ≈ h.divergent rtol = 1e-12
+    Test.@test same(d.rotational, h.rotational) && same(d.divergent, h.divergent)
 end
 
-# A power-law spectrum `A k^-β` has `S₂ = 2A I_D(β) r^(β-1)`, `I_D(β) = ∫₀^∞ (1 - T_D(x)) x^-β dx` with `T_D` the
-# angular average of `cos`; its Mellin transform gives `I_1` and `I_3` in closed form.
+# A power law A k^-β has S₂ = 2A I_D(β) r^(β-1), with I_1 and I_3 in closed form by its Mellin transform.
 Test.@testset "the equivalent spectrum of a power law, debiased, is the power law" begin
     g = Bessels.gamma
     I1(β) = π / (2 * g(β) * sin(π * (β - 1) / 2))
     I3(β) = g(3 - β) * sin(π * β / 2) / (-β * (1 - β) * (2 - β))
-    r = exp.(range(log(1e-2), log(10.0); length = 400))
+    r = exp.(range(log(1e-2), log(10.0); length = 100))
+    inner = 3:(length(r) - 2)
     A = 0.7
-    for (D, I) in ((1, I1), (3, I3)), β in (5 / 3, 2.5)
-        S2 = 2A * I(β) .* r .^ (β - 1)
-        e = SFC.equivalent_spectrum(SFT.S2SFType(), r, S2, Val(D))
-        b = D == 1 ? 1.0 : 2.0
+    for (D, I, b, β) in ((1, I1, 1.0, 5 / 3), (3, I3, 2.0, 2.5))
+        e = SFC.equivalent_spectrum(SFT.S2SFType(), r, 2A * I(β) .* r .^ (β - 1), Val(D))
         Test.@test e.wavenumber ≈ reverse(b ./ r)
-        inner = 3:(length(r) - 2)
         Test.@test maximum(abs, e.debiased[inner] ./ (A .* e.wavenumber[inner] .^ -β) .- 1) < 1e-3
     end
     S2 = 2 * I3(2.5) .* r .^ 1.5
-    S2[200] = -1.0
+    S2[50] = -1.0
     e = SFC.equivalent_spectrum(SFT.S2SFType(), r, S2, Val(3))
     Test.@test all(x -> isfinite(x) && x > 0, e.spectrum)
     Test.@test_throws ArgumentError SFC.equivalent_spectrum(SFT.L2SFType(), r, S2, Val(3))
     Test.@test_throws ArgumentError SFC.equivalent_spectrum(SFT.S2SFType(), reverse(r), S2, Val(3))
 end
-

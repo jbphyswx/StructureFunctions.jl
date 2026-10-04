@@ -1,59 +1,35 @@
-"""
-    runtests.jl
-
-Tier-2 CUDA tests — **not** part of default `Pkg.test()`. Skips cleanly when no
-functional CUDA device is present.
-
-Run from the repository root (GPU allocation / SLURM):
-
-    julia --project=gpu gpu/runtests.jl
-
-The testset files run in this process; the script-style parity files each run in their own
-process, so their top-level constants never collide, and pass when they exit cleanly.
-"""
-
+# Tier-2 CUDA tests, outside `Pkg.test()`: `julia --project=gpu gpu/runtests.jl` on a GPU allocation.
 using CUDA: CUDA
 using Test: Test
 
-if !CUDA.functional()
-    @warn "CUDA not functional — skipping GPU tests" CUDA_VISIBLE_DEVICES=get(ENV, "CUDA_VISIBLE_DEVICES", "unset")
-    exit(0)
-end
+CUDA.functional() || error("CUDA is not functional (CUDA_VISIBLE_DEVICES = $(get(ENV, "CUDA_VISIBLE_DEVICES", "unset")))")
 
-println("CUDA device: ", CUDA.name(CUDA.device()))
-
-const GPU_DIR = @__DIR__
-const SCRIPT_SUITES = (
+# One module per file; the shared-memory file runs first, as it reads the compiler's report of the kernels it compiles.
+const FILES = (
+    "test_cuda_smem_budget.jl",
+    "test_cuda_parity.jl",
+    "test_workspace_cuda.jl",
+    "test_cuda_batch_contract.jl",
     "test_cuda_1d_parity.jl",
     "test_cuda_2d_parity.jl",
-    "test_e2e_2d_cuda.jl",
-    "test_slices_e2e.jl",
-    "test_cuda_gridded_parity.jl",
-    "test_cuda_pair_weights.jl",
-    "test_cuda_second_axis.jl",
-    "test_cuda_lag_sweep.jl",
-    "test_cuda_sorted_line.jl",
-    "test_cuda_harmonic.jl",
-    "test_cuda_nufft.jl",
     "test_cuda_batch_widths.jl",
     "test_cuda_widths.jl",
-    "test_cuda_smem_budget.jl",
+    "test_cuda_pair_weights.jl",
+    "test_cuda_second_axis.jl",
     "test_cuda_batch_culling.jl",
+    "test_cuda_sorted_line.jl",
+    "test_cuda_lag_sweep.jl",
+    "test_cuda_gridded_parity.jl",
+    "test_cuda_nufft.jl",
+    "test_cuda_harmonic.jl",
     "test_cuda_postprocess.jl",
 )
 
 Test.@testset "StructureFunctions GPU" begin
-    include("test_cuda_parity.jl")
-    include("test_workspace_cuda.jl")
-    include("test_cuda_batch_contract.jl")
-    Test.@testset "script suites" begin
-        for file in SCRIPT_SUITES
-            cmd = `$(Base.julia_cmd()) --project=$(GPU_DIR) --threads=$(Threads.nthreads()) $(joinpath(GPU_DIR, file))`
-            Test.@testset "$file" begin
-                Test.@test success(pipeline(cmd; stdout, stderr))
-            end
+    Test.@testset "$file" for file in FILES
+        name, path = Symbol(first(splitext(file))), joinpath(@__DIR__, file)
+        @eval Main module $name
+            include($path)
         end
     end
 end
-
-println("GPU tests passed.")

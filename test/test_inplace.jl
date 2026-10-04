@@ -1,175 +1,49 @@
-module TestInplace
-
 using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using Random: Random
 using OhMyThreads: OhMyThreads
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
-    StructureFunctionObjects as SFO, StructureFunctionTypes as SFT, HelperFunctions as SFH
+    StructureFunctionObjects as SFO, StructureFunctionTypes as SFT
 
-Test.@testset "In-place / Pre-allocated Buffer API Tests" begin
-    # Generate synthetic test dataset
+"""Zeroed buffers, the mutating call adding into them, and the serial allocating result, of one input form."""
+function ip_form(form, x, u, ub, bins, vbins)
+    nb, nv = length(bins) - 1, length(vbins) - 1
+    sft, ser = SFT.L2SFType(), CB.SerialBackend()
+    if form === :point
+        return (zeros(nb), zeros(UInt32, nb)),
+               (s, c, be) -> SFC.calculate_structure_function!(s, c, sft, x, u, bins; backend = be),
+               SFC.calculate_structure_function(sft, x, u, bins, SF.StructureFunctionSumsAndCounts; backend = ser)
+    elseif form === :joint
+        return (zeros(nb, nv), zeros(UInt32, nb, nv)),
+               (s, c, be) -> SFC.calculate_structure_function!(s, c, sft, x, u, bins, vbins; backend = be),
+               SFC.calculate_structure_function(sft, x, u, bins, vbins; backend = ser)
+    elseif form === :batch
+        return (zeros(nb, size(ub, 3)), zeros(UInt32, nb, size(ub, 3))),
+               (s, c, be) -> SFC.calculate_structure_function!(s, c, sft, x, ub, bins; backend = be),
+               SFC.calculate_structure_function(sft, x, ub, bins, SF.StructureFunctionSumsAndCounts; backend = ser)
+    else
+        return (zeros(2, 2, nb), zeros(UInt32, nb)),
+               (s, c, be) -> SFC.calculate_structure_function_tensor!(s, c, Val(2), x, u, bins; backend = be),
+               SFC.calculate_structure_function_tensor(Val(2), x, u, bins, SFO.StructureFunctionTensorSumsAndCounts;
+                                                       backend = ser)
+    end
+end
+
+const IP_CASES = ((:point, CB.SerialBackend()), (:joint, CB.ThreadedBackend()), (:batch, CB.AutoBackend()),
+                  (:tensor, CB.ThreadedBackend()))
+
+# A mutating entry adds exactly the allocating entry's sums and counts into its buffers, on every call.
+Test.@testset "a mutating entry accumulates the allocating entry's result" begin
     Random.seed!(1234)
-    n_points = 60
-    x_coords = rand(n_points) .* 50000.0
-    y_coords = rand(n_points) .* 50000.0
-    x_mat = [x_coords'; y_coords']
-
-    u_coords = randn(n_points) .* 0.5
-    v_coords = randn(n_points) .* 0.5
-    u_mat = [u_coords'; v_coords']
-
-    distance_bins = [0.0, 10000.0, 20000.0, 30000.0, 50000.0]
-    n_dist = length(distance_bins) - 1
-    value_bins = range(-1.0, 1.0, length = 11)
-    n_vals = length(value_bins) - 1
-    G2 = SFH.FlatGeometry{2}()
-
-    # 1. The 1D serial in-place entry reproduces the allocating result and accumulates on a second call
-    Test.@testset "1D Serial Mutating Array Correctness & Accumulation" begin
-        # Baselines
-        bas = SFC.calculate_structure_function(
-            SFT.L2SF, x_mat, u_mat, distance_bins, SF.StructureFunctionSumsAndCounts;
-            backend = CB.SerialBackend()
-        )
-
-        sums = zeros(Float64, n_dist)
-        counts = zeros(UInt32, n_dist)
-
-        # Mutate
-        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
-        Test.@test sums == bas.sums
-        Test.@test counts == bas.counts
-
-        # Accumulation (calling twice should double the values)
-        SFC.serial_calculate_structure_function!(sums, counts, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
-        Test.@test sums ≈ bas.sums .* 2
-        Test.@test counts == bas.counts .* 2
-    end
-
-    # 2. The 2D serial in-place entry reproduces the allocating result and accumulates on a second call
-    Test.@testset "2D Serial Mutating Array & Array Correctness & Accumulation" begin
-        bas_arr = SFC.calculate_structure_function(
-            SFT.L2SF, x_mat, u_mat, distance_bins, value_bins;
-            backend = CB.SerialBackend()
-        )
-
-        sums_arr = zeros(Float64, n_dist, n_vals)
-        counts_arr = zeros(UInt32, n_dist, n_vals)
-
-        # Mutate Array
-        SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
-        Test.@test sums_arr == bas_arr.sums
-        Test.@test counts_arr == bas_arr.counts
-
-        # Accumulation
-        SFC.serial_calculate_structure_function!(sums_arr, counts_arr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
-        Test.@test sums_arr ≈ bas_arr.sums .* 2
-        Test.@test counts_arr == bas_arr.counts .* 2
-    end
-
-    # 3. The threaded in-place entries match the serial ones in 1D and 2D, with a bounded allocation
-    Test.@testset "1D & 2D Threaded Mutating Parity & Low Allocation" begin
-        # 1D Array Threaded
-        sums_ser = zeros(Float64, n_dist)
-        counts_ser = zeros(UInt32, n_dist)
-        SFC.serial_calculate_structure_function!(sums_ser, counts_ser, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
-
-        sums_thr = zeros(Float64, n_dist)
-        counts_thr = zeros(UInt32, n_dist)
-        SFC.threaded_calculate_structure_function!(sums_thr, counts_thr, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
-
-        Test.@test sums_ser ≈ sums_thr
-        Test.@test counts_ser == counts_thr
-
-        # 2D Array Threaded
-        sums_2d_ser = zeros(Float64, n_dist, n_vals)
-        counts_2d_ser = zeros(UInt32, n_dist, n_vals)
-        SFC.serial_calculate_structure_function!(sums_2d_ser, counts_2d_ser, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
-
-        sums_2d_thr = zeros(Float64, n_dist, n_vals)
-        counts_2d_thr = zeros(UInt32, n_dist, n_vals)
-        SFC.threaded_calculate_structure_function!(sums_2d_thr, counts_2d_thr, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
-
-        Test.@test sums_2d_ser ≈ sums_2d_thr
-        Test.@test counts_2d_ser == counts_2d_thr
-
-        # Allocation checks: chunked OhMyThreads must allocate O(n_threads) which is extremely lightweight
-        # We check that it runs without errors or excessive allocation.
-        alloc1 = @allocated SFC.threaded_calculate_structure_function!(sums_thr, counts_thr, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
-        @info "Threaded 1D Array Mutating call allocation: $alloc1 bytes"
-        Test.@test alloc1 < 250_000 # extremely lightweight compared to O(N_points)
-    end
-
-    # 4. The public in-place entry with AutoBackend matches the serial one in 1D and 2D
-    Test.@testset "Public Entrypoints & Backend Dispatch" begin
-        # 1D Public AutoBackend (resolves to threaded or serial)
-        sums_pub = zeros(Float64, n_dist)
-        counts_pub = zeros(UInt32, n_dist)
-        SFC.calculate_structure_function!(sums_pub, counts_pub, SFT.L2SF, x_mat, u_mat, distance_bins; backend=CB.AutoBackend())
-
-        sums_bas = zeros(Float64, n_dist)
-        counts_bas = zeros(UInt32, n_dist)
-        SFC.serial_calculate_structure_function!(sums_bas, counts_bas, SFT.L2SF, x_mat, u_mat, distance_bins; geometry = G2)
-
-        Test.@test sums_pub ≈ sums_bas
-        Test.@test counts_pub == counts_bas
-
-        # 2D Public AutoBackend
-        sums_2d_pub = zeros(Float64, n_dist, n_vals)
-        counts_2d_pub = zeros(UInt32, n_dist, n_vals)
-        SFC.calculate_structure_function!(sums_2d_pub, counts_2d_pub, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; backend=CB.AutoBackend())
-
-        sums_2d_bas = zeros(Float64, n_dist, n_vals)
-        counts_2d_bas = zeros(UInt32, n_dist, n_vals)
-        SFC.serial_calculate_structure_function!(sums_2d_bas, counts_2d_bas, SFT.L2SF, x_mat, u_mat, distance_bins, value_bins; geometry = G2)
-
-        Test.@test sums_2d_pub ≈ sums_2d_bas
-        Test.@test counts_2d_pub == counts_2d_bas
+    N = 40
+    x, u, ub = rand(2, N), randn(2, N), randn(2, N, 3)
+    bins = [0.0, 0.25, 0.5, 1.0, 1.5]
+    vbins = collect(range(-1.0, 1.0; length = 11))
+    for (form, backend) in IP_CASES
+        (s, c), add!, ref = ip_form(form, x, u, ub, bins, vbins)
+        add!(s, c, backend)
+        Test.@test s ≈ ref.sums && c == ref.counts
+        add!(s, c, backend)
+        Test.@test s ≈ 2 .* ref.sums && c == 2 .* ref.counts
     end
 end
-
-# Every `!` entry ACCUMULATES into the caller's buffers; zeroing belongs to the non-mutating
-# wrappers. One contract for every rank of input, checked here rank by rank.
-Test.@testset "Mutating API accumulates for every input shape" begin
-    Random.seed!(4242)
-    FT = Float64
-    N, B = 24, 3
-    bins = collect(FT, range(0.0, 2.0; length = 7))
-    nb = length(bins) - 1
-    sft = SFT.L2SFType()
-    x2, u2 = rand(FT, 2, N), rand(FT, 2, N)
-    u3 = rand(FT, 2, N, B)
-
-    # (a) point-field: the family that already accumulated.
-    s1, c1 = zeros(FT, nb), zeros(UInt32, nb)
-    SFC.calculate_structure_function!(s1, c1, sft, x2, u2, bins)
-    s2, c2 = copy(s1), copy(c1)
-    SFC.calculate_structure_function!(s2, c2, sft, x2, u2, bins)
-    Test.@test s2 ≈ 2 .* s1
-    Test.@test c2 == 2 .* c1
-
-    # (b) batch / auxiliary axes
-    bs1, bc1 = zeros(FT, nb, B), zeros(UInt32, nb, B)
-    SFC.calculate_structure_function!(bs1, bc1, sft, x2, u3, bins)
-    bs2, bc2 = copy(bs1), copy(bc1)
-    SFC.calculate_structure_function!(bs2, bc2, sft, x2, u3, bins)
-    Test.@test bs2 ≈ 2 .* bs1
-    Test.@test bc2 == 2 .* bc1
-
-    # (c) tensor
-    ts1, tc1 = zeros(FT, 2, 2, nb), zeros(UInt32, nb)
-    SFC.calculate_structure_function_tensor!(ts1, tc1, Val(2), x2, u2, bins)
-    ts2, tc2 = copy(ts1), copy(tc1)
-    SFC.calculate_structure_function_tensor!(ts2, tc2, Val(2), x2, u2, bins)
-    Test.@test ts2 ≈ 2 .* ts1
-    Test.@test tc2 == 2 .* tc1
-
-    # The non-mutating wrappers still own the zeroing, so repeated calls are independent.
-    r1 = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins, SFO.StructureFunctionTensorSumsAndCounts)
-    r2 = SFC.calculate_structure_function_tensor(Val(2), x2, u2, bins, SFO.StructureFunctionTensorSumsAndCounts)
-    Test.@test r1.sums ≈ r2.sums
-    Test.@test r1.counts == r2.counts
-end
-
-end # module

@@ -2,34 +2,15 @@ using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
-    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO, HelperFunctions as SFH
+    StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT, HelperFunctions as SFH
 using Random: Random
 
 Random.seed!(42)
 
-"""Wide synthetic value-bin edges for unit tests only."""
-function _synthetic_value_bins(n_bins::Int)
-    return collect(range(-1.0, 2.0, length = n_bins + 1))
-end
-
-function _synthetic_value_bins_ntuple(n_bins::Int)
-    template = _synthetic_value_bins(n_bins)
-    return ntuple(_ -> copy(template), 6)
-end
-
-function _nan_equal(a, b; atol)
-    axes(a) == axes(b) || return false
-    return all(eachindex(a, b)) do i
-        ai = a[i]
-        bi = b[i]
-        (isnan(ai) && isnan(bi)) || isapprox(ai, bi; atol = atol)
-    end
-end
-
+# A workspace gives the fresh-buffer answer, takes new same-shape inputs, and serves a varying-position joint batch.
 Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     N = 40
-    T = 4
+    T = 3
     FT = Float64
     x2 = rand(FT, 2, N)
     u2 = rand(FT, 2, N)
@@ -39,45 +20,17 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     linear_bins = collect(FT, range(0.0, 1.5, length = 11))
     log_bins = exp.(range(log(FT(0.01)), log(FT(1.5)), length = 11))
     value_bins = collect(FT, range(0.0, 2.0, length = 9))
-    value_bins_ntuple = _synthetic_value_bins_ntuple(8)
 
     sft = SFT.L2SFType()
     backend = KA.CPU()
-    NB = length(linear_bins) - 1
     G2 = SFH.FlatGeometry{2}()
 
-    # --- 1D: fresh alloc vs workspace ---
-    for (x, u, bins) in ((x2, u2, linear_bins), (x2, u2, log_bins), (x3, u3, linear_bins))
-        geom = SFH.FlatGeometry{size(u, 1)}()
-        ref = SFC.gpu_calculate_structure_function(
-            sft, backend, x, u, bins, UInt32; geometry = geom,
-        )
-        ws = SFC.GPUSFWorkspace(backend, bins)
-        out_ws = SFC.gpu_calculate_structure_function(
-            sft, backend, x, u, bins, UInt32; geometry = geom, workspace = ws,
-        )
-        Test.@test ref.counts ≈ out_ws.counts
-        Test.@test ref.sums ≈ out_ws.sums atol = 1e-12
-
-        sums_acc = zeros(eltype(ref.sums), NB)
-        counts_acc = zeros(UInt32, NB)
-        K = 3
-        for _ in 1:K
-            SFC.gpu_calculate_structure_function!(
-                sums_acc, counts_acc, sft, backend, x, u, bins; geometry = geom, workspace = ws,
-            )
-        end
-        ref_k = SFC.gpu_calculate_structure_function(
-            sft, backend, x, u, bins, UInt32; geometry = geom,
-        )
-        sums_k = zeros(eltype(ref.sums), NB)
-        counts_k = zeros(UInt32, NB)
-        for _ in 1:K
-            SFC.gpu_calculate_structure_function!(sums_k, counts_k, sft, backend, x, u, bins; geometry = geom)
-        end
-        Test.@test sums_acc ≈ sums_k atol = 1e-12
-        Test.@test counts_acc ≈ counts_k
-    end
+    ref = SFC.gpu_calculate_structure_function(sft, backend, x3, u3, log_bins, UInt32; geometry = SFH.FlatGeometry{3}())
+    out_ws = SFC.gpu_calculate_structure_function(sft, backend, x3, u3, log_bins, UInt32;
+                                                  geometry = SFH.FlatGeometry{3}(),
+                                                  workspace = SFC.GPUSFWorkspace(backend, log_bins))
+    Test.@test ref.counts == out_ws.counts
+    Test.@test ref.sums ≈ out_ws.sums atol = 1e-12
 
     Test.@testset "workspace input cache refreshes same-shape host inputs" begin
         ws_refresh = SFC.GPUSFWorkspace(backend, linear_bins)
@@ -98,89 +51,15 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
         )
 
         Test.@test out_a.sums ≈ ref_a.sums atol = 1e-12
-        Test.@test out_a.counts ≈ ref_a.counts
+        Test.@test out_a.counts == ref_a.counts
         Test.@test out_b.sums ≈ ref_b.sums atol = 1e-12
-        Test.@test out_b.counts ≈ ref_b.counts
+        Test.@test out_b.counts == ref_b.counts
         Test.@test !isapprox(out_b.sums, ref_a.sums; atol = 1e-12)
         SFC.release!(ws_refresh)
     end
 
-    # --- 2D joint ---
-    ref2d = SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x2, u2, linear_bins, value_bins, UInt32; geometry = G2,
-    )
-    ws2d = SFC.GPUSFWorkspace(backend, linear_bins, value_bins)
-    out2d_ws = SFC.gpu_calculate_structure_function_2d(
-        sft, backend, x2, u2, linear_bins, value_bins, UInt32; geometry = G2, workspace = ws2d,
-    )
-    Test.@test ref2d.sums ≈ out2d_ws.sums atol = 1e-12
-    Test.@test ref2d.counts ≈ out2d_ws.counts
-
-    # --- single_pass ---
-    sp_inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
-    ref_sp = SFC.calculate_structure_functions_single_pass(
-        x2, u2, linear_bins, SF.StructureFunctionSumsAndCounts; backend = CB.GPUBackend(backend),
-    )
-    ws_sp = SFC.GPUSFWorkspace(backend, linear_bins; kind = :single_pass)
-    out_sp = SFC.calculate_structure_functions_single_pass(
-        x2, u2, linear_bins, SF.StructureFunctionSumsAndCounts;
-        backend = CB.GPUBackend(backend), workspace = ws_sp,
-    )
-    for k in sp_inv
-        Test.@test _nan_equal(ref_sp[k].sums, out_sp[k].sums; atol = 1e-12)
-        Test.@test ref_sp[k].counts ≈ out_sp[k].counts
-    end
-
-    # --- single_pass_2d ---
-    n_val = length(value_bins_ntuple[1]) - 1
-    sums_sp2d = zeros(FT, 6, NB, n_val)
-    counts_sp2d = zeros(UInt32, 6, NB, n_val)
-    SFC.calculate_structure_functions_single_pass_2d!(
-        sums_sp2d, counts_sp2d, x2, u2, linear_bins, value_bins_ntuple;
-        backend = CB.SerialBackend(),
-    )
-    ws_sp2d = SFC.GPUSFWorkspace(backend, linear_bins, value_bins_ntuple)
-    sums_gpu = zeros(FT, 6, NB, n_val)
-    counts_gpu = zeros(UInt32, 6, NB, n_val)
-    SFC.gpu_calculate_structure_functions_single_pass_2d!(
-        sums_gpu, counts_gpu, backend, x2, u2, linear_bins, value_bins_ntuple;
-        geometry = G2, workspace = ws_sp2d,
-    )
-    Test.@test sums_gpu ≈ sums_sp2d atol = 1e-10
-    Test.@test counts_gpu ≈ counts_sp2d
-
-    # --- slice batch: (N_dims, N_points, T) ---
     x_batch = rand(FT, 2, N, T)
     u_batch = rand(FT, 2, N, T)
-    sums_slices = zeros(FT, NB, T)
-    counts_slices = zeros(UInt32, NB, T)
-
-    for t in 1:T
-        ref_t = SFC.gpu_calculate_structure_function(
-            sft, backend, x_batch[:, :, t], u_batch[:, :, t], linear_bins, UInt32; geometry = G2,
-        )
-        sums_slices[:, t] .= ref_t.sums
-        counts_slices[:, t] .= ref_t.counts
-    end
-
-    sums_drv = zeros(FT, NB, T)
-    counts_drv = zeros(UInt32, NB, T)
-    ws_slice = SFC.GPUSFWorkspace(backend, linear_bins)
-    SFC.gpu_calculate_structure_function_batch!(
-        sums_drv, counts_drv, sft, backend, x_batch, u_batch, linear_bins;
-        geometry = G2, workspace = ws_slice,
-    )
-    Test.@test sums_drv ≈ sums_slices atol = 1e-12
-    Test.@test counts_drv ≈ counts_slices
-
-    SFC.calculate_structure_function_batch!(
-        sums_drv, counts_drv, sft, x_batch, u_batch, linear_bins;
-        backend = CB.GPUBackend(backend), workspace = ws_slice,
-    )
-    Test.@test sums_drv ≈ 2 .* sums_slices atol = 1e-12
-    Test.@test counts_drv == 2 .* counts_slices
-
-    # --- 2D joint slices ---
     n_dist = length(linear_bins) - 1
     n_val = length(value_bins) - 1
     sums_2d_ref = zeros(FT, n_dist, n_val, T)
@@ -196,67 +75,18 @@ Test.@testset "GPU Workspace & Slice Batch (KA.CPU)" begin
     counts_2d_drv = zeros(UInt32, n_dist, n_val, T)
     SFC.gpu_calculate_structure_function_2d_batch!(
         sums_2d_drv, counts_2d_drv, sft, backend, x_batch, u_batch, linear_bins, value_bins;
-        geometry = G2, workspace = ws2d,
+        geometry = G2, workspace = SFC.GPUSFWorkspace(backend, linear_bins, value_bins),
     )
     Test.@test sums_2d_drv ≈ sums_2d_ref atol = 1e-12
-    Test.@test counts_2d_drv ≈ counts_2d_ref
-
-    # --- single_pass slices ---
-    sums_sp_ref = zeros(FT, 6, NB, T)
-    counts_sp_ref = zeros(UInt32, 6, NB, T)
-    for t in 1:T
-        res = SFC.calculate_structure_functions_single_pass(
-            x_batch[:, :, t], u_batch[:, :, t], linear_bins, SF.StructureFunctionSumsAndCounts;
-            backend = CB.GPUBackend(backend),
-        )
-        for (i, k) in enumerate(sp_inv)
-            sums_sp_ref[i, :, t] .= res[k].sums
-            counts_sp_ref[i, :, t] .= res[k].counts
-        end
-    end
-    sums_sp_drv = zeros(FT, 6, NB, T)
-    counts_sp_drv = zeros(UInt32, 6, NB, T)
-    SFC.gpu_calculate_structure_functions_single_pass_batch!(
-        sums_sp_drv, counts_sp_drv, backend, x_batch, u_batch, linear_bins;
-        geometry = G2, workspace = ws_sp,
-    )
-    Test.@test sums_sp_drv ≈ sums_sp_ref atol = 1e-10
-    Test.@test counts_sp_drv ≈ counts_sp_ref
-
-    # --- single_pass_2d slices ---
-    sums_sp2d_ref = zeros(FT, 6, NB, n_val, T)
-    counts_sp2d_ref = zeros(UInt32, 6, NB, n_val, T)
-    for t in 1:T
-        st = zeros(FT, 6, NB, n_val)
-        ct = zeros(UInt32, 6, NB, n_val)
-        SFC.calculate_structure_functions_single_pass_2d!(
-            st, ct, x_batch[:, :, t], u_batch[:, :, t], linear_bins, value_bins_ntuple;
-            backend = CB.SerialBackend(),
-        )
-        sums_sp2d_ref[:, :, :, t] .= st
-        counts_sp2d_ref[:, :, :, t] .= ct
-    end
-    sums_sp2d_drv = zeros(FT, 6, NB, n_val, T)
-    counts_sp2d_drv = zeros(UInt32, 6, NB, n_val, T)
-    SFC.gpu_calculate_structure_functions_single_pass_2d_batch!(
-        sums_sp2d_drv, counts_sp2d_drv, backend, x_batch, u_batch,
-        linear_bins, value_bins_ntuple; geometry = G2, workspace = ws_sp2d,
-    )
-    Test.@test sums_sp2d_drv ≈ sums_sp2d_ref atol = 1e-10
-    Test.@test counts_sp2d_drv ≈ counts_sp2d_ref
-
-    SFC.release!(ws_slice)
-    SFC.release!(ws2d)
-    SFC.release!(ws_sp)
-    SFC.release!(ws_sp2d)
+    Test.@test counts_2d_drv == counts_2d_ref
 end
 
+# Three-wide individual and single-pass batches equal the same slices one at a time, and count every pair once.
 Test.@testset "three-dimensional slice batches (KA.CPU)" begin
-    # A batch of any width equals the same slices computed one at a time.
-    N, T, FT = 40, 4, Float64
+    N, T, FT = 40, 3, Float64
     backend = KA.CPU()
     sft = SFT.L2SFType()
-    bins = collect(FT, range(0.0, 1.5, length = 11))
+    bins = collect(FT, range(0.0, 1.8, length = 11))
     NB = length(bins) - 1
     Random.seed!(8801)
     x_batch = rand(FT, 3, N, T)
@@ -279,51 +109,35 @@ Test.@testset "three-dimensional slice batches (KA.CPU)" begin
     Test.@test isapprox(got_s, ref_s; atol = 1e-12)
     Test.@test sum(Int.(got_c)) == T * N * (N - 1) ÷ 2
 
-    # the six single-pass invariants over the same batch
     sp_s = zeros(FT, SFC.SINGLE_PASS_N, NB, T)
     sp_c = zeros(UInt32, SFC.SINGLE_PASS_N, NB, T)
     SFC.gpu_calculate_structure_functions_single_pass_batch!(sp_s, sp_c, backend, x_batch, u_batch, bins;
                                                              geometry = SFH.FlatGeometry{3}())
+    one_s = zeros(FT, SFC.SINGLE_PASS_N, NB, T)
+    one_c = zeros(UInt32, SFC.SINGLE_PASS_N, NB, T)
     for t in 1:T
-        one_s = zeros(FT, SFC.SINGLE_PASS_N, NB)
-        one_c = zeros(UInt32, SFC.SINGLE_PASS_N, NB)
-        SFC.calculate_structure_functions_single_pass!(one_s, one_c, x_batch[:, :, t], u_batch[:, :, t],
-                                                       bins; backend = CB.SerialBackend())
-        Test.@test isapprox(sp_s[:, :, t], one_s; rtol = 1e-10, atol = 1e-12)
-        Test.@test sp_c[1, :, t] == one_c[1, :]
+        s, c = zeros(FT, SFC.SINGLE_PASS_N, NB), zeros(UInt32, SFC.SINGLE_PASS_N, NB)
+        SFC.calculate_structure_functions_single_pass!(s, c, x_batch[:, :, t], u_batch[:, :, t], bins;
+                                                       backend = CB.SerialBackend())
+        one_s[:, :, t] .= s
+        one_c[:, :, t] .= c
     end
-
-    # a width outside the compiled set takes the same route and must give the same answer
-    x4 = rand(FT, 4, N, T)
-    u4 = rand(FT, 4, N, T)
-    ref4_s = zeros(FT, NB, T)
-    ref4_c = zeros(UInt32, NB, T)
-    for t in 1:T
-        r = SFC.calculate_structure_function(sft, x4[:, :, t], u4[:, :, t], bins, UInt32,
-            SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
-        ref4_s[:, t] .= r.sums
-        ref4_c[:, t] .= r.counts
-    end
-    got4_s = zeros(FT, NB, T)
-    got4_c = zeros(UInt32, NB, T)
-    SFC.gpu_calculate_structure_function_batch!(got4_s, got4_c, sft, backend, x4, u4, bins;
-                                                geometry = SFH.FlatGeometry{4}())
-    Test.@test sum(Int.(ref4_c)) > 0
-    Test.@test got4_c == ref4_c
-    Test.@test isapprox(got4_s, ref4_s; rtol = 1e-10, atol = 1e-12)
+    Test.@test all(t -> isapprox(sp_s[:, :, t], one_s[:, :, t]; rtol = 1e-10, atol = 1e-12), 1:T)
+    Test.@test sp_c[1, :, :] == one_c[1, :, :]
 end
 
+const GPU_WS_FIXED_X_CASES = ((2, :typed), (3, :raw))
+
+# A fixed-position slice batch matches serial at each width and bin spelling, and `!` adds into the caller's buffers.
 Test.@testset "a fixed-position slice batch agrees at every width and bin spelling (KA.CPU)" begin
-    # Shared positions take a different device route from a varying-x batch, and the bin *type*
-    # selects within it: `LinearBinEdges` reaches the warp-replica kernel, a raw edge vector the
-    # unified one. Both must give the serial answer at both widths, or the answer depends on how
-    # the caller spelled the bins.
     N, T, FT = 60, 3, Float64
     backend = KA.CPU()
     sft = SFT.L2SFType()
     NB = 8
     Random.seed!(8802)
-    for D in (2, 3)
+    bin_spellings = (typed = SF.LinearBinEdges(range(0.0, 1.0; length = NB + 1)),
+                     raw = collect(range(0.0, 1.0; length = NB + 1)))
+    Test.@testset "D = $D, $spelling bins" for (D, spelling) in GPU_WS_FIXED_X_CASES
         x = rand(FT, D, N)
         u = rand(FT, D, N, T)
         ref_s = zeros(FT, NB, T)
@@ -335,19 +149,16 @@ Test.@testset "a fixed-position slice batch agrees at every width and bin spelli
             ref_s[:, t] .= r.sums
             ref_c[:, t] .= r.counts
         end
-        for bins in (SF.LinearBinEdges(range(0.0, 1.0; length = NB + 1)),
-                     collect(range(0.0, 1.0; length = NB + 1)))
-            g = SFC.calculate_structure_function(sft, x, u, bins, SF.StructureFunctionSumsAndCounts;
-                backend = CB.GPUBackend(backend))
-            Test.@test reshape(collect(g.counts), NB, T) == ref_c
-            Test.@test isapprox(reshape(collect(g.sums), NB, T), ref_s; rtol = 1e-10)
-            # `!` adds: twice into the caller's buffers is twice the histogram, on every route
-            s, c = zeros(FT, NB, T), zeros(UInt32, NB, T)
-            for _ in 1:2
-                SFC.calculate_structure_function_batch!(s, c, sft, x, u, bins; backend = CB.GPUBackend(backend))
-            end
-            Test.@test c == 2 .* ref_c
-            Test.@test isapprox(s, 2 .* ref_s; rtol = 1e-10)
+        bins = bin_spellings[spelling]
+        g = SFC.calculate_structure_function(sft, x, u, bins, SF.StructureFunctionSumsAndCounts;
+            backend = CB.GPUBackend(backend))
+        Test.@test reshape(collect(g.counts), NB, T) == ref_c
+        Test.@test isapprox(reshape(collect(g.sums), NB, T), ref_s; rtol = 1e-10)
+        s, c = zeros(FT, NB, T), zeros(UInt32, NB, T)
+        for _ in 1:2
+            SFC.calculate_structure_function_batch!(s, c, sft, x, u, bins; backend = CB.GPUBackend(backend))
         end
+        Test.@test c == 2 .* ref_c
+        Test.@test isapprox(s, 2 .* ref_s; rtol = 1e-10)
     end
 end

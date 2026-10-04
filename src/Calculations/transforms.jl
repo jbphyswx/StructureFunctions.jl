@@ -848,9 +848,9 @@ function `SF_Au = ⟨δu · δ𝓐_u⟩`, `𝓐_u = u·∇u`, sampled at `separa
 ```
 
 The `J₁` relation on `⟨δω δ𝓐_ω⟩ = -∇² SF_Au` integrated by parts twice; `[J₃ - J₁]/2 = -J₂'`. The
-slope `SF_Au'(R)` is the one-sided difference of the last two samples, so the boundary term is
-sensitive to noise in the last bins. `operator` must name two distinct fields, the velocity and
-its advection.
+slope `SF_Au'(R)` is the second-order one-sided difference of the last three samples (of the last two when only two
+are given), so the boundary term is sensitive to noise in the last bins. `operator` must name two distinct fields,
+the velocity and its advection.
 """
 function enstrophy_flux(op::SFT.VectorDotStructureFunctionType, separations::AbstractVector,
                         SF_Au::AbstractVector, wavenumbers::AbstractVector)
@@ -859,10 +859,8 @@ function enstrophy_flux(op::SFT.VectorDotStructureFunctionType, separations::Abs
     length(separations) >= 2 || throw(ArgumentError(
         "the boundary term needs the slope of SF_Au at the last separation; give at least two",
     ))
-    rs = collect(separations)
-    last_two = FT.(_tail(SF_Au, 2))
-    R, AR = FT(rs[end]), last_two[2]
-    dA = (last_two[2] - last_two[1]) / (R - FT(rs[end - 1]))
+    rs = FT.(collect(separations))
+    R, AR, dA = rs[end], _end_value_and_slope(rs, FT.(_tail(SF_Au, min(3, length(rs)))))...
     integral = _flux_integrals((K, r) -> (bessel_kernel(Val(3), K * r) - bessel_kernel(Val(1), K * r)) / 2,
                                separations, SF_Au, wavenumbers, FT)
     K = _on(integral, FT, wavenumbers)
@@ -871,6 +869,15 @@ function enstrophy_flux(op::SFT.VectorDotStructureFunctionType, separations::Abs
         k^2 * (AR * bessel_kernel(Val(2), k * R) + dA * bessel_kernel(Val(1), k * R) / k) / 2
     end for K0 in wavenumbers])
     return K .^ 3 .* integral ./ 2 .+ boundary
+end
+
+"""The last of the samples `f` (the tail of a sequence sampled at increasing `r`) and its slope there: the
+second-order one-sided difference over the last three samples, the difference of the last two when there are two."""
+function _end_value_and_slope(r::AbstractVector, f::AbstractVector)
+    length(f) == 2 && return f[2], (f[2] - f[1]) / (r[end] - r[end - 1])
+    h1, h2 = r[end - 1] - r[end - 2], r[end] - r[end - 1]
+    slope = f[1] * h2 / (h1 * (h1 + h2)) - f[2] * (h1 + h2) / (h1 * h2) + f[3] * (h1 + 2h2) / (h2 * (h1 + h2))
+    return f[3], slope
 end
 
 function enstrophy_flux(sf::SFO.AbstractStructureFunction, wavenumbers::AbstractVector)

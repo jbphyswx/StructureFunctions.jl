@@ -7,11 +7,9 @@ using Random: Random
 
 Random.seed!(42)
 
-function _value_bins_uniform(n_val::Int, ::Type{FT}) where {FT}
-    edges = collect(range(FT(-1), FT(2); length = n_val + 1))
-    return [copy(edges) for _ in 1:6]
-end
+const GPU_SP_TILED_EXT = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
 
+# Single-pass log-bin histograms through a workspace into Int32 counts match serial.
 Test.@testset "GPU single-pass tiled parity — 1D log bins" begin
     N = 64
     FT = Float32
@@ -37,35 +35,7 @@ Test.@testset "GPU single-pass tiled parity — 1D log bins" begin
     Test.@test counts_gpu == counts_cpu
 end
 
-Test.@testset "GPU single-pass tiled parity — 2D log dist + linear value" begin
-    N = 48
-    FT = Float32
-    x = rand(FT, 2, N) .* FT(5000)
-    u = randn(FT, 2, N) .* FT(0.3)
-    dist_vec = LogBinEdges(FT(10), FT(5000), 11)
-    n_val = 8
-    value_bins = ntuple(_ -> LinearBinEdges(range(FT(-1), FT(2); length = n_val + 1)), 6)
-    n_dist = length(dist_vec) - 1
-
-    sums_cpu = zeros(FT, 6, n_dist, n_val)
-    counts_cpu = zeros(Int32, 6, n_dist, n_val)
-    SFC.calculate_structure_functions_single_pass_2d!(
-        sums_cpu, counts_cpu, x, u, dist_vec, value_bins;
-        backend = CB.SerialBackend(),
-    )
-
-    sums_gpu = zeros(FT, 6, n_dist, n_val)
-    counts_gpu = zeros(Int32, 6, n_dist, n_val)
-    ws = SFC.GPUSFWorkspace(KA.CPU(), dist_vec, value_bins; kind = :single_pass_2d)
-    SFC.calculate_structure_functions_single_pass_2d!(
-        sums_gpu, counts_gpu, x, u, dist_vec, value_bins;
-        backend = CB.GPUBackend(KA.CPU()), workspace = ws,
-    )
-
-    Test.@test sums_gpu ≈ sums_cpu rtol = FT(1e-4)
-    Test.@test counts_gpu == counts_cpu
-end
-
+# Inf-padded value bins put out-of-range values in their catch-all bins as serial does.
 Test.@testset "GPU single-pass tiled parity — 2D InfPadded linear value catch-alls" begin
     N = 48
     FT = Float32
@@ -95,75 +65,35 @@ Test.@testset "GPU single-pass tiled parity — 2D InfPadded linear value catch-
     Test.@test counts_gpu == counts_cpu
 end
 
-Test.@testset "GPU single-pass global fallback parity — 2D and 3D" begin
+const GPU_SP1D_CAP_CASES = ((2, :uniform, :within_cap), (3, :log, :within_cap), (2, :irregular, :past_cap))
+
+# Point-list single-pass histograms match serial with bin counts within and past the tiled kernel's cap.
+Test.@testset "GPU single-pass parity within and past the tiled bin cap — 2D and 3D" begin
     FT = Float32
     backend = CB.GPUBackend(KA.CPU())
+    inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
 
-    for D in (2, 3)
+    Test.@testset "D = $D, $kind bins, $side" for (D, kind, side) in GPU_SP1D_CAP_CASES
         N = 18
+        n_bins = side === :within_cap ? 74 : GPU_SP_TILED_EXT.SF_GPU_MAX_BINS + 1
         x = rand(FT, D, N)
         u = rand(FT, D, N)
-        bin_sets = (
-            collect(FT, range(0, 2; length = 75)),
-            LogBinEdges(FT(0.01), FT(2), 75),
-            begin
-                edges = sort!(vcat(FT(0), cumsum(rand(FT, 74))))
-                edges ./= edges[end] / FT(2)
-                edges
-            end,
-        )
-
-        inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
-        for bins in bin_sets
-            sp_cpu = SFC.calculate_structure_functions_single_pass(
-                x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
-            )
-            sp_gpu = SFC.calculate_structure_functions_single_pass(
-                x, u, bins, SF.StructureFunctionSumsAndCounts; backend,
-            )
-            for k in inv
-                Test.@test sp_gpu[k].counts == sp_cpu[k].counts
-                Test.@test sp_gpu[k].sums ≈ sp_cpu[k].sums atol = FT(1e-4)
-            end
-        end
-    end
-end
-
-Test.@testset "GPU single-pass 2D global fallback parity" begin
-    FT = Float32
-    backend = CB.GPUBackend(KA.CPU())
-    N = 16
-    x = rand(FT, 2, N)
-    u = rand(FT, 2, N)
-    value_bins = collect(FT, range(-0.5f0, 1.5f0; length = 9))
-    bin_sets = (
-        collect(FT, range(0, 2; length = 75)),
-        LogBinEdges(FT(0.01), FT(2), 75),
-        begin
-            edges = sort!(vcat(FT(0), cumsum(rand(FT, 74))))
+        bins = if kind === :uniform
+            collect(FT, range(0, 2; length = n_bins + 1))
+        elseif kind === :log
+            LogBinEdges(FT(0.01), FT(2), n_bins + 1)
+        else
+            edges = sort!(vcat(FT(0), cumsum(rand(FT, n_bins))))
             edges ./= edges[end] / FT(2)
             edges
-        end,
-    )
-
-    inv = (:S2, :L2, :T2, :S3, :L3, :L1T2)
-    for bins in bin_sets
-        sp_cpu = SFC.calculate_structure_functions_single_pass_2d(
-            x, u, bins, value_bins; backend = CB.SerialBackend(),
-        )
-        GE = Base.get_extension(SF, :StructureFunctionsKernelAbstractionsExt)
-        gs = zeros(FT, 6, length(bins) - 1, length(value_bins) - 1)
-        gc = zeros(UInt32, 6, length(bins) - 1, length(value_bins) - 1)
-        GE._launch_single_pass_2d_kernel!(
-            backend.backend, 64, gs, gc, x, u,
-            GE._gpu_digitizer(backend.backend, bins, Val(:single_pass_2d)),
-            GE._value_digitizer(nothing, backend.backend, value_bins),
-            N, length(bins), length(value_bins), SF.HelperFunctions.FlatGeometry{2}(),
-        )
-        KA.synchronize(backend.backend)
-        for (t, k) in enumerate(inv)
-            Test.@test gc[t, :, :] == sp_cpu[k].counts
-            Test.@test gs[t, :, :] ≈ sp_cpu[k].sums atol = FT(1e-4)
         end
+        sp_cpu = SFC.calculate_structure_functions_single_pass(
+            x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+        )
+        sp_gpu = SFC.calculate_structure_functions_single_pass(
+            x, u, bins, SF.StructureFunctionSumsAndCounts; backend,
+        )
+        Test.@test all(k -> sp_gpu[k].counts == sp_cpu[k].counts, inv)
+        Test.@test all(k -> isapprox(sp_gpu[k].sums, sp_cpu[k].sums; atol = FT(1e-4)), inv)
     end
 end

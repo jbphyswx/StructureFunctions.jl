@@ -7,15 +7,12 @@ using ComputationalBackends: ComputationalBackends as CB
 using KernelAbstractions: KernelAbstractions as KA
 using OhMyThreads: OhMyThreads
 
-# A route either applies pair weights or refuses; none may accept them and compute the unweighted
-# answer. `honours` pins the first by a property no kernel can satisfy by accident: a constant
-# weight `k` on every point multiplies each pair's contribution by exactly `k²`, so every sum and
-# every count scales by `k²` whatever the operator, the binning or the pair reading.
+# A constant weight `k` on every point scales every sum and count by exactly `k²`, so a route that drops its weights fails.
 const K_CONST = 0.6
 
-"""Whether `run(weights)` scales by `k²` under a constant weight, i.e. the weights reach the kernel."""
-function honours_weights(run, n_points::Int; k::Real = K_CONST, rtol::Real = 1e-12)
-    a_s, a_c = run(nothing)
+"""Whether `run` under the constant weight `k` gives `k²` times the unweighted answer `unweighted`."""
+function honours_weights(run, unweighted, n_points::Int; k::Real = K_CONST, rtol::Real = 1e-12)
+    a_s, a_c = unweighted
     b_s, b_c = run(fill(k, n_points))
     return isapprox(b_s, k^2 .* a_s; rtol = rtol) && isapprox(b_c, k^2 .* a_c; rtol = rtol)
 end
@@ -45,112 +42,113 @@ Test.@testset "pair weights reach every route that accepts them" begin
     value_bins = collect(range(0.0, 2.0; length = 5))
     op = SFT.S2SFType()
     device = CB.GPUBackend(KA.CPU())
+    backends = (CB.SerialBackend(), CB.ThreadedBackend(), device)
     x = rand(2, np)
     u = rand(2, np)
     w = 0.3 .+ rand(np)
+    nb = length(bins) - 1
+    sf1d(backend, uu = u) = ws -> begin
+        r = SFC.calculate_structure_function(op, x, uu, bins, Float64, SFO.StructureFunctionSumsAndCounts;
+            backend = backend, culling = SFC.NoCulling(), weights = ws)
+        (collect(r.sums), collect(r.counts))
+    end
+    joint2d(backend, uu = u) = ws -> begin
+        r = SFC.calculate_structure_function(op, x, uu, bins, value_bins, Float64,
+            SFO.StructureFunction2DSumsAndCounts; backend = backend, culling = SFC.NoCulling(), weights = ws)
+        (collect(r.sums), collect(r.counts))
+    end
+    invariants = (:S2, :L2, :T2, :S3, :L3, :L1T2)
+    stacked(r) = (mapreduce(k -> collect(r[k].sums), vcat, invariants),
+                  mapreduce(k -> collect(r[k].counts), vcat, invariants))
+    single_pass(backend, uu = u) = ws -> stacked(SFC.calculate_structure_functions_single_pass(x, uu, bins,
+        Float64; backend = backend, culling = SFC.NoCulling(), weights = ws))
 
     Test.@testset "the 1-D point histogram, against an independent weighted pair loop" begin
         ref_s, ref_c = weighted_pair_loop(op, x, u, w, bins)
-        for backend in (CB.SerialBackend(), CB.ThreadedBackend(), device)
+        for backend in backends
             got = SFC.calculate_structure_function(op, x, u, bins, Float64, SFO.StructureFunctionSumsAndCounts;
-                backend = backend, weights = w)
+                backend = backend, culling = SFC.NoCulling(), weights = w)
             Test.@test isapprox(collect(got.sums), ref_s; rtol = 1e-10)
             Test.@test isapprox(collect(got.counts), ref_c; rtol = 1e-10)
         end
     end
 
     Test.@testset "a constant weight scales every accepting route by k²" begin
-        sf1d(backend) = ws -> begin
-            r = SFC.calculate_structure_function(op, x, u, bins, Float64, SFO.StructureFunctionSumsAndCounts;
-                backend = backend, weights = ws)
-            (collect(r.sums), collect(r.counts))
-        end
-        joint2d(backend) = ws -> begin
-            r = SFC.calculate_structure_function(op, x, u, bins, value_bins, Float64,
-                SFO.StructureFunction2DSumsAndCounts; backend = backend, weights = ws)
-            (collect(r.sums), collect(r.counts))
-        end
-        invariants = (:S2, :L2, :T2, :S3, :L3, :L1T2)
-        stacked(r) = (mapreduce(k -> collect(r[k].sums), vcat, invariants),
-                      mapreduce(k -> collect(r[k].counts), vcat, invariants))
-        single_pass(backend) = ws -> stacked(SFC.calculate_structure_functions_single_pass(x, u, bins, Float64;
-            backend = backend, weights = ws))
         single_pass_2d(backend) = ws -> stacked(SFC.calculate_structure_functions_single_pass_2d(x, u, bins,
-            value_bins, Float64; backend = backend, weights = ws))
+            value_bins, Float64; backend = backend, culling = SFC.NoCulling(), weights = ws))
         tensor(backend) = ws -> begin
-            nb = length(bins) - 1
             s = zeros(Float64, 2, 2, nb)
             c = zeros(Float64, nb)
             SFC.calculate_structure_function_tensor!(s, c, Val(2), x, u, bins;
-                backend = backend, weights = ws)
+                backend = backend, culling = SFC.NoCulling(), weights = ws)
             (s, c)
         end
 
-        for backend in (CB.SerialBackend(), CB.ThreadedBackend(), device)
-            Test.@test honours_weights(sf1d(backend), np)
-            Test.@test honours_weights(single_pass(backend), np)
-            Test.@test honours_weights(joint2d(backend), np)
-            Test.@test honours_weights(single_pass_2d(backend), np)
-            Test.@test honours_weights(tensor(backend), np)
+        for route in (sf1d, single_pass, joint2d, single_pass_2d, tensor)
+            unweighted = route(CB.SerialBackend())(nothing)
+            for backend in backends
+                Test.@test honours_weights(route(backend), unweighted, np)
+            end
         end
     end
 
     Test.@testset "the auxiliary-axis batches take weights on every backend that runs them" begin
+        # Each batch's unweighted reference is its point route's, slice by slice.
         nt = 3
         ub = rand(2, np, nt)
+        slices(route) = [route(CB.SerialBackend(), ub[:, :, b])(nothing) for b in 1:nt]
+        along(f, rs, dims) = (cat((f(r[1]) for r in rs)...; dims), cat((f(r[2]) for r in rs)...; dims))
+        rows(v) = permutedims(reshape(v, nb, SFC.SINGLE_PASS_N))
         batch1d(backend) = ws -> begin
             r = SFC.calculate_structure_function(op, x, ub, bins, Float64, SFO.StructureFunctionSumsAndCounts;
-                backend = backend, weights = ws)
+                backend = backend, culling = SFC.NoCulling(), weights = ws)
             (collect(r.sums), collect(r.counts))
         end
         batch_joint(backend) = ws -> begin
             r = SFC.calculate_structure_function(op, x, ub, bins, value_bins, Float64,
-                SFO.StructureFunction2DSumsAndCounts; backend = backend, weights = ws)
+                SFO.StructureFunction2DSumsAndCounts; backend = backend, culling = SFC.NoCulling(), weights = ws)
             (collect(r.sums), collect(r.counts))
         end
         batch_sp1d = ws -> begin
-            nb = length(bins) - 1
             s = zeros(Float64, SFC.SINGLE_PASS_N, nb, nt)
             c = zeros(Float64, SFC.SINGLE_PASS_N, nb, nt)
             SFC.calculate_structure_functions_single_pass_batch!(s, c, x, ub, bins;
-                backend = CB.SerialBackend(), weights = ws)
+                backend = CB.SerialBackend(), culling = SFC.NoCulling(), weights = ws)
             (s, c)
         end
-        for backend in (CB.SerialBackend(), CB.ThreadedBackend(), device)
-            Test.@test honours_weights(batch1d(backend), np)
-            Test.@test honours_weights(batch_joint(backend), np)
+        for (route, unweighted) in ((batch1d, along(identity, slices(sf1d), 2)),
+                                    (batch_joint, along(identity, slices(joint2d), 3)))
+            for backend in backends
+                Test.@test honours_weights(route(backend), unweighted, np)
+            end
         end
-        Test.@test honours_weights(batch_sp1d, np)
+        Test.@test honours_weights(batch_sp1d, along(rows, slices(single_pass), 3), np)
     end
 
     Test.@testset "multi-field sweeps take weights" begin
         fields = MF.Fields(vectors = (rand(2, np),), scalars = (rand(np),))
         mixed = SFT.MixedSFType{1, 0, 2}()
-        nb = length(bins) - 1
-        multifield(run!) = ws -> begin
+        multifield(backend) = ws -> begin
             s = zeros(Float64, nb)
             c = zeros(Float64, nb)
-            run!(s, c, ws)
+            SFC.calculate_structure_function!(s, c, mixed, x, fields, bins; backend = backend,
+                culling = SFC.NoCulling(), weights = ws)
             (s, c)
         end
-        Test.@test honours_weights(multifield((s, c, ws) ->
-            SFC.calculate_structure_function!(s, c, mixed, x, fields, bins; backend = CB.SerialBackend(),
-                weights = ws)), np)
-        Test.@test honours_weights(multifield((s, c, ws) ->
-            SFC.calculate_structure_function!(s, c, mixed, x, fields, bins; backend = device,
-                weights = ws)), np)
+        unweighted = multifield(CB.SerialBackend())(nothing)
+        Test.@test honours_weights(multifield(CB.SerialBackend()), unweighted, np)
+        Test.@test honours_weights(multifield(device), unweighted, np)
     end
 
     Test.@testset "the device single-pass 2D point path equals the serial weighted answer" begin
-        # `honours_weights` proves the weight reaches the kernel; this proves it reaches it the
-        # same way the CPU applies it, over both the shared-histogram and the value-column routes.
+        # The device weights each pair as the CPU does, at two and three dimensions.
         for D in (2, 3)
             xd = rand(D, np); ud = rand(D, np)
             g_D = SFH.FlatGeometry{D}()
             r = SFC._dispatch_single_pass_2d(CB.SerialBackend(), SFC.PointField{D}(), xd, ud,
-                bins, value_bins, Float64; geometry = g_D, weights = w)
+                bins, value_bins, Float64; geometry = g_D, culling = SFC.NoCulling(), weights = w)
             g = SFC._dispatch_single_pass_2d(device, SFC.PointField{D}(), xd, ud,
-                bins, value_bins, Float64; geometry = g_D, weights = w)
+                bins, value_bins, Float64; geometry = g_D, culling = SFC.NoCulling(), weights = w)
             Test.@test isapprox(collect(g[1]), collect(r[1]); rtol = 1e-9)
             Test.@test isapprox(collect(g[2]), collect(r[2]); rtol = 1e-9)
         end

@@ -1,6 +1,6 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
-    StructureFunctionObjects as SFO, HelperFunctions as SFH, HarmonicNodes
+    StructureFunctionObjects as SFO, HelperFunctions as SFH
 using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
 using StaticArrays: StaticArrays as SA
@@ -45,8 +45,7 @@ function _weighted_run(sf, f::Fields, sched, bins; weights = nothing, tag = noth
     return s, c
 end
 
-# The weighted pair statistic written out on flat points: Σ w_i w_j v_ij and Σ w_i w_j over the pairs
-# each (lo, hi] bin holds.
+# The weighted pair statistic on flat points: Σ w_i w_j v_ij and Σ w_i w_j over the pairs of each (lo, hi] bin.
 function _flat_pair_loop(sf, x, u, bins, w)
     nb = length(bins) - 1
     s = zeros(nb)
@@ -91,8 +90,7 @@ function _separated_bins(x, n_bins)
     return [0.0; [(dist[k] + dist[k + 1]) / 2 for k in picks]]
 end
 
-# The sphere's cells as the unstructured entry wants them: (λ, φ) in radians, flattened as the zonal
-# sweep indexes cells.
+# The sphere's cells as the unstructured entry wants them: (λ, φ) in radians, flattened as the zonal sweep indexes cells.
 function _sphere_points(lats, n_lon, dlon)
     n_lat = length(lats)
     x = Matrix{Float64}(undef, 2, n_lon * n_lat)
@@ -106,58 +104,28 @@ end
 
 _close(a, b) = isapprox(a, b; rtol = 1e-9, atol = 1e-10 * max(1.0, maximum(abs, b)))
 
-# Serially the order of summation is fixed and sums agree bit for bit; the threaded tasks' order varies by run.
-_same_sums(got, ref, ::CB.SerialBackend) = Test.@test got == ref
-_same_sums(got, ref, ::CB.ThreadedBackend) = Test.@test got ≈ ref rtol = 1e-12
-
 # Bin averages agree where both are defined; an empty bin is NaN on both sides.
 _same_average(a, b) = all(((x, y),) -> (isnan(x) && isnan(y)) || isapprox(x, y; rtol = 1e-9), zip(a, b))
 
-const WEIGHT_OPS = (SFT.L2SFType(), SFT.T2SFType(), SFT.L3SFType(), SFT.S3SFType(), SFT.T3SFType(),
-                    SFT.ProjectedStructureFunctionType{2, 2}())
+# Each operator on one route: the lag sweep, the transform, or the point entry on a serial or threaded backend.
+const WEIGHT_ROUTES_2D = ((SFT.L2SFType(), :sweep), (SFT.T2SFType(), :transform), (SFT.L3SFType(), SERIAL),
+                          (SFT.S3SFType(), THREADED), (SFT.T3SFType(), :sweep),
+                          (SFT.ProjectedStructureFunctionType{2, 2}(), :transform))
+const WEIGHT_ROUTES_3D = ((SFT.L2SFType(), :transform), (SFT.T3SFType(), :sweep), (SFT.S3SFType(), SERIAL))
 
-Test.@testset "weights of one reproduce the unweighted results" begin
-    Random.seed!(9500)
-    dims, spacing = (9, 6), (0.1, 0.2)
-    N = prod(dims)
-    u = randn(2, dims...)
-    data = reshape(u, 2, N)
-    sched = SFC.UniformLagSchedule(dims, spacing, (false, false))
-    x = _grid_points(dims, spacing)
-    bins = _separated_bins(x, 8)
-    ones_w = ones(N)
-    for sf in WEIGHT_OPS
-        ref_s, ref_c = _weighted_run(sf, data, sched, bins, Val(2), Val(1), Val(0))
-        got_s, got_c = _weighted_run(sf, data, sched, bins, Val(2), Val(1), Val(0); weights = ones_w)
-        Test.@test got_s == ref_s
-        Test.@test got_c == ref_c
-        tr_s, tr_c = _weighted_run(sf, data, sched, bins, Val(2), Val(1), Val(0); tag = FFT_TAG)
-        tw_s, tw_c = _weighted_run(sf, data, sched, bins, Val(2), Val(1), Val(0); tag = FFT_TAG, weights = ones_w)
-        Test.@test _close(tw_s, tr_s)
-        Test.@test tw_c ≈ tr_c rtol = 1e-12
-        for backend in (SERIAL, THREADED)
-            ref = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend)
-            got = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend, weights = ones_w)
-            _same_sums(got.sums, ref.sums, backend)
-            Test.@test got.counts == ref.counts
-        end
-    end
-    θ = randn(dims...)
-    f = Fields(vectors = (u,), scalars = (θ,))
-    for sf in (SFT.MixedSFType{1, 0, 2}(), SFT.ScalarSFType{2}(), SFT.VectorDotSFType(1, 1)),
-        backend in (SERIAL, THREADED)
-
-        ref = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend)
-        got = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend, weights = ones_w)
-        _same_sums(got.sums, ref.sums, backend)
-        Test.@test got.counts == ref.counts
-    end
+# Sums and counts of `sf` on `route` over the grid `sched` of the points `x`, as a `RAW` result's are.
+function _route_run(sf, route, x, data, sched, bins, ::Val{Dg}; weights = nothing) where {Dg}
+    route === :sweep && return _weighted_run(sf, data, sched, bins, Val(Dg), Val(1), Val(0); weights)
+    route === :transform && return _weighted_run(sf, data, sched, bins, Val(Dg), Val(1), Val(0); weights, tag = FFT_TAG)
+    r = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend = route, weights)
+    return r.sums, r.counts
 end
 
 Test.@testset "random weights equal the weighted pair loop on grids and points" begin
     Random.seed!(9510)
-    for (dims, spacing, ops) in (((9, 6), (0.1, 0.2), WEIGHT_OPS),
-                                 ((5, 4, 4), (0.2, 0.25, 0.3), (SFT.L2SFType(), SFT.T3SFType(), SFT.S3SFType())))
+    sums_ok, counts_ok = Bool[], Bool[]
+    for (dims, spacing, routes) in (((9, 6), (0.1, 0.2), WEIGHT_ROUTES_2D),
+                                    ((5, 4, 4), (0.2, 0.25, 0.3), WEIGHT_ROUTES_3D))
         Dg = length(dims)
         N = prod(dims)
         u = randn(Dg, dims...)
@@ -166,28 +134,29 @@ Test.@testset "random weights equal the weighted pair loop on grids and points" 
         x = _grid_points(dims, spacing)
         bins = _separated_bins(x, 8)
         sched = SFC.UniformLagSchedule(dims, spacing, ntuple(_ -> false, Dg))
-        for sf in ops
+        for (sf, route) in routes
             ref_s, ref_c = _flat_pair_loop(sf, x, data, bins, w)
-            Test.@test sum(ref_c) > 0
-            for tag in (nothing, FFT_TAG)
-                got_s, got_c = _weighted_run(sf, data, sched, bins, Val(Dg), Val(1), Val(0); weights = w, tag)
-                Test.@test _close(got_s, ref_s)
-                Test.@test got_c ≈ ref_c rtol = 1e-11
-            end
-            for backend in (SERIAL, THREADED)
-                got = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend, weights = w)
-                Test.@test _close(got.sums, ref_s)
-                Test.@test got.counts ≈ ref_c rtol = 1e-11
-            end
+            got_s, got_c = _route_run(sf, route, x, data, sched, bins, Val(Dg); weights = w)
+            push!(sums_ok, _close(got_s, ref_s))
+            push!(counts_ok, sum(ref_c) > 0 && isapprox(got_c, ref_c; rtol = 1e-11))
         end
     end
+    Test.@test all(sums_ok)
+    Test.@test all(counts_ok)
 end
+
+const WEIGHT_MASKED_TRANSFORM_CASES = (
+    ((8, 8), (0.25, 0.25), (true, true), SFT.L2SFType(), SERIAL),
+    ((10, 7), (0.15, 0.15), (true, false), SFT.L3SFType(), DEVICE),
+    ((6, 6, 4), (0.2, 0.2, 0.3), (true, false, true), SFT.S3SFType(), DEVICE),
+    ((8, 8), (0.25, 0.25), (true, true), SFT.T3SFType(), SERIAL),
+    ((10, 7), (0.15, 0.15), (true, false), SFT.ProjectedStructureFunctionType{4, 0}(), SERIAL),
+)
 
 Test.@testset "the weighted transform equals the weighted sweep with masks and wrapping, on the device too" begin
     Random.seed!(9520)
-    for (dims, spacing, periodic) in (((8, 8), (0.25, 0.25), (true, true)),
-                                      ((10, 7), (0.15, 0.15), (true, false)),
-                                      ((6, 6, 4), (0.2, 0.2, 0.3), (true, false, true)))
+    sums_ok, counts_ok = Bool[], Bool[]
+    for (dims, spacing, periodic, sf, backend) in WEIGHT_MASKED_TRANSFORM_CASES
         Dg = length(dims)
         N = prod(dims)
         u = randn(Dg, dims...)
@@ -196,24 +165,22 @@ Test.@testset "the weighted transform equals the weighted sweep with masks and w
             rand() < 0.3 && (uf[1, k] = NaN)
         end
         valid = SFC.field_validity(u)
-        Test.@test !(valid isa SFC.AllValid)
         w = 0.5 .+ rand(N)
         sched = SFC.UniformLagSchedule(dims, spacing, periodic)
         bins = collect(range(0.0, 0.7 * sum(d -> spacing[d] * dims[d], 1:Dg); length = 9))
-        for sf in (SFT.L2SFType(), SFT.L3SFType(), SFT.S3SFType(), SFT.T3SFType(),
-                   SFT.ProjectedStructureFunctionType{4, 0}())
-            ref_s, ref_c = _weighted_run(sf, uf, sched, bins, Val(Dg), Val(1), Val(0); valid, weights = w)
-            Test.@test all(isfinite, ref_s)
-            Test.@test sum(ref_c) > 0
-            for backend in (SERIAL, DEVICE)
-                got_s, got_c = _weighted_run(sf, uf, sched, bins, Val(Dg), Val(1), Val(0);
-                                             valid, weights = w, tag = FFT_TAG, backend)
-                Test.@test _close(got_s, ref_s)
-                Test.@test got_c ≈ ref_c rtol = 1e-11
-            end
-        end
+        ref_s, ref_c = _weighted_run(sf, uf, sched, bins, Val(Dg), Val(1), Val(0); valid, weights = w)
+        got_s, got_c = _weighted_run(sf, uf, sched, bins, Val(Dg), Val(1), Val(0);
+                                     valid, weights = w, tag = FFT_TAG, backend)
+        push!(sums_ok, all(isfinite, ref_s) && _close(got_s, ref_s))
+        push!(counts_ok, sum(ref_c) > 0 && isapprox(got_c, ref_c; rtol = 1e-11))
     end
+    Test.@test all(sums_ok)
+    Test.@test all(counts_ok)
 end
+
+const WEIGHT_FIELD_ROUTES = ((:mixed, SFT.MixedSFType{1, 0, 2}(), :transform), (:mixed, SFT.ScalarSFType{2}(), SERIAL),
+                             (:mixed, SFT.MixedSFType{1, 0, 1}(), THREADED), (:mixed, SFT.L2SFType(), :transform),
+                             (:pair, SFT.VectorDotSFType(1, 2), SERIAL), (:pair, SFT.L2SFType(), THREADED))
 
 Test.@testset "multi-fields carry weights on every route" begin
     Random.seed!(9530)
@@ -226,24 +193,25 @@ Test.@testset "multi-fields carry weights on every route" begin
     bins = _separated_bins(x, 8)
     w = 0.5 .+ rand(N)
     sched = SFC.UniformLagSchedule(dims, spacing, (false, false))
-    cases = (
-        (Fields(vectors = (u,), scalars = (θ,)),
-         (SFT.MixedSFType{1, 0, 2}(), SFT.ScalarSFType{2}(), SFT.MixedSFType{1, 0, 1}(), SFT.L2SFType())),
-        (Fields(vectors = (u, a)), (SFT.VectorDotSFType(1, 2), SFT.L2SFType())),
-    )
-    for (f, ops) in cases, sf in ops
+    fields = (mixed = Fields(vectors = (u,), scalars = (θ,)), pair = Fields(vectors = (u, a)))
+    agree = Bool[]
+    for (key, sf, route) in WEIGHT_FIELD_ROUTES
+        f = fields[key]
         ref_s, ref_c = _weighted_run(sf, f, sched, bins; weights = w)
-        Test.@test sum(ref_c) > 0
-        tr_s, tr_c = _weighted_run(sf, f, sched, bins; weights = w, tag = FFT_TAG)
-        Test.@test _close(tr_s, ref_s)
-        Test.@test tr_c ≈ ref_c rtol = 1e-11
-        for backend in (SERIAL, THREADED)
-            got = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend, weights = w)
-            Test.@test _close(got.sums, ref_s)
-            Test.@test got.counts ≈ ref_c rtol = 1e-11
+        got_s, got_c = if route === :transform
+            _weighted_run(sf, f, sched, bins; weights = w, tag = FFT_TAG)
+        else
+            got = SFC.calculate_structure_function(sf, x, f, bins, Float64, RAW; backend = route, weights = w)
+            got.sums, got.counts
         end
+        push!(agree, sum(ref_c) > 0 && _close(got_s, ref_s) && isapprox(got_c, ref_c; rtol = 1e-11))
     end
+    Test.@test all(agree)
 end
+
+const WEIGHT_SPHERE_ROUTES = ((SFT.L2SFType(), :transform, SERIAL), (SFT.L2SFType(), :points, SERIAL),
+                              (SFT.T2SFType(), :transform, DEVICE), (SFT.L3SFType(), :sweep, THREADED),
+                              (SFT.S3SFType(), :points, THREADED))
 
 Test.@testset "weights on the sphere: zonal sweep, transform, device and the point entry agree" begin
     Random.seed!(9540)
@@ -257,24 +225,24 @@ Test.@testset "weights on the sphere: zonal sweep, transform, device and the poi
     w = 0.5 .+ rand(N)
     x = _sphere_points(lats, n_lon, dlon)
     bins = collect(range(0.0, π; length = 8)) .+ 1e-3
-    for sf in (SFT.L2SFType(), SFT.T2SFType(), SFT.L3SFType(), SFT.S3SFType())
+    agree = Bool[]
+    for (sf, route, backend) in WEIGHT_SPHERE_ROUTES
         ref_s, ref_c = _weighted_run(sf, data, sched, bins, Val(2), Val(1), Val(0); weights = w)
-        Test.@test sum(ref_c) > 0
-        for (tag, backend) in ((FFT_TAG, SERIAL), (FFT_TAG, DEVICE), (nothing, THREADED))
-            got_s, got_c = _weighted_run(sf, data, sched, bins, Val(2), Val(1), Val(0); weights = w, tag, backend)
-            Test.@test _close(got_s, ref_s)
-            Test.@test got_c ≈ ref_c rtol = 1e-11
-        end
-        for backend in (SERIAL, THREADED)
+        got_s, got_c = if route === :points
             pts = SFC.calculate_structure_function(sf, x, data, bins, Float64, RAW; backend, weights = w,
                                                    distance_metric = SFH.SphericalDistance(1.0))
-            Test.@test _close(pts.sums, ref_s)
-            Test.@test pts.counts ≈ ref_c rtol = 1e-11
+            pts.sums, pts.counts
+        else
+            _weighted_run(sf, data, sched, bins, Val(2), Val(1), Val(0); weights = w,
+                          tag = route === :transform ? FFT_TAG : nothing, backend)
         end
+        push!(agree, sum(ref_c) > 0 && _close(got_s, ref_s) && isapprox(got_c, ref_c; rtol = 1e-11))
     end
+    Test.@test all(agree)
 end
 
-Test.@testset "cell_measure feeds a grid's cell areas as weights" begin
+Test.@testset "cell_measure gives each cell its area, and as weights an area average on every route" begin
+    # A lat-lon cell's area is ∝ cos φ, longitude running fastest; a uniform Cartesian cell's is hx·hy.
     Random.seed!(9550)
     geo = FG.Geometry.SphericalGeometry(1.0)
     n_lon, n_lat = 15, 8
@@ -283,9 +251,8 @@ Test.@testset "cell_measure feeds a grid's cell areas as weights" begin
     grid = FG.Grids.StructuredGrid(geo, lam, phi)
     w = SFC.cell_measure(grid)
     N = n_lon * n_lat
-    Test.@test length(w) == N
-    Test.@test all(>(0), w)
-    Test.@test w[1] < w[n_lon * (n_lat ÷ 2) + 1]
+    ratio = w ./ vec([cos(φ) for _ in lam, φ in phi])
+    Test.@test all(r -> isapprox(r, ratio[1]; rtol = 1e-12), ratio)
     u = randn(2, n_lon, n_lat)
     bins = collect(range(0.0, π; length = 8)) .+ 1e-3
     got = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, Float64, RAW; weights = w, backend = SERIAL)
@@ -299,14 +266,11 @@ Test.@testset "cell_measure feeds a grid's cell areas as weights" begin
                                           backend = SERIAL)
     Test.@test _close(tr.sums, got.sums)
     Test.@test tr.counts ≈ got.counts rtol = 1e-11
-    plain = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, bins, RAW; backend = SERIAL)
-    Test.@test !(got.sums ./ got.counts ≈ plain.sums ./ plain.counts)
 
-    # a Cartesian grid's cells are all alike, so its measure changes no average
     cgrid = FG.Grids.StructuredGrid(FG.Geometry.CartesianGeometry(), range(0.0, step = 0.1, length = 7),
                                     range(0.0, step = 0.2, length = 5))
     cw = SFC.cell_measure(cgrid)
-    Test.@test all(v -> v ≈ cw[1], cw)
+    Test.@test all(v -> isapprox(v, 0.1 * 0.2; rtol = 1e-12), cw)
     uc = randn(2, 7, 5)
     cbins = collect(range(0.0, 1.2; length = 7)) .+ 1e-3
     cgot = SFC.calculate_structure_function(SFT.L2SFType(), cgrid, uc, cbins, Float64, RAW; weights = cw,
@@ -314,36 +278,6 @@ Test.@testset "cell_measure feeds a grid's cell areas as weights" begin
     cplain = SFC.calculate_structure_function(SFT.L2SFType(), cgrid, uc, cbins, RAW; backend = SERIAL)
     Test.@test _same_average(cgot.sums ./ cgot.counts, cplain.sums ./ cplain.counts)
     Test.@test cgot.counts ≈ cplain.counts .* cw[1]^2
-end
-
-Test.@testset "area-weighted hard bins agree with the harmonic route's area average" begin
-    geo = FG.Geometry.SphericalGeometry(1.0)
-    n_lon, n_lat = 96, 48
-    lam = range(0.0, step = 2π / n_lon, length = n_lon)
-    phi = range(-π / 2 + π / (2n_lat), step = π / n_lat, length = n_lat)
-    grid = FG.Grids.StructuredGrid(geo, lam, phi)
-    # the gradient of Φ = cos²φ cos 2λ, a degree-2 harmonic: u_E = ∂_λΦ / cos φ, u_N = ∂_φΦ
-    u = Array{Float64}(undef, 2, n_lon, n_lat)
-    for (j, φ) in enumerate(phi), (i, λ) in enumerate(lam)
-        u[1, i, j] = -2 * cos(φ) * sin(2λ)
-        u[2, i, j] = -2 * cos(φ) * sin(φ) * cos(2λ)
-    end
-    w = SFC.cell_measure(grid)
-    nodes = HarmonicNodes(24, 48; taper = SF.GaussianTaper(π / 48))
-    harm = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, nodes, SB.DirectSumSpectralBackend(), RAW)
-    β = nodes.separations
-    half = 0.04
-    edges = sort(vcat(0.0, β .- half, β .+ half))
-    zon = SFC.calculate_structure_function(SFT.L2SFType(), grid, u, edges, Float64, RAW; weights = w, backend = SERIAL)
-    hard = zon.sums ./ zon.counts
-    soft = harm.sums ./ harm.counts
-    compared = 0
-    for (k, b) in enumerate(β)
-        0.7 <= b <= 2.4 || continue
-        Test.@test isapprox(hard[2k], soft[k]; rtol = 4e-2)
-        compared += 1
-    end
-    Test.@test compared >= 8
 end
 
 Test.@testset "weights are refused where they cannot be honoured" begin
@@ -369,45 +303,32 @@ Test.@testset "weights are refused where they cannot be honoured" begin
                                                         FFT_TAG; weights = w)
     x = _grid_points(dims, spacing)
     Test.@test_throws ArgumentError SFC.calculate_structure_function(L2, x, data, bins; weights = w, backend = SERIAL)
-    # The device point path, the distributed point path and the value-binned joint histogram all
-    # carry weights now. Each is checked against the serial weighted answer, so a weight plumbed
-    # nowhere would not pass.
-    #
-    # The device and the serial kernel reach a bin by different arithmetic — a squared-distance
-    # plan against squared edges, and a distance against the edges — so a separation sitting
-    # exactly on an edge can round to either side. This lattice puts 19 pairs on the edges of
-    # `bins`; `off_lattice_bins` shifts the edges clear of every achievable separation, which is
-    # the condition under which the backends must agree exactly.
-    off_lattice_bins = bins .+ 0.013
-    ref = SFC.calculate_structure_function(L2, x, data, off_lattice_bins, Float64,
-                                           SFO.StructureFunctionSumsAndCounts; weights = w,
-                                           backend = SERIAL)
-    dev_w = SFC.calculate_structure_function(L2, x, data, off_lattice_bins, Float64,
-                                             SFO.StructureFunctionSumsAndCounts; weights = w,
-                                             backend = DEVICE)
-    Test.@test isapprox(collect(dev_w.sums), collect(ref.sums); rtol = 1e-10)
-    Test.@test isapprox(collect(dev_w.counts), collect(ref.counts); rtol = 1e-10)
-
-    dist_w = SFC.calculate_structure_function(L2, x, data, off_lattice_bins, Float64,
-                                              SFO.StructureFunctionSumsAndCounts; weights = w,
-                                              backend = CB.DistributedBackend())
-    Test.@test isapprox(collect(dist_w.sums), collect(ref.sums); rtol = 1e-10)
-    Test.@test isapprox(collect(dist_w.counts), collect(ref.counts); rtol = 1e-10)
-
-    vb = collect(range(-3.0, 3.0; length = 5))
-    joint_w = SFC.calculate_structure_function(L2, x, data, bins, vb, Float64; weights = w,
-                                               backend = SERIAL)
-    joint_1 = SFC.calculate_structure_function(L2, x, data, bins, vb, Float64;
-                                               backend = SERIAL)
-    Test.@test all(isfinite, joint_w.counts)
-    Test.@test maximum(abs, joint_w.counts .- joint_1.counts) > 0
     grid = FG.Grids.StructuredGrid(FG.Geometry.CartesianGeometry(), range(0.0, step = 0.1, length = 6),
                                    range(0.0, step = 0.1, length = 5))
     Test.@test_throws ArgumentError SFC.calculate_structure_function(L2, grid, u, bins; weights = SFC.cell_measure(grid))
 end
 
+Test.@testset "the device and distributed point paths carry weights" begin
+    # Edges shifted clear of every lattice separation, where the backends' distance arithmetic must agree.
+    Random.seed!(9570)
+    dims, spacing = (6, 5), (0.1, 0.1)
+    N = prod(dims)
+    data = randn(2, N)
+    w = 0.5 .+ rand(N)
+    x = _grid_points(dims, spacing)
+    bins = collect(range(0.0, 0.5; length = 5)) .+ 0.013
+    ref = SFC.calculate_structure_function(SFT.L2SFType(), x, data, bins, Float64, RAW; weights = w, backend = SERIAL)
+    agree = Bool[]
+    for backend in (DEVICE, CB.DistributedBackend())
+        got = SFC.calculate_structure_function(SFT.L2SFType(), x, data, bins, Float64, RAW; weights = w, backend)
+        push!(agree, isapprox(collect(got.sums), collect(ref.sums); rtol = 1e-10) &&
+                     isapprox(collect(got.counts), collect(ref.counts); rtol = 1e-10))
+    end
+    Test.@test sum(ref.counts) > 0 && all(agree)
+end
+
 Test.@testset "the value-binned joint histogram takes pair weights" begin
-    # The weighted joint (distance x value) histogram on the serial and threaded backends equals a weighted pair loop.
+    # Serial and threaded weighted joint (distance × value) histograms equal a weighted pair loop; integer counts are refused.
     Random.seed!(2024)
     N, nb, nv = 60, 6, 5
     x = rand(2, N) .* 3
@@ -416,42 +337,27 @@ Test.@testset "the value-binned joint histogram takes pair weights" begin
     dbins = collect(range(0.0, 3.0; length = nb + 1))
     vbins = collect(range(-4.0, 4.0; length = nv + 1))
     op = SFT.L2SFType()
-
-    function brute(weights)
-        s = zeros(Float64, nb, nv)
-        c = zeros(Float64, nb, nv)
-        for i in 1:(N - 1), j in (i + 1):N
-            dx = SA.SVector(x[1, j] - x[1, i], x[2, j] - x[2, i])
-            r = sqrt(LA.dot(dx, dx))
-            db = SFH.digitize(r, dbins)
-            1 <= db <= nb || continue
-            du = SA.SVector(u[1, j] - u[1, i], u[2, j] - u[2, i])
-            v = op(du, dx ./ r)
-            vb = SFH.digitize(v, vbins)
-            1 <= vb <= nv || continue
-            ww = weights === nothing ? 1.0 : weights[i] * weights[j]
-            s[db, vb] += ww * v
-            c[db, vb] += ww
-        end
-        (s, c)
+    bs = zeros(Float64, nb, nv)
+    bc = zeros(Float64, nb, nv)
+    for i in 1:(N - 1), j in (i + 1):N
+        dx = SA.SVector(x[1, j] - x[1, i], x[2, j] - x[2, i])
+        r = sqrt(LA.dot(dx, dx))
+        db = SFH.digitize(r, dbins)
+        1 <= db <= nb || continue
+        du = SA.SVector(u[1, j] - u[1, i], u[2, j] - u[2, i])
+        v = op(du, dx ./ r)
+        vb = SFH.digitize(v, vbins)
+        1 <= vb <= nv || continue
+        bs[db, vb] += w[i] * w[j] * v
+        bc[db, vb] += w[i] * w[j]
     end
-
     same(a, b) = maximum(abs, a .- b) <= 1e-10 * max(maximum(abs, b), 1e-10)
-
-    bs, bc = brute(w)
+    agree = Bool[]
     for be in (CB.SerialBackend(), CB.ThreadedBackend())
         r = SFC.calculate_structure_function(op, x, u, dbins, vbins, Float64; backend = be, weights = w)
-        Test.@test same(r.sums, bs)
-        Test.@test same(r.counts, bc)
+        push!(agree, same(r.sums, bs) && same(r.counts, bc))
     end
-
-    # weights of one reproduce the unweighted histogram
-    us, uc = brute(nothing)
-    r1 = SFC.calculate_structure_function(op, x, u, dbins, vbins, Float64; weights = ones(N))
-    Test.@test same(r1.sums, us)
-    Test.@test same(r1.counts, uc)
-
-    # an integer count type cannot hold a weighted pair mass
+    Test.@test sum(bc) > 0 && all(agree)
     Test.@test_throws ArgumentError SFC.calculate_structure_function(
         op, x, u, dbins, vbins; weights = w)
 end

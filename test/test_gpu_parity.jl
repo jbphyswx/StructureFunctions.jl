@@ -4,19 +4,15 @@ using KernelAbstractions: KernelAbstractions as KA
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using Random: Random
-using LinearAlgebra: LinearAlgebra as LA
-using StaticArrays: StaticArrays as SA
 
 Random.seed!(42)
 
 Test.@testset "GPU Kernel Parity (KA.CPU)" begin
-    # Small dataset suitable for N² kernel
     N = 50
     FT = Float64
     x = rand(FT, 2, N)    # (N_dims, N_points) layout
     u = rand(FT, 2, N)
 
-    # Bin edges (monotone)
     bin_edges = collect(FT, range(0.0, 1.4, length = 11))   # 10 bins
 
     sft = SFT.L2SFType()
@@ -27,7 +23,6 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
     ref_vals = res_ref.sums
     ref_counts = res_ref.counts
 
-    # --- GPU extension (CPU backend for parity test) ---
     res_gpu = SFC.calculate_structure_function(
         sft, x, u, bin_edges, SF.StructureFunctionSumsAndCounts;
         backend = CB.GPUBackend(KA.CPU()),
@@ -35,8 +30,6 @@ Test.@testset "GPU Kernel Parity (KA.CPU)" begin
     gpu_vals = res_gpu.sums
     gpu_counts = res_gpu.counts
 
-    Test.@test gpu_counts ≈ ref_counts atol = 0.0
+    Test.@test gpu_counts == ref_counts
     Test.@test gpu_vals ≈ ref_vals atol = 1e-12
-
-    println("Parity check passed!  max Δ = $(maximum(abs.(gpu_vals .- ref_vals)))")
 end

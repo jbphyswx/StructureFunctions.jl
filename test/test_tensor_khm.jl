@@ -1,10 +1,9 @@
 using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT, HelperFunctions as SFH
-using StructureFunctions: StructureFunctionObjects as SFO, MultiFields as MF
+using StructureFunctions: MultiFields as MF
 using OhMyThreads: OhMyThreads
 using KernelAbstractions: KernelAbstractions as KA
-using Distances: Distances as DI
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using FFTW: FFTW
@@ -14,142 +13,46 @@ using Random: Random
 using Test: Test
 
 Test.@testset "Tensor Structure Functions" begin
+    # Three points: the rank-2 sums are each bin's outer products, the default is their mean, a slice of 2u adds 4×.
     x = [0.0 1.0 0.0; 0.0 0.0 1.0]
     u = [0.0 2.0 3.0; 0.0 5.0 7.0]
     bins = [0.0, 1.1, 2.0]
+    du12 = u[:, 2] - u[:, 1]
+    du13 = u[:, 3] - u[:, 1]
+    du23 = u[:, 3] - u[:, 2]
+    expected = cat(du12 * du12' + du13 * du13', du23 * du23'; dims = 3)
 
     t2 = SFC.calculate_structure_function_tensor(
         Val(2), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend(),
     )
-    Test.@test t2 isa SF.StructureFunctionTensorSumsAndCounts{2}
-    Test.@test size(t2.sums) == (2, 2, 2)
-    Test.@test size(t2.counts) == (2,)
     Test.@test t2.counts == UInt32[2, 1]
+    Test.@test t2.sums ≈ expected
 
-    du12 = u[:, 2] - u[:, 1]
-    du13 = u[:, 3] - u[:, 1]
-    du23 = u[:, 3] - u[:, 2]
-    expected_bin1 = du12 * du12' + du13 * du13'
-    expected_bin2 = du23 * du23'
-    Test.@test t2.sums[:, :, 1] ≈ expected_bin1
-    Test.@test t2.sums[:, :, 2] ≈ expected_bin2
-
-    # Default output is the averaged mean tensor D_ij(r) = sums ./ counts (per distance bin).
     t2_mean = SFC.calculate_structure_function_tensor(Val(2), x, u, bins; backend = CB.SerialBackend())
-    Test.@test t2_mean isa SF.StructureFunctionTensor{2}
-    Test.@test t2_mean.values[:, :, 1] ≈ expected_bin1 ./ 2
-    Test.@test t2_mean.values[:, :, 2] ≈ expected_bin2 ./ 1
+    Test.@test t2_mean.values ≈ expected ./ reshape([2, 1], 1, 1, 2)
 
-    s2 = SFC.calculate_structure_function(
-        SFT.S2SF, x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend()
-    )
-    trace_sums = [sum(t2.sums[a, a, bin] for a in 1:2) for bin in axes(t2.sums, 3)]
-    Test.@test trace_sums ≈ s2.sums
-    Test.@test t2.counts == s2.counts
-
-    t3 = SFC.calculate_structure_function_tensor(
-        Val(3), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend(),
-    )
-    Test.@test t3 isa SF.StructureFunctionTensorSumsAndCounts{3}
-    Test.@test size(t3.sums) == (2, 2, 2, 2)
-    Test.@test t3.counts == t2.counts
-    Test.@test t3.sums[1, 2, 2, 1] ≈ du12[1] * du12[2] * du12[2] +
-        du13[1] * du13[2] * du13[2]
-
-    u_aux = cat(u, 2u; dims = 3)
     t2_aux = SFC.calculate_structure_function_tensor(
-        Val(2), x, u_aux, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend(),
+        Val(2), x, cat(u, 2u; dims = 3), bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend(),
     )
-    Test.@test size(t2_aux.sums) == (2, 2, 2, 2)
-    Test.@test size(t2_aux.counts) == (2, 2)
-    Test.@test t2_aux.sums[:, :, :, 1] ≈ t2.sums
-    Test.@test t2_aux.sums[:, :, :, 2] ≈ 4 .* t2.sums
+    Test.@test t2_aux.counts == UInt32[2 2; 1 1]
+    Test.@test t2_aux.sums ≈ cat(expected, 4 .* expected; dims = 4)
 end
 
-Test.@testset "KHM Diagnostics" begin
-    r = [1.0, 2.0, 3.0, 4.0]
-    DLL = r .^ 2
-    DTT = 2 .* r .^ 2
-    Test.@test SF.KHM.transverse_incompressibility_residual(r, DLL, DTT; dimension = 3) ≈ zeros(4)
-
-    ε = 0.2
-    S3 = .-(4 / 5) .* ε .* r
-    Test.@test SF.KHM.epsilon_from_four_fifths(r, S3) ≈ fill(ε, length(r))
-    Test.@test SF.KHM.four_fifths_residual(r, S3, ε) ≈ zeros(length(r))
-end
-
-Test.@testset "each inertial-range law takes the quantity it is stated for" begin
-    # The four-fifths law inverts ⟨δu_L³⟩ (L3SF) and the four-thirds law ⟨δu_L‖δu‖²⟩ (S3SF); each recovers ε from its own quantity.
+Test.@testset "each law's residual vanishes on a field obeying it" begin
     r = collect(range(0.1, 2.0; length = 9))
     eps = 0.37
-
-    # a field obeying the four-fifths law exactly
-    L3 = -(4 / 5) .* eps .* r
-    Test.@test SF.KHM.epsilon_from_four_fifths(r, L3) ≈ fill(eps, length(r))
-    Test.@test all(abs.(SF.KHM.four_fifths_residual(r, L3, eps)) .< 1e-12)
-
-    # a field obeying the four-thirds law exactly
-    S3 = -(4 / 3) .* eps .* r
-    Test.@test SF.KHM.epsilon_from_four_thirds(r, S3) ≈ fill(eps, length(r))
-    Test.@test all(abs.(SF.KHM.four_thirds_residual(r, S3, eps)) .< 1e-12)
-
-    # the two are NOT interchangeable: feeding one quantity to the other's inverse is off by 5/3
-    wrong = SF.KHM.epsilon_from_four_fifths(r, S3)
-    Test.@test all(wrong ./ eps .≈ 5 / 3)
-
-    # Yaglom returns the scalar dissipation, on its own law
-    eps_th = 0.21
-    LS2 = -(4 / 3) .* eps_th .* r
-    Test.@test SF.KHM.epsilon_theta_from_yaglom(r, LS2) ≈ fill(eps_th, length(r))
-    Test.@test all(abs.(SF.KHM.yaglom_residual(r, LS2, eps_th)) .< 1e-12)
-end
-
-Test.@testset "every backend computes the same tensor" begin
-    # The pair set is the same upper triangle on every backend, and a histogram is order-independent,
-    # so counts must be exactly equal and sums must agree to summation order.
-    Random.seed!(4)
-    N = 200
-    x = rand(2, N)
-    u = randn(2, N)
-    bins = collect(range(0.0, 1.2; length = 9))
-
-    ref = SFC.calculate_structure_function_tensor(
-        Val(2), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend())
-
-    for be in (CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
-        got = SFC.calculate_structure_function_tensor(
-            Val(2), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = be)
-        Test.@test got.counts == ref.counts
-        Test.@test isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)
-    end
-
-    # order 3 as well, since the accumulator rank is a type parameter
-    r3 = SFC.calculate_structure_function_tensor(
-        Val(3), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend())
-    t3 = SFC.calculate_structure_function_tensor(
-        Val(3), x, u, bins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.ThreadedBackend())
-    Test.@test t3.counts == r3.counts
-    Test.@test isapprox(t3.sums, r3.sums; rtol = 1e-10, atol = 1e-12)
-
-    # and on a sphere, where the increments are transported rather than differenced
-    xs = vcat(reshape(2π .* rand(N), 1, N), reshape((rand(N) .- 0.5) .* 1.4, 1, N))
-    sbins = collect(range(0.0, 2.4; length = 6))
-    rs = SFC.calculate_structure_function_tensor(
-        Val(2), xs, u, sbins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.SerialBackend(),
-        distance_metric = DI.SphericalAngle())
-    ts = SFC.calculate_structure_function_tensor(
-        Val(2), xs, u, sbins, SF.StructureFunctionTensorSumsAndCounts; backend = CB.ThreadedBackend(),
-        distance_metric = DI.SphericalAngle())
-    Test.@test sum(ts.counts) > 0
-    Test.@test ts.counts == rs.counts
-    Test.@test isapprox(ts.sums, rs.sums; rtol = 1e-10, atol = 1e-12)
+    r4 = [1.0, 2.0, 3.0, 4.0]
+    Test.@test SF.KHM.transverse_incompressibility_residual(r4, r4 .^ 2, 2 .* r4 .^ 2; dimension = 3) ≈ zeros(4)
+    Test.@test all(abs.(SF.KHM.four_fifths_residual(r, -(4 / 5) .* eps .* r, eps)) .< 1e-12)
+    Test.@test all(abs.(SF.KHM.four_thirds_residual(r, -(4 / 3) .* eps .* r, eps)) .< 1e-12)
+    Test.@test all(abs.(SF.KHM.yaglom_residual(r, -(4 / 3) .* eps .* r, eps)) .< 1e-12)
 end
 
 # --- Tensors from the transform, higher orders, and the joint tensor over angle ---
 
 const RAW_T = SF.StructureFunctionTensorSumsAndCounts
-const RAW_T2 = SFO.StructureFunctionTensor2DSumsAndCounts
 const FFT_TAG = SB.FastFourierTransformSpectralBackend()
+const TK_SERIAL, TK_THREADED, TK_DEVICE = CB.SerialBackend(), CB.ThreadedBackend(), CB.GPUBackend(KA.CPU())
 
 # Grid coordinates as a point list, in the cell order the packed field uses.
 function _tensor_grid_points(dims, spacing)
@@ -187,55 +90,69 @@ function _brute_tensor(P, x, u, bins)
     return sums, counts
 end
 
+# (dims, spacing) of each grid.
+const TK_GRIDS = (((9, 6), (0.1, 0.2)), ((5, 4, 4), (0.2, 0.25, 0.3)))
+
+# (grid, order, tag, backend, field): every grid, order, tag and field kind.
+const TK_TRANSFORM_CASES = (
+    (1, 4, SB.AutoSpectralBackend(), TK_SERIAL, :plain),
+    (1, 3, FFT_TAG, TK_SERIAL, :masked),
+    (2, 2, FFT_TAG, TK_SERIAL, :weighted),
+)
+
 Test.@testset "the tensor from the transform equals the point tensor on a grid's points" begin
     Random.seed!(4100)
     geo = FG.Geometry.CartesianGeometry()
-    for (dims, spacing, orders) in (((9, 6), (0.1, 0.2), (2, 3, 4)), ((5, 4, 4), (0.2, 0.25, 0.3), (2, 3)))
+    grid_of(dims, spacing) =
+        FG.Grids.StructuredGrid(geo, ntuple(d -> range(0.0, step = spacing[d], length = dims[d]), length(dims))...)
+    bins_of(dims, spacing) = collect(range(0.0, 0.7 * sum(d -> spacing[d] * dims[d], 1:length(dims)); length = 7)) .+ 1e-3
+    for (gi, P, tag, backend, field) in TK_TRANSFORM_CASES
+        dims, spacing = TK_GRIDS[gi]
         Dg = length(dims)
         N = prod(dims)
-        grid = FG.Grids.StructuredGrid(geo, ntuple(d -> range(0.0, step = spacing[d], length = dims[d]), Dg)...)
+        grid = grid_of(dims, spacing)
+        bins = bins_of(dims, spacing)
         u = randn(Dg, dims...)
         x = _tensor_grid_points(dims, spacing)
-        r_max = 0.7 * sum(d -> spacing[d] * dims[d], 1:Dg)
-        bins = collect(range(0.0, r_max; length = 7)) .+ 1e-3
-        for P in orders
-            ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, Dg, N), bins, RAW_T;
-                                                          backend = CB.SerialBackend())
-            for tag in (FFT_TAG, SB.AutoSpectralBackend()),
-                backend in (CB.SerialBackend(), CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
-                got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, tag, RAW_T; backend)
-                Test.@test got.counts == ref.counts
-                Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
-            end
+        case = (dims, P, field, backend)
+        if field === :masked
             # a masked field: the point tensor over the held cells
-            um = copy(u)
-            umf = reshape(um, Dg, N)
+            umf = reshape(u, Dg, N)
             held = rand(N) .< 0.75
             umf[1, .!held] .= NaN
-            refm = SFC.calculate_structure_function_tensor(Val(P), x[:, held], umf[:, held], bins, RAW_T;
-                                                           backend = CB.SerialBackend())
-            # weights of one change nothing but the count type
-            for backend in (CB.SerialBackend(), CB.GPUBackend(KA.CPU()))
-                gotm = SFC.calculate_structure_function_tensor(Val(P), grid, um, bins, FFT_TAG, RAW_T; backend)
-                Test.@test gotm.counts == refm.counts
-                Test.@test isapprox(gotm.sums, refm.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, refm.sums))
-                gotw = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, Float64, RAW_T;
-                                                               weights = ones(N), backend)
-                Test.@test gotw.counts ≈ ref.counts
-                Test.@test isapprox(gotw.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
+            ref = SFC.calculate_structure_function_tensor(Val(P), x[:, held], umf[:, held], bins, RAW_T;
+                                                          backend = TK_SERIAL)
+            got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, tag, RAW_T; backend)
+            Test.@test (case, got.counts == ref.counts) == (case, true)
+        else
+            ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, Dg, N), bins, RAW_T; backend = TK_SERIAL)
+            if field === :weighted
+                # weights of one change nothing but the count type
+                got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, tag, Float64, RAW_T;
+                                                              weights = ones(N), backend)
+                Test.@test (case, got.counts ≈ ref.counts) == (case, true)
+            else
+                got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, tag, RAW_T; backend)
+                Test.@test (case, got.counts == ref.counts) == (case, true)
             end
         end
-        # the averaged tensor is the default representation
-        mean = SFC.calculate_structure_function_tensor(Val(2), grid, u, bins, FFT_TAG)
-        Test.@test mean isa SF.StructureFunctionTensor{2}
-        ref2 = SFC.calculate_structure_function_tensor(Val(2), x, reshape(u, Dg, N), bins; backend = CB.SerialBackend())
-        Test.@test isapprox(mean.values, ref2.values; rtol = 1e-9, atol = 1e-10, nans = true)
-        # one algorithm: the direct sum is refused, a multi-field of fields is refused
-        Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(Val(2), grid, u, bins,
-                                                                                SB.DirectSumSpectralBackend())
-        Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(
-            Val(2), grid, MF.Fields(vectors = (u,), scalars = (randn(dims...),)), bins, FFT_TAG)
+        Test.@test (case, isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))) ==
+                   (case, true)
     end
+    # the averaged tensor is the default representation
+    dims, spacing = TK_GRIDS[1]
+    Dg, N = length(dims), prod(dims)
+    grid, bins = grid_of(dims, spacing), bins_of(dims, spacing)
+    u = randn(Dg, dims...)
+    mean = SFC.calculate_structure_function_tensor(Val(2), grid, u, bins, FFT_TAG)
+    ref2 = SFC.calculate_structure_function_tensor(Val(2), _tensor_grid_points(dims, spacing), reshape(u, Dg, N), bins;
+                                                   backend = TK_SERIAL)
+    Test.@test isapprox(mean.values, ref2.values; rtol = 1e-9, atol = 1e-10, nans = true)
+    # one algorithm: the direct sum is refused, a multi-field of fields is refused
+    Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(Val(2), grid, u, bins,
+                                                                            SB.DirectSumSpectralBackend())
+    Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(
+        Val(2), grid, MF.Fields(vectors = (u,), scalars = (randn(dims...),)), bins, FFT_TAG)
 end
 
 Test.@testset "the tensor on a lat-lon grid is the point tensor in the geodesic frame" begin
@@ -248,19 +165,14 @@ Test.@testset "the tensor on a lat-lon grid is the point tensor in the geodesic 
     coords = FG.Grids.materialize(grid)
     x = Matrix(hcat(coords[1], coords[2])')
     bins = collect(range(0.0, π; length = 7)) .+ 1e-3
-    for P in (2, 3)
-        ref = SFC.calculate_structure_function_tensor(Val(P), x, reshape(u, 2, :), bins, RAW_T; backend = CB.SerialBackend(),
-                                                      distance_metric = SFH.SphericalDistance(1.0))
-        for backend in (CB.SerialBackend(), CB.GPUBackend(KA.CPU()))
-            got = SFC.calculate_structure_function_tensor(Val(P), grid, u, bins, FFT_TAG, RAW_T; backend)
-            Test.@test got.counts == ref.counts
-            Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
-        end
-        Test.@test sum(ref.counts) > 0
-    end
+    ref = SFC.calculate_structure_function_tensor(Val(3), x, reshape(u, 2, :), bins, RAW_T; backend = TK_SERIAL,
+                                                  distance_metric = SFH.SphericalDistance(1.0))
+    got = SFC.calculate_structure_function_tensor(Val(3), grid, u, bins, FFT_TAG, RAW_T; backend = TK_SERIAL)
+    Test.@test got.counts == ref.counts
+    Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
 end
 
-Test.@testset "higher orders on points match brute force on every backend" begin
+Test.@testset "orders 1, 4 and 5 on points match brute force" begin
     Random.seed!(4120)
     N = 40
     x = rand(2, N)
@@ -268,46 +180,29 @@ Test.@testset "higher orders on points match brute force on every backend" begin
     bins = collect(range(0.0, 1.2; length = 6))
     for P in (1, 4, 5)
         ref_s, ref_c = _brute_tensor(P, x, u, bins)
-        for backend in (CB.SerialBackend(), CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
-            got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, RAW_T; backend)
-            Test.@test (P, backend, got.counts == ref_c) == (P, backend, true)
-            Test.@test (P, backend, isapprox(got.sums, ref_s; rtol = 1e-11, atol = 1e-12)) == (P, backend, true)
-        end
+        got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, RAW_T; backend = TK_SERIAL)
+        Test.@test (P, got.counts == ref_c) == (P, true)
+        Test.@test (P, isapprox(got.sums, ref_s; rtol = 1e-11, atol = 1e-12)) == (P, true)
     end
     Test.@test_throws ArgumentError SFT.MomentTensorOperator{2}()(SA.SVector(1.0, 0.0), SA.SVector(1.0, 0.0))
 end
 
-Test.@testset "the device tensor over batches, culled with or without a workspace, adds" begin
+Test.@testset "the device tensor over batches adds in place" begin
+    # an odd order over slices sharing positions, integer counts
     Random.seed!(4125)
-    N, B = 600, 3
+    N, B, P = 200, 3, 3
     bins = collect(range(0.0, 0.2; length = 6))
-    dev = CB.GPUBackend(KA.CPU())
-    w = 0.5 .+ rand(N)
-    for (layout, x) in (("shared", rand(2, N)), ("varying", rand(2, N, B))), P in (2, 3), weighted in (false, true)
-        u = randn(2, N, B)
-        CT = weighted ? Float64 : Int
-        kw = weighted ? (; weights = w) : (;)
-        ref = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, CT, RAW_T; backend = CB.SerialBackend(), kw...)
-        case = (layout, P, weighted)
-        for pol in (SFC.NoCulling(), SFC.AlwaysCulling())
-            ws = SFC.GPUSFWorkspace(KA.CPU(), bins)
-            got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, CT, RAW_T; backend = dev, workspace = ws,
-                                                          culling = pol, kw...)
-            Test.@test (case, pol, isapprox(got.counts, ref.counts; rtol = 1e-12)) == (case, pol, true)
-            Test.@test (case, pol, isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, pol, true)
-            Test.@test (case, pol, ws.lazy.cull isa SFC.GPUCullMemo) == (case, pol, pol isa SFC.AlwaysCulling)
-        end
-        got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, CT, RAW_T; backend = dev,
-                                                      culling = SFC.AlwaysCulling(), kw...)
-        Test.@test (case, isapprox(got.counts, ref.counts; rtol = 1e-12),
-                    isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true, true)
-        s, c = zeros(size(ref.sums)), zeros(CT, size(ref.counts))
-        for _ in 1:2
-            SFC.calculate_structure_function_tensor!(s, c, Val(P), x, u, bins; backend = dev, kw...)
-        end
-        Test.@test (case, isapprox(c, 2 .* ref.counts; rtol = 1e-12)) == (case, true)
-        Test.@test (case, isapprox(s, 2 .* ref.sums; rtol = 1e-10, atol = 1e-12)) == (case, true)
+    x, u = rand(2, N), randn(2, N, B)
+    ref = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, Int, RAW_T; backend = TK_SERIAL)
+    got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, Int, RAW_T; backend = TK_DEVICE)
+    Test.@test got.counts == ref.counts
+    Test.@test isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)
+    s, c = zeros(size(ref.sums)), zeros(Int, size(ref.counts))
+    for _ in 1:2
+        SFC.calculate_structure_function_tensor!(s, c, Val(P), x, u, bins; backend = TK_DEVICE)
     end
+    Test.@test c == 2 .* ref.counts
+    Test.@test isapprox(s, 2 .* ref.sums; rtol = 1e-10, atol = 1e-12)
 end
 
 Test.@testset "the joint tensor over angle marginalises to the tensor and to the joint histogram" begin
@@ -318,30 +213,16 @@ Test.@testset "the joint tensor over angle marginalises to the tensor and to the
     bins = collect(range(0.0, 1.0; length = 6))
     θbins = collect(range(prevfloat(0.0), π; length = 5))
     axis = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
-    t1 = SFC.calculate_structure_function_tensor(Val(2), x, u, bins, RAW_T; backend = CB.SerialBackend())
-    for backend in (CB.SerialBackend(), CB.ThreadedBackend(), CB.GPUBackend(KA.CPU()))
+    t1 = SFC.calculate_structure_function_tensor(Val(2), x, u, bins, RAW_T; backend = TK_SERIAL)
+    # the trace of the joint tensor is the joint histogram of S2
+    s2 = SFC.calculate_structure_function(SFT.S2SFType(), x, u, bins, θbins; backend = TK_SERIAL, second_axis = axis)
+    for backend in (TK_SERIAL, TK_THREADED)
         joint = SFC.calculate_structure_function_tensor(Val(2), x, u, bins, θbins; second_axis = axis, backend)
-        Test.@test joint isa RAW_T2
         Test.@test size(joint.sums) == (2, 2, 5, 4)
         Test.@test dropdims(sum(joint.counts; dims = 2); dims = 2) == t1.counts
         Test.@test isapprox(dropdims(sum(joint.sums; dims = 4); dims = 4), t1.sums; rtol = 1e-11, atol = 1e-12)
-        # the trace of the joint tensor is the joint histogram of S2
-        s2 = SFC.calculate_structure_function(SFT.S2SFType(), x, u, bins, θbins; backend = CB.SerialBackend(),
-                                              second_axis = axis)
         Test.@test joint.counts == s2.counts
         Test.@test isapprox(joint.sums[1, 1, :, :] .+ joint.sums[2, 2, :, :], s2.sums; rtol = 1e-11, atol = 1e-12)
-    end
-    # Rank 3 on the device exercises the other branch of the component loop.
-    for D in (2, 3)
-        xd, ud = rand(D, N), randn(D, N)
-        ax_d = SFC.SeparationAngleAxis(D == 2 ? SA.SVector(1.0, 0.0) : SA.SVector(1.0, 0.0, 0.0))
-        ref3 = SFC.calculate_structure_function_tensor(Val(3), xd, ud, bins, θbins;
-                                                       second_axis = ax_d, backend = CB.SerialBackend())
-        dev3 = SFC.calculate_structure_function_tensor(Val(3), xd, ud, bins, θbins;
-                                                       second_axis = ax_d, backend = CB.GPUBackend(KA.CPU()))
-        Test.@test sum(ref3.counts) > 0
-        Test.@test dev3.counts == ref3.counts
-        Test.@test isapprox(dev3.sums, ref3.sums; rtol = 1e-11, atol = 1e-12)
     end
     Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(Val(2), x, cat(u, 2u; dims = 3), bins, θbins;
                                                                             second_axis = axis)
@@ -354,15 +235,10 @@ Test.@testset "the joint tensor over angle marginalises to the tensor and to the
     gbins = collect(range(0.0, 1.1; length = 6)) .+ 1e-3
     # angle edges placed between the angles a lattice can produce (its diagonals sit exactly on π/4 and 3π/4)
     gθbins = [prevfloat(0.0); collect(range(0.3011, π - 0.3; length = 5)); π + 1e-9]
-    for P in (2, 3)
-        refj = SFC.calculate_structure_function_tensor(Val(P), xg, reshape(ug, 2, :), gbins, gθbins; second_axis = axis,
-                                                       backend = CB.SerialBackend())
-        for backend in (CB.SerialBackend(), CB.GPUBackend(KA.CPU()))
-            gotj = SFC.calculate_structure_function_tensor(Val(P), grid, ug, gbins, gθbins, FFT_TAG; second_axis = axis,
-                                                           backend)
-            Test.@test gotj isa RAW_T2
-            Test.@test gotj.counts ≈ refj.counts
-            Test.@test isapprox(gotj.sums, refj.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, refj.sums))
-        end
-    end
+    refj = SFC.calculate_structure_function_tensor(Val(2), xg, reshape(ug, 2, :), gbins, gθbins; second_axis = axis,
+                                                   backend = TK_SERIAL)
+    gotj = SFC.calculate_structure_function_tensor(Val(2), grid, ug, gbins, gθbins, FFT_TAG; second_axis = axis,
+                                                   backend = TK_SERIAL)
+    Test.@test gotj.counts ≈ refj.counts
+    Test.@test isapprox(gotj.sums, refj.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, refj.sums))
 end

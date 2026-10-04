@@ -721,6 +721,15 @@ innermost; `lanes()` on any other metric.
     (!fixed_x || B < lanes_min) ? rows(vS) : lanes()
 
 """
+    _bl_mode(vS, rows, lanes)
+
+The kernel family of a batch that loops the slices outside the pairs whatever their count: `rows(vS)` on a flat metric
+of SIMD width `vS`, `lanes()` on any other metric.
+"""
+@inline _bl_mode(::Nothing, rows::R, lanes::L) where {R, L} = lanes()
+@inline _bl_mode(vS::Val, rows::R, lanes::L) where {R, L} = rows(vS)
+
+"""
     _bl_slices(x, ub, geom, distance_bins, culling, Val(fixed_x), weights) -> (grid, xs, us, ws)
 
 [`_bl_prepare`](@ref)'s staged inputs as the kernels that loop the slices outside the pairs load them, sorted into cull
@@ -824,16 +833,15 @@ function _bl_rows_runner(kernel!::K, grid, xs, us, ws, N::Int) where {K}
 end
 
 """
-    _bl_rows_sweep(executor, slices, kernel!, make_scratch, make_accum, N, B, accum_bytes, workspace)
+    _bl_rows_sweep(executor, grid, xs, us, ws, window, kernel!, make_scratch, make_accum, N, B, accum_bytes, workspace)
 
-`executor` over [`_bl_slices`](@ref)'s output through [`_bl_rows_runner`](@ref), the kernel filling the
-[`BLRowsScratch`](@ref) slice histograms `make_scratch` builds.
+`executor` over [`_bl_slices`](@ref)'s output `(grid, xs, us, ws)` through [`_bl_rows_runner`](@ref), the kernel
+filling the [`BLRowsScratch`](@ref) slice histograms `make_scratch(window)` builds for the pair window of `N` points.
 """
-function _bl_rows_sweep(executor::E, slices::Tuple, kernel!::K, make_scratch::M, make_accum::A, N::Int, B::Int,
-                        accum_bytes::Int, workspace) where {E, K, M, A}
-    grid, xs, us, ws = slices
-    return executor(make_accum, make_scratch, _bl_rows_runner(kernel!, grid, xs, us, ws, N), 1:(N - 1), grid, B,
-                    accum_bytes, workspace)
+function _bl_rows_sweep(executor::E, grid, xs, us, ws, window::PairWindow, kernel!::K, make_scratch::M, make_accum::A,
+                        N::Int, B::Int, accum_bytes::Int, workspace) where {E, K, M, A}
+    return executor(make_accum, () -> make_scratch(window), _bl_rows_runner(kernel!, grid, xs, us, ws, N), 1:(N - 1),
+                    grid, B, accum_bytes, workspace)
 end
 
 """
@@ -881,8 +889,8 @@ of `f` compiled for it alone.
 
 """A task's [`BLRowsScratch`](@ref) for the 1-D kernels over `N` points: the pair window, the digitize keys,
 approximate bins, compacted slots, distance bins and values, and `n_bins`-bin slice histograms."""
-function _bl_rows_scratch_1d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, n_bins::Int) where {D, FT, OT, CT}
-    window = _pair_window(N)
+function _bl_rows_scratch_1d(window::PairWindow, N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT},
+                             n_bins::Int) where {D, FT, OT, CT}
     L = _pair_scratch_length(window, N)
     bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
             Vector{OT}(undef, L))
@@ -986,8 +994,8 @@ end
 
 """A task's [`BLRowsScratch`](@ref) for the single-pass kernels: the pair window, the digitize keys, approximate bins,
 compacted slots, distance bins, `δu_L` and `‖δu‖²`, and `(6, n_bins)` slice histograms."""
-function _bl_rows_scratch_sp1d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, n_bins::Int) where {D, FT, OT, CT}
-    window = _pair_window(N)
+function _bl_rows_scratch_sp1d(window::PairWindow, N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT},
+                               n_bins::Int) where {D, FT, OT, CT}
     L = _pair_scratch_length(window, N)
     bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
             Vector{OT}(undef, L), Vector{OT}(undef, L))
@@ -1094,9 +1102,8 @@ end
 """A task's [`BLRowsScratch`](@ref) for the joint kernels: the pair window, the digitize keys, approximate bins,
 compacted slots, distance bins, values, value columns, the shared columns of a second axis that is not the value and
 the second-axis quantities [`_pf_2d_simd_pairs!`](@ref) reads, and padded `(n_dist, n_val + 2)` slice histograms."""
-function _bl_rows_scratch_joint(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, second_axis, n_dist::Int,
-                                n_val::Int) where {D, FT, OT, CT}
-    window = _pair_window(N)
+function _bl_rows_scratch_joint(window::PairWindow, N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, second_axis,
+                                n_dist::Int, n_val::Int) where {D, FT, OT, CT}
     L = _pair_scratch_length(window, N)
     valbuf = Vector{OT}(undef, L)
     bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
@@ -1240,9 +1247,8 @@ end
 """A task's [`BLRowsScratch`](@ref) for the single-pass 2D kernels: the pair window, the digitize keys, approximate
 bins, compacted slots, distance bins, `δu_L`, `‖δu‖²` and the six value-column buffers, and the interleaved slice
 histograms of [`_sp2d_histogram`](@ref)."""
-function _bl_rows_scratch_sp2d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, val_plan, n_bins::Int,
-                               n_val::Int) where {D, FT, OT, CT}
-    window = _pair_window(N)
+function _bl_rows_scratch_sp2d(window::PairWindow, N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, val_plan,
+                               n_bins::Int, n_val::Int) where {D, FT, OT, CT}
     L = _pair_scratch_length(window, N)
     Lc = _sp2d_has_columns(val_plan, OT) ? L : 0
     bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
@@ -1412,8 +1418,9 @@ function _bl_run_1d!(sums, counts, sf_type, x, u, distance_bins, geom, executor,
         plan = squared_digitize_plan(distance_bins)
         kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_1d!(scr, xc, us, bs, slots, sf_type, plan, vS, blocks,
                                                                       w)
-        _bl_rows_sweep(executor, _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
-                       () -> _bl_rows_scratch_1d(N, vS, eltype(x0), OT, CT, n_bins), make_accum, N, B, accum_bytes,
+        grid, xs, us, ws = _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights)
+        _bl_rows_sweep(executor, grid, xs, us, ws, _pair_window(N), kernel!,
+                       w -> _bl_rows_scratch_1d(w, N, vS, eltype(x0), OT, CT, n_bins), make_accum, N, B, accum_bytes,
                        workspace)
     end
     lanes = () -> begin
@@ -1449,8 +1456,9 @@ function _bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins
         plan = squared_digitize_plan(distance_bins)
         kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_joint!(scr, xc, us, bs, slots, sf_type, plan, val_be,
                                                                          second_axis, vS, blocks, w)
-        _bl_rows_sweep(executor, _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
-                       () -> _bl_rows_scratch_joint(N, vS, eltype(x0), OT, CT, second_axis, n_dist, n_val), make_accum,
+        grid, xs, us, ws = _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights)
+        _bl_rows_sweep(executor, grid, xs, us, ws, _pair_window(N), kernel!,
+                       w -> _bl_rows_scratch_joint(w, N, vS, eltype(x0), OT, CT, second_axis, n_dist, n_val), make_accum,
                        N, B, accum_bytes, workspace)
     end
     lanes = () -> begin
@@ -1462,7 +1470,7 @@ function _bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins
         _bl_sweep(executor, _bl_cull(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!, identity,
                   make_accum, vD, N, B, accum_bytes, workspace)
     end
-    sums_bl, counts_bl = _bl_mode(_simd_width(geom), vFX, B, typemax(Int), rows, lanes)
+    sums_bl, counts_bl = _bl_mode(_simd_width(geom), rows, lanes)
     _bl_add_permuted!(reshape(sums, n_dist, n_val, B), view(sums_bl, :, :, 2:(n_val + 1)), (2, 3, 1))
     _bl_add_permuted!(reshape(counts, n_dist, n_val, B), view(counts_bl, :, :, 2:(n_val + 1)), (2, 3, 1))
     return nothing
@@ -1482,8 +1490,9 @@ function _bl_run_sp1d!(sums, counts, x, u, distance_bins, geom, executor, worksp
     rows = vS -> begin
         plan = squared_digitize_plan(distance_bins)
         kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_sp1d!(scr, xc, us, bs, slots, plan, vS, blocks, w)
-        _bl_rows_sweep(executor, _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
-                       () -> _bl_rows_scratch_sp1d(N, vS, eltype(x0), OT, CT, n_bins), make_accum, N, B, accum_bytes,
+        grid, xs, us, ws = _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights)
+        _bl_rows_sweep(executor, grid, xs, us, ws, _pair_window(N), kernel!,
+                       w -> _bl_rows_scratch_sp1d(w, N, vS, eltype(x0), OT, CT, n_bins), make_accum, N, B, accum_bytes,
                        workspace)
     end
     lanes = () -> begin
@@ -1518,8 +1527,9 @@ function _bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins, geom, exec
         plan = squared_digitize_plan(distance_bins)
         kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_sp2d!(scr, xc, us, bs, slots, plan, val_plan, vS,
                                                                         blocks, w)
-        _bl_rows_sweep(executor, _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!,
-                       () -> _bl_rows_scratch_sp2d(N, vS, eltype(x0), OT, CT, val_plan, n_bins, n_val), make_accum,
+        grid, xs, us, ws = _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights)
+        _bl_rows_sweep(executor, grid, xs, us, ws, _pair_window(N), kernel!,
+                       w -> _bl_rows_scratch_sp2d(w, N, vS, eltype(x0), OT, CT, val_plan, n_bins, n_val), make_accum,
                        N, B, accum_bytes, workspace)
     end
     lanes = () -> begin
@@ -1531,7 +1541,7 @@ function _bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins, geom, exec
         _bl_sweep(executor, _bl_cull(x0, u0, geom, distance_bins, culling, vFX, weights), kernel!, identity,
                   make_accum, vD, N, B, accum_bytes, workspace)
     end
-    sums_bl, counts_bl = _bl_mode(_simd_width(geom), vFX, B, typemax(Int), rows, lanes)
+    sums_bl, counts_bl = _bl_mode(_simd_width(geom), rows, lanes)
     interior = 2:(n_val + 1)
     _bl_add_permuted!(reshape(sums, SINGLE_PASS_N, n_bins, n_val, B), view(sums_bl, :, :, :, interior), (2, 3, 4, 1))
     _bl_add_permuted!(reshape(counts, SINGLE_PASS_N, n_bins, n_val, B), view(counts_bl, :, :, :, interior),

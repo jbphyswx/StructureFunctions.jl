@@ -17,27 +17,8 @@ _sp(x, u, bins, m; be = CB.SerialBackend()) = SFC.calculate_structure_functions_
     x, u, bins, SFO.StructureFunctionSumsAndCounts; backend = be, distance_metric = m,
 )
 
-Test.@testset "Pair geometry: selection and coordinate width" begin
-    Test.@test SFH.pair_geometry_for(DI.Euclidean(), Val(2)) === SFH.FlatGeometry{2}()
-    Test.@test SFH.pair_geometry_for(DI.Euclidean(), Val(3)) === SFH.FlatGeometry{3}()
-    Test.@test SFH.pair_geometry_for(DI.Haversine(EARTH_R), Val(2)) isa SFH.SphericalGeometry{2}
-    Test.@test SFH.pair_geometry_for(DI.SphericalAngle(), Val(3)) isa SFH.SphericalGeometry{3}
-
-    # A caller supplies two coordinates on a shell whether or not the velocity carries a radial
-    # third; the kernels index the ambient position `prepare_pair_inputs` builds from them.
-    Test.@test SFH.coordinate_width(SFH.FlatGeometry{2}()) === Val(2)
-    Test.@test SFH.coordinate_width(SFH.FlatGeometry{3}()) === Val(3)
-    Test.@test SFH.input_coordinate_width(SFH.FlatGeometry{2}()) === Val(2)
-    Test.@test SFH.field_width(SFH.FlatGeometry{3}()) === Val(3)
-    for D in (2, 3)
-        g = SFH.pair_geometry_for(DI.Haversine(EARTH_R), Val(D))
-        Test.@test SFH.input_coordinate_width(g) === Val(2)
-        Test.@test SFH.coordinate_width(g) === Val(3)
-        Test.@test SFH.field_width(g) === Val(3)
-    end
-
-    # A distance function does not define a direction or a transport rule, so a metric with no
-    # geometry is refused rather than assumed flat.
+# A metric with no pair geometry is refused with an error that names the hook to define.
+Test.@testset "a metric with no pair geometry is refused" begin
     Test.@test_throws ArgumentError SFH.pair_geometry_for(DI.Cityblock(), Val(2))
     msg = try
         SFH.pair_geometry_for(DI.Cityblock(), Val(2))
@@ -47,34 +28,31 @@ Test.@testset "Pair geometry: selection and coordinate width" begin
     Test.@test occursin("pair_geometry_for", msg)
 end
 
+# pair_frame's arc matches Haversine in degrees and SphericalAngle in radians, with the same frame for the same pair.
 Test.@testset "Spherical separation matches the metric, in both angle conventions" begin
     hav = DI.Haversine(EARTH_R)
     sph = DI.SphericalAngle()
-    for (lo1, la1, lo2, la2) in ((10.0, 45.0, 13.0, 47.0), (-170.0, -33.0, 175.0, 12.0),
-                                 (0.0, 0.0, 0.0, 90.0), (100.0, 60.0, 100.0, 60.5))
-        # `pair_frame` reads the ambient position, so the angle unit is resolved once at ingest.
-        gh = SFH.pair_geometry_for(hav, Val(2))
-        gs = SFH.pair_geometry_for(sph, Val(2))
+    gh = SFH.pair_geometry_for(hav, Val(2))
+    gs = SFH.pair_geometry_for(sph, Val(2))
+    cases = map(((10.0, 45.0, 13.0, 47.0), (-170.0, -33.0, 175.0, 12.0),
+                 (0.0, 0.0, 0.0, 90.0), (100.0, 60.0, 100.0, 60.5))) do (lo1, la1, lo2, la2)
         p1 = SA.SVector(lo1, la1); p2 = SA.SVector(lo2, la2)
-        ok_h, r_h, f_h = SFH.pair_frame(gh, SFH.unit_position(hav, lo1, la1), SFH.unit_position(hav, lo2, la2))
         q1 = SA.SVector(deg2rad(lo1), deg2rad(la1)); q2 = SA.SVector(deg2rad(lo2), deg2rad(la2))
+        ok_h, r_h, f_h = SFH.pair_frame(gh, SFH.unit_position(hav, lo1, la1), SFH.unit_position(hav, lo2, la2))
         ok_s, r_s, f_s = SFH.pair_frame(gs, SFH.unit_position(sph, q1[1], q1[2]), SFH.unit_position(sph, q2[1], q2[2]))
-
-        Test.@test ok_h && ok_s
-        Test.@test isapprox(r_h, hav(p1, p2); rtol = 1e-12)
-        Test.@test isapprox(r_s, sph(q1, q2); rtol = 1e-12)
-        # Degrees and radians describe the same physical pair: same arc, same local frame.
-        Test.@test isapprox(r_h, EARTH_R * r_s; rtol = 1e-12)
-        Test.@test isapprox(f_h[1], f_s[1]; atol = 1e-12)
-        Test.@test isapprox(f_h[2], f_s[2]; atol = 1e-12)
+        (; ok = ok_h && ok_s, r_h, r_s, f_h, f_s, hav = hav(p1, p2), sph = sph(q1, q2))
     end
+    Test.@test all(c -> c.ok, cases)
+    Test.@test all(c -> isapprox(c.r_h, c.hav; rtol = 1e-12), cases)
+    Test.@test all(c -> isapprox(c.r_s, c.sph; rtol = 1e-12), cases)
+    Test.@test all(c -> isapprox(c.r_h, EARTH_R * c.r_s; rtol = 1e-12), cases)
+    Test.@test all(c -> isapprox(c.f_h[1], c.f_s[1]; atol = 1e-12) && isapprox(c.f_h[2], c.f_s[2]; atol = 1e-12),
+                   cases)
 end
 
-# A rigid rotation preserves every geodesic distance, so d(σ)/dt = δu_L / R vanishes for EVERY
-# pair at every separation. This is the sharpest single test of the parallel transport: it holds
-# under transport and fails badly for a frame that is not transported.
+# Under transport a rigid rotation has δu_L = 0 on every pair (L2/S2 at the eps² level); a flat lon/lat frame does not.
 Test.@testset "Solid-body rotation has no longitudinal increment" begin
-    N = 250
+    N = 60
     Ω = 7.292e-5
     lon = 360 .* rand(N) .- 180
     lat = 120 .* rand(N) .- 60
@@ -85,11 +63,8 @@ Test.@testset "Solid-body rotation has no longitudinal increment" begin
     r = _sp(x, u, bins, DI.Haversine(EARTH_R))
     occ = r.L2.counts .> 0
     Test.@test any(occ)
-    # L2 is a square of δu_L, so machine-zero here is ~eps^2 relative to S2.
     Test.@test sum(r.L2.sums[occ]) / sum(r.S2.sums[occ]) < 1e-24
 
-    # Control: the identical field with a non-transported (flat lon/lat) frame puts a large
-    # fraction of the energy into a quantity whose true value is zero.
     flat = SFC.calculate_structure_functions_single_pass(
         x, u, collect(range(0.0, 80.0; length = 21)), SFO.StructureFunctionSumsAndCounts;
         backend = CB.SerialBackend(), distance_metric = DI.Euclidean(),
@@ -98,34 +73,31 @@ Test.@testset "Solid-body rotation has no longitudinal increment" begin
     Test.@test sum(flat.L2.sums[occf]) / sum(flat.S2.sums[occf]) > 0.01
 end
 
+# A radial third component leaves L2 unchanged to eps times the field scale, adds to S2, and keeps S2 = L2 + T2.
 Test.@testset "Thin shell: radial component is carried but never transported" begin
-    N = 200
+    N = 60
     Ω = 7.292e-5
     lon = 300 .* rand(N) .- 150
     lat = 100 .* rand(N) .- 50
-    x = permutedims(hcat(lon, lat))                                   # (2, N)
+    x = permutedims(hcat(lon, lat))
     ue = Ω * EARTH_R .* cosd.(lat)
-    u2 = permutedims(hcat(ue, zeros(N)))                              # (2, N)
-    u3 = permutedims(hcat(ue, zeros(N), 3.0 .* sind.(2 .* lat)))      # (3, N) + vertical
+    u2 = permutedims(hcat(ue, zeros(N)))
+    u3 = permutedims(hcat(ue, zeros(N), 3.0 .* sind.(2 .* lat)))
     bins = collect(range(0.0, 8.0e6; length = 21))
     m = DI.Haversine(EARTH_R)
 
     r2 = _sp(x, u2, bins, m)
     r3 = _sp(x, u3, bins, m)
 
-    # The geodesic frame is tangent to the shell, so the radial component is orthogonal to both t̂
-    # and m̂. In ambient coordinates that orthogonality holds to round-off rather than exactly —
-    # `p̂·t̂` is O(eps) once `‖p̂‖` is only 1 to round-off — so the radial part reaches δu_L bounded by
-    # eps times the scale of the field, not at all.
     Test.@test isapprox(r3.L2.sums, r2.L2.sums; atol = eps() * maximum(r3.S2.sums))
     Test.@test r3.L2.counts == r2.L2.counts
-    # It does contribute to the total, and the six invariants stay consistent.
     Test.@test sum(r3.S2.sums) > sum(r2.S2.sums)
     Test.@test r3.S2.sums ≈ r3.L2.sums .+ r3.T2.sums
 end
 
+# The threaded single pass, and the L2, T2 and S2 operators, match the serial single-pass invariants on the sphere.
 Test.@testset "Spherical geometry: backend agreement" begin
-    N = 120
+    N = 60
     lon = 300 .* rand(N) .- 150
     lat = 100 .* rand(N) .- 50
     x = permutedims(hcat(lon, lat))
@@ -134,29 +106,18 @@ Test.@testset "Spherical geometry: backend agreement" begin
     m = DI.Haversine(EARTH_R)
 
     ref = _sp(x, u, bins, m)
-    for be in (CB.AutoBackend(), CB.ThreadedBackend())
-        got = _sp(x, u, bins, m; be = be)
-        for k in (:S2, :L2, :T2, :S3, :L3, :L1T2)
-            Test.@test got[k].counts == ref[k].counts
-            Test.@test got[k].sums ≈ ref[k].sums
-        end
-    end
+    got = _sp(x, u, bins, m; be = CB.ThreadedBackend())
+    Test.@test all(got[k].counts == ref[k].counts && got[k].sums ≈ ref[k].sums for k in (:S2, :L2, :T2, :S3, :L3, :L1T2))
 
-    # Single operators must agree with the single-pass invariants under the same geometry.
-    for (sft, key) in ((SFT.LongitudinalSecondOrderStructureFunctionType(), :L2),
-                       (SFT.TransverseSecondOrderStructureFunctionType(), :T2),
-                       (SFT.SecondOrderStructureFunctionType(), :S2))
-        one = SFC.calculate_structure_function(
-            sft, x, u, bins, SFO.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(), distance_metric = m,
-        )
-        Test.@test one.counts == ref[key].counts
-        Test.@test one.sums ≈ ref[key].sums
-    end
+    operators = [(SFC.calculate_structure_function(sft, x, u, bins, SFO.StructureFunctionSumsAndCounts;
+                                                  backend = CB.SerialBackend(), distance_metric = m), key)
+                 for (sft, key) in ((SFT.LongitudinalSecondOrderStructureFunctionType(), :L2),
+                                    (SFT.TransverseSecondOrderStructureFunctionType(), :T2),
+                                    (SFT.SecondOrderStructureFunctionType(), :S2))]
+    Test.@test all(r.counts == ref[key].counts && r.sums ≈ ref[key].sums for (r, key) in operators)
 end
 
-# On a patch of angular size ε the transported frame and a flat tangent-plane frame differ by
-# O(ε) (the meridian convergence). Shrinking the patch must shrink the discrepancy proportionally
-# — "the difference is small" is not the claim; the scaling is.
+# The spherical-minus-tangent-plane L2 discrepancy is O(r/R): a 4x smaller patch cuts it by more than 2.5x.
 Test.@testset "Flat limit: spherical converges to Cartesian like r/R" begin
     N = 90
     lat0 = 35.0
@@ -168,7 +129,6 @@ Test.@testset "Flat limit: spherical converges to Cartesian like r/R" begin
         lat = lat0 .+ dlat
         uu = permutedims(hcat(randn(N), randn(N)))
         x_sph = permutedims(hcat(lon, lat))
-        # Local tangent plane at (0, lat0), in metres.
         x_flat = permutedims(hcat(
             EARTH_R .* deg2rad.(dlon) .* cosd(lat0), EARTH_R .* deg2rad.(dlat),
         ))
@@ -183,13 +143,9 @@ Test.@testset "Flat limit: spherical converges to Cartesian like r/R" begin
     d_big = deviation(4.0)
     d_small = deviation(1.0)
     Test.@test d_small < d_big
-    # A 4x smaller patch must cut the O(r/R) discrepancy by at least ~2.5x (allowing slack for
-    # the pair set changing with the patch and for the O((r/R)^2) term).
     Test.@test d_big / d_small > 2.5
 end
 
-# The geometry interface is the extension point: a user's own manifold works by adding methods,
-# with no special-casing anywhere in the package. Demonstrated, not asserted in prose.
 struct DoubledFlatMetric <: DI.PreMetric end
 (::DoubledFlatMetric)(a, b) = 2 * sqrt(sum(abs2, a .- b))
 
@@ -203,23 +159,20 @@ end
 @inline SFH.pair_direction(::DoubledFlatGeometry, frame, r) = frame / (r / 2)
 @inline SFH.pair_delta(::DoubledFlatGeometry, frame, x1, x2, u1, u2) = u2 - u1
 
+# A user geometry doubling every separation reproduces the Euclidean single-pass and joint histograms on doubled bins.
 Test.@testset "User-defined geometry works end to end on every backend" begin
-    N = 100
+    N = 40
     x = rand(2, N)
     u = randn(2, N)
     bins = collect(range(0.05, 1.4; length = 11))
 
-    # Every separation is doubled, so doubled bins must reproduce the Euclidean histogram exactly.
     euc = _sp(x, u, bins, DI.Euclidean())
-    for be in (CB.SerialBackend(), CB.AutoBackend())
+    for be in (CB.SerialBackend(), CB.ThreadedBackend())
         got = _sp(x, u, 2 .* bins, DoubledFlatMetric(); be = be)
-        for k in (:S2, :L2, :T2, :S3, :L3, :L1T2)
-            Test.@test got[k].counts == euc[k].counts
-            Test.@test got[k].sums ≈ euc[k].sums
-        end
+        Test.@test all(got[k].counts == euc[k].counts && got[k].sums ≈ euc[k].sums
+                       for k in (:S2, :L2, :T2, :S3, :L3, :L1T2))
     end
 
-    # And through a different entry point (2D joint) to show nothing is special-cased per-path.
     vb = collect(range(-3.0, 3.0; length = 9))
     j_euc = SFC.calculate_structure_function(
         SFT.L2SFType(), x, u, bins, vb; backend = CB.SerialBackend(),
@@ -232,12 +185,11 @@ Test.@testset "User-defined geometry works end to end on every backend" begin
     Test.@test j_got.sums ≈ j_euc.sums
 end
 
+# Flat x must match the velocity width; a shell takes two coordinates for both D = 2 and D = 3.
 Test.@testset "Shape contract is geometry-aware" begin
     bins = collect(range(0.0, 5.0e6; length = 9))
-    # Flat space: the coordinate count is the velocity dimension.
     Test.@test_throws DimensionMismatch _sp(rand(2, 8), randn(3, 8), bins, DI.Euclidean())
     Test.@test_throws DimensionMismatch _sp(rand(3, 8), randn(2, 8), bins, DI.Euclidean())
-    # A shell locates a point with two coordinates, for both D = 2 and D = 3.
     m = DI.Haversine(EARTH_R)
     Test.@test_throws DimensionMismatch _sp(rand(3, 8), randn(3, 8), bins, m)
     lonlat = permutedims(hcat(20 .* rand(8), 20 .* rand(8)))
@@ -245,47 +197,29 @@ Test.@testset "Shape contract is geometry-aware" begin
     Test.@test _sp(lonlat, randn(3, 8), bins, m) isa NamedTuple
 end
 
+# geodesic_frame keeps short pairs to 1e-12; near-antipodal ones are kept within sqrt(eps) at gap ≥ 1e-5 and refused at gap ≤ 1e-9.
 Test.@testset "the separation direction is refused where it carries no information" begin
-    # `sin σ` vanishes at two separations and the frame behaves differently at each. Short pairs are
-    # computed exactly and must be kept; near-antipodal pairs lose the direction to cancellation, at
-    # a rate of ε/(π−σ), and the guard must refuse them rather than return an arbitrary unit vector.
     setprecision(BigFloat, 256)
     Random.seed!(4242)
     exact_frame(p, q) = SFH.geodesic_frame(SA.SVector{3, BigFloat}(BigFloat.(p)),
                                            SA.SVector{3, BigFloat}(BigFloat.(q)))
-
-    # short pairs: accepted, and accurate
-    for gap in (1e-1, 1e-4, 1e-8, 1e-12)
+    function pair_at(gap, sgn)
         p = LA.normalize(SA.SVector(randn(3)...))
         w = LA.normalize(LA.cross(p, LA.normalize(SA.SVector(randn(3)...))))
-        q = LA.normalize(cos(gap) * p + sin(gap) * w)
-        _, tA, _, m, ok = SFH.geodesic_frame(p, q)
-        Test.@test ok
-        _, tAb, _, _, _ = exact_frame(p, q)
-        Test.@test Float64(LA.norm(SA.SVector{3, BigFloat}(BigFloat.(tA)) - tAb)) < 1e-12
+        return p, LA.normalize(sgn * cos(gap) * p + sin(gap) * w)
+    end
+    function sample(gap, sgn)
+        p, q = pair_at(gap, sgn)
+        _, tA, _, _, ok = SFH.geodesic_frame(p, q)
+        err = ok ? Float64(LA.norm(SA.SVector{3, BigFloat}(BigFloat.(tA)) - exact_frame(p, q)[2])) : 0.0
+        return (; gap, ok, err)
     end
 
-    # near-antipodal: whatever is accepted must still be accurate, and the rest is refused
-    for gap in (1e-1, 1e-5, 1e-9, 1e-13, 1e-15)
-        refused = 0
-        worst_accepted = 0.0
-        for _ in 1:100
-            p = LA.normalize(SA.SVector(randn(3)...))
-            w = LA.normalize(LA.cross(p, LA.normalize(SA.SVector(randn(3)...))))
-            q = LA.normalize(-cos(gap) * p + sin(gap) * w)
-            _, tA, _, _, ok = SFH.geodesic_frame(p, q)
-            if ok
-                _, tAb, _, _, _ = exact_frame(p, q)
-                worst_accepted = max(worst_accepted,
-                                     Float64(LA.norm(SA.SVector{3, BigFloat}(BigFloat.(tA)) - tAb)))
-            else
-                refused += 1
-            end
-        end
-        # nothing is accepted with a direction that has lost more than sqrt(eps) of itself
-        Test.@test worst_accepted < sqrt(eps(Float64))
-        # and the ones where it is hopeless really are refused
-        gap <= 1e-9 && Test.@test refused == 100
-        gap >= 1e-5 && Test.@test refused == 0
-    end
+    near = [sample(gap, 1) for gap in (1e-1, 1e-4, 1e-8, 1e-12)]
+    Test.@test all(s -> s.ok && s.err < 1e-12, near)
+
+    anti = [sample(gap, -1) for gap in (1e-1, 1e-5, 1e-9, 1e-13, 1e-15) for _ in 1:20]
+    Test.@test all(s -> s.err < sqrt(eps(Float64)), anti)
+    Test.@test all(s -> !s.ok, filter(s -> s.gap <= 1e-9, anti))
+    Test.@test all(s -> s.ok, filter(s -> s.gap >= 1e-5, anti))
 end

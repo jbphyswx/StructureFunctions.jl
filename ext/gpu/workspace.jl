@@ -132,12 +132,9 @@ function SFC.release!(ws::GPUSFWorkspace)
     return nothing
 end
 
-"""Invalidate prepared inputs and culling decisions."""
+"""Invalidate the cull grid prepared from the coordinates; the staging buffers, refilled on every call, are kept."""
 function SFC.refresh!(ws::GPUSFWorkspace)
-    lazy = ws.lazy
-    lazy.x_dev_cache = nothing
-    lazy.u_dev_cache = nothing
-    lazy.cull = nothing
+    ws.lazy.cull = nothing
     return ws
 end
 

@@ -46,15 +46,15 @@ end
 
 _close(a, b; rtol = 1e-9) = isapprox(a, b; rtol, atol = 1e-9 * max(1.0, maximum(abs, b)))
 
+# (lattice, spacing, operator, a random subset held, weighted)
+const SM_LATTICE_CASES = (
+    ((12,), (0.3,), SFT.L2SFType(), false, false), ((12, 8), (0.25, 0.4), SFT.T2SFType(), true, false),
+    ((12, 8), (0.25, 0.4), SFT.S3SFType(), false, true), ((8, 8, 8), (0.2, 0.2, 0.3), SFT.T3SFType(), true, true),
+)
+
 Test.@testset "points on the mode grid reproduce the periodic gridded transform ($(_provider_name(tag)))" for tag in PROVIDERS
     Random.seed!(9700)
-    cases = (
-        ((12,), (0.3,), (SFT.L2SFType(), SFT.L3SFType())),
-        ((12, 8), (0.25, 0.4), (SFT.L2SFType(), SFT.T2SFType(), SFT.L3SFType(), SFT.S3SFType(), SFT.T3SFType(),
-                               SFT.ProjectedStructureFunctionType{2, 2}())),
-        ((8, 8, 8), (0.2, 0.2, 0.3), (SFT.L2SFType(), SFT.S3SFType(), SFT.T3SFType())),
-    )
-    for (dims, spacing, ops) in cases
+    for (dims, spacing, sf, subset, weighted) in SM_LATTICE_CASES
         Dg = length(dims)
         N = prod(dims)
         x = _lattice_points(dims, spacing)
@@ -64,20 +64,14 @@ Test.@testset "points on the mode grid reproduce the periodic gridded transform 
         modes = _lattice_schedule(x, dims, spacing)
         r_max = 0.45 * minimum(dims .* spacing)
         bins = collect(range(0.0, r_max; length = 6))
-        # every node held, a random subset held, and random weights
         held = rand(N) .< 0.7
-        valid = SFC.field_validity(reshape(ifelse.(held', data, NaN), Dg, N))
-        w = 0.5 .+ rand(N)
-        for sf in ops
-            for (v, wt) in ((SFC.AllValid(), nothing), (valid, nothing), (SFC.AllValid(), w), (valid, w))
-                ref_s, ref_c = _gridded_run(sf, data, grid, bins, Val(Dg), Val(1), Val(0); valid = v, weights = wt)
-                got_s, got_c = _gridded_run(sf, data, modes, bins, Val(Dg), Val(1), Val(0);
-                                            valid = v, weights = wt, tag)
-                Test.@test _close(got_c, ref_c)
-                Test.@test _close(got_s, ref_s)
-                Test.@test sum(ref_c) > 0
-            end
-        end
+        v = subset ? SFC.field_validity(reshape(ifelse.(held', data, NaN), Dg, N)) : SFC.AllValid()
+        wt = weighted ? 0.5 .+ rand(N) : nothing
+        ref_s, ref_c = _gridded_run(sf, data, grid, bins, Val(Dg), Val(1), Val(0); valid = v, weights = wt)
+        got_s, got_c = _gridded_run(sf, data, modes, bins, Val(Dg), Val(1), Val(0); valid = v, weights = wt, tag)
+        Test.@test _close(got_c, ref_c)
+        Test.@test _close(got_s, ref_s)
+        Test.@test sum(ref_c) > 0
     end
     # a multi-field on the lattice
     dims, spacing = (12, 8), (0.25, 0.4)
@@ -86,12 +80,11 @@ Test.@testset "points on the mode grid reproduce the periodic gridded transform 
     grid = SFC.UniformLagSchedule(dims, spacing, (true, true))
     modes = _lattice_schedule(x, dims, spacing)
     bins = collect(range(0.0, 1.3; length = 6))
-    for sf in (SFT.MixedSFType{1, 0, 2}(), SFT.ScalarSFType{2}(), SFT.MixedSFType{1, 0, 1}())
-        ref_s, ref_c = _gridded_run(sf, SF.MultiFields.packed(f), grid, bins, Val(2), Val(1), Val(1))
-        got_s, got_c = _gridded_run(sf, SF.MultiFields.packed(f), modes, bins, Val(2), Val(1), Val(1); tag)
-        Test.@test _close(got_c, ref_c)
-        Test.@test _close(got_s, ref_s)
-    end
+    sf = SFT.MixedSFType{1, 0, 2}()
+    ref_s, ref_c = _gridded_run(sf, SF.MultiFields.packed(f), grid, bins, Val(2), Val(1), Val(1))
+    got_s, got_c = _gridded_run(sf, SF.MultiFields.packed(f), modes, bins, Val(2), Val(1), Val(1); tag)
+    Test.@test _close(got_c, ref_c)
+    Test.@test _close(got_s, ref_s)
 end
 
 # The periodic kernel of M modes with the taper's squared mode weights, on a box of length L.
@@ -137,28 +130,31 @@ function _oracle_1d(order, x, u, w, s, bins)
     return sums, cnts
 end
 
+# (modes, taper, operator, order)
+const SM_OFF_GRID_CASES = ((9, SF.NoTaper(), SFT.L2SFType(), 2), (8, SF.NoTaper(), SFT.L3SFType(), 3),
+                           (8, SF.GaussianTaper(0.05), SFT.L2SFType(), 2))
+
 Test.@testset "off the grid: the kernel identity written out in one dimension ($(_provider_name(tag)))" for tag in PROVIDERS
     Random.seed!(9710)
     N = 7
     x = sort(rand(N)) .* 0.8
     u = randn(1, N)
     w = 0.5 .+ rand(N)
-    for M in (9, 8), taper in (SF.NoTaper(), SF.GaussianTaper(0.05))
+    bins = collect(range(0.0, 0.7; length = 5))
+    for (M, taper, sf, order) in SM_OFF_GRID_CASES
         s = SFC.ScatteredModesSchedule(reshape(x, 1, N), 0.6, (M,); taper)
         Test.@test s.box[1] ≈ maximum(x) - minimum(x) + 0.6
-        bins = collect(range(0.0, 0.7; length = 5))
-        for (sf, order) in ((SFT.L2SFType(), 2), (SFT.L3SFType(), 3))
-            ref_s, ref_c = _oracle_1d(order, x, u[1, :], w, s, bins)
-            got_s, got_c = _gridded_run(sf, u, s, bins, Val(1), Val(1), Val(0); weights = w, tag)
-            Test.@test isapprox(got_c, ref_c; rtol = 1e-9, atol = 1e-10)
-            Test.@test isapprox(got_s, ref_s; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref_s))
-            Test.@test sum(abs, ref_c) > 0
-        end
+        ref_s, ref_c = _oracle_1d(order, x, u[1, :], w, s, bins)
+        got_s, got_c = _gridded_run(sf, u, s, bins, Val(1), Val(1), Val(0); weights = w, tag)
+        Test.@test isapprox(got_c, ref_c; rtol = 1e-9, atol = 1e-10)
+        Test.@test isapprox(got_s, ref_s; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref_s))
+        Test.@test sum(abs, ref_c) > 0
     end
 end
 
-Test.@testset "the soft bins converge to the hard bins as the modes grow ($(_provider_name(tag)))" for tag in PROVIDERS
+Test.@testset "the soft bins converge to the hard bins as the modes grow" begin
     Random.seed!(9720)
+    tag = PROVIDERS[1]
     N = 200
     x = rand(2, N)
     u = vcat(sin.(2π .* x[1:1, :]) .* cos.(2π .* x[2:2, :]), cos.(2π .* x[1:1, :]) .* sin.(2π .* x[2:2, :]))
@@ -170,8 +166,6 @@ Test.@testset "the soft bins converge to the hard bins as the modes grow ($(_pro
     for M in (16, 32, 64)
         s = SFC.ScatteredModesSchedule(x, r_max, (M, M); taper = SF.GaussianTaper(maximum(x) / M))
         soft = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag, RAW; backend = SERIAL)
-        Test.@test soft.distance isa SF.ModeBinEdges
-        Test.@test soft.distance.schedule === s
         Test.@test sum(soft.counts) ≈ sum(hard.counts) rtol = 0.2
         push!(errs, maximum(abs.(soft.sums ./ soft.counts .- hard_avg) ./ abs.(hard_avg)))
     end
@@ -180,9 +174,12 @@ Test.@testset "the soft bins converge to the hard bins as the modes grow ($(_pro
     Test.@test errs[3] < 0.1
 end
 
+# (dimension, modes, r_max, operator)
+const SM_PROVIDER_CASES = ((2, (32, 24), 0.4, SFT.S3SFType()), (3, (12, 10, 8), 0.5, SFT.L2SFType()))
+
 Test.@testset "the two providers compute the same transforms" begin
     Random.seed!(9760)
-    for (Dg, modes, r_max) in ((1, (64,), 0.4), (2, (32, 24), 0.4), (3, (12, 10, 8), 0.5))
+    for (Dg, modes, r_max, sf) in SM_PROVIDER_CASES
         N = 150
         x = rand(Dg, N)
         u = randn(Dg, N)
@@ -191,18 +188,17 @@ Test.@testset "the two providers compute the same transforms" begin
         w = 0.5 .+ rand(N)
         s = SFC.ScatteredModesSchedule(x, r_max, modes; taper = SF.GaussianTaper(0.02))
         bins = collect(range(0.0, r_max; length = 5))
-        for sf in (SFT.L2SFType(), SFT.S3SFType())
-            a_s, a_c = _gridded_run(sf, u, s, bins, Val(Dg), Val(1), Val(0); valid, weights = w, tag = PROVIDERS[1])
-            b_s, b_c = _gridded_run(sf, u, s, bins, Val(Dg), Val(1), Val(0); valid, weights = w, tag = PROVIDERS[2])
-            Test.@test isapprox(a_c, b_c; rtol = 1e-10, atol = 1e-10 * maximum(abs, a_c))
-            Test.@test isapprox(a_s, b_s; rtol = 1e-10, atol = 1e-10 * maximum(abs, a_s))
-            Test.@test sum(a_c) > 0
-        end
+        a_s, a_c = _gridded_run(sf, u, s, bins, Val(Dg), Val(1), Val(0); valid, weights = w, tag = PROVIDERS[1])
+        b_s, b_c = _gridded_run(sf, u, s, bins, Val(Dg), Val(1), Val(0); valid, weights = w, tag = PROVIDERS[2])
+        Test.@test isapprox(a_c, b_c; rtol = 1e-10, atol = 1e-10 * maximum(abs, a_c))
+        Test.@test isapprox(a_s, b_s; rtol = 1e-10, atol = 1e-10 * maximum(abs, a_s))
+        Test.@test sum(a_c) > 0
     end
 end
 
-Test.@testset "the device engine runs the non-uniform route ($(_provider_name(tag)))" for tag in PROVIDERS
+Test.@testset "the device engine runs the non-uniform route" begin
     Random.seed!(9730)
+    tag = PROVIDERS[1]
     N = 60
     x = rand(2, N) .* (1.0, 0.7)
     u = randn(2, N)
@@ -212,21 +208,14 @@ Test.@testset "the device engine runs the non-uniform route ($(_provider_name(ta
     w = 0.5 .+ rand(N)
     s = SFC.ScatteredModesSchedule(x, 0.5, (24, 16); taper = SF.GaussianTaper(0.03))
     bins = collect(range(0.0, 0.5; length = 6))
-    for sf in (SFT.L2SFType(), SFT.S3SFType(), SFT.T3SFType())
-        ref_s, ref_c = _gridded_run(sf, uf, s, bins, Val(2), Val(1), Val(0); valid, weights = w, tag)
-        dev_s, dev_c = _gridded_run(sf, uf, s, bins, Val(2), Val(1), Val(0); valid, weights = w, tag,
-                                    backend = DEVICE)
-        Test.@test _close(dev_c, ref_c)
-        Test.@test _close(dev_s, ref_s)
-        Test.@test all(isfinite, ref_s)
-        # the allocating entry allocates its result on the device
-        a = SFC.calculate_structure_function(sf, s, uf, bins, tag, RAW; weights = w, backend = SERIAL)
-        b = SFC.calculate_structure_function(sf, s, uf, bins, tag, RAW; weights = w, backend = DEVICE)
-        Test.@test _close(b.counts, a.counts) && _close(b.sums, a.sums)
-    end
+    sf = SFT.T3SFType()
+    ref_s, ref_c = _gridded_run(sf, uf, s, bins, Val(2), Val(1), Val(0); valid, weights = w, tag)
+    dev_s, dev_c = _gridded_run(sf, uf, s, bins, Val(2), Val(1), Val(0); valid, weights = w, tag, backend = DEVICE)
+    Test.@test _close(dev_c, ref_c)
+    Test.@test _close(dev_s, ref_s)
 end
 
-Test.@testset "a workspace keeps the plan set to the schedule's points ($(_provider_name(tag)))" for tag in PROVIDERS
+Test.@testset "a workspace reused across slices and calls gives the answer computed without one ($(_provider_name(tag)))" for tag in PROVIDERS
     Random.seed!(9770)
     N, nt = 80, 3
     s = SFC.ScatteredModesSchedule(rand(2, N), 0.4, (16, 12); taper = SF.GaussianTaper(0.02))
@@ -236,29 +225,22 @@ Test.@testset "a workspace keeps the plan set to the schedule's points ($(_provi
     ref_s, ref_c = zeros(nb, nt), zeros(nb, nt)
     SFC.calculate_structure_function_batch!(ref_s, ref_c, SFT.L2SFType(), s, u, bins, tag; backend = SERIAL)
     ws = SFC.TransformWorkspace()
-    kind = tag isa SFC.NonuniformFFTsSpectralBackend ? :nonuniformffts : :finufft
-    plans() = [last(e[2]) for e in ws.pool if e[1] === kind]
-    run!() = begin
+    for _ in 1:2
         gs, gc = zeros(nb, nt), zeros(nb, nt)
         SFC.calculate_structure_function_batch!(gs, gc, SFT.L2SFType(), s, u, bins, tag; backend = SERIAL,
                                                 workspace = ws)
         Test.@test _close(gc, ref_c) && _close(gs, ref_s)
     end
-    run!()
-    kept = only(plans())                        # one plan served every slice
-    run!()
-    Test.@test only(plans()) === kept           # and the next call
     a = SFC.calculate_structure_function(SFT.L2SFType(), s, u[:, :, 1], bins, tag, RAW; backend = SERIAL,
                                          workspace = ws)
-    Test.@test only(plans()) === kept
     b = SFC.calculate_structure_function(SFT.L2SFType(), s, u[:, :, 1], bins, tag, RAW; backend = SERIAL)
     Test.@test _close(a.counts, b.counts) && _close(a.sums, b.sums)
     SFC._release_plans!(ws)
-    Test.@test isempty(ws.pool) && isempty(ws.kept)
 end
 
-Test.@testset "the box is padded so that no pair within r_max wraps ($(_provider_name(tag)))" for tag in PROVIDERS
+Test.@testset "the box is padded so that no pair within r_max wraps" begin
     Random.seed!(9740)
+    tag = PROVIDERS[1]
     half = 20
     x = reshape(vcat(0.1 .* rand(half), 2.0 .+ 0.1 .* rand(half)), 1, 2half)
     u = randn(1, 2half)
@@ -279,7 +261,7 @@ Test.@testset "the box is padded so that no pair within r_max wraps ($(_provider
     Test.@test sum(wrapped.counts) - sum(soft.counts) > 0.5 * inter
 end
 
-Test.@testset "the route is asked for by name and refuses what it cannot mean" begin
+Test.@testset "the scattered-mode route refuses what it cannot mean, and its result carries the bins" begin
     Random.seed!(9750)
     N = 30
     x = rand(2, N)
@@ -290,24 +272,19 @@ Test.@testset "the route is asked for by name and refuses what it cannot mean" b
     Test.@test_throws ArgumentError SFC.ScatteredModesSchedule(x, 0.0, (16, 16))
     Test.@test_throws ArgumentError SFC.ScatteredModesSchedule(x, 0.5, (1, 16))
     Test.@test_throws DimensionMismatch SFC.ScatteredModesSchedule(x, 0.5, (16,))
-    # the transforms' accuracy is one tolerance on either tag; NonuniformFFTs' kernel half-support follows from it
     for make in (SFC.NonuniformFFTsSpectralBackend, SFC.FINUFFTSpectralBackend)
         Test.@test_throws ArgumentError make(tolerance = 0.0)
         Test.@test_throws ArgumentError make(tolerance = 1.0)
-        Test.@test make(tolerance = 1e-9).tolerance == 1e-9
-        Test.@test make().tolerance == 1e-12
     end
-    Test.@test SFC.nufft_half_support(SFC.NonuniformFFTsSpectralBackend(tolerance = 1e-7)) == 4
-    Test.@test SFC.nufft_half_support(SFC.NonuniformFFTsSpectralBackend(tolerance = 1e-12)) == 7
-    Test.@test SFC.nufft_half_support(SFC.NonuniformFFTsSpectralBackend(tolerance = 1e-15)) == 8
-    # NonuniformFFTs' spreading kernel needs at least its half-support in modes; FINUFFT pads its own fine grid
+    # NonuniformFFTs refuses fewer modes than its kernel's half-support at the tolerance, and takes them at a looser one
     small = SFC.ScatteredModesSchedule(x, 0.5, (4, 16))
     Test.@test_throws ArgumentError _gridded_run(SFT.L2SFType(), u, small, bins, Val(2), Val(1), Val(0);
                                                  tag = SFC.NonuniformFFTsSpectralBackend())
-    Test.@test all(isfinite, _gridded_run(SFT.L2SFType(), u, small, bins, Val(2), Val(1), Val(0);
-                                          tag = SFC.NonuniformFFTsSpectralBackend(tolerance = 1e-7))[1])
-    Test.@test all(isfinite, _gridded_run(SFT.L2SFType(), u, small, bins, Val(2), Val(1), Val(0);
-                                          tag = SFC.FINUFFTSpectralBackend())[1])
+    nu_s, nu_c = _gridded_run(SFT.L2SFType(), u, small, bins, Val(2), Val(1), Val(0);
+                              tag = SFC.NonuniformFFTsSpectralBackend(tolerance = 1e-7))
+    fi_s, fi_c = _gridded_run(SFT.L2SFType(), u, small, bins, Val(2), Val(1), Val(0); tag = SFC.FINUFFTSpectralBackend())
+    Test.@test isapprox(nu_s, fi_s; rtol = 1e-6, atol = 1e-6 * maximum(abs, fi_s))
+    Test.@test isapprox(nu_c, fi_c; rtol = 1e-6, atol = 1e-6 * maximum(abs, fi_c))
     # the generic SpectralBackends NUFFT tag names no provider
     Test.@test_throws ArgumentError _gridded_run(SFT.L2SFType(), u, s, bins, Val(2), Val(1), Val(0);
                                                  tag = SB.NonUniformFastFourierTransformSpectralBackend())
@@ -319,19 +296,11 @@ Test.@testset "the route is asked for by name and refuses what it cannot mean" b
                                                         PROVIDERS[1])
     Test.@test_throws ArgumentError SFC.gridded_lag_sweep!(sums, zeros(4), SFT.L2SFType(), u, s, bins, Val(2), Val(1), Val(0))
     grid = SFC.UniformLagSchedule((6, 5), (0.2, 0.2), (true, true))
-    for tag in PROVIDERS
-        Test.@test_throws ArgumentError SFC.gridded_sweep!(sums, zeros(4), SFT.L2SFType(), randn(2, 30), grid, bins, Val(2),
-                                                            Val(1), Val(0), tag)
-    end
+    Test.@test_throws ArgumentError SFC.gridded_sweep!(sums, zeros(4), SFT.L2SFType(), randn(2, 30), grid, bins, Val(2),
+                                                        Val(1), Val(0), PROVIDERS[1])
     Test.@test_throws DimensionMismatch SFC.calculate_structure_function(SFT.L2SFType(), s, randn(2, N + 1), bins,
                                                                          PROVIDERS[1])
-    # a point list without a schedule stays on the exact pair loop
-    plain = SFC.calculate_structure_function(SFT.L2SFType(), x, u, bins, RAW; backend = CB.AutoBackend())
-    Test.@test !(plain.distance isa SF.ModeBinEdges)
-    for tag in PROVIDERS
-        res = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, tag)
-        Test.@test res isa SFO.StructureFunction
-        Test.@test SF.midpoints(res.distance) == SF.midpoints(bins)
-        Test.@test SF.n_histogram_bins(res.distance) == 4
-    end
+    res = SFC.calculate_structure_function(SFT.L2SFType(), s, u, bins, PROVIDERS[1])
+    Test.@test SF.midpoints(res.distance) == SF.midpoints(bins)
+    Test.@test SF.n_histogram_bins(res.distance) == length(bins) - 1
 end

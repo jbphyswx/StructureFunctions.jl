@@ -1,14 +1,3 @@
-"""
-    test_workspace_cuda.jl
-
-CUDA workspace + slice-batch parity (run on a GPU node / SLURM allocation).
-
-    julia --project=. gpu/test_workspace_cuda.jl
-
-Compares fresh-alloc vs `GPUSFWorkspace` and slice drivers on `CUDA.CUDABackend()`.
-CPU reference uses serial `calculate_structure_function` on host arrays.
-"""
-
 using Test: Test
 using CUDA: CUDA
 using KernelAbstractions: KernelAbstractions as KA
@@ -19,6 +8,7 @@ using Random: Random
 
 Random.seed!(42)
 
+# Fresh buffers, a workspace, repeated accumulation and the slice batch each give the serial answer.
 Test.@testset "CUDA GPUSFWorkspace & slices" begin
     Test.@test CUDA.functional()
 
@@ -44,7 +34,6 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     CUDA.synchronize()
     Test.@test Array(res_fresh.counts) == ref.counts
     max_Δ_fresh = maximum(abs, Array(res_fresh.sums) .- ref.sums)
-    # Float32 GPU atomics vs serial CPU — same tolerance as test_cuda_parity.jl
     Test.@test max_Δ_fresh < 0.05f0
 
     ws = SFC.GPUSFWorkspace(backend, bins)
@@ -56,7 +45,6 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     max_Δ_ws = maximum(abs, Array(res_ws.sums) .- ref.sums)
     Test.@test max_Δ_ws < 0.05f0
 
-    # repeated-call accumulation with workspace
     sums_acc = CUDA.zeros(Float64, NB)
     counts_acc = CUDA.zeros(UInt32, NB)
     for _ in 1:3
@@ -69,7 +57,6 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
     max_Δ_acc = maximum(abs, Array(sums_acc) .- 3 .* ref.sums)
     Test.@test max_Δ_acc < 0.15f0
 
-    # slice batch on device-resident (N_dims, N_points, T)
     x_batch_cpu = rand(FT, 2, N, T)
     u_batch_cpu = rand(FT, 2, N, T)
     x_batch = CUDA.cu(x_batch_cpu)
@@ -100,5 +87,4 @@ Test.@testset "CUDA GPUSFWorkspace & slices" begin
 
     SFC.release!(ws)
     SFC.release!(ws_slice)
-    println("CUDA workspace tests passed on ", CUDA.name(CUDA.device()))
 end
