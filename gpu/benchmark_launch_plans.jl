@@ -130,7 +130,7 @@ function native1d(io; points = (20_000,), batch = true)
         batch && push!(modes, ("batch", Nb, CUDA.CuArray(rand(rng, FT, W, Nb)), CUDA.CuArray(randn(rng, FT, W, Nb, Bb)),
                                Bb, true))
         for rmax in (0.05, 0.1, 0.15, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0, 1.5), (mode, N, x, u, B, fixed) in modes
-            dig = GE._gpu_digitizer(BE, LinearBinEdges(zero(FT), FT(rmax), NB + 1), Val(NMOM == 1 ? :sf1d : :single_pass))
+            dig = GE._gpu_digitizer(BE, SF.LinearBinEdges(zero(FT), FT(rmax), NB + 1), Val(NMOM == 1 ? :sf1d : :single_pass))
             f = SFC.gpu_in_range_fraction(BE, x, dig, NB, geom, nothing, GE.SF_GPU_TILE)
             out, cnt = CUDA.zeros(FT, NMOM, NB, B), CUDA.zeros(UInt32, NMOM, NB, B)
             ref = nothing
@@ -198,7 +198,7 @@ function fixed1d(io; points = (5_000,), slices = (4, 8, 16, 32))
             push!(plans, ((:strip, TILE, SW, R), CE.CUDA1DStripPlan{W, W, NMOM, TILE, SW, R, H, UInt32}()))
         end
         for rmax in (0.05, 0.1, 0.2, 0.3, 0.45, 0.6, 1.5)
-            dig = GE._gpu_digitizer(BE, LinearBinEdges(zero(FT), FT(rmax), NB + 1), Val(NMOM == 1 ? :sf1d : :single_pass))
+            dig = GE._gpu_digitizer(BE, SF.LinearBinEdges(zero(FT), FT(rmax), NB + 1), Val(NMOM == 1 ? :sf1d : :single_pass))
             f = SFC.gpu_in_range_fraction(BE, x, dig, NB, geom, nothing, GE.SF_GPU_TILE)
             out, cnt = CUDA.zeros(FT, NMOM, NB, B), CUDA.zeros(UInt32, NMOM, NB, B)
             ref = nothing
@@ -261,7 +261,7 @@ function carveout1d(io)
         u1 = CUDA.CuArray(randn(rng, FT, W, N, 1))
         ub = CUDA.CuArray(randn(rng, FT, W, N, Bb))
         for frac in (0.05, 0.3, 1.5), (mode, u, B, fixed) in (("point", u1, 1, false), ("batch", ub, Bb, true))
-            dig = GE._gpu_digitizer(BE, LinearBinEdges(zero(FT), FT(frac), NB + 1), Val(NMOM == 1 ? :sf1d : :single_pass))
+            dig = GE._gpu_digitizer(BE, SF.LinearBinEdges(zero(FT), FT(frac), NB + 1), Val(NMOM == 1 ? :sf1d : :single_pass))
             out, cnt = CUDA.zeros(FT, NMOM, NB, B), CUDA.zeros(UInt32, NMOM, NB, B)
             cands, kerns = [], []
             for TILE in (128, 256, 384, 512, 1024), R in (1, 2, 4, 8, 16, 32)
@@ -322,11 +322,11 @@ function native2d(io; points = (20_000,), batches = ((5_000, 16),),
         for (Nb, Bb) in batches
             push!(modes, ("batch", Nb, CUDA.CuArray(rand(rng, FT, W, Nb)), CUDA.CuArray(randn(rng, FT, W, Nb, Bb)), Bb, true))
         end
-        vbins = values === :linear ? LinearBinEdges(FT(-1), FT(3), nv + 1) : collect(range(FT(-1), FT(3); length = nv + 1))
+        vbins = values === :linear ? SF.LinearBinEdges(FT(-1), FT(3), nv + 1) : collect(range(FT(-1), FT(3); length = nv + 1))
         vplan = GE._value_digitizer(nothing, BE, vbins)
         hcells = nd * CE._cuda_val_stride(nv)
         for rmax in rmaxes, (mode, N, x, u, B, fixed) in modes
-            ddig = GE._gpu_digitizer(BE, LinearBinEdges(zero(FT), FT(rmax), nd + 1),
+            ddig = GE._gpu_digitizer(BE, SF.LinearBinEdges(zero(FT), FT(rmax), nd + 1),
                                      Val(NMOM == 1 ? :joint2d : :single_pass_2d))
             f = SFC.gpu_in_range_fraction(BE, x, ddig, nd, geom, nothing, GE.SF_GPU_TILE)
             out, cnt = CUDA.zeros(FT, NMOM, nd, nv, B), CUDA.zeros(UInt32, NMOM, nd, nv, B)
@@ -499,7 +499,7 @@ function sp2d_portable(io)
         x, u = CUDA.CuArray(rand(rng, FT, W, N)), CUDA.CuArray(randn(rng, FT, W, N))
         vplan = GE._value_digitizer(nothing, BE, collect(range(FT(-1), FT(3); length = nv + 1)))
         for frac in (0.3, 1.5)
-            ddig = GE._gpu_digitizer(BE, LinearBinEdges(zero(FT), FT(frac), nd + 1), Val(:single_pass_2d))
+            ddig = GE._gpu_digitizer(BE, SF.LinearBinEdges(zero(FT), FT(frac), nd + 1), Val(:single_pass_2d))
             s, c = CUDA.zeros(FT, 6, nd, nv), CUDA.zeros(UInt32, 6, nd, nv)
             cands = Any[(string(mode), () -> GE._launch_single_pass_2d_strategy!(BE, s, c, x, u, ddig, vplan, N, nd + 1,
                                                                                  nv + 1, nd, config, geom))]
@@ -548,7 +548,7 @@ function batch1d(io)
         x = CUDA.CuArray(rand(rng, FT, W, N)); u = CUDA.CuArray(randn(rng, FT, W, N, B))
         plan = SFC.gpu_native_1d_plan(BE, FT, FT, FT, UInt32, SFC.NoWeights(), geom, NB, M)
         for rmax in (0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.45, 0.6, 1.5)
-            dig = GE._gpu_digitizer(BE, LinearBinEdges(zero(FT), FT(rmax), NB + 1), Val(:sf1d))
+            dig = GE._gpu_digitizer(BE, SF.LinearBinEdges(zero(FT), FT(rmax), NB + 1), Val(:sf1d))
             f = SFC.gpu_in_range_fraction(BE, x, dig, NB, geom, nothing, GE.SF_GPU_TILE)
             bufs = [(CUDA.zeros(FT, 1, NB, B), CUDA.zeros(UInt32, 1, NB, B)) for _ in 1:3]
             strip = () -> begin

@@ -1,10 +1,6 @@
-# =============================================================================
-# Parity + timing for the CUDA fast 1D kernel (N-body broadcast, static-shared
-# privatized histogram, TILE=256) vs the KA unified kernel on KA.CPU(). Also
-# re-checks the joint2d-varying GPU↔CPU count diff is FP-boundary (few pairs),
-# not systematic.
+# Parity and timing of the native CUDA 1D kernel against the portable kernel on KA.CPU(), and the
+# joint 2D varying-position count difference between CUDA and KA.CPU().
 #   julia --project=gpu gpu/test_cuda_1d_parity.jl
-# =============================================================================
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 import KernelAbstractions as KA
 using CUDA: CUDA
@@ -53,10 +49,10 @@ for NMOM in (1, 6), fixed_x in (true, false), NB in (16, 50, 128)
     dig_c = GE._gpu_digitizer(KA.CPU(), dist_bins, kind)
     dig_g = GE._gpu_digitizer(CUDA.CUDABackend(), dist_bins, kind)
     o_ref, c_ref = ref_1d(x_h, u_h, dig_c, N, NB, B, NMOM, fixed_x)
-    o_cu, c_cu, h = cuda_1d(CuArray(x_h), CuArray(u_h), dig_g, N, NB, B, NMOM, fixed_x)
+    o_cu, c_cu, h = cuda_1d(CUDA.CuArray(x_h), CUDA.CuArray(u_h), dig_g, N, NB, B, NMOM, fixed_x)
     rel = maximum(abs.(o_cu .- o_ref) ./ max.(abs.(o_ref), 1f-3))
     dcnt = maximum(abs.(Int.(c_cu) .- Int.(c_ref)))
-    @printf("| %d | %s | %d | %s | %.2e | %d |\n", NMOM, fixed_x, NB, h, rel, dcnt)
+    Printf.@printf("| %d | %s | %d | %s | %.2e | %d |\n", NMOM, fixed_x, NB, h, rel, dcnt)
 end
 
 # ---- timing: SP1D NB=50 & individual NB=50, fixed-x, real N=20000 ----
@@ -65,7 +61,7 @@ let Nt = 20000, Bt = 64, NB = 50
     Random.seed!(20260916)
     x_h = rand(FT, D, Nt); u_h = randn(FT, D, Nt, Bt)
     dist_bins = collect(FT, range(0.05f0, 2.0f0, length = NB + 1))
-    xd = CuArray(x_h); ud = CuArray(u_h)
+    xd = CUDA.CuArray(x_h); ud = CUDA.CuArray(u_h)
     for NMOM in (1, 6)
         dig = GE._gpu_digitizer(CUDA.CUDABackend(), dist_bins, Val(NMOM == 1 ? :sf1d : :single_pass))
         out = CUDA.zeros(FT, NMOM, NB, Bt); cnt = CUDA.zeros(UInt32, NMOM, NB, Bt)
@@ -75,8 +71,8 @@ let Nt = 20000, Bt = 64, NB = 50
                                          true, GEOM, nothing);
                CUDA.synchronize())
         f(); f(); ts = Float64[]; for _ in 1:5; t = time_ns(); f(); push!(ts, (time_ns()-t)/1e9); end
-        t = median(ts); bapps = (Nt*(Nt-1)/2)*Bt/t/1e9
-        @printf("  NMOM=%d NB=%d: %.4f s  (%.1f bapps)  → B=8064 ≈ %.1f s\n", NMOM, NB, t, bapps, t*8064/Bt)
+        t = Statistics.median(ts); bapps = (Nt*(Nt-1)/2)*Bt/t/1e9
+        Printf.@printf("  NMOM=%d NB=%d: %.4f s  (%.1f bapps)  → B=8064 ≈ %.1f s\n", NMOM, NB, t, bapps, t*8064/Bt)
     end
 end
 
@@ -96,12 +92,12 @@ let Nj = 3000, Bj = 6, nd = 20, nv = 20
                                 SFC.InvariantValueAxis())
         KA.synchronize(KA.CPU())
         og = CUDA.zeros(FT, 1, nd, nv, Bj); cg = CUDA.zeros(UInt32, 1, nd, nv, Bj)
-        GE._sf_launch_2d_batch!(CUDA.CUDABackend(), og, cg, CuArray(x_h), CuArray(u_h), sf2, ddig_g, vpg, Nj, nd, nv, Bj,
+        GE._sf_launch_2d_batch!(CUDA.CUDABackend(), og, cg, CUDA.CuArray(x_h), CUDA.CuArray(u_h), sf2, ddig_g, vpg, Nj, nd, nv, Bj,
                                 false, GEOM, SFC.InvariantValueAxis())
         CUDA.synchronize()
         dcnt = maximum(abs.(Int.(Array(cg)) .- Int.(cc)))
         tot = sum(cc)
-        @printf("  seed_shift=%.3f: max|Δcount|=%d  total_pairs=%d  (%.1e fraction)\n", seed_shift, dcnt, tot, dcnt/tot)
+        Printf.@printf("  seed_shift=%.3f: max|Δcount|=%d  total_pairs=%d  (%.1e fraction)\n", seed_shift, dcnt, tot, dcnt/tot)
     end
 end
 println("\nDONE_1D")

@@ -33,7 +33,7 @@ let
     fo() = (CUDA.fill!(so, 0f0); CUDA.fill!(co, UInt32(0));
         GE._launch_batch_fixed_x_sf!(BE, so, co, xo, uo, sf2, N, B, dig, NB, GEOM); CUDA.synchronize())
     to = bench(fo)
-    xn = CuArray(x_fix); un = CuArray(u)
+    xn = CUDA.CuArray(x_fix); un = CUDA.CuArray(u)
     sn = CUDA.zeros(FT, 1, NB, B); cn = CUDA.zeros(UInt32, 1, NB, B)
     plan = SFC.gpu_native_1d_plan(BE, FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NB, sf2)
     fn() = (CUDA.fill!(sn, 0f0); CUDA.fill!(cn, UInt32(0));
@@ -41,7 +41,7 @@ let
         CUDA.synchronize())
     tn = bench(fn)
     eq = Array(co) == reshape(Array(cn), NB, B)
-    @printf("| ind fixed | %.0f (%.1f) | %.0f (%.1f) | %s | %s |\n",
+    Printf.@printf("| ind fixed | %.0f (%.1f) | %.0f (%.1f) | %s | %s |\n",
         tput(to), to * 8064 / B, tput(tn), tn * 8064 / B,
         tput(to) > tput(tn) ? "strip" : "nbody", eq)
 end
