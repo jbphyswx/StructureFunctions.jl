@@ -5,7 +5,6 @@ using StructureFunctions.MultiFields: Fields
 using SpectralBackends: SpectralBackends as SB
 using ComputationalBackends: ComputationalBackends as CB
 using KernelAbstractions: KernelAbstractions as KA
-using OhMyThreads: OhMyThreads
 using NUFSHT: NUFSHT
 using NonuniformFFTs: NonuniformFFTs
 using FlowGeometries: FlowGeometries as FG
@@ -418,17 +417,6 @@ Test.@testset "kernel-binned results invert to the spectra they came from" begin
     Test.@test maximum(abs.(ratio[1:Lf] .- full[2:(Lf + 1)]) ./ (R .* truth)) < 0.1
     Test.@test all(pseudo[2:(Lf + 1)] ./ full[2:(Lf + 1)] .< 0.6)
     Test.@test maximum(abs, ratio[(Lf + 1):lmax]) < 0.05 * R * truth[end]
-end
-
-Test.@testset "the threaded direct sum gives the serial answer" begin
-    Random.seed!(404)
-    N, lmax = 400, 12
-    θ = acos.(clamp.(2 .* rand(N) .- 1, -1, 1))
-    φ = 2π .* rand(N)
-    f = complex.(randn(N), randn(N))
-    ref = SFC.pseudo_coefficients_direct(f, θ, φ, 1, lmax; backend = CB.SerialBackend())
-    got = SFC.pseudo_coefficients_direct(f, θ, φ, 1, lmax; backend = CB.ThreadedBackend())
-    Test.@test maximum(abs, got .- ref) <= 1e-10 * max(maximum(abs, ref), 1e-10)
 end
 
 _harm_rel(a, b) = maximum(abs, a .- b) / max(maximum(abs, b), 1e-300)

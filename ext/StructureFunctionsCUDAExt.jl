@@ -57,7 +57,7 @@ SFC.gpu_native_1d_plan(::CUDA.CUDABackend, ::Type{XT}, ::Type{UT}, ::Type{OT}, :
         _cuda_1d_plan(caps, XT, UT, OT, CT, wts, geom, Int(NB), moments)
     end
 
-SFC.gpu_native_launch_1d!(plan::Union{CUDA1DPlan, CUDA1DStripPlan, CUDAChoice}, out, cnt, x, u, wts, sf_type, dist_dig,
+SFC.gpu_native_launch_1d!(plan::Union{CUDA1DPlan, CUDA1DStripPlan, CUDA1DRule}, out, cnt, x, u, wts, sf_type, dist_dig,
                           N, NB, B, fixed_x, geom, cull) =
     _cuda_launch_1d!(plan, out, cnt, x, u, wts, sf_type, dist_dig, Int(N), Int(NB), Int(B), fixed_x, geom, cull)
 

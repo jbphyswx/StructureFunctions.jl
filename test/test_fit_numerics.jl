@@ -38,14 +38,17 @@ Test.@testset "regularised least squares refuses what it cannot solve" begin
     Test.@test_throws DimensionMismatch C.solve(C.RegularizedLeastSquares(nothing), H, y[1:2], ones(2))
 end
 
-# Dependent columns at three scales meet the KKT conditions; an unfinished solve is reported or raises.
+# Dependent columns, and a system whose solve drops a variable it took in, at three scales meet the KKT conditions;
+# an unfinished solve is reported or raises.
 Test.@testset "non-negative least squares is optimal or says it is not" begin
-    A = [1.0 0 1; 0 1 1; 1 1 2]
-    sols = map((1e-12, 1.0, 1e12)) do scale
-        b = scale .* [1.0, -1, 0]
-        x, _, info = C.solve(C.NonNegativeLeastSquares(), A, b, nothing; return_info = true)
-        (; scale, x, info, gradient = A' * (A * x - b))
-    end
+    systems = (([1.0 0 1; 0 1 1; 1 1 2], [1.0, -1, 0]), ([2.0 0 2; -2 -2 1; 2 0 -1], [3.0, -3, -2]))
+    sols = [begin
+                b = scale .* b1
+                x, _, info = C.solve(C.NonNegativeLeastSquares(), A, b, nothing; return_info = true)
+                (; scale, x, info, gradient = A' * (A * x - b))
+            end for (A, b1) in systems, scale in (1e-12, 1.0, 1e12)]
+    # More solves than final support means a variable left the support; the exact answer is (0, 23/10, 8/5).
+    Test.@test all(s -> s.info.iterations > count(>(0), s.x) && s.x ≈ s.scale .* [0, 2.3, 1.6], sols[2, :])
     Test.@test all(s -> s.info.converged, sols)
     Test.@test all(s -> all(>=(0), s.x) && minimum(s.gradient) >= -1e-12 * s.scale, sols)
     Test.@test all(s -> maximum(abs, s.x .* s.gradient) <= 1e-12 * s.scale^2, sols)

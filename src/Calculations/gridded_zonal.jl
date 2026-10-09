@@ -211,13 +211,13 @@ function gridded_lag_sweep!(
     uu = valid isa AllValid ? data : data[:, keep]
     ww = w isa NoWeights ? w : w[keep]
     _assert_counts_can_accumulate(counts, size(x, 2), ww)
+    validate_fields(sf, Val(V), Val(K))
     if V == 1 && K == 0
         _validate_array_shape(x, uu, s.metric)
         _dispatch_execution_backend!(backend, PointField{D}(), sums, counts, sf, x, uu, dist_be;
                                      geometry = SFH.pair_geometry_for(s.metric, Val(D)), weights = ww)
     else
         f = MF.Fields{D, V, K, typeof(uu)}(uu)
-        validate_fields(sf, f)
         _with_field_geometry(f, x, s.metric) do geometry
             _field_dispatch!(backend, sums, counts, sf, x, f, dist_be; geometry, weights = ww)
         end

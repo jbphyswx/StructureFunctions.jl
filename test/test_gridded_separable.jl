@@ -3,7 +3,6 @@ using StructureFunctions: StructureFunctions as SF, Calculations as SFC, Structu
     StructureFunctionObjects as SFO, HelperFunctions as SFH
 using StructureFunctions.MultiFields: Fields
 using ComputationalBackends: ComputationalBackends as CB
-using OhMyThreads: OhMyThreads
 using FFTW: FFTW
 using SpectralBackends: SpectralBackends as SB
 using FlowGeometries: FlowGeometries as FG
@@ -80,7 +79,7 @@ function _reference(sf, x, u, bins; metric = DI.Euclidean())
             distance_metric = metric, backend = CB.SerialBackend())
         return ref.sums, Int.(ref.counts)
     end
-    SFC.calculate_structure_function!(s, c, sf, x, u, bins; distance_metric = metric)
+    SFC.calculate_structure_function!(s, c, sf, x, u, bins; distance_metric = metric, backend = CB.SerialBackend())
     return s, c
 end
 
@@ -219,42 +218,6 @@ Test.@testset "bins shorter than the grid: the zonal and rectilinear routes equa
     Test.@test all(transform_ok)
 end
 
-Test.@testset "the threaded backend gives the serial answer" begin
-    # Both routes on a sphere's slab pairs, the sweep on a single slab's lags, and a rectilinear joint histogram.
-    n_lon, lats = 12, [-0.9, -0.5, -0.3, 0.1, 0.35, 0.8]
-    Random.seed!(7500)
-    u = randn(2, n_lon, length(lats))
-    sched = SFC.ZonalLagSchedule(lats, n_lon, 2π / n_lon, 1.0, true)
-    uni = SFC.UniformLagSchedule((9, 7), (0.1, 0.15), (false, true))
-    uu = randn(2, 9, 7)
-    ubins = [0.0; collect(range(0.0937, 1.1; length = 7))]
-    agree = Bool[]
-    for (sf, field, s, bins, tag) in ((SFT.L3SFType(), u, sched, collect(range(0.0, 0.5π; length = 8)), nothing),
-                                      (SFT.L3SFType(), u, sched, collect(range(0.0, 0.5π; length = 8)), FFT_TAG),
-                                      (SFT.L2SFType(), uu, uni, ubins, nothing))
-        ser_s, ser_c = _run(sf, field, s, bins; tag)
-        thr_s, thr_c = _run(sf, field, s, bins; tag, backend = CB.ThreadedBackend())
-        push!(agree, thr_c == ser_c && sum(ser_c) > 0 && _close(thr_s, ser_s))
-    end
-    src = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
-    ax_bins = [prevfloat(0.0); collect(range(0.3011, π - 0.3; length = 5)); π + 1e-9]
-    na = length(ax_bins) - 1
-    nb = length(ubins) - 1
-    rect = SFC.RectilinearLagSchedule(SFC.UniformLagSchedule((9,), (0.1,), (false,)),
-                                      ([0.0, 0.13, 0.31, 0.5, 0.52, 0.9, 1.4],), (1, 2))
-    ur = randn(2, 9, 7)
-    ss = zeros(nb, na); sc = zeros(Float64, nb, na)
-    SFC.gridded_lag_sweep!(ss, sc, SFT.L2SFType(), ur, rect, ubins, ax_bins, Val(2); second_axis = src)
-    ts = zeros(nb, na); tc = zeros(Float64, nb, na)
-    SFC.gridded_sweep!(ts, tc, SFT.L2SFType(), ur, rect, ubins, ax_bins, Val(2), FFT_TAG;
-                       second_axis = src, backend = CB.ThreadedBackend())
-    hs = zeros(nb, na); hc = zeros(Float64, nb, na)
-    SFC.gridded_lag_sweep!(hs, hc, SFT.L2SFType(), ur, rect, ubins, ax_bins, Val(2);
-                           second_axis = src, backend = CB.ThreadedBackend())
-    push!(agree, sum(sc) > 0 && tc == sc && hc == sc && _close(ts, ss) && _close(hs, ss))
-    Test.@test all(agree)
-end
-
 Test.@testset "a sphere's radius scales the separations of every route and nothing else" begin
     # The unit sphere's pair loop with radian bins is the oracle for the metric, the zonal and the enumerated routes.
     a = (0.3, -0.2)
@@ -272,9 +235,11 @@ Test.@testset "a sphere's radius scales the separations of every route and nothi
     lam = range(0.0, step = dlon, length = n_lon)
     phi = range(-0.6, 0.6; length = length(lats))
     rz = SFC.calculate_structure_function(SFT.L2SFType(), FG.Grids.StructuredGrid(geo, lam, phi), u,
-                                          RE .* unit_bins, SFO.StructureFunctionSumsAndCounts)
+                                          RE .* unit_bins, SFO.StructureFunctionSumsAndCounts;
+                                          backend = CB.SerialBackend())
     rs = SFC.calculate_structure_function(SFT.L2SFType(), FG.Grids.StructuredGrid(geo, collect(lam), phi), u,
-                                          RE .* unit_bins, SFO.StructureFunctionSumsAndCounts)
+                                          RE .* unit_bins, SFO.StructureFunctionSumsAndCounts;
+                                          backend = CB.SerialBackend())
     Test.@test count(!iszero, c1) > 1 && c2 == c1 && rz.counts == c1 && rs.counts == c1
     Test.@test isapprox(s2, s1; rtol = 1e-12) && isapprox(rz.sums, s1; rtol = 1e-9, atol = 1e-10) &&
                isapprox(rs.sums, s1; rtol = 1e-9, atol = 1e-10)

@@ -1,6 +1,18 @@
 # The choice of a native launch plan: a formula over the device and the call names the plans worth trying, and the
 # second call of each class of calls times them once and keeps the fastest.
 
+"""Tile pairs of `N` points at `tile`."""
+_cuda_blocks(N::Int, tile::Int) = (n = cld(N, tile); n * (n + 1) ÷ 2)
+
+"""The largest of `tiles` whose tile pairs over `N` points and `B` slices reach `k` blocks per multiprocessor of the
+device `caps` describes, else 128."""
+function _cuda_tile_for(caps::SFC.GPUDeviceCaps, N::Int, B::Int, k::Int, tiles::Tuple)
+    for t in tiles
+        _cuda_blocks(N, t) * B >= k * caps.n_sms && return t
+    end
+    return 128
+end
+
 """The native plans of one call's types on one device: `candidates(N, B, fixed, evaluations, share)` gives the plans
 worth trying for a call, in order of preference. A call of at least `choose_from` pair evaluations samples its in-range
 share; the first call of its class ([`_cuda_call_class`](@ref)) takes the first candidate, the class joining `seen`, and
@@ -31,9 +43,6 @@ function _cuda_kept(cull, N::Int, tile::Int)
     n = cld(N, tile)
     return SFC.n_pair_blocks(SFC.schedule_for(cull, N, tile)) / (n * (n + 1) ÷ 2)
 end
-
-"""Tile pairs of `N` points at `tile`."""
-_cuda_blocks(N::Int, tile::Int) = (n = cld(N, tile); n * (n + 1) ÷ 2)
 
 """The plan of `choice` for a launch over `N` points and `B` slices (`fixed`: a batch over shared positions) of the
 kernel coordinates `x` binned by `ddig` into `NB` distance bins: the first candidate at a share of one when the pair

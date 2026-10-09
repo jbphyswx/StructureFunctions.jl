@@ -81,24 +81,12 @@ end
     return (ok && 1 <= bin < N_bins, bin, Xi, Xj, dist, frame)
 end
 
-"""Stage host batch inputs. Fixed-x: `u` → `(B, N, N_dims)` batch-major."""
-function _stage_batch_device(backend::KA.Backend, x::AbstractArray{FT}, u::AbstractArray{FT}; fixed_x::Bool) where {FT}
-    if fixed_x
-        ndims(x) == 2 || throw(ArgumentError("fixed-x batch expects matrix x"))
-        ndims(u) >= 3 || throw(ArgumentError("fixed-x batch expects trailing batch dims on u"))
-        size(x)[1:2] == size(u)[1:2] || throw(ArgumentError("x and u leading dims must match"))
-        B = SFC.batch_size(u)
-        u_flat = reshape(u, size(u, 1), size(u, 2), B)
-        u_batchmajor = permutedims(u_flat, (3, 2, 1))
-        return KA.adapt(backend, x), KA.adapt(backend, u_batchmajor)
-    else
-        ndims(x) >= 3 || throw(ArgumentError("varying-x batch expects ndims >= 3"))
-        size(x) == size(u) || throw(ArgumentError("varying-x requires x and u same shape"))
-        B = SFC.batch_size(u)
-        x_flat = reshape(x, size(x, 1), size(x, 2), B)
-        u_flat = reshape(u, size(u, 1), size(u, 2), B)
-        return KA.adapt(backend, x_flat), KA.adapt(backend, u_flat)
-    end
+"""Stage shared positions `x` `(W, N)` and fields `u` `(W, N, B…)` on `backend`, `u` batch-major `(B, N, W)`."""
+function _stage_batch_device(backend::KA.Backend, x::AbstractMatrix{FT}, u::AbstractArray{FT}) where {FT}
+    ndims(u) >= 3 || throw(ArgumentError("a batch over shared positions expects trailing batch dims on u"))
+    size(x) == size(u)[1:2] || throw(ArgumentError("x and u leading dims must match"))
+    u_batchmajor = permutedims(reshape(u, size(u, 1), size(u, 2), SFC.batch_size(u)), (3, 2, 1))
+    return KA.adapt(backend, x), KA.adapt(backend, u_batchmajor)
 end
 
 KA.@kernel unsafe_indices=true function _batch_merge_usmem_sums!(

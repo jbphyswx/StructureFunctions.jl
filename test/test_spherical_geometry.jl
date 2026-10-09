@@ -2,7 +2,6 @@ using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions:
     StructureFunctions as SF, Calculations as SFC, HelperFunctions as SFH,
     StructureFunctionObjects as SFO, StructureFunctionTypes as SFT
-using OhMyThreads: OhMyThreads
 using Distances: Distances as DI
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
@@ -95,8 +94,8 @@ Test.@testset "Thin shell: radial component is carried but never transported" be
     Test.@test r3.S2.sums ≈ r3.L2.sums .+ r3.T2.sums
 end
 
-# The threaded single pass, and the L2, T2 and S2 operators, match the serial single-pass invariants on the sphere.
-Test.@testset "Spherical geometry: backend agreement" begin
+# On the sphere each operator's own call gives the single pass's invariant.
+Test.@testset "Spherical geometry: the operators match the single-pass invariants" begin
     N = 60
     lon = 300 .* rand(N) .- 150
     lat = 100 .* rand(N) .- 50
@@ -106,9 +105,6 @@ Test.@testset "Spherical geometry: backend agreement" begin
     m = DI.Haversine(EARTH_R)
 
     ref = _sp(x, u, bins, m)
-    got = _sp(x, u, bins, m; be = CB.ThreadedBackend())
-    Test.@test all(got[k].counts == ref[k].counts && got[k].sums ≈ ref[k].sums for k in (:S2, :L2, :T2, :S3, :L3, :L1T2))
-
     operators = [(SFC.calculate_structure_function(sft, x, u, bins, SFO.StructureFunctionSumsAndCounts;
                                                   backend = CB.SerialBackend(), distance_metric = m), key)
                  for (sft, key) in ((SFT.LongitudinalSecondOrderStructureFunctionType(), :L2),
@@ -160,18 +156,15 @@ end
 @inline SFH.pair_delta(::DoubledFlatGeometry, frame, x1, x2, u1, u2) = u2 - u1
 
 # A user geometry doubling every separation reproduces the Euclidean single-pass and joint histograms on doubled bins.
-Test.@testset "User-defined geometry works end to end on every backend" begin
+Test.@testset "User-defined geometry works end to end" begin
     N = 40
     x = rand(2, N)
     u = randn(2, N)
     bins = collect(range(0.05, 1.4; length = 11))
 
     euc = _sp(x, u, bins, DI.Euclidean())
-    for be in (CB.SerialBackend(), CB.ThreadedBackend())
-        got = _sp(x, u, 2 .* bins, DoubledFlatMetric(); be = be)
-        Test.@test all(got[k].counts == euc[k].counts && got[k].sums ≈ euc[k].sums
-                       for k in (:S2, :L2, :T2, :S3, :L3, :L1T2))
-    end
+    got = _sp(x, u, 2 .* bins, DoubledFlatMetric())
+    Test.@test all(got[k].counts == euc[k].counts && got[k].sums ≈ euc[k].sums for k in (:S2, :L2, :T2, :S3, :L3, :L1T2))
 
     vb = collect(range(-3.0, 3.0; length = 9))
     j_euc = SFC.calculate_structure_function(

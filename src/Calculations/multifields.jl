@@ -180,9 +180,8 @@ function _field_pairs!(
     xk::AbstractMatrix, data::AbstractMatrix, geom::SFH.FlatGeometry, vF::Val, vV::Val, vK::Val,
     plan::AbstractSquaredDigitizePlan, nb::Int, vW::Val, blocks, weights,
 ) where {OT, CT}
-    window = _pair_window(size(xk, 2))
-    L = _pair_scratch_length(window, size(xk, 2))
-    return _field_pairs!(sums, counts, sf, xk, data, geom, vF, vV, vK, plan, nb, vW, blocks, weights, window,
+    L = _pair_scratch_length(size(xk, 2))
+    return _field_pairs!(sums, counts, sf, xk, data, geom, vF, vV, vK, plan, nb, vW, blocks, weights,
                          Vector{eltype(xk)}(undef, L), Vector{OT}(undef, L), Vector{Int32}(undef, L),
                          Vector{Int32}(undef, L))
 end
@@ -191,7 +190,7 @@ function _field_pairs!(
     sums::AbstractVector{OT}, counts::AbstractVector{CT},
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xk::AbstractMatrix, data::AbstractMatrix, geom::SFH.FlatGeometry, ::Val{F}, ::Val{V}, ::Val{K},
-    plan::AbstractSquaredDigitizePlan, nb::Int, ::Val{W}, blocks, weights, window::PairWindow,
+    plan::AbstractSquaredDigitizePlan, nb::Int, ::Val{W}, blocks, weights,
     keybuf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32}, sel::AbstractVector{Int32},
 ) where {OT, CT, F, V, K, W}
     FTx = eltype(xk)
@@ -199,8 +198,8 @@ function _field_pairs!(
     chooses = _chooses_compaction(blocks)
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
-        _check_run_fits(window, valbuf, jr)
-        off = _slot_offset(window, jr)
+        _check_run_fits(valbuf, jr)
+        off = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, j_first)
             jlo > j_last && continue
@@ -288,8 +287,10 @@ An operator with no field index reads vector field 1.
 
 """
     validate_fields(operator, fields)
+    validate_fields(operator, Val(V), Val(K))
 
-Refuse an operator that reads a field the multi-field does not carry.
+Refuse an operator that reads a field the field does not carry: a multi-field its `V` vector and `K` scalar fields, an
+array its one vector field (`V = 1`, `K = 0`).
 
 Checked once at the entry, before any backend task opens.
 """
@@ -392,27 +393,29 @@ _field_dispatch!(::CB.AbstractAutoBackend, sums, counts, sf, x, f, bins; kwargs.
     _field_dispatch!(resolve_auto_backend(), sums, counts, sf, x, f, bins; kwargs...)
 
 """
-    calculate_structure_function!(sums, counts, sf, x, fields, distance_bins; backend, kwargs...)
+    calculate_structure_function!(sums, counts, sf, x, fields, distance_bins; backend, distance_metric, weights, culling, workspace)
 
 Accumulate a multi-field's pairs into `sums`/`counts` on `backend`.
 """
 function calculate_structure_function!(
     sums, counts, sf::SFT.AbstractPairwiseStructureFunctionType, x::AbstractMatrix, f::MF.Fields,
     distance_bins; backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-    distance_metric::DI.PreMetric = DI.Euclidean(), weights = nothing, kwargs...,
+    distance_metric::DI.PreMetric = DI.Euclidean(), weights = nothing, culling::CullingPolicy = AutoCulling(),
+    workspace = nothing,
 )
     _require_backend(backend)
     w = _pair_weights(weights, size(MF.packed(f), 2), eltype(sums))
     _assert_counts_can_accumulate(counts, size(MF.packed(f), 2), w)
     validate_fields(sf, f)
     _with_field_geometry(f, x, distance_metric) do geometry
-        _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; geometry, weights = w, kwargs...)
+        _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; geometry, weights = w, culling,
+                         _workspace_kw(workspace)...)
     end
     return nothing
 end
 
 """
-    calculate_structure_function(sf, x, fields, distance_bins[, CT][, OT]; backend, weights, kwargs...)
+    calculate_structure_function(sf, x, fields, distance_bins[, CT][, OT]; backend, distance_metric, weights, culling, workspace)
 
 Structure function of a multi-field: several quantities sampled at the same points, swept
 together in one pass, so a mixed moment reads every field at each pair.
@@ -427,7 +430,8 @@ function calculate_structure_function(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing,
-    kwargs...,
+    culling::CullingPolicy = AutoCulling(),
+    workspace = nothing,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
     N = size(MF.packed(f), 2)
@@ -439,7 +443,8 @@ function calculate_structure_function(
     sums = _result_zeros(backend, ST, nb)
     counts = _result_zeros(backend, CT, nb)
     _with_field_geometry(f, x, distance_metric) do geometry
-        _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; geometry, weights = w, kwargs...)
+        _field_dispatch!(backend, sums, counts, sf, x, f, distance_bins; geometry, weights = w, culling,
+                         _workspace_kw(workspace)...)
     end
     raw = SFO.StructureFunctionSumsAndCounts(sf, distance_bins, sums, counts)
     return _finalize(raw, OT)

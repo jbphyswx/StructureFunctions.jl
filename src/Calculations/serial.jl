@@ -74,7 +74,7 @@ end
 @inline _component_point(c::NTuple{D}, j, ::Val{D}) where {D} = SA.SVector{D}(ntuple(d -> @inbounds(c[d][j]), Val(D)))
 
 """
-    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, sel, window, blocks, weights)
+    _pf_simd_pairs!(output, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, sel, blocks, weights)
 
 Accumulate the pairs `(i, j>i)` covered by `blocks` into `output`/`counts`, each pair carrying
 `weights[i] * weights[j]` in both.
@@ -87,8 +87,7 @@ Uniqueness is `j > i`, independent of whether a block pair lies on the diagonal.
 The `@simd` half writes the digitize key, the SF value, and the approximate bin index to buffers; the
 scalar half scatters the in-range pairs straight into `output`/`counts`, under a range branch or, on a
 schedule that [`_chooses_compaction`](@ref) and a run whose sampled keys [`_compacts`](@ref), through the
-in-range list [`_compact_in_range!`](@ref) builds in `sel`. The buffers are indexed by `window`
-([`PairWindow`](@ref)).
+in-range list [`_compact_in_range!`](@ref) builds in `sel`. The buffers hold one `j` block ([`_slot_offset`](@ref)).
 
 The `i`-loop and the inner `@simd` must stay in this function body to vectorize.
 """
@@ -97,15 +96,15 @@ function _pf_simd_pairs!(
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, ::Val{D},
     r2buf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32}, sel::AbstractVector{Int32},
-    window::PairWindow, blocks, weights,
+    blocks, weights,
 ) where {OT, CT, D}
     nb = n_histogram_bins(plan)
     chooses = _chooses_compaction(blocks)
     FTx = eltype(xc[1])
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
-        _check_run_fits(window, valbuf, jr)
-        o = _slot_offset(window, jr)
+        _check_run_fits(valbuf, jr)
+        o = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, j_first)
             jlo > j_last && continue
@@ -373,12 +372,12 @@ Run the pair kernel with the schedule `grid` selects (`nothing` or a `CellGrid`)
 @inline _pf_run_blocks!(
     sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, sel, ilist, N, ::Nothing, weights,
 ) where {D} = _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, sel,
-    _pair_window(N), pair_blocks(N, ilist), weights)
+    pair_blocks(N, ilist), weights)
 
 @inline _pf_run_blocks!(
     sums, counts, sf, xc, uc, plan, ::Val{D}, r2buf, valbuf, idxbuf, sel, ilist, N, grid::CellGrid, weights,
 ) where {D} = _pf_simd_pairs!(sums, counts, sf, xc, uc, plan, Val(D), r2buf, valbuf, idxbuf, sel,
-    _pair_window(N), pair_blocks(N, ilist; grid = grid), weights)
+    pair_blocks(N, ilist; grid = grid), weights)
 
 """
     _pf_simd_partial!(sums, counts, sf, x_vecs, u_vecs, dist_be, ::Val{D}, share; kwargs...)

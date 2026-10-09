@@ -46,15 +46,16 @@ calculate_structure_function(::SFT.AbstractPairwiseStructureFunctionType, x::Tup
     _unsupported_tuple_input()
 
 """
-    calculate_structure_function(sf, x, u, distance_bins[, CT][, OT]; backend, distance_metric, weights, kwargs...)
-    calculate_structure_function(sf, x, u, distance_bins, value_bins[, CT][, OT]; kwargs...)
+    calculate_structure_function(sf, x, u, distance_bins[, CT][, OT]; backend, distance_metric, weights, culling, workspace)
+    calculate_structure_function(sf, x, u, distance_bins, value_bins[, CT][, OT]; second_axis, ...)
 
 The pair histogram of `sf` over `distance_bins`, or the joint distance × value histogram with
 `value_bins`, on `backend`. `CT` is the count element type (default `$(DEFAULT_COUNT_TYPE)`), and
 `OT` the result representation: `StructureFunction` (the default without `value_bins`) or
 `StructureFunctionSumsAndCounts`, and `StructureFunction2DSumsAndCounts` with `value_bins`.
 `weights`, one finite value per point, weight each pair by the product of its two points' weights and
-need a floating-point `CT`.
+need a floating-point `CT`. `culling` ([`CullingPolicy`](@ref)) decides whether pairs past the last
+distance edge are skipped by cells; `workspace` holds buffers a backend reuses between calls.
 """
 function calculate_structure_function(
     structure_function_type::SFT.AbstractPairwiseStructureFunctionType,
@@ -66,15 +67,17 @@ function calculate_structure_function(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing,
-    kwargs...,
+    culling::CullingPolicy = AutoCulling(),
+    workspace = nothing,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
     _validate_array_shape(x, u, distance_metric)
+    validate_fields(structure_function_type, Val(1), Val(0))
     w = _pair_weights(weights, size(x, 2), promote_type(float(eltype(x)), float(eltype(u))))
     _assert_count_type(CT, size(x, 2), w)
     raw = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
         _dispatch_execution_backend(backend, shape, structure_function_type, x, u, distance_bins, CT; geometry,
-                                    weights = w, kwargs...)
+                                    weights = w, culling, _workspace_kw(workspace)...)
     end
     return _finalize(raw, OT)
 end
@@ -101,15 +104,17 @@ function calculate_structure_function(
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing,
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
-    kwargs...,
+    culling::CullingPolicy = AutoCulling(),
+    workspace = nothing,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
     _validate_array_shape(x, u, distance_metric)
+    validate_fields(structure_function_type, Val(1), Val(0))
     w = _pair_weights(weights, size(x, 2), promote_type(float(eltype(x)), float(eltype(u))))
     _assert_count_type(CT, size(x, 2), w)
     raw = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
         _dispatch_execution_backend(backend, shape, structure_function_type, x, u, distance_bins, value_bins, CT;
-                                    geometry, weights = w, second_axis, kwargs...)
+                                    geometry, weights = w, second_axis, culling, _workspace_kw(workspace)...)
     end
     return _finalize(raw, OT)
 end
@@ -223,24 +228,25 @@ calculate_structure_function!(sums, counts, ::SFT.AbstractPairwiseStructureFunct
                               args...; kwargs...) = _unsupported_tuple_input()
 
 """
-    calculate_structure_function!(sums, counts, sf, x, u, distance_bins[, value_bins]; backend, distance_metric, weights, kwargs...)
+    calculate_structure_function!(sums, counts, sf, x, u, distance_bins[, value_bins]; backend, distance_metric, weights, culling, workspace)
 
 Add the pairs of [`calculate_structure_function`](@ref) into `sums` and `counts`, whose element types
-are the result's and the count type.
+are the result's and the count type; with `value_bins` also `second_axis`.
 """
 function calculate_structure_function!(
     sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = nothing, kwargs...,
+    weights = nothing, culling::CullingPolicy = AutoCulling(), workspace = nothing,
 )
     _require_backend(backend)
     _validate_array_shape(x, u, distance_metric)
+    validate_fields(sf_type, Val(1), Val(0))
     w = _pair_weights(weights, size(x, 2), eltype(sums))
     _assert_counts_can_accumulate(counts, size(x, 2), w)
     _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
         _dispatch_execution_backend!(backend, shape, sums, counts, sf_type, x, u, distance_bins; geometry,
-                                     weights = w, kwargs...)
+                                     weights = w, culling, _workspace_kw(workspace)...)
     end
     return nothing
 end
@@ -249,15 +255,17 @@ function calculate_structure_function!(
     sums_2d, counts_2d, sf_type::SFT.AbstractPairwiseStructureFunctionType, x::AbstractArray, u::AbstractArray,
     distance_bins::AbstractVector, value_bins::AbstractVector;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = nothing, kwargs...,
+    weights = nothing, second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
+    culling::CullingPolicy = AutoCulling(), workspace = nothing,
 )
     _require_backend(backend)
     _validate_array_shape(x, u, distance_metric)
+    validate_fields(sf_type, Val(1), Val(0))
     w = _pair_weights(weights, size(x, 2), eltype(sums_2d))
     _assert_counts_can_accumulate(counts_2d, size(x, 2), w)
     _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
         _dispatch_execution_backend!(backend, shape, sums_2d, counts_2d, sf_type, x, u, distance_bins, value_bins;
-                                     geometry, weights = w, kwargs...)
+                                     geometry, weights = w, second_axis, culling, _workspace_kw(workspace)...)
     end
     return nothing
 end

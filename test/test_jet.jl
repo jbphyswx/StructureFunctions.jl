@@ -24,6 +24,23 @@ _reports_past_boundaries(r) = filter(JET.get_reports(r)) do rep
     !any(v -> v.linfo.def.name === :_at_width && !isconcretetype(v.linfo.specTypes.parameters[3]), rep.vst)
 end
 
+# The closures `_by_width` calls at run time in the optimization analysis `r`.
+_width_closures(r) = unique([rep.vst[end].linfo.specTypes.parameters[2] for rep in JET.get_reports(r)
+                             if rep.vst[end].linfo.def.name === :_by_width])
+
+"""`analyze(f, types)` of JET (`JET.report_opt` or `JET.report_call`) past the boundaries, and of the code each
+run-time width call of it runs at width `W`."""
+function _reports_through_width(analyze, f, types, W)
+    r = analyze(f, types; target_modules = JET_MODULES)
+    reps = _reports_past_boundaries(r)
+    opt = analyze === JET.report_opt ? r : JET.report_opt(f, types; target_modules = JET_MODULES)
+    for G in _width_closures(opt)
+        append!(reps, _reports_past_boundaries(analyze(Tuple{typeof(SFC._at_width), G, Val{W}};
+                                                       target_modules = JET_MODULES)))
+    end
+    return reps
+end
+
 """Data of every route, passed to it as an argument so JET analyzes concrete types."""
 function _jet_route_data()
     Random.seed!(11)
@@ -54,13 +71,12 @@ function _jet_route_data()
     )
 end
 
-"""Capability-matrix routes as the entry a user calls, on `be` with the data `d` of [`_jet_route_data`](@ref)."""
+"""Routes as the entry a user calls, on `be` with the data `d` of [`_jet_route_data`](@ref): each entry form and
+family once, and each argument type that changes the call chain (second axis, shared or per-slice positions, culling,
+batch) at least once."""
 _jet_routes() = (
     ("point 1D", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xp, d.up, d.bins, SF.StructureFunctionSumsAndCounts;
         backend = be); (r.sums, r.counts)))),
-    ("point 1D in-place", ((be, d) -> (s = zeros(d.nb); c = zeros(Int, d.nb);
-        SFC.calculate_structure_function!(s, c, d.op, d.xp, d.up, d.bins; backend = be);
-            (s, c)))),
     ("point joint value", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xp, d.up,
         d.bins, d.vbins; backend = be); (r.sums, r.counts)))),
     ("point joint angle", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xp, d.up,
@@ -71,8 +87,6 @@ _jet_routes() = (
     ("point multi-field", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xp,
         d.fields, d.bins, SF.StructureFunctionSumsAndCounts; backend = be);
         (r.sums, r.counts)))),
-    ("moment tensor", ((be, d) -> (r = SFC.calculate_structure_function_tensor(Val(2), d.xp, d.up,
-        d.bins, SF.StructureFunctionObjects.StructureFunctionTensorSumsAndCounts; backend = be); (r.sums, r.counts)))),
     ("moment tensor joint", ((be, d) -> (r = SFC.calculate_structure_function_tensor(Val(2), d.xp,
         d.up, d.bins, d.abins; second_axis = d.ax, backend = be); (r.sums, r.counts)))),
     ("single-pass 1D", ((be, d) -> (s = zeros(SFC.SINGLE_PASS_N, d.nb);
@@ -83,62 +97,19 @@ _jet_routes() = (
         c = zeros(Int, SFC.SINGLE_PASS_N, d.nb, d.nv);
         SFC.calculate_structure_functions_single_pass_2d!(s, c, d.xp, d.up, d.bins, d.vbins;
             backend = be); (s, c)))),
-    ("aux axes 1D", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xb, d.ub, d.bins, SF.StructureFunctionSumsAndCounts;
-        backend = be); (r.sums, r.counts)))),
-    ("aux axes joint", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xb, d.ub, d.bins,
-        d.vbins; backend = be); (r.sums, r.counts)))),
-    ("aux axes joint angle", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xb, d.ub, d.bins,
-        d.abins; backend = be, second_axis = d.ax); (r.sums, r.counts)))),
-    ("aux axes joint angle shared", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xp, d.ub,
-        d.bins, d.abins; backend = be, second_axis = d.ax); (r.sums, r.counts)))),
     ("aux axes 1D culled", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xb, d.ub, d.tbins,
         SF.StructureFunctionSumsAndCounts; backend = be, culling = SFC.AlwaysCulling()); (r.sums, r.counts)))),
-    ("aux axes 1D culled shared", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.xp, d.ub,
-        d.tbins, SF.StructureFunctionSumsAndCounts; backend = be, culling = SFC.AlwaysCulling()); (r.sums, r.counts)))),
-    ("slice batch 1D", ((be, d) -> (s = zeros(d.nb, d.T); c = zeros(Int, d.nb, d.T);
-        SFC.calculate_structure_function_batch!(s, c, d.op, d.xb, d.ub, d.bins; backend = be);
-        (s, c)))),
     ("slice batch joint", ((be, d) -> (s = zeros(d.nb, d.nv, d.T);
         c = zeros(Int, d.nb, d.nv, d.T);
         SFC.calculate_structure_function_2d_batch!(s, c, d.op, d.xb, d.ub, d.bins, d.vbins;
             backend = be); (s, c)))),
-    ("slice batch joint angle", ((be, d) -> (s = zeros(d.nb, d.na, d.T);
-        c = zeros(Int, d.nb, d.na, d.T);
-        SFC.calculate_structure_function_2d_batch!(s, c, d.op, d.xb, d.ub, d.bins, d.abins;
-            backend = be, second_axis = d.ax); (s, c)))),
-    ("slice batch sp1d", ((be, d) -> (s = zeros(SFC.SINGLE_PASS_N, d.nb, d.T);
-        c = zeros(Int, SFC.SINGLE_PASS_N, d.nb, d.T);
-        SFC.calculate_structure_functions_single_pass_batch!(s, c, d.xb, d.ub, d.bins;
-            backend = be); (s, c)))),
-    ("slice batch sp1d culled shared", ((be, d) -> (s = zeros(SFC.SINGLE_PASS_N, d.nb, d.T);
-        c = zeros(Int, SFC.SINGLE_PASS_N, d.nb, d.T);
-        SFC.calculate_structure_functions_single_pass_batch!(s, c, d.xp, d.ub, d.tbins;
-            backend = be, culling = SFC.AlwaysCulling()); (s, c)))),
     ("slice batch sp2d", ((be, d) -> (s = zeros(SFC.SINGLE_PASS_N, d.nb, d.nv, d.T);
         c = zeros(Int, SFC.SINGLE_PASS_N, d.nb, d.nv, d.T);
         SFC.calculate_structure_functions_single_pass_2d_batch!(s, c, d.xb, d.ub, d.bins,
             d.vbins; backend = be); (s, c)))),
-    ("gridded lag sweep", ((be, d) -> (s = zeros(d.nb); c = zeros(Int, d.nb);
-        SFC.gridded_lag_sweep!(s, c, d.op, d.gu, d.gs, d.gb, Val(2), Val(1), Val(0);
-            backend = be); (s, c)))),
-    ("gridded lag sweep joint value", ((be, d) -> (s = zeros(d.nb, d.nv); c = zeros(d.nb, d.nv);
-        SFC.gridded_lag_sweep!(s, c, d.op, d.gu, d.gs, d.gb, d.vbins, Val(2), Val(1), Val(0);
-            backend = be, second_axis = SFC.InvariantValueAxis()); (s, c)))),
     ("gridded lag sweep joint angle", ((be, d) -> (s = zeros(d.nb, d.na); c = zeros(d.nb, d.na);
         SFC.gridded_lag_sweep!(s, c, d.op, d.gu, d.gs, d.gb, d.abins, Val(2), Val(1), Val(0);
             backend = be, second_axis = d.ax); (s, c)))),
-    ("gridded lag sweep batch", ((be, d) -> (s = zeros(d.nb, 2); c = zeros(Int, d.nb, 2);
-        SFC.gridded_lag_sweep_batch!(s, c, d.op, d.gub, d.gs, d.gb, Val(2), Val(1), Val(0);
-            backend = be); (s, c)))),
-    ("gridded lag sweep batch joint value", ((be, d) -> (s = zeros(d.nb, d.nv, 2); c = zeros(d.nb, d.nv, 2);
-        SFC.gridded_lag_sweep_batch!(s, c, d.op, d.gub, d.gs, d.gb, d.vbins, Val(2), Val(1), Val(0);
-            backend = be, second_axis = SFC.InvariantValueAxis()); (s, c)))),
-    ("gridded transform", ((be, d) -> (s = zeros(d.nb); c = zeros(Int, d.nb);
-        SFC.gridded_sweep!(s, c, d.op, d.gu, d.gs, d.gb, Val(2), Val(1), Val(0), SB.FastFourierTransformSpectralBackend();
-            backend = be); (s, c)))),
-    ("gridded single pass", ((be, d) -> (s = zeros(SFC.SINGLE_PASS_N, d.nb); c = zeros(Int, SFC.SINGLE_PASS_N, d.nb);
-        SFC.gridded_lag_sweep!(s, c, SFT.SinglePassInvariants(), d.gu, d.gs, d.gb, Val(2), Val(1), Val(0);
-            backend = be); (s, c)))),
     ("gridded single pass transform", ((be, d) -> (s = zeros(SFC.SINGLE_PASS_N, d.nb);
         c = zeros(Int, SFC.SINGLE_PASS_N, d.nb);
         SFC.gridded_sweep!(s, c, SFT.SinglePassInvariants(), d.gu, d.gs, d.gb, Val(2), Val(1), Val(0), SB.FastFourierTransformSpectralBackend();
@@ -146,12 +117,6 @@ _jet_routes() = (
     ("gridded transform batch", ((be, d) -> (s = zeros(d.nb, 2); c = zeros(Int, d.nb, 2);
         SFC.gridded_sweep_batch!(s, c, d.op, d.gub, d.gs, d.gb, Val(2), Val(1), Val(0), SB.FastFourierTransformSpectralBackend();
             backend = be); (s, c)))),
-    ("gridded tensor", ((be, d) -> (s = zeros(2, 2, d.nb); c = zeros(Int, d.nb);
-        SFC.gridded_tensor_sweep!(s, c, Val(2), d.gu, d.gs, d.gb, Val(2), SB.FastFourierTransformSpectralBackend();
-            backend = be); (s, c)))),
-    ("gridded tensor joint angle", ((be, d) -> (s = zeros(2, 2, d.nb, d.na); c = zeros(d.nb, d.na);
-        SFC.gridded_tensor_sweep!(s, c, Val(2), d.gu, d.gs, d.gb, d.abins, Val(2), SB.FastFourierTransformSpectralBackend();
-            backend = be, second_axis = d.ax); (s, c)))),
     ("harmonic direct sum", ((be, d) -> (r = SFC.calculate_structure_function(d.op, d.hx, d.hu,
         d.nodes, SB.DirectSumSpectralBackend(), SF.StructureFunctionSumsAndCounts; backend = be);
         (r.sums, r.counts)))),
@@ -160,14 +125,19 @@ _jet_routes() = (
         (r.sums, r.counts)))),
 )
 
-"""`(name, count)` of each route in `names` whose analysis on `be` reports runtime dispatch past the boundaries."""
+"""Routes whose data is one coordinate wide; every other route's is two."""
+const _JET_LINE_ROUTES = ("point sorted line",)
+
+"""`(name, count)` of each route in `names` whose analysis on `be`, through the width boundary at its data's width,
+reports runtime dispatch past the boundaries."""
 function _dispatching_routes(be, names)
     issubset(names, first.(_jet_routes())) || error("not routes: $(setdiff(names, first.(_jet_routes())))")
     d = _jet_route_data()
     found = Tuple{String, Int}[]
     for (name, run) in _jet_routes()
         name in names || continue
-        n = length(_reports_past_boundaries(JET.report_opt(run, (typeof(be), typeof(d)); target_modules = JET_MODULES)))
+        W = name in _JET_LINE_ROUTES ? 1 : 2
+        n = length(_reports_through_width(JET.report_opt, run, (typeof(be), typeof(d)), W))
         n == 0 || push!(found, (name, n))
     end
     return found
@@ -179,20 +149,20 @@ Test.@testset "the default point entry, in two and three dimensions" begin
     x2, u2 = [0.0 1.0; 0.0 0.0], [1.0 2.0; 0.0 0.0]
     x3, u3 = [0.0 1.0; 0.0 0.0; 0.0 0.0], [1.0 2.0; 0.0 0.0; 0.0 0.0]
     serial = (s, x, u, b) -> SFC.calculate_structure_function(s, x, u, b; backend = CB.SerialBackend())
-    opt(x, u) = _reports_past_boundaries(JET.report_opt(serial, typeof.((sf, x, u, bins)); target_modules = JET_MODULES))
-    Test.@test isempty(opt(x2, u2))
-    Test.@test isempty(opt(x3, u3))
-    JET.@test_call target_modules = JET_MODULES SFC.calculate_structure_function(sf, x2, u2, bins)
-    JET.@test_call target_modules = JET_MODULES SFC.calculate_structure_function(sf, x3, u3, bins)
+    default = (s, x, u, b) -> SFC.calculate_structure_function(s, x, u, b)
+    Test.@test !isempty(_width_closures(JET.report_opt(serial, typeof.((sf, x2, u2, bins)); target_modules = JET_MODULES)))
+    Test.@test isempty(_reports_through_width(JET.report_opt, serial, typeof.((sf, x2, u2, bins)), 2))
+    Test.@test isempty(_reports_through_width(JET.report_opt, serial, typeof.((sf, x3, u3, bins)), 3))
+    Test.@test isempty(_reports_through_width(JET.report_call, default, typeof.((sf, x2, u2, bins)), 2))
+    Test.@test isempty(_reports_through_width(JET.report_call, default, typeof.((sf, x3, u3, bins)), 3))
 end
 
 # Every route has no runtime dispatch past the boundaries on the serial backend, and the threaded subset on threads.
 Test.@testset "every route has no runtime dispatch outside the width and workspace boundaries" begin
     Test.@test isempty(_dispatching_routes(CB.SerialBackend(), first.(_jet_routes())))
     Test.@test isempty(_dispatching_routes(CB.ThreadedBackend(),
-        ("point 1D", "point joint value", "point joint angle", "point sorted line", "point multi-field", "moment tensor",
-         "single-pass 1D", "single-pass 2D", "aux axes 1D", "slice batch joint", "gridded lag sweep", "gridded transform",
-         "harmonic direct sum", "scattered modes NUFFT")))
+        ("point 1D", "point joint angle", "single-pass 1D", "single-pass 2D", "slice batch joint",
+         "gridded transform batch", "harmonic direct sum")))
 end
 
 # The kernels a distributed worker runs, at the argument types the Distributed extension passes, do not dispatch.

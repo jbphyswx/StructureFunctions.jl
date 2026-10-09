@@ -28,7 +28,7 @@ println("warp-replica strip vs N-body, 1D individual fixed-x, N=$N B=$B NB=$NB\n
 println("| regime | strip bapps (s@8064) | nbody bapps (s@8064) | winner | equal? |")
 
 let
-    xo, uo = GE._stage_batch_device(BE, x_fix, u; fixed_x = true)
+    xo, uo = GE._stage_batch_device(BE, x_fix, u)
     so = CUDA.zeros(FT, NB, B); co = CUDA.zeros(UInt32, NB, B)
     fo() = (CUDA.fill!(so, 0f0); CUDA.fill!(co, UInt32(0));
         GE._launch_batch_fixed_x_sf!(BE, so, co, xo, uo, sf2, N, B, dig, NB, GEOM); CUDA.synchronize())

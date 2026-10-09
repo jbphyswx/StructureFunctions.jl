@@ -2,27 +2,19 @@ using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
     HelperFunctions as SFH, MultiFields as MF
 using ComputationalBackends: ComputationalBackends as CB
-using KernelAbstractions: KernelAbstractions as KA
-using OhMyThreads: OhMyThreads
 using StaticArrays: StaticArrays as SA
 using Distances: Distances as DI
 using Random: Random
 
 const RAW = SF.StructureFunctionSumsAndCounts
-kw(be) = (; backend = be, culling = SFC.NoCulling())
 
 const SERIAL = CB.SerialBackend()
-const THREADED = CB.ThreadedBackend()
-const DEVICE = CB.GPUBackend(KA.CPU())
 
-# (operator, FT, D, backend): every operator serially; D = 4 takes the scalar kernel, D ∈ (2, 3) the SIMD one.
+# (operator, FT, D, backend): every operator, D = 4 taking the scalar kernel and D ∈ (2, 3) the SIMD one.
 const SUM_CASES = (
     (SFT.L2SF, Float32, 2, SERIAL), (SFT.T2SF, Float64, 3, SERIAL), (SFT.S3SF, Float32, 3, SERIAL),
     (SFT.L3SF, Float64, 2, SERIAL), (SFT.L1T2SF, Float32, 2, SERIAL), (SFT.T2ComponentSF, Float64, 2, SERIAL),
     (SFT.L1T2ComponentSF, Float32, 3, SERIAL), (SFT.T2ComponentSF, Float64, 4, SERIAL),
-    (SFT.L1T2SF, Float64, 3, THREADED), (SFT.L1T2SF, Float64, 4, THREADED),
-    (SFT.L1T2ComponentSF, Float32, 2, DEVICE), (SFT.L1T2ComponentSF, Float32, 3, DEVICE),
-    (SFT.L1T2ComponentSF, Float32, 4, DEVICE),
 )
 
 # (FT, D, operators) of the per-pair check: each operator at both float types and both widths.
@@ -56,7 +48,7 @@ Test.@testset "A pair's value" begin
         x = rand(rng, FT, D, N); u = randn(rng, FT, D, N)
         bins = collect(range(FT(0), FT(1.2); length = 9))
         ref, mag = operator_sums(sf, x, u, bins, Val(D))
-        r0 = SF.to_host(SFC.calculate_structure_function(sf, x, u, bins, UInt64, RAW; kw(be)...))
+        r0 = SF.to_host(SFC.calculate_structure_function(sf, x, u, bins, RAW; backend = be))
         # Per bin against Σ|v|: an odd moment's bin sum cancels, and the kernels sum in FT.
         Test.@test all(abs.(r0.sums .- ref) .<= (FT == Float32 ? 1e-4 : 1e-10) .* mag)
     end

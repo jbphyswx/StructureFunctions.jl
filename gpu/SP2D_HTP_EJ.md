@@ -2,7 +2,7 @@
 
 **Code:** `ext/gpu/kernels_2d_single_pass.jl`, `ext/gpu/sp2d_accumulation_strategy.jl`, `ext/gpu/launch.jl`, `ext/gpu/workspace.jl`
 **Benchmark:** `gpu/benchmark_2d_grid_scaling.jl`
-**Tests:** `test/test_gpu_sp2d_strategy.jl` (`KernelAbstractions.CPU()` parity for `:shared` and `:typeplane`)
+**Tests:** `test/test_device.jl` (`KernelAbstractions.CPU()` parity for every accumulation mode)
 
 This document describes how the six-invariant single-pass 2D histograms are accumulated on a device.
 

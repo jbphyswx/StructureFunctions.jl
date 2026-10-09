@@ -100,12 +100,13 @@ Test.@testset "the zonal sweep equals the unstructured spherical path" begin
     Test.@test all(sums_ok)
 end
 
-# (lats, dlon, operators): ascending axes, latitudes running north to south, then longitudes running westward.
+# (lats, dlon, operators, vector field): ascending axes, latitudes running north to south, then longitudes running
+# westward on a field of one scalar alone.
 const ZONAL_ORDER_CASES = (
     (collect(range(-0.6, 0.6; length = 5)), 2π / 11,
-     (SFT.MixedSFType{1, 0, 1}(), SFT.ScalarSFType{3}(), SFT.MixedSFType{1, 0, 2}())),
-    (collect(range(0.6, -0.6; length = 5)), 2π / 11, (SFT.MixedSFType{1, 0, 1}(),)),
-    (collect(range(-0.6, 0.6; length = 5)), -2π / 11, (SFT.ScalarSFType{3}(),)),
+     (SFT.MixedSFType{1, 0, 1}(), SFT.ScalarSFType{3}(), SFT.MixedSFType{1, 0, 2}()), true),
+    (collect(range(0.6, -0.6; length = 5)), 2π / 11, (SFT.MixedSFType{1, 0, 1}(),), true),
+    (collect(range(-0.6, 0.6; length = 5)), -2π / 11, (SFT.ScalarSFType{3}(),), false),
 )
 
 Test.@testset "odd scalar moments read each pair in the point path's order, on ascending and descending axes" begin
@@ -113,13 +114,13 @@ Test.@testset "odd scalar moments read each pair in the point path's order, on a
     n_lon = 11
     Random.seed!(9150)
     counts_ok, sums_ok = Bool[], Bool[]
-    for (lats, dlon, ops) in ZONAL_ORDER_CASES
+    for (lats, dlon, ops, vector) in ZONAL_ORDER_CASES
         n_lat = length(lats)
         u = randn(2, n_lon, n_lat)
         th = randn(n_lon, n_lat)
         x, uu = _zonal_points(lats, n_lon, dlon, u)
-        f_grid = MF.Fields(vectors = (u,), scalars = (th,))
-        f_pts = MF.Fields(vectors = (uu,), scalars = (vec(th),))
+        f_grid = vector ? MF.Fields(vectors = (u,), scalars = (th,)) : MF.Fields(scalars = (th,))
+        f_pts = vector ? MF.Fields(vectors = (uu,), scalars = (vec(th),)) : MF.Fields(scalars = (vec(th),))
         bins = collect(range(0.0, 0.45 * π; length = 7))
         nb = length(bins) - 1
         sched = SFC.ZonalLagSchedule(lats, n_lon, dlon, R_UNIT, true)
@@ -203,12 +204,11 @@ Test.@testset "a spherical grid entry equals the unstructured path: wrapping, re
     Test.@test all(sums_ok)
 end
 
-# Each operator once and each parity on both latitude axes; an odd longitude count keeps antipodes off the grid.
+# Each parity on both latitude axes, an odd longitudinal moment kept and an odd transverse one flipped; an odd longitude
+# count keeps antipodes off the grid. test_core_correctness.jl checks the other operators' parity on a pair.
 const ZONAL_REFLECTION_CASES = (
-    ([-1.0, -0.6, -0.25, 0.25, 0.6, 1.0],
-     ((SFT.L2SFType(), 1), (SFT.S2SFType(), 1), (SFT.S3SFType(), 1), (SFT.T3SFType(), -1))),
-    ([-0.8, -0.3, 0.0, 0.3, 0.8],
-     ((SFT.T2SFType(), 1), (SFT.L3SFType(), 1), (SFT.L1T2SFType(), 1), (SFT.L2T1SFType(), -1))),
+    ([-1.0, -0.6, -0.25, 0.25, 0.6, 1.0], ((SFT.L2SFType(), 1), (SFT.T3SFType(), -1))),
+    ([-0.8, -0.3, 0.0, 0.3, 0.8], ((SFT.L3SFType(), 1), (SFT.L2T1SFType(), -1))),
 )
 
 Test.@testset "the equatorial reflection flips exactly the odd-transverse operators" begin

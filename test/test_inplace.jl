@@ -1,7 +1,6 @@
 using ComputationalBackends: ComputationalBackends as CB
 using Test: Test
 using Random: Random
-using OhMyThreads: OhMyThreads
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionObjects as SFO, StructureFunctionTypes as SFT
 
@@ -29,21 +28,19 @@ function ip_form(form, x, u, ub, bins, vbins)
     end
 end
 
-const IP_CASES = ((:point, CB.SerialBackend()), (:joint, CB.ThreadedBackend()), (:batch, CB.AutoBackend()),
-                  (:tensor, CB.ThreadedBackend()))
-
-# A mutating entry adds exactly the allocating entry's sums and counts into its buffers, on every call.
+# A mutating entry adds exactly the allocating entry's sums and counts into its buffers, on every call; the parallel
+# backends' in-place methods add in test_parallel_equivalence.jl.
 Test.@testset "a mutating entry accumulates the allocating entry's result" begin
     Random.seed!(1234)
     N = 40
     x, u, ub = rand(2, N), randn(2, N), randn(2, N, 3)
     bins = [0.0, 0.25, 0.5, 1.0, 1.5]
     vbins = collect(range(-1.0, 1.0; length = 11))
-    for (form, backend) in IP_CASES
+    for form in (:point, :joint, :batch, :tensor)
         (s, c), add!, ref = ip_form(form, x, u, ub, bins, vbins)
-        add!(s, c, backend)
+        add!(s, c, CB.SerialBackend())
         Test.@test s ≈ ref.sums && c == ref.counts
-        add!(s, c, backend)
+        add!(s, c, CB.SerialBackend())
         Test.@test s ≈ 2 .* ref.sums && c == 2 .* ref.counts
     end
 end

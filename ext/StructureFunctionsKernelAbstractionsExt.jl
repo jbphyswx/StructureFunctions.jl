@@ -748,26 +748,6 @@ backend in buffers of their own, with counts of type `CT`. Use `to_host` for hos
 function SFC.gpu_calculate_structure_function_2d(
     sf_type::SFT.AbstractPairwiseStructureFunctionType,
     backend::KA.Backend,
-    x::AbstractArray{FT1},
-    u::AbstractArray{FT2},
-    distance_bins::AbstractVector{FT3},
-    value_bins::AbstractVector{FT4},
-    ::Type{CT};
-    kwargs...,
-) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, FT4 <: Number, CT}
-    if ndims(u) >= 3
-        return _gpu_calculate_structure_function_2d_batch(
-            sf_type, backend, x, u, distance_bins, value_bins, CT; kwargs...,
-        )
-    end
-    return _gpu_calculate_structure_function_2d_snapshot(
-        sf_type, backend, x, u, distance_bins, value_bins, CT; kwargs...,
-    )
-end
-
-function _gpu_calculate_structure_function_2d_snapshot(
-    sf_type::SFT.AbstractPairwiseStructureFunctionType,
-    backend::KA.Backend,
     x_mat::AbstractMatrix{FT1},
     u_mat::AbstractMatrix{FT2},
     distance_bins::AbstractVector{FT3},

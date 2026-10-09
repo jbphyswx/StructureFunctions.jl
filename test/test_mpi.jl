@@ -9,7 +9,7 @@ Test.@testset "MPI backend (multi-rank parity)" begin
     proj = Base.active_project()
     # `mpiexec` establishes the launcher environment for the duration of the block.
     parity_ok = MPI.mpiexec() do exe
-        cmd = `$exe -n 2 $(Base.julia_cmd()) --project=$proj --threads=2 $script`
+        cmd = `$exe -n 2 $(Base.julia_cmd()) --project=$proj $script`
         success(pipeline(cmd; stdout = stdout, stderr = stderr))
     end
     Test.@test parity_ok

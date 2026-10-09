@@ -1,7 +1,7 @@
 # Batch Drivers and Entry Points (batch over the trailing slice/time axis of `(D, N, T)` inputs)
 
 """
-    calculate_structure_function_batch!(sums, counts, sf_type, x, u, distance_bins; backend=..., workspace=nothing, ...)
+    calculate_structure_function_batch!(sums, counts, sf_type, x, u, distance_bins; backend, distance_metric, weights, culling, workspace)
     calculate_structure_function_batch!(sums, counts, sf_type, grid, u, distance_bins[, axis_bins][, spectral_backend]; ...)
 
 Structure functions of one fixed sampling observed over a trailing slice axis, accumulated into
@@ -20,12 +20,14 @@ function calculate_structure_function_batch!(
     sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType, x::BatchInput, u::BatchInput,
     distance_bins::AbstractVector;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = nothing, kwargs...
+    weights = nothing, culling::CullingPolicy = AutoCulling(), workspace = nothing,
 )
     _require_backend(backend)
+    validate_fields(sf_type, Val(1), Val(0))
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _with_batch_geometry(u, distance_metric) do geometry
-        _dispatch_batch!(backend, sums, counts, sf_type, x, u, distance_bins; geometry, weights = w, kwargs...)
+        _dispatch_batch!(backend, sums, counts, sf_type, x, u, distance_bins; geometry, weights = w, culling,
+                         _workspace_kw(workspace)...)
     end
     return nothing
 end
@@ -80,7 +82,7 @@ function _dispatch_batch!(
 end
 
 """
-    calculate_structure_function_2d_batch!(sums, counts, sf_type, x, u, distance_bins, value_bins; backend=..., ...)
+    calculate_structure_function_2d_batch!(sums, counts, sf_type, x, u, distance_bins, value_bins; backend, distance_metric, weights, second_axis, culling, workspace)
 
 Batch 2D joint histograms over `(N_dims, N_points, T)`; outputs `(n_dist, n_val, T)`.
 """
@@ -88,13 +90,15 @@ function calculate_structure_function_2d_batch!(
     sums, counts, sf_type::SFT.AbstractPairwiseStructureFunctionType, x::BatchInput, u::BatchInput,
     distance_bins::AbstractVector, value_bins::AbstractVector;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = nothing, kwargs...
+    weights = nothing, second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
+    culling::CullingPolicy = AutoCulling(), workspace = nothing,
 )
     _require_backend(backend)
+    validate_fields(sf_type, Val(1), Val(0))
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _with_batch_geometry(u, distance_metric) do geometry
         _dispatch_2d_batch!(backend, sums, counts, sf_type, x, u, distance_bins, value_bins; geometry, weights = w,
-                            kwargs...)
+                            second_axis, culling, _workspace_kw(workspace)...)
     end
     return nothing
 end
@@ -195,7 +199,7 @@ function _validate_value_bins!(value_bins, n_val::Int)
 end
 
 """
-    calculate_structure_functions_single_pass_batch!(sums, counts, x, u, distance_bins; backend=..., ...)
+    calculate_structure_functions_single_pass_batch!(sums, counts, x, u, distance_bins; backend, distance_metric, weights, culling, workspace)
 
 Batch six invariant 1D distance histograms over `(N_dims, N_points, T)`;
 outputs `(6, NB, T)`.
@@ -203,12 +207,13 @@ outputs `(6, NB, T)`.
 function calculate_structure_functions_single_pass_batch!(
     sums, counts, x::BatchInput, u::BatchInput, distance_bins::AbstractVector;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = nothing, kwargs...
+    weights = nothing, culling::CullingPolicy = AutoCulling(), workspace = nothing,
 )
     _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _with_batch_geometry(u, distance_metric) do geometry
-        _dispatch_single_pass_batch!(backend, sums, counts, x, u, distance_bins; geometry, weights = w, kwargs...)
+        _dispatch_single_pass_batch!(backend, sums, counts, x, u, distance_bins; geometry, weights = w, culling,
+                                     _workspace_kw(workspace)...)
     end
     return nothing
 end
@@ -243,7 +248,7 @@ function _dispatch_single_pass_batch!(
 end
 
 """
-    calculate_structure_functions_single_pass_2d_batch!(sums, counts, x, u, distance_bins, value_bins; backend=..., ...)
+    calculate_structure_functions_single_pass_2d_batch!(sums, counts, x, u, distance_bins, value_bins; backend, distance_metric, weights, culling, workspace)
 
 Batch six invariant distance × value joint histograms over `(N_dims, N_points, T)`;
 outputs `(6, NB, n_val, T)`. Pass shared bin types or `NTuple{6,...}`; use `Tuple(v...)`
@@ -253,13 +258,13 @@ function calculate_structure_functions_single_pass_2d_batch!(
     sums, counts, x::BatchInput, u::BatchInput, distance_bins::AbstractVector,
     value_bins::SinglePass2DValueBins;
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
-    weights = nothing, kwargs...
+    weights = nothing, culling::CullingPolicy = AutoCulling(), workspace = nothing,
 )
     _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _with_batch_geometry(u, distance_metric) do geometry
         _dispatch_single_pass_2d_batch!(backend, sums, counts, x, u, distance_bins, value_bins; geometry, weights = w,
-                                        kwargs...)
+                                        culling, _workspace_kw(workspace)...)
     end
     return nothing
 end
@@ -301,11 +306,13 @@ end
 
 function calculate_structure_functions_single_pass!(sums::AbstractArray, counts::AbstractArray,
         x::BatchInput, u::BatchInput, bins::AbstractVector; backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
-        distance_metric::DI.PreMetric = DI.Euclidean(), weights = nothing, kwargs...)
+        distance_metric::DI.PreMetric = DI.Euclidean(), weights = nothing, culling::CullingPolicy = AutoCulling(),
+        workspace = nothing)
     _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _with_batch_geometry(u, distance_metric) do geometry
-        _dispatch_single_pass_batch!(backend, sums, counts, x, u, bins; geometry, weights = w, kwargs...)
+        _dispatch_single_pass_batch!(backend, sums, counts, x, u, bins; geometry, weights = w, culling,
+                                     _workspace_kw(workspace)...)
     end
     return sums, counts
 end
@@ -313,12 +320,12 @@ end
 function calculate_structure_functions_single_pass_2d!(sums::AbstractArray, counts::AbstractArray,
         x::BatchInput, u::BatchInput, bins::AbstractVector, value_bins::SinglePass2DValueBins;
         backend::CB.AbstractExecutionBackend = CB.AutoBackend(), distance_metric::DI.PreMetric = DI.Euclidean(),
-        weights = nothing, kwargs...)
+        weights = nothing, culling::CullingPolicy = AutoCulling(), workspace = nothing)
     _require_backend(backend)
     w = _batch_boundary(counts, x, u, distance_metric, weights, eltype(sums))
     _with_batch_geometry(u, distance_metric) do geometry
         _dispatch_single_pass_2d_batch!(backend, sums, counts, x, u, bins, value_bins; geometry, weights = w,
-                                        kwargs...)
+                                        culling, _workspace_kw(workspace)...)
     end
     return sums, counts
 end

@@ -350,27 +350,10 @@ const VectorDotSFType = VectorDotStructureFunctionType
 @inline (sf::VectorDotStructureFunctionType)(δu, r̂) =
     SFH.fma_dot(SFC_field_vector(δu, sf.a), SFC_field_vector(δu, sf.b))
 
-# Field `i` of an increment; field 1 of a single-field increment is the vector itself.
-@inline SFC_field_vector(δu::MF.FieldIncrement{D, 0, K}, i::Integer) where {D, K} =
-    throw(ArgumentError(
-        "this field carries no vector fields, so a velocity operator has nothing to read. Build " *
-        "it with Fields(vectors = (...), ...), or use a scalar operator.",
-    ))
-
+# Field `i` of an increment, `i` within the fields the entry validated; a single-field increment is its field 1.
 @inline SFC_field_vector(δu::MF.FieldIncrement, i::Integer) = MF.vector_field(δu, i)
-@inline function SFC_field_vector(δu, i::Integer)
-    i == 1 || throw(ArgumentError(
-        "this field has one vector field; asked for field $i. Build the field with " *
-        "Fields(vectors = (...), ...) to carry more.",
-    ))
-    return δu
-end
-
+@inline SFC_field_vector(δu, i::Integer) = δu
 @inline SFC_field_scalar(δu::MF.FieldIncrement, i::Integer) = MF.scalar_field(δu, i)
-@inline SFC_field_scalar(δu, i::Integer) = throw(ArgumentError(
-    "this field carries no scalar fields; asked for scalar field $i. Build the field with " *
-    "Fields(scalars = (...), ...) to carry one.",
-))
 
 """The operators whose value on a pair is a function of `δu_L` and `‖δu‖²` of its vector field alone."""
 const InvariantOperator = Union{

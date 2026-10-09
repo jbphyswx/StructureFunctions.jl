@@ -52,7 +52,9 @@ const SM_LATTICE_CASES = (
     ((12, 8), (0.25, 0.4), SFT.S3SFType(), false, true), ((8, 8, 8), (0.2, 0.2, 0.3), SFT.T3SFType(), true, true),
 )
 
-Test.@testset "points on the mode grid reproduce the periodic gridded transform ($(_provider_name(tag)))" for tag in PROVIDERS
+# One provider here and off the grid; the other gives the same transforms in the provider testset.
+Test.@testset "points on the mode grid reproduce the periodic gridded transform" begin
+    tag = PROVIDERS[1]
     Random.seed!(9700)
     for (dims, spacing, sf, subset, weighted) in SM_LATTICE_CASES
         Dg = length(dims)
@@ -134,7 +136,8 @@ end
 const SM_OFF_GRID_CASES = ((9, SF.NoTaper(), SFT.L2SFType(), 2), (8, SF.NoTaper(), SFT.L3SFType(), 3),
                            (8, SF.GaussianTaper(0.05), SFT.L2SFType(), 2))
 
-Test.@testset "off the grid: the kernel identity written out in one dimension ($(_provider_name(tag)))" for tag in PROVIDERS
+Test.@testset "off the grid: the kernel identity written out in one dimension" begin
+    tag = PROVIDERS[1]
     Random.seed!(9710)
     N = 7
     x = sort(rand(N)) .* 0.8
@@ -175,7 +178,8 @@ Test.@testset "the soft bins converge to the hard bins as the modes grow" begin
 end
 
 # (dimension, modes, r_max, operator)
-const SM_PROVIDER_CASES = ((2, (32, 24), 0.4, SFT.S3SFType()), (3, (12, 10, 8), 0.5, SFT.L2SFType()))
+const SM_PROVIDER_CASES = ((1, (64,), 0.4, SFT.L3SFType()), (2, (32, 24), 0.4, SFT.S3SFType()),
+                           (3, (12, 10, 8), 0.5, SFT.L2SFType()))
 
 Test.@testset "the two providers compute the same transforms" begin
     Random.seed!(9760)

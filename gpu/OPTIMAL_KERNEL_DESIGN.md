@@ -51,14 +51,16 @@ The kernel a call runs depends on its regime.
 
 | regime | kernel |
 |--------|--------|
-| 1D, `NB` up to the compiled bin cap (`CU_MAX_BINS`), CUDA | `_cuda_sf_1d_kernel!` with replicated shared histograms; `_cuda_sf_1d_queued_kernel!` for several moments at a low in-range share; `_cuda_sf_1d_strip_kernel!` for a fixed-x batch at a low in-range share |
+| 1D, `NB` up to the compiled bin cap (`CU_MAX_BINS`), CUDA | `_cuda_sf_1d_kernel!` with replicated shared histograms |
 | joint 2D and single-pass 2D, CUDA | `_cuda_sf_2d_kernel!` with the histogram planes in dynamic shared memory; `_cuda_sf_2d_global_kernel!` adds straight into the output when no plane fits |
 | any other backend, or a call without a native plan | the portable tiled kernels of `ext/gpu/` |
 
-On CUDA each call's candidate plans (tile size, histogram replicas, planes per launch) come from the
-device's capabilities and the call's types and sizes. A call large enough to repay it samples the
-share of its pairs in range, and the second call of each class times the candidates once and keeps
-the fastest (`CUDAChoice`, `ext/cuda/plans.jl`).
+On CUDA a 1D call over its own positions takes its plan (tile size, histogram replicas) from a formula over the
+device's capabilities and the call's types and sizes (`CUDA1DRule`), stepped down until it fits. The 2D kernels
+and 1D batches over shared positions (`_cuda_sf_1d_strip_kernel!`, a block per tile pair and strip of slices)
+choose through `CUDAChoice`: a call samples the share of its pairs in range (`gpu_in_range_fraction`), and the
+second call of each class (pair evaluations, share band, strip width) times the candidate plans for that share once
+and keeps the fastest.
 
 Replicas of a shared 1D histogram are full independent histograms summed at the block-end flush; a
 thread's replica is `(lid - 1) % R + 1`, and the bin index is never offset.

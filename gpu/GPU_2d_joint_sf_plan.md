@@ -44,8 +44,7 @@ Helpers:
 
 CPU-runnable parity and routing tests live in:
 
-- `test/test_gpu_parity.jl`
+- `test/test_device.jl`
 - `test/test_2d_binning.jl`
-- `test/test_gpu_joint2d_smem.jl`
 
 CUDA parity lives in `gpu/test_cuda_parity.jl` and runs on a CUDA device.

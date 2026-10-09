@@ -185,26 +185,26 @@ and the count in row 1. Assigns with `=`, so repeated calls on one buffer are id
 end
 
 """
-    _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, sel, window, blocks)
+    _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, sel, blocks)
 
 Single-pass (6 invariants) point-field SIMD compute/scatter kernel over the pairs `blocks` covers.
 For each `i`: `@simd` over its `j` block computes distance, `du_L = du·r̂`, and `|du|²` into buffers
-indexed by `window` ([`PairWindow`](@ref)), then a scalar loop scatters the 6 invariants of the in-range
+holding the block ([`_slot_offset`](@ref)), then a scalar loop scatters the 6 invariants of the in-range
 pairs as [`_pf_simd_pairs!`](@ref) does. Consumes `(i-block, j-block)` pairs (see [`block_pairs`](@ref)).
 """
 function _pf_sp_simd_pairs!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, ::Val{D},
     keybuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector,
-    idxbuf::AbstractVector{Int32}, sel::AbstractVector{Int32}, window::PairWindow, blocks, weights = NoWeights(),
+    idxbuf::AbstractVector{Int32}, sel::AbstractVector{Int32}, blocks, weights = NoWeights(),
 ) where {OT, CT, D}
     nb = n_histogram_bins(plan)
     chooses = _chooses_compaction(blocks)
     FTx = eltype(xc[1])
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
-        _check_run_fits(window, duLbuf, jr)
-        o = _slot_offset(window, jr)
+        _check_run_fits(duLbuf, jr)
+        o = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, j_first)
             jlo > j_last && continue
@@ -269,13 +269,13 @@ concretely typed schedule.
     sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, sel, ilist, N, ::Nothing,
     weights = NoWeights(),
 ) where {D} = _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf,
-    idxbuf, sel, _pair_window(N), pair_blocks(N, ilist), weights)
+    idxbuf, sel, pair_blocks(N, ilist), weights)
 
 @inline _sp_run_blocks!(
     sums, counts, xc, uc, plan, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, sel, ilist, N,
     grid::CellGrid, weights = NoWeights(),
 ) where {D} = _pf_sp_simd_pairs!(sums, counts, xc, uc, plan, Val(D), keybuf, duLbuf, dn2buf,
-    idxbuf, sel, _pair_window(N), pair_blocks(N, ilist; grid = grid), weights)
+    idxbuf, sel, pair_blocks(N, ilist; grid = grid), weights)
 
 function _sp_simd_run!(
     sums::AbstractMatrix{OT}, counts::AbstractMatrix{CT},
@@ -450,7 +450,7 @@ function _dispatch_single_pass end
 function _dispatch_single_pass! end
 
 """
-    calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins; backend=CB.SerialBackend(), kwargs...)
+    calculate_structure_functions_single_pass!(sums, counts, x, u, distance_bins; backend, distance_metric, weights, culling, workspace)
 
 Accumulate into pre-allocated ``(6, n_bins)`` buffers using the requested execution backend.
 """
@@ -463,14 +463,16 @@ function calculate_structure_functions_single_pass!(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing,
-    kwargs...
+    culling::CullingPolicy = AutoCulling(),
+    workspace = nothing,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     _require_backend(backend)
     _validate_array_shape(x, u, distance_metric)
     w = _pair_weights(weights, size(x, 2), OT)
     _assert_counts_can_accumulate(counts, size(x, 2), w)
     _shaped(PointField, size(u, 1), distance_metric) do _, geometry
-        _dispatch_single_pass!(backend, sums, counts, x, u, distance_bins; geometry, weights = w, kwargs...)
+        _dispatch_single_pass!(backend, sums, counts, x, u, distance_bins; geometry, weights = w, culling,
+                               _workspace_kw(workspace)...)
     end
     return sums, counts
 end
@@ -628,7 +630,7 @@ function _single_pass_collection_1d(
 end
 
 """
-    calculate_structure_functions_single_pass(x, u, distance_bins[, CT][, OT]; backend, distance_metric, weights, kwargs...)
+    calculate_structure_functions_single_pass(x, u, distance_bins[, CT][, OT]; backend, distance_metric, weights, culling, workspace)
 
 Compute the six native invariant structure functions (S2, L2, T2, S3, L3, L1T2) in one pair
 pass, returned as a `NamedTuple` keyed by invariant. `CT` is the count element type (default
@@ -651,7 +653,8 @@ function calculate_structure_functions_single_pass(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing,
-    kwargs...
+    culling::CullingPolicy = AutoCulling(),
+    workspace = nothing,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, M, CT <: Real, OT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
     _validate_array_shape(x, u, distance_metric)
@@ -659,7 +662,8 @@ function calculate_structure_functions_single_pass(
     w = _pair_weights(weights, size(x, 2), OTv)
     _assert_count_type(CT, size(x, 2), w)
     raw = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
-        _dispatch_single_pass(backend, shape, x, u, distance_bins, CT; geometry, weights = w, kwargs...)
+        _dispatch_single_pass(backend, shape, x, u, distance_bins, CT; geometry, weights = w, culling,
+                              _workspace_kw(workspace)...)
     end
     # The sum element type is `OTv`, the count element type `CT`, and the stacked accumulator's rank
     # `ndims(u)`: point-field `(6, n_bins)` is rank 2 and batched `(6, n_bins, aux...)` rank `M`.
@@ -682,7 +686,7 @@ calculate_structure_functions_single_pass(x::AbstractArray, u::AbstractArray, di
 # --- 2D Single Pass Functions ---
 
 """
-    calculate_structure_functions_single_pass_2d!(sums_3d, counts_3d, x, u, distance_bins, value_bins; backend, distance_metric, weights, kwargs...)
+    calculate_structure_functions_single_pass_2d!(sums_3d, counts_3d, x, u, distance_bins, value_bins; backend, distance_metric, weights, culling, workspace)
 
 Accumulate the six invariants' joint distance × value histograms of a point list into `sums_3d`
 and `counts_3d`, `(6, n_bins, n_val)` each, on `backend`; the in-place form of
@@ -699,7 +703,8 @@ function calculate_structure_functions_single_pass_2d!(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing,
-    kwargs...
+    culling::CullingPolicy = AutoCulling(),
+    workspace = nothing,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, OT, CT}
     _require_backend(backend)
     _validate_array_shape(x, u, distance_metric)
@@ -707,7 +712,7 @@ function calculate_structure_functions_single_pass_2d!(
     _assert_counts_can_accumulate(counts_3d, size(x, 2), w)
     _shaped(PointField, size(u, 1), distance_metric) do _, geometry
         _dispatch_single_pass_2d!(backend, sums_3d, counts_3d, x, u, distance_bins, value_bins; geometry,
-                                  weights = w, kwargs...)
+                                  weights = w, culling, _workspace_kw(workspace)...)
     end
     return sums_3d, counts_3d
 end
@@ -944,12 +949,12 @@ invariant."""
     has_vector_digitize(value_bins, OT) || _sp2d_invariant_linear(value_bins, OT)
 
 """
-    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, C, sel, window,
-                      n_val, blocks, weights)
+    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, C, sel, n_val, blocks,
+                      weights)
 
 Single-pass 2D point-field SIMD compute/scatter kernel over the pairs `blocks` covers, the 2D analogue
 of [`_pf_sp_simd_pairs!`](@ref). The `@simd` half computes the distance key, `du_L` and `|du|²` into buffers
-indexed by `window`, and the six invariants' value columns into `C` where [`has_vector_digitize`](@ref) holds
+holding the block, and the six invariants' value columns into `C` where [`has_vector_digitize`](@ref) holds
 for the value edges and [`_sp2d_column_pass`](@ref) for the run; with a linear edge set per invariant, a pass per
 invariant forms them when [`_sp2d_invariant_column_pass`](@ref) holds for the run. The scalar half adds each
 in-range pair's six invariants into their cells, over the compacted in-range slots ([`_compact_in_range!`](@ref))
@@ -959,7 +964,7 @@ function _sp2d_simd_pairs!(
     h::AbstractArray{SumCount{OT, CT}, 3},
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, value_bins, ::Val{D},
     keybuf::AbstractVector, duLbuf::AbstractVector, dn2buf::AbstractVector, idxbuf::AbstractVector{Int32},
-    C::NTuple{SINGLE_PASS_N, AbstractVector{Int32}}, sel::AbstractVector{Int32}, window::PairWindow, n_val::Int,
+    C::NTuple{SINGLE_PASS_N, AbstractVector{Int32}}, sel::AbstractVector{Int32}, n_val::Int,
     blocks, weights = NoWeights(),
 ) where {OT, CT, D}
     nb = n_histogram_bins(plan)
@@ -971,8 +976,8 @@ function _sp2d_simd_pairs!(
     s_in, s_n = 0, 0
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
-        _check_run_fits(window, duLbuf, jr)
-        o = _slot_offset(window, jr)
+        _check_run_fits(duLbuf, jr)
+        o = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, j_first)
             jlo > j_last && continue
@@ -1063,13 +1068,13 @@ concretely typed schedule.
     h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, C, sel, n_val,
     ilist, N, ::Nothing, weights = NoWeights(),
 ) where {D} = _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, Val(D), keybuf, duLbuf, dn2buf,
-    idxbuf, C, sel, _pair_window(N), n_val, pair_blocks(N, ilist), weights)
+    idxbuf, C, sel, n_val, pair_blocks(N, ilist), weights)
 
 @inline _sp2d_run_blocks!(
     h, xc, uc, plan, value_bins, ::Val{D}, keybuf, duLbuf, dn2buf, idxbuf, C, sel, n_val,
     ilist, N, grid::CellGrid, weights = NoWeights(),
 ) where {D} = _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, Val(D), keybuf, duLbuf, dn2buf,
-    idxbuf, C, sel, _pair_window(N), n_val, pair_blocks(N, ilist; grid = grid), weights)
+    idxbuf, C, sel, n_val, pair_blocks(N, ilist; grid = grid), weights)
 
 function _dispatch_single_pass_2d!(
     ::CB.AbstractSerialBackend, sums_3d::AbstractArray, counts_3d::AbstractArray, x::AbstractMatrix, u::AbstractMatrix, distance_bins::AbstractVector, value_bins::SinglePass2DValueBins; kwargs...
@@ -1227,7 +1232,7 @@ function _single_pass_collection_2d(
 end
 
 """
-    calculate_structure_functions_single_pass_2d(x, u, distance_bins, value_bins[, CT][, OT]; backend, distance_metric, weights, kwargs...)
+    calculate_structure_functions_single_pass_2d(x, u, distance_bins, value_bins[, CT][, OT]; backend, distance_metric, weights, culling, workspace)
 
 Compute the six invariant 2D joint structure-function histograms in one pass, returned as a
 `NamedTuple` keyed by invariant (`S2, L2, T2, S3, L3, L1T2`). `CT` is the count element type (default
@@ -1245,7 +1250,8 @@ function calculate_structure_functions_single_pass_2d(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     distance_metric::DI.PreMetric = DI.Euclidean(),
     weights = nothing,
-    kwargs...,
+    culling::CullingPolicy = AutoCulling(),
+    workspace = nothing,
 ) where {FT1 <: Number, FT2 <: Number, FT3 <: Number, CT <: Real, OT <: SFO.AbstractStructureFunction}
     _require_backend(backend)
     _validate_array_shape(x, u, distance_metric)
@@ -1253,7 +1259,7 @@ function calculate_structure_functions_single_pass_2d(
     _assert_count_type(CT, size(x, 2), w)
     raw = _shaped(_shape_kind(x, u), size(u, 1), distance_metric) do shape, geometry
         _dispatch_single_pass_2d(backend, shape, x, u, distance_bins, value_bins, CT; geometry, weights = w,
-                                 kwargs...)
+                                 culling, _workspace_kw(workspace)...)
     end
     return _single_pass_collection_2d(raw[1], raw[2], distance_bins, value_bins, OT)
 end

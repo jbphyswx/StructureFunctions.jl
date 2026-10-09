@@ -60,12 +60,12 @@ end
 
 """
     _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf, colbuf,
-                       sel, window, blocks, second_axis, axbuf, weights)
+                       sel, blocks, second_axis, axbuf, weights)
 
 2D-joint point-field SIMD compute/scatter kernel over the pairs `blocks` covers, into `sums2d`/`counts2d` of
 shape `(n_dist, n_val + 2)`: value column `c + 1` holds value bin `c`, and the first and last columns the
 values below and above the value edges. `@simd` over each `j` block computes the distance key and the SF
-value into buffers indexed by `window`, and the value column into `colbuf` where [`has_vector_digitize`](@ref)
+value into buffers holding the block, and the value column into `colbuf` where [`has_vector_digitize`](@ref)
 holds for the value edges and the schedule is culled or the run before was not sparse ([`_sparse`](@ref));
 a scalar loop then scatters the in-range pairs as [`_pf_simd_pairs!`](@ref) does, forming the value column
 itself when the vectorized half did not. `second_axis` selects what the second axis bins; the operator's own
@@ -77,7 +77,7 @@ function _pf_2d_simd_pairs!(
     sf::SFT.AbstractPairwiseStructureFunctionType,
     xc::NTuple{D}, uc::NTuple{D}, plan::AbstractSquaredDigitizePlan, val_be, ::Val{D},
     keybuf::AbstractVector, valbuf::AbstractVector, idxbuf::AbstractVector{Int32},
-    colbuf::AbstractVector{Int32}, sel::AbstractVector{Int32}, window::PairWindow, blocks,
+    colbuf::AbstractVector{Int32}, sel::AbstractVector{Int32}, blocks,
     second_axis::AbstractSecondAxisSource = InvariantValueAxis(),
     axbuf::AbstractVector = valbuf,
     weights = NoWeights(),
@@ -90,8 +90,8 @@ function _pf_2d_simd_pairs!(
     s_in, s_n = 0, 0
     @inbounds for (ir, jr) in blocks
         j_first, j_last = first(jr), last(jr)
-        _check_run_fits(window, valbuf, jr)
-        o = _slot_offset(window, jr)
+        _check_run_fits(valbuf, jr)
+        o = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, j_first)
             jlo > j_last && continue
@@ -193,15 +193,14 @@ end
     ilist, N, ::Nothing, second_axis = InvariantValueAxis(), axbuf = valbuf,
     weights = NoWeights(),
 ) where {D} = _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D),
-    keybuf, valbuf, idxbuf, colbuf, sel, _pair_window(N), pair_blocks(N, ilist), second_axis, axbuf, weights)
+    keybuf, valbuf, idxbuf, colbuf, sel, pair_blocks(N, ilist), second_axis, axbuf, weights)
 
 @inline _pf_2d_run_blocks!(
     sums2d, counts2d, sf, xc, uc, plan, val_be, ::Val{D}, keybuf, valbuf, idxbuf, colbuf, sel,
     ilist, N, grid::CellGrid, second_axis = InvariantValueAxis(), axbuf = valbuf,
     weights = NoWeights(),
 ) where {D} = _pf_2d_simd_pairs!(sums2d, counts2d, sf, xc, uc, plan, val_be, Val(D),
-    keybuf, valbuf, idxbuf, colbuf, sel, _pair_window(N), pair_blocks(N, ilist; grid = grid), second_axis, axbuf,
-    weights)
+    keybuf, valbuf, idxbuf, colbuf, sel, pair_blocks(N, ilist; grid = grid), second_axis, axbuf, weights)
 
 function _pf_2d_simd_run!(
     sums2d::AbstractMatrix{OT}, counts2d::AbstractMatrix{CT},

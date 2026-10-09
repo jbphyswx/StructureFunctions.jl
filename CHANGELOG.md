@@ -13,7 +13,8 @@ All notable changes to this project will be documented in this file.
 - `verbose`, `show_progress` and the ProgressMeter dependency are removed. Passing either keyword raises, as any
   unknown keyword does.
 - The backend-keyword entries are the public surface; the `serial_*`, `threaded_*`, `gpu_*` and `auxiliary_*` drivers
-  are internal.
+  are internal. Their keywords are named in their signatures: `backend`, `distance_metric`, `weights`, `culling`,
+  `workspace`, and `second_axis` on the joint forms.
 - A result computed on a GPU backend stays on the device; `to_host(result)` copies it to the host. In-place calls on a
   GPU backend take device output buffers.
 - A vector of edges is `BinEdges`; `LinearBinEdges(::AbstractVector)` and `LogBinEdges(::AbstractVector)` raise. A
@@ -37,12 +38,16 @@ All notable changes to this project will be documented in this file.
   `Bessels`.
 - `TransformWorkspace` keeps a grid transform's buffers and plans, including non-uniform FFT plans set to a scattered
   schedule's points, from one call to the next.
+- A call compiles its pair kernels for the field width of its data only.
 - On grids: the six single-pass invariants, by the lag sweep and by the transform; the joint histogram over the
   operator value; device routes for the joint histograms, the batches and the tensor.
 - Culling on every CPU and device pair route, batches, tensors and multi-fields included, with or without a
   workspace.
 - On a device: tensors of any order, multi-fields, the sorted line, harmonic coefficients, weighted calls and any width
-  on the native CUDA kernels.
+  on the native CUDA kernels. A native 1-D call over its own positions takes its launch plan (tile, histogram
+  replicas) from a formula over the device's capabilities and the call's size, and compiles the one kernel it runs.
+  The distance × value kernels and batches over shared positions sample the share of pairs in range, and the second
+  call of a class times the plans worth trying for that share and keeps the fastest.
 - Spectra, fluxes, the covariance and the Helmholtz split of a device result are computed in the result's own array
   family.
 - The transform shares one grid's forward transforms, inverse columns and lags over the backend's tasks, and a batch
@@ -67,14 +72,22 @@ All notable changes to this project will be documented in this file.
   trapezoid rule. `isotropic_spectrum` weighted its first sample as a whole bin and left out the separations below
   it, which in one dimension added a constant to the spectrum at every wavenumber; `helmholtz_decompose_2d` began
   its integral at the first bin.
-- The native CUDA plan of a call class is chosen by timing every candidate after all have compiled, and a candidate
-  leaves the timing only from its second round. A candidate's first timed launch held host time, so the plan the
-  class's first call had run could be kept over a faster one.
 - The spectra of a structure function that overshoots its large-separation limit, such as the transverse function
   of a solenoidal field, rang and went negative: the transforms subtracted the function's largest value, so the
   integrand did not decay before the last separation. They subtract twice the variance.
 - `helmholtz_spectra(h, k)` transformed the rotational and divergent functions separately, each with a limit of its
   own; it transforms the trace and `D_LL − D_TT`, as the form taking `L2` and `T2` does.
+- Auto-binned calls (an integer bin count) could leave the nearest or farthest pair out of every bin: the extreme
+  separations came from the metric's own distance rather than the separation the kernels bin, and logarithmic edges
+  were rebuilt from their logarithms. The edges now run from just below the least separation the kernels compute to
+  exactly the greatest.
+- `enstrophy_flux` took the slope of `SF_Au` at the last separation from the last two samples, a first-order
+  difference; it uses the second-order one-sided difference of the last three.
+- `refresh!` on a GPU workspace dropped the staging buffers along with the cull grid; it drops only the cull grid,
+  which is what depends on the coordinates.
+- An operator reading a field a plain array does not carry (a scalar field, or a vector field past the first) was
+  refused pair by pair inside the kernels; every array entry refuses it before the sweep, as the multi-field entries
+  do.
 
 ## [0.4.0] - 2026-09-11
 

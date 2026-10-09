@@ -51,16 +51,16 @@ end
 
 # A batch over shared positions has no Helmholtz entry, and each slice equals the point single pass.
 Test.@testset "Single-Pass 3D auxiliary axes" begin
-    x = rand(Float32, 3, 8)
-    u = rand(Float32, 3, 8, 2)
-    distance_bins = Float32[0.0, 0.75, 1.5, 3.0]
+    x = rand(3, 8)
+    u = rand(3, 8, 2)
+    distance_bins = [0.0, 0.75, 1.5, 3.0]
 
     batched = SFC.calculate_structure_functions_single_pass(
         x, u, distance_bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
     )
     Test.@test keys(batched) == SP_INV
     slices = [SFC.calculate_structure_functions_single_pass(
-        x, @view(u[:, :, b]), distance_bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
+        x, u[:, :, b], distance_bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend(),
     ) for b in 1:2]
     Test.@test all(batched[k].sums[:, b] ≈ slices[b][k].sums for k in SP_INV, b in 1:2)
     Test.@test all(batched[k].counts[:, b] == slices[b][k].counts for k in SP_INV, b in 1:2)

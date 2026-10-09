@@ -277,35 +277,14 @@ Points per `j` block in the CPU pair loop.
 """
 const SF_CPU_PAIR_TILE = 65536
 
-"""Points up to which a per-task pair buffer spans the whole sweep; above it a buffer spans one tile."""
-const SF_CPU_WHOLE_RUN_MAX = 4 * SF_CPU_PAIR_TILE
+"""Length of a per-task pair buffer of an `n`-point sweep: the most points a `j` block holds."""
+@inline _pair_scratch_length(n::Integer) = clamp(Int(n), 1, SF_CPU_PAIR_TILE)
 
-"""How a per-task pair buffer is indexed: [`WholeRun`](@ref) or [`BlockRun`](@ref)."""
-abstract type PairWindow end
+"""Pair `(i, j)` of block `jr` fills buffer slot `j - _slot_offset(jr)`."""
+@inline _slot_offset(jr) = first(jr) - 1
 
-"""A pair buffer spanning every point of the sweep; pair `(i, j)` fills slot `j`."""
-struct WholeRun <: PairWindow end
-
-"""A pair buffer spanning one tile; pair `(i, j)` of block `jr` fills slot `j - first(jr) + 1`."""
-struct BlockRun <: PairWindow end
-
-"""The window of an `n`-point sweep's pair buffers."""
-@inline _pair_window(n::Integer) = n <= SF_CPU_WHOLE_RUN_MAX ? WholeRun() : BlockRun()
-
-"""Length of a per-task pair buffer for `n` points under its window."""
-@inline _pair_scratch_length(n::Integer) = _pair_scratch_length(_pair_window(n), n)
-@inline _pair_scratch_length(::WholeRun, n::Integer) = max(1, Int(n))
-@inline _pair_scratch_length(::BlockRun, ::Integer) = SF_CPU_PAIR_TILE
-
-"""The buffer slot of `j` in block `jr` is `j - _slot_offset(window, jr)`."""
-@inline _slot_offset(::WholeRun, jr) = 0
-@inline _slot_offset(::BlockRun, jr) = first(jr) - 1
-
-"""Throw unless a per-`j` buffer holds the slots of block `jr` under `window`."""
-@inline function _check_run_fits(window::PairWindow, buf, jr)
-    last_slot = last(jr) - _slot_offset(window, jr)
-    return last_slot <= length(buf) || _run_exceeds_scratch(length(buf), last_slot)
-end
+"""Throw unless a per-`j` buffer holds the slots of block `jr`."""
+@inline _check_run_fits(buf, jr) = length(jr) <= length(buf) || _run_exceeds_scratch(length(buf), length(jr))
 @noinline _run_exceeds_scratch(L, n) =
     throw(ArgumentError("a pair block reaching slot $n exceeds the $L-entry pair buffer"))
 

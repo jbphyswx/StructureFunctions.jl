@@ -5,7 +5,6 @@ using Random: Random
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using ComputationalBackends: ComputationalBackends as CB
-using OhMyThreads: OhMyThreads
 
 Test.@testset "Core Correctness - Block A" begin
     # Three pairs with (δu⋅r̂)² = 1, 1 and 2, one of them along a diagonal, average to 4/3.
@@ -46,7 +45,8 @@ Test.@testset "Core Correctness - Block A" begin
         Test.@test SFT.FullVectorStructureFunctionType(3)(δu, r̂) ≈ sqrt(sum(abs2, δu))^3
     end
 
-    # With n̂ = ẑ × r̂, δu_T = +3: a rotation leaves L2T1 and T3 unchanged and a reflection flips their sign.
+    # With n̂ = ẑ × r̂, δu_T = +3: a rotation leaves L2T1 and T3 unchanged and a reflection flips their sign; the operators
+    # even in δu_T keep theirs.
     Test.@testset "Signed transverse operators use the documented 2D orientation" begin
         δu = SA.SVector(2.0, 3.0)
         r̂ = SA.SVector(1.0, 0.0)
@@ -59,7 +59,8 @@ Test.@testset "Core Correctness - Block A" begin
         Flip = SA.SMatrix{2, 2}(1.0, 0.0, 0.0, -1.0)
         Test.@test SFT.L2T1SF(Flip * δu, Flip * r̂) ≈ -SFT.L2T1SF(δu, r̂)
         Test.@test SFT.T3SF(Flip * δu, Flip * r̂) ≈ -SFT.T3SF(δu, r̂)
-        Test.@test SFT.T2SF(Flip * δu, Flip * r̂) ≈ SFT.T2SF(δu, r̂)
+        Test.@test all(sf -> sf(Flip * δu, Flip * r̂) ≈ sf(δu, r̂),
+                       (SFT.L2SF, SFT.T2SF, SFT.S2SF, SFT.L3SF, SFT.S3SF, SFT.L1T2SF))
     end
 end
 
@@ -67,7 +68,7 @@ const CC_CANONICAL = SFH.CanonicalTransverseBasis()
 const CC_REFERENCE_AXIS = SFH.ReferenceAxisTransverseBasis(LA.normalize(SA.SVector(1.0, sqrt(2.0), sqrt(3.0))))
 const CC_PROJECTED_CASES = (
     (NL = 0, NT = 3, basis = CC_CANONICAL, backend = CB.SerialBackend()),
-    (NL = 2, NT = 1, basis = CC_REFERENCE_AXIS, backend = CB.ThreadedBackend()),
+    (NL = 2, NT = 1, basis = CC_REFERENCE_AXIS, backend = CB.SerialBackend()),
 )
 
 # The entry sums δu_L^NL (δu⋅e)^NT with e the first transverse vector of the operator's own convention.

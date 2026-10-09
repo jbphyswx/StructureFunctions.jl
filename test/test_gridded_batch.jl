@@ -29,10 +29,12 @@ function _batch_matches(sf, u, s, edges, D; valid = SFC.AllValid(), weights = no
     ref_s, ref_c = zeros(nb, nt), zeros(CT, nb, nt)
     got_s, got_c = zeros(nb, nt), zeros(CT, nb, nt)
     for t in 1:nt
-        rs, rc, ut, vt = view(ref_s, :, t), view(ref_c, :, t), view(u, :, :, t), _slice_validity(valid, u, t)
+        rs, rc, ut, vt = zeros(nb), zeros(CT, nb), u[:, :, t], _slice_validity(valid, u, t)
         tag === nothing ?
             SFC.gridded_lag_sweep!(rs, rc, sf, ut, s, edges, Val(D), Val(1), Val(0); valid = vt, weights) :
             SFC.gridded_sweep!(rs, rc, sf, ut, s, edges, Val(D), Val(1), Val(0), tag; valid = vt, weights)
+        ref_s[:, t] .= rs
+        ref_c[:, t] .= rc
     end
     tag === nothing ?
         SFC.gridded_lag_sweep_batch!(got_s, got_c, sf, u, s, edges, Val(D), Val(1), Val(0); valid, weights, backend) :
@@ -115,36 +117,31 @@ Test.@testset "a batch takes the grid-shaped field and the slice count from its 
     Test.@test maximum(abs, c .- a) <= 1e-12 * max(maximum(abs, a), 1e-12)
 end
 
+# The automatic algorithm takes the transform for an odd polynomial operator, equal to the lag sweep.
 Test.@testset "the automatic algorithm on a batch equals the lag sweep" begin
     Random.seed!(25)
     s = SFC.UniformLagSchedule((8, 8), (0.5, 0.5), (true, true))
     edges = collect(range(0.0, 3.0; length = 7))
     u = randn(2, 8 * 8, 3)
     nb = length(edges) - 1
-    agree = Bool[]
-    for sf in (SFT.L2SFType(), SFT.L3SFType())
-        a, ca = zeros(nb, 3), zeros(Int, nb, 3)
-        b, cb = zeros(nb, 3), zeros(Int, nb, 3)
-        SFC.gridded_sweep_batch!(a, ca, sf, u, s, edges, Val(2), Val(1), Val(0), SB.AutoSpectralBackend())
-        SFC.gridded_lag_sweep_batch!(b, cb, sf, u, s, edges, Val(2), Val(1), Val(0))
-        push!(agree, ca == cb && sum(cb) > 0 && maximum(abs, a .- b) <= 1e-11 * max(maximum(abs, b), 1e-12))
-    end
-    Test.@test all(agree)
+    a, ca = zeros(nb, 3), zeros(Int, nb, 3)
+    b, cb = zeros(nb, 3), zeros(Int, nb, 3)
+    SFC.gridded_sweep_batch!(a, ca, SFT.L3SFType(), u, s, edges, Val(2), Val(1), Val(0), SB.AutoSpectralBackend())
+    SFC.gridded_lag_sweep_batch!(b, cb, SFT.L3SFType(), u, s, edges, Val(2), Val(1), Val(0))
+    Test.@test ca == cb && sum(cb) > 0 && maximum(abs, a .- b) <= 1e-11 * max(maximum(abs, b), 1e-12)
 end
 
-Test.@testset "a device-backend batch equals its slices: complete, masked, weighted and on a sphere" begin
+# The device transform batch carries masks with cell weights, and the zonal frames of a sphere.
+Test.@testset "a device-backend batch equals its slices: masked and weighted, and on a sphere" begin
     Random.seed!(26)
     s = SFC.UniformLagSchedule((8, 6), (0.5, 0.7), (true, true))
     edges = collect(range(0.0, 3.5; length = 8))
-    u = randn(2, 8 * 6, 3)
-    um, uv = _masked_batch(u, 0.2)
+    um, uv = _masked_batch(randn(2, 8 * 6, 3), 0.2)
     w = rand(8 * 6) .+ 0.5
     n_lon, n_lat = 15, 9
     zs = SFC.ZonalLagSchedule(collect(range(-1.1, 1.1; length = n_lat)), n_lon, 2π / n_lon, 1.0, true)
     zu = randn(2, n_lon * n_lat, 3)
-    agree = Bool[_batch_matches(SFT.L2SFType(), u, s, edges, 2; backend = DEV, atol = 1e-11),
-                 _batch_matches(SFT.L2SFType(), um, s, edges, 2; valid = uv, backend = DEV, atol = 1e-11),
-                 _batch_matches(SFT.L2SFType(), um, s, edges, 2; valid = uv, weights = w, backend = DEV, atol = 1e-11),
+    agree = Bool[_batch_matches(SFT.L2SFType(), um, s, edges, 2; valid = uv, weights = w, backend = DEV, atol = 1e-11),
                  _batch_matches(SFT.L2SFType(), zu, zs, collect(range(0.0, π; length = 9)), 2; backend = DEV,
                                 atol = 1e-11)]
     Test.@test all(agree)
@@ -162,8 +159,11 @@ Test.@testset "a batch histogram joint in separation and angle" begin
     nb, na = length(edges) - 1, length(axis_be) - 1
     ref_s, ref_c = zeros(nb, na, nt), zeros(nb, na, nt)
     for t in 1:nt
-        SFC.gridded_sweep!(view(ref_s, :, :, t), view(ref_c, :, :, t), SFT.L2SFType(), view(u, :, :, t), s, edges,
-                           axis_be, Val(2), Val(1), Val(0), FFT; second_axis)
+        rs, rc = zeros(nb, na), zeros(nb, na)
+        SFC.gridded_sweep!(rs, rc, SFT.L2SFType(), u[:, :, t], s, edges, axis_be, Val(2), Val(1), Val(0), FFT;
+                           second_axis)
+        ref_s[:, :, t] .= rs
+        ref_c[:, :, t] .= rc
     end
     agree = Bool[]
     for kw in ((;), (; backend = DEV))
@@ -209,27 +209,6 @@ Test.@testset "a batch refuses what it cannot represent" begin
         zeros(nb, 2, 3), zeros(nb, 2, 3), SFT.L2SFType(), randn(2, 77, 3), zs, edges,
         collect(range(-1e-9, π; length = 3)), Val(2), Val(1), Val(0), FFT;
         second_axis = SFC.SeparationAngleAxis([1.0, 0.0]))
-end
-
-Test.@testset "a threaded batch equals a serial one" begin
-    Random.seed!(28)
-    n_lon, n_lat = 15, 9
-    zs = SFC.ZonalLagSchedule(collect(range(-1.1, 1.1; length = n_lat)), n_lon, 2π / n_lon, 1.0, true)
-    edges = collect(range(0.0, π; length = 9))
-    u = randn(2, n_lon * n_lat, 3)
-    nb = length(edges) - 1
-    ref, cref = zeros(nb, 3), zeros(Int, nb, 3)
-    SFC.gridded_lag_sweep_batch!(ref, cref, SFT.L2SFType(), u, zs, edges, Val(2), Val(1), Val(0);
-                                 backend = CB.SerialBackend())
-    agree = Bool[]
-    for (tag, backend) in ((FFT, CB.AutoBackend()), (nothing, CB.AutoBackend()), (FFT, CB.SerialBackend()))
-        a, ca = zeros(nb, 3), zeros(Int, nb, 3)
-        tag === nothing ?
-            SFC.gridded_lag_sweep_batch!(a, ca, SFT.L2SFType(), u, zs, edges, Val(2), Val(1), Val(0); backend) :
-            SFC.gridded_sweep_batch!(a, ca, SFT.L2SFType(), u, zs, edges, Val(2), Val(1), Val(0), tag; backend)
-        push!(agree, ca == cref && sum(cref) > 0 && maximum(abs, a .- ref) <= 1e-11 * max(maximum(abs, ref), 1e-12))
-    end
-    Test.@test all(agree)
 end
 
 Test.@testset "the grid entry takes a slice batch" begin

@@ -195,8 +195,8 @@ function sp2d_row(nd, nv, D, w)
     return nothing
 end
 
-plan_params(::CE.CUDA1DPlan{W, F, M, T, R, S, H, C, Q}) where {W, F, M, T, R, S, H, C, Q} =
-    (; TILE = T, S, H, CST = C, Q, kernel = Q == 0 ? "_cuda_sf_1d_kernel" : "_cuda_sf_1d_queued_kernel")
+plan_params(::CE.CUDA1DPlan{W, F, M, T, R, S, H, C}) where {W, F, M, T, R, S, H, C} =
+    (; TILE = T, S, H, CST = C, kernel = "_cuda_sf_1d_kernel")
 plan_params(::CE.CUDA2DPlan{W, F, M, T, C, NP}) where {W, F, M, T, C, NP} =
     (; TILE = T, CST = C, NP, kernel = "_cuda_sf_2d_kernel")
 plan_params(::CE.CUDA2DGlobalPlan{W, F, M, T}) where {W, F, M, T} =
@@ -346,7 +346,7 @@ Test.@testset "static shared memory against ptxas" begin
         x, u, bins = rand(FTb, 2, N), rand(FTb, 2, N, Bs), edges(FTb, 1.5, 32)
         run = () -> begin
             s, c = CUDA.zeros(FTb, 32, Bs), CUDA.zeros(UInt32, 32, Bs)
-            xd, ud = GE._stage_batch_device(BE, x, u; fixed_x = true)
+            xd, ud = GE._stage_batch_device(BE, x, u)
             GE._launch_batch_fixed_x_sf!(BE, s, c, xd, ud, OP, N, Bs, GE._gpu_digitizer(BE, bins, Val(:sf1d)), 32,
                                          geom(2))
             Raw(s, c)
@@ -370,32 +370,30 @@ Test.@testset "static shared memory against ptxas" begin
         kw = weighted ? (; weights = w) : (;)
         run = () -> SFC.calculate_structure_function(OP, x, u, bins, CT, RAW; backend = DEV, kw...)
         ref = () -> SFC.calculate_structure_function(OP, x, u, bins, CT, RAW; backend = SER, kw...)
-        choice = CE._cuda_1d_plan(CAPS, F64, F64, F64, CT, weighted ? CUDA.CuArray(w) : SFC.NoWeights(), geom(D), 64,
-                                  OP)
-        if choice === nothing
+        rule = CE._cuda_1d_plan(CAPS, F64, F64, F64, CT, weighted ? CUDA.CuArray(w) : SFC.NoWeights(), geom(D), 64,
+                                OP)
+        if rule === nothing
             past_row("no plan", "_cuda_sf_1d_kernel", run, ref)
         else
-            Test.@test N * (N - 1) ÷ 2 < choice.choose_from
-            p = plan_params(first(choice.candidates(N, 1, false, N * (N - 1) ÷ 2, 1.0)))
-            tiled_row("TILE=$(p.TILE) S=$(p.S) Q=$(p.Q)", p.kernel,
-                CE._cuda_1d_smem_bytes(F64, F64, F64, p.CST, D, D, 1, p.TILE, p.S, p.H, p.Q), run, ref)
+            p = plan_params(CE._cuda_1d_launch_plan(rule, N, 1))
+            tiled_row("TILE=$(p.TILE) S=$(p.S)", p.kernel,
+                CE._cuda_1d_smem_bytes(F64, F64, F64, p.CST, D, D, 1, p.TILE, p.S, p.H), run, ref)
         end
     end
 
-    # The native 1-D kernel of six moments: a call too small to estimate takes its group's unestimated plan.
+    # The native 1-D kernel of six moments at the plan its rule gives the call.
     Test.@testset "native 1-D single pass $FT D=$D" for (FT, D) in NATIVE_SP1D_CASES
         x, u, bins = pts(FT, D), pts(FT, D), edges(FT, sqrt(D), 64)
         run = () -> SFC.calculate_structure_functions_single_pass(x, u, bins, UInt32, RAW; backend = DEV)
         ref = () -> SFC.calculate_structure_functions_single_pass(x, u, bins, UInt32, RAW; backend = SER)
-        choice = CE._cuda_1d_plan(CAPS, FT, FT, FT, UInt32, SFC.NoWeights(), geom(D), 64, SFT.SinglePassInvariants())
-        Test.@test N * (N - 1) ÷ 2 < choice.choose_from
-        p = plan_params(first(choice.candidates(N, 1, false, N * (N - 1) ÷ 2, 1.0)))
-        tiled_row("TILE=$(p.TILE) S=$(p.S) Q=$(p.Q)", p.kernel,
-            CE._cuda_1d_smem_bytes(FT, FT, FT, p.CST, D, D, 6, p.TILE, p.S, p.H, p.Q), run, ref;
+        rule = CE._cuda_1d_plan(CAPS, FT, FT, FT, UInt32, SFC.NoWeights(), geom(D), 64, SFT.SinglePassInvariants())
+        p = plan_params(CE._cuda_1d_launch_plan(rule, N, 1))
+        tiled_row("TILE=$(p.TILE) S=$(p.S)", p.kernel,
+            CE._cuda_1d_smem_bytes(FT, FT, FT, p.CST, D, D, 6, p.TILE, p.S, p.H), run, ref;
             rtol = FT == Float32 ? 1e-5 : 1e-10)
     end
 
-    # The native 2-D kernel: a call too small to estimate takes its group's unestimated plan, staged at its tile.
+    # The native 2-D kernel: a call too small to sample takes its first candidate, staged at its tile.
     Test.@testset "native joint $FT D=$D weighted=$weighted" for (FT, D, weighted) in NATIVE_2D_CASES
         x, u, bins = rand(FT, D, N), rand(FT, D, N), edges(FT, sqrt(D), 16)
         vb = collect(range(FT(-1), FT(1); length = 11))

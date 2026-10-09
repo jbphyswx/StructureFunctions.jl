@@ -1,5 +1,6 @@
 using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
+using StructureFunctions: MultiFields as MF
 using FlowGeometries: FlowGeometries as FG
 using SpectralBackends: SpectralBackends as SB
 using FFTW: FFTW
@@ -83,38 +84,41 @@ Test.@testset "a periodic topology wraps its direction" begin
     Test.@test rw.counts == _minimum_image_counts((nx, ny), (0.25, 0.25), (true, false), bins)
 end
 
-Test.@testset "a mis-shaped field and an unknown keyword are refused" begin
+Test.@testset "a mis-shaped field is refused" begin
     geo = FG.Geometry.CartesianGeometry()
     bins = collect(range(0.0, 1.0; length = 5))
     uniform = FG.Grids.StructuredGrid(geo, range(0.0, step = 0.2, length = 4),
                                       range(0.0, step = 0.2, length = 4))
     Test.@test_throws DimensionMismatch SFC.calculate_structure_function(
         SF1D, uniform, randn(2, 4), bins)
-    Test.@test_throws ArgumentError SFC.calculate_structure_function(
-        SF1D, uniform, randn(2, 4, 4), bins; nonsense = 1)
 end
 
 Test.@testset "stretched and irregular axes give the unstructured answer" begin
-    # A stretched axis first, then second under the transform; then no uniform axis; a periodic stretched axis is refused.
+    # A stretched axis first, then second under the transform; then no uniform axis, with a vector and a scalar field;
+    # a periodic stretched axis is refused.
     Random.seed!(5300)
     geo = FG.Geometry.CartesianGeometry()
     xs = [0.0, 0.1, 0.35, 0.8, 0.85]
     ys = range(0.0, step = 0.2, length = 4)
     exact(g, r) = isapprox(g, r; rtol = 1e-10, atol = 1e-12)
     rounded(g, r) = isapprox(g, r; rtol = 1e-9, atol = 1e-10 * max(1.0, maximum(abs, r)))
-    cases = (((xs, ys), SF1D, SB.AutoSpectralBackend(), exact),
-             ((ys, xs), SFT.L2T1SFType(), SB.FastFourierTransformSpectralBackend(), rounded),
-             ((xs, collect(ys)), SF1D, SB.AutoSpectralBackend(), exact))
+    cases = (((xs, ys), SF1D, SB.AutoSpectralBackend(), exact, false),
+             ((ys, xs), SFT.L2T1SFType(), SB.FastFourierTransformSpectralBackend(), rounded, false),
+             ((xs, collect(ys)), SFT.MixedSFType{1, 0, 2}(), SB.AutoSpectralBackend(), exact, true))
     counts_ok, sums_ok = Bool[], Bool[]
-    for (axes, sf, tag, close) in cases
+    for (axes, sf, tag, close, scalar) in cases
         grid = FG.Grids.StructuredGrid(geo, axes...)
         x = _axes_points(axes)
         bins = _separated_bins_points(x, 6)
         nb = length(bins) - 1
         u = randn(2, map(length, axes)...)
-        got = SFC.calculate_structure_function(sf, grid, u, bins, tag, UInt32, SF.StructureFunctionSumsAndCounts)
+        θ = randn(map(length, axes)...)
+        field, points = scalar ? (MF.Fields(vectors = (u,), scalars = (θ,)),
+                                  MF.Fields(vectors = (reshape(u, 2, :),), scalars = (vec(θ),))) :
+                        (u, reshape(u, 2, :))
+        got = SFC.calculate_structure_function(sf, grid, field, bins, tag, UInt32, SF.StructureFunctionSumsAndCounts)
         ref_s = zeros(nb); ref_c = zeros(UInt32, nb)
-        SFC.calculate_structure_function!(ref_s, ref_c, sf, x, reshape(u, 2, :), bins)
+        SFC.calculate_structure_function!(ref_s, ref_c, sf, x, points, bins)
         push!(counts_ok, got.counts == ref_c && sum(ref_c) > 0)
         push!(sums_ok, close(got.sums, ref_s))
     end

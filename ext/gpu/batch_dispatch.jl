@@ -85,7 +85,7 @@ function _gpu_1d_individual_device(backend, sf_type, x, u, distance_bins,
         B == 0 && return sums_dev, counts_dev, direct
         xs, us, _, cull = _gpu_cull_and_permute!(workspace, backend, x, reshape(u, 2, N, B), geom, distance_bins,
                                                  culling, source)
-        x_dev, u_dev = _stage_batch_device(backend, xs, us; fixed_x=true)
+        x_dev, u_dev = _stage_batch_device(backend, xs, us)
         _launch_batch_fixed_x_sf!(backend, sums_dev, counts_dev, x_dev, u_dev, sf_type, N, B,
                                   _dist_digitizer(workspace, backend, distance_bins, Val(:sf1d)), NB, geom;
                                   cull)

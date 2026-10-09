@@ -115,16 +115,13 @@ The measure of every cell of a FlowGeometries grid, in the gridded entries' cell
 SFC.cell_measure(grid::FG.Grids.AbstractGrid) = vec(FG.Grids.measure_array(grid))
 
 """
-    _with_gridded(g, grid, u, kwargs)
+    _with_gridded(g, grid, u)
 
 `g(schedule, data, vD, vV, vK, valid)` for a gridded call, after validating it and settling which cells hold a
 datum: the grid must be one the lag enumeration describes and the field must cover it. `data` and its layout are
 those of `SFC._with_packed`. The schedule entry the call reaches checks the weights and the counts.
 """
-function _with_gridded(g, grid, u::GriddedField, kwargs)
-    isempty(kwargs) || throw(ArgumentError(
-        "unsupported keyword(s) $(join(keys(kwargs), ", ")) for a gridded calculation",
-    ))
+function _with_gridded(g, grid, u::GriddedField)
     sched = _lag_schedule(grid)
     return SFC._with_packed(u) do data, vD, vV, vK
         cells = SFC.n_cells(sched)
@@ -186,9 +183,8 @@ function SFC.calculate_structure_function(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
     workspace = nothing,
-    kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
-    return _with_gridded(grid, u, kwargs) do sched, data, vD, vV, vK, valid
+    return _with_gridded(grid, u) do sched, data, vD, vV, vK, valid
         nb = SFC.n_histogram_bins(distance_bins)
         sums = SFC._result_zeros(backend, float(eltype(data)), nb)
         counts = SFC._result_zeros(backend, CT, nb)
@@ -238,9 +234,8 @@ function SFC.calculate_structure_function(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
     workspace = nothing,
-    kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
-    return _with_gridded(grid, u, kwargs) do sched, data, vD, vV, vK, valid
+    return _with_gridded(grid, u) do sched, data, vD, vV, vK, valid
         nb = SFC.n_histogram_bins(distance_bins)
         na = SFC.n_histogram_bins(axis_bins)
         sums = SFC._result_zeros(backend, float(eltype(data)), nb, na)
@@ -281,16 +276,13 @@ SFC.calculate_structure_function(sf::_Pairwise, grid::_Grid, u::GriddedField, bi
     SFC.calculate_structure_function(sf, grid, u, bins, axis_bins, tag, SFC.DEFAULT_SPLIT_COUNT_TYPE, OT; kw...)
 
 """
-    _with_gridded_batch(g, grid, u, kwargs)
+    _with_gridded_batch(g, grid, u)
 
 As [`_with_gridded`](@ref) for a field sampled repeatedly on one grid, stored `(component, cells..., slices)`:
 `g(schedule, data, vD, vV, vK, valid)` with `data` the `(D, cells, slices)` view of `u`, after checking that the grid
 is one the lag enumeration describes and that every slice covers it; the validity is settled per slice.
 """
-function _with_gridded_batch(g, grid, u::AbstractArray, kwargs)
-    isempty(kwargs) || throw(ArgumentError(
-        "unsupported keyword(s) $(join(keys(kwargs), ", ")) for a gridded calculation",
-    ))
+function _with_gridded_batch(g, grid, u::AbstractArray)
     ndims(u) >= 3 || throw(DimensionMismatch(
         "a slice batch is stored (component, cells..., slices) and so has at least three axes; got $(size(u))",
     ))
@@ -332,9 +324,8 @@ function SFC.calculate_structure_function_batch!(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
     workspace = nothing,
-    kwargs...,
 )
-    _with_gridded_batch(grid, u, kwargs) do sched, data, vD, vV, vK, valid
+    _with_gridded_batch(grid, u) do sched, data, vD, vV, vK, valid
         SFC.gridded_sweep_batch!(sums, counts, sf_type, data, sched, distance_bins, vD, vV, vK, spectral_backend;
                                  valid, weights, backend, SFC._workspace_kw(workspace)...)
     end
@@ -353,9 +344,8 @@ function SFC.calculate_structure_function_batch!(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
     workspace = nothing,
-    kwargs...,
 )
-    _with_gridded_batch(grid, u, kwargs) do sched, data, vD, vV, vK, valid
+    _with_gridded_batch(grid, u) do sched, data, vD, vV, vK, valid
         SFC.gridded_sweep_batch!(sums, counts, sf_type, data, sched, distance_bins, axis_bins, vD, vV, vK,
                                  spectral_backend; valid, weights, backend, second_axis,
                                  SFC._workspace_kw(workspace)...)
@@ -377,9 +367,8 @@ function SFC.calculate_structure_functions_single_pass(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
     workspace = nothing,
-    kwargs...,
 ) where {CT <: Real, OT <: SFO.AbstractStructureFunction}
-    return _with_gridded(grid, u, kwargs) do sched, data, vD, vV, vK, valid
+    return _with_gridded(grid, u) do sched, data, vD, vV, vK, valid
         nb = SFC.n_histogram_bins(distance_bins)
         sums = SFC._result_zeros(backend, float(eltype(data)), SFC.SINGLE_PASS_N, nb)
         counts = SFC._result_zeros(backend, CT, SFC.SINGLE_PASS_N, nb)
@@ -429,9 +418,8 @@ function SFC.calculate_structure_functions_single_pass_batch!(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
     workspace = nothing,
-    kwargs...,
 )
-    _with_gridded_batch(grid, u, kwargs) do sched, data, vD, vV, vK, valid
+    _with_gridded_batch(grid, u) do sched, data, vD, vV, vK, valid
         SFC.gridded_sweep_batch!(sums, counts, SFT.SinglePassInvariants(), data, sched, distance_bins, vD, vV, vK,
                                  spectral_backend; valid, weights, backend, SFC._workspace_kw(workspace)...)
     end
@@ -454,9 +442,8 @@ function SFC.calculate_structure_function_tensor(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
     workspace = nothing,
-    kwargs...,
 ) where {P, CT <: Real, OT <: SFO.AbstractStructureFunction}
-    return _with_gridded(grid, u, kwargs) do sched, data, vD, vV, vK, valid
+    return _with_gridded(grid, u) do sched, data, vD, vV, vK, valid
         _one_vector_field(vV, vK)
         nb = SFC.n_histogram_bins(distance_bins)
         sums = SFC._result_zeros(backend, float(eltype(data)), ntuple(_ -> SFC._val_int(vD), P)..., nb)
@@ -485,9 +472,8 @@ function SFC.calculate_structure_function_tensor(
     backend::CB.AbstractExecutionBackend = CB.AutoBackend(),
     weights = nothing,
     workspace = nothing,
-    kwargs...,
 ) where {P, CT <: Real, OT <: SFO.AbstractStructureFunction}
-    return _with_gridded(grid, u, kwargs) do sched, data, vD, vV, vK, valid
+    return _with_gridded(grid, u) do sched, data, vD, vV, vK, valid
         _one_vector_field(vV, vK)
         nb = SFC.n_histogram_bins(distance_bins)
         na = SFC.n_histogram_bins(axis_bins)

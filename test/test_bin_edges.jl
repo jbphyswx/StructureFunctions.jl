@@ -2,11 +2,9 @@ using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT
 using Test: Test
 using Random: Random
-using KernelAbstractions: KernelAbstractions as KA
 
-# (backend, single pass): each pair kernel that forms a separation.
-const BE_COINCIDENCE_ROUTES = ((CB.SerialBackend(), false), (CB.SerialBackend(), true), (CB.GPUBackend(KA.CPU()), false),
-                               (CB.GPUBackend(KA.CPU()), true))
+# (backend, single pass): each serial pair kernel that forms a separation; test_device.jl runs these on the device.
+const BE_COINCIDENCE_ROUTES = ((CB.SerialBackend(), false), (CB.SerialBackend(), true))
 
 Test.@testset "BinEdges Tests" begin
     # Uniform edges are their grid at any integer index; padding adds the infinite ends once.

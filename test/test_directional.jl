@@ -2,8 +2,6 @@ using Test: Test
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC, StructureFunctionTypes as SFT,
     HelperFunctions as SFH
 using ComputationalBackends: ComputationalBackends as CB
-using KernelAbstractions: KernelAbstractions as KA
-using OhMyThreads: OhMyThreads
 using StaticArrays: StaticArrays as SA
 using Random: Random
 
@@ -104,23 +102,23 @@ Test.@testset "binning the operator value is unchanged" begin
     Test.@test sum(plain.counts) > 0
 end
 
-# Each slice of a device batch with its own positions bins the angle of its own separations, as the point entry does.
-Test.@testset "the angle axis on a device batch with positions varying per slice" begin
-    Random.seed!(7600)
-    N, B = 100, 2
-    dist_bins = collect(range(0.0, 1.0; length = 7))
-    ax_bins = collect(range(prevfloat(0.0), π; length = 5))
-    src = SFC.SeparationAngleAxis(SA.SVector(1.0, 0.0))
-    x, u = rand(2, N, B), randn(2, N, B)
-    got = SFC.calculate_structure_function(SF2, x, u, dist_bins, ax_bins; backend = CB.GPUBackend(KA.CPU()),
-        second_axis = src)
-    refs = [SFC.calculate_structure_function(SF2, x[:, :, b], u[:, :, b], dist_bins, ax_bins;
-        backend = CB.SerialBackend(), second_axis = src) for b in 1:B]
-    Test.@test got.counts == cat((r.counts for r in refs)...; dims = 3)
-    Test.@test got.sums ≈ cat((r.sums for r in refs)...; dims = 3)
-    value_binned = SFC.calculate_structure_function(SF2, x[:, :, 1], u[:, :, 1], dist_bins, ax_bins;
-        backend = CB.SerialBackend())
-    Test.@test value_binned.counts != refs[1].counts
+# In four dimensions a CPU batch, positions shared or per slice, bins each slice's angle as the point entry does.
+Test.@testset "the angle axis on a CPU batch in four dimensions" begin
+    Random.seed!(7700)
+    N, B = 60, 2
+    dist_bins = collect(range(0.0, 1.2; length = 5))
+    ax_bins = collect(range(prevfloat(0.0), π / 2 + 1e-9; length = 4))
+    src = SFC.SeparationAngleAxis(SA.SVector(0.0, 0.0, 0.0, 1.0))
+    u = randn(4, N, B)
+    for x in (rand(4, N), rand(4, N, B))
+        got = SFC.calculate_structure_function(SF2, x, u, dist_bins, ax_bins; backend = CB.SerialBackend(),
+            second_axis = src)
+        refs = [SFC.calculate_structure_function(SF2, ndims(x) == 3 ? x[:, :, b] : x, u[:, :, b], dist_bins, ax_bins;
+            backend = CB.SerialBackend(), second_axis = src) for b in 1:B]
+        agrees = got.counts == cat((r.counts for r in refs)...; dims = 3) &&
+                 isapprox(got.sums, cat((r.sums for r in refs)...; dims = 3); rtol = 1e-12)
+        Test.@test (ndims(x), agrees) == (ndims(x), true)
+    end
 end
 
 # On a sphere each pair's direction lives in its own frame, so every entry refuses an angle to a fixed axis.
@@ -133,9 +131,6 @@ Test.@testset "an angle axis is refused where the direction is not shared" begin
     Test.@test_throws ArgumentError SFC.serial_calculate_structure_function(
         SF2, x, randn(2, 3), dist_bins, ax_bins, UInt32;
         geometry = SFH.pair_geometry_for(SFC.DI.SphericalAngle(), Val(2)), second_axis = src)
-    for (u, backend) in ((randn(2, 3), CB.GPUBackend(KA.CPU())), (randn(2, 3, 2), CB.SerialBackend()),
-                         (randn(2, 3, 2), CB.GPUBackend(KA.CPU())))
-        Test.@test_throws ArgumentError SFC.calculate_structure_function(SF2, x, u, dist_bins, ax_bins;
-            backend, distance_metric = SFC.DI.SphericalAngle(), second_axis = src)
-    end
+    Test.@test_throws ArgumentError SFC.calculate_structure_function(SF2, x, randn(2, 3, 2), dist_bins, ax_bins;
+        backend = CB.SerialBackend(), distance_metric = SFC.DI.SphericalAngle(), second_axis = src)
 end

@@ -98,15 +98,12 @@ end
 """
     _bl_kernel_scratch(xs, ::Val{W}) -> scratch
 
-A task's scratch for the batch kernel over the shared positions `xs`: for flat component vectors the pair window
-and its buffers — digitize key, approximate bin, direction, compacted slots; `nothing` for a kernel that takes
-none.
+A task's scratch for the batch kernel over the shared positions `xs`: for flat component vectors the pair buffers —
+digitize key, approximate bin, direction, compacted slots; `nothing` for a kernel that takes none.
 """
-@inline _bl_kernel_scratch(xc::Tuple{AbstractVector{T}, Vararg{AbstractVector{T}}}, vW::Val) where {T} =
-    _bl_kernel_scratch(_pair_window(length(xc[1])), xc, vW)
-@inline function _bl_kernel_scratch(window, xc::Tuple{AbstractVector{T}, Vararg{AbstractVector{T}}}, ::Val{W}) where {T, W}
-    L = _pair_scratch_length(window, length(xc[1]))
-    return (window, Vector{T}(undef, L), Vector{Int32}(undef, L), Matrix{T}(undef, L, W), Vector{Int32}(undef, L))
+@inline function _bl_kernel_scratch(xc::Tuple{AbstractVector{T}, Vararg{AbstractVector{T}}}, ::Val{W}) where {T, W}
+    L = _pair_scratch_length(length(xc[1]))
+    return (Vector{T}(undef, L), Vector{Int32}(undef, L), Matrix{T}(undef, L, W), Vector{Int32}(undef, L))
 end
 @inline _bl_kernel_scratch(xs, ::Val) = nothing
 
@@ -150,7 +147,6 @@ function _bl_shared_1d!(
     blocks,
     brange,
     weights,
-    window::PairWindow,
     keybuf, idxbuf, rhbuf, sel,
 ) where {OT, CT, D}
     nb = size(sums_bl, 2)
@@ -158,8 +154,8 @@ function _bl_shared_1d!(
     vD = Val(D)
     chooses = _chooses_compaction(blocks)
     @inbounds for (ir, jr) in blocks
-        _check_run_fits(window, keybuf, jr)
-        o = _slot_offset(window, jr)
+        _check_run_fits(keybuf, jr)
+        o = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
@@ -370,15 +366,15 @@ end
 function _bl_sp1d_shared!(
     sums_bl::AbstractArray{OT, 3}, counts_bl::AbstractArray{CT, 3},
     xc::NTuple{D, AbstractVector}, ub::AbstractArray{<:Any, 3}, plan::AbstractSquaredDigitizePlan,
-    geom::SFH.FlatGeometry, ::Val{D}, blocks, brange, weights, window::PairWindow, keybuf, idxbuf, rhbuf, sel,
+    geom::SFH.FlatGeometry, ::Val{D}, blocks, brange, weights, keybuf, idxbuf, rhbuf, sel,
 ) where {OT, CT, D}
     nb = size(sums_bl, 3)
     boff = first(brange) - 1
     vD = Val(D)
     chooses = _chooses_compaction(blocks)
     @inbounds for (ir, jr) in blocks
-        _check_run_fits(window, keybuf, jr)
-        o = _slot_offset(window, jr)
+        _check_run_fits(keybuf, jr)
+        o = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
@@ -833,14 +829,14 @@ function _bl_rows_runner(kernel!::K, grid, xs, us, ws, N::Int) where {K}
 end
 
 """
-    _bl_rows_sweep(executor, grid, xs, us, ws, window, kernel!, make_scratch, make_accum, N, B, accum_bytes, workspace)
+    _bl_rows_sweep(executor, grid, xs, us, ws, kernel!, make_scratch, make_accum, N, B, accum_bytes, workspace)
 
 `executor` over [`_bl_slices`](@ref)'s output `(grid, xs, us, ws)` through [`_bl_rows_runner`](@ref), the kernel
-filling the [`BLRowsScratch`](@ref) slice histograms `make_scratch(window)` builds for the pair window of `N` points.
+filling the [`BLRowsScratch`](@ref) slice histograms `make_scratch()` builds for `N` points.
 """
-function _bl_rows_sweep(executor::E, grid, xs, us, ws, window::PairWindow, kernel!::K, make_scratch::M, make_accum::A,
+function _bl_rows_sweep(executor::E, grid, xs, us, ws, kernel!::K, make_scratch::M, make_accum::A,
                         N::Int, B::Int, accum_bytes::Int, workspace) where {E, K, M, A}
-    return executor(make_accum, () -> make_scratch(window), _bl_rows_runner(kernel!, grid, xs, us, ws, N), 1:(N - 1),
+    return executor(make_accum, make_scratch, _bl_rows_runner(kernel!, grid, xs, us, ws, N), 1:(N - 1),
                     grid, B, accum_bytes, workspace)
 end
 
@@ -887,12 +883,12 @@ of `f` compiled for it alone.
     first(flags) ? _bl_choose(f, Base.tail(flags), args, (vals..., Val(true))) :
                    _bl_choose(f, Base.tail(flags), args, (vals..., Val(false)))
 
-"""A task's [`BLRowsScratch`](@ref) for the 1-D kernels over `N` points: the pair window, the digitize keys,
+"""A task's [`BLRowsScratch`](@ref) for the 1-D kernels over `N` points: the digitize keys,
 approximate bins, compacted slots, distance bins and values, and `n_bins`-bin slice histograms."""
-function _bl_rows_scratch_1d(window::PairWindow, N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT},
+function _bl_rows_scratch_1d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT},
                              n_bins::Int) where {D, FT, OT, CT}
-    L = _pair_scratch_length(window, N)
-    bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
+    L = _pair_scratch_length(N)
+    bufs = (Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
             Vector{OT}(undef, L))
     return BLRowsScratch(bufs, () -> (zeros(OT, n_bins), zeros(CT, n_bins)))
 end
@@ -909,12 +905,12 @@ function _bl_rows_1d!(scratch::BLRowsScratch, xc::NTuple{D}, us::AbstractVector,
                       blocks, weights) where {D}
     length(slices) == 1 && return _bl_rows_1d!(scratch, xc, us[first(slices)], slices, slots, sf, plan, vD, blocks,
                                                weights)
-    window, keybuf, idxbuf, _, _, valbuf = scratch.bufs
+    keybuf, idxbuf, _, _, valbuf = scratch.bufs
     hist = _bl_hists!(scratch, last(slots))
     chooses = _chooses_compaction(blocks)
     @inbounds for (ir, jr) in blocks
-        _check_run_fits(window, keybuf, jr)
-        o = _slot_offset(window, jr)
+        _check_run_fits(keybuf, jr)
+        o = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
@@ -974,7 +970,7 @@ slice its scatter into `hist[slot]`, each further slice's value pass first, over
 """
 @noinline function _bl_rows_1d_run!(hist, bufs, xc, Xi, us, slices, slots, sf, plan, vD::Val{D}, ks, o, i, wi, weights,
                                     chooses, vcompact::Val{compact}) where {D, compact}
-    _, keybuf, idxbuf, sel, binbuf, valbuf = bufs
+    keybuf, idxbuf, sel, binbuf, valbuf = bufs
     nb = n_histogram_bins(plan)
     n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
     for q in eachindex(slices)
@@ -986,18 +982,18 @@ end
 
 function _bl_rows_1d!(scratch::BLRowsScratch, xc::NTuple{D}, uc::Tuple, slices, slots, sf, plan, vD::Val{D}, blocks,
                       weights) where {D}
-    window, keybuf, idxbuf, sel, _, valbuf = scratch.bufs
+    keybuf, idxbuf, sel, _, valbuf = scratch.bufs
     s, c = _bl_hists!(scratch, first(slots))[first(slots)]
-    _pf_simd_pairs!(s, c, sf, xc, uc, plan, vD, keybuf, valbuf, idxbuf, sel, window, blocks, weights)
+    _pf_simd_pairs!(s, c, sf, xc, uc, plan, vD, keybuf, valbuf, idxbuf, sel, blocks, weights)
     return nothing
 end
 
-"""A task's [`BLRowsScratch`](@ref) for the single-pass kernels: the pair window, the digitize keys, approximate bins,
+"""A task's [`BLRowsScratch`](@ref) for the single-pass kernels: the digitize keys, approximate bins,
 compacted slots, distance bins, `δu_L` and `‖δu‖²`, and `(6, n_bins)` slice histograms."""
-function _bl_rows_scratch_sp1d(window::PairWindow, N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT},
+function _bl_rows_scratch_sp1d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT},
                                n_bins::Int) where {D, FT, OT, CT}
-    L = _pair_scratch_length(window, N)
-    bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
+    L = _pair_scratch_length(N)
+    bufs = (Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
             Vector{OT}(undef, L), Vector{OT}(undef, L))
     return BLRowsScratch(bufs, () -> (zeros(OT, SINGLE_PASS_N, n_bins), zeros(CT, SINGLE_PASS_N, n_bins)))
 end
@@ -1012,12 +1008,12 @@ function _bl_rows_sp1d!(scratch::BLRowsScratch, xc::NTuple{D}, us::AbstractVecto
                         blocks, weights) where {D}
     length(slices) == 1 && return _bl_rows_sp1d!(scratch, xc, us[first(slices)], slices, slots, plan, vD, blocks,
                                                  weights)
-    window, keybuf, idxbuf, _, _, duLbuf, dn2buf = scratch.bufs
+    keybuf, idxbuf, _, _, duLbuf, dn2buf = scratch.bufs
     hist = _bl_hists!(scratch, last(slots))
     chooses = _chooses_compaction(blocks)
     @inbounds for (ir, jr) in blocks
-        _check_run_fits(window, keybuf, jr)
-        o = _slot_offset(window, jr)
+        _check_run_fits(keybuf, jr)
+        o = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
@@ -1080,7 +1076,7 @@ and the scatter adds the invariants.
 """
 @noinline function _bl_rows_sp1d_run!(hist, bufs, xc, Xi, us, slices, slots, plan, vD::Val{D}, ks, o, i, wi, weights,
                                       chooses, vcompact::Val{compact}) where {D, compact}
-    _, keybuf, idxbuf, sel, binbuf, duLbuf, dn2buf = bufs
+    keybuf, idxbuf, sel, binbuf, duLbuf, dn2buf = bufs
     nb = n_histogram_bins(plan)
     n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
     for q in eachindex(slices)
@@ -1093,20 +1089,20 @@ end
 
 function _bl_rows_sp1d!(scratch::BLRowsScratch, xc::NTuple{D}, uc::Tuple, slices, slots, plan, vD::Val{D}, blocks,
                         weights) where {D}
-    window, keybuf, idxbuf, sel, _, duLbuf, dn2buf = scratch.bufs
+    keybuf, idxbuf, sel, _, duLbuf, dn2buf = scratch.bufs
     s, c = _bl_hists!(scratch, first(slots))[first(slots)]
-    _pf_sp_simd_pairs!(s, c, xc, uc, plan, vD, keybuf, duLbuf, dn2buf, idxbuf, sel, window, blocks, weights)
+    _pf_sp_simd_pairs!(s, c, xc, uc, plan, vD, keybuf, duLbuf, dn2buf, idxbuf, sel, blocks, weights)
     return nothing
 end
 
-"""A task's [`BLRowsScratch`](@ref) for the joint kernels: the pair window, the digitize keys, approximate bins,
+"""A task's [`BLRowsScratch`](@ref) for the joint kernels: the digitize keys, approximate bins,
 compacted slots, distance bins, values, value columns, the shared columns of a second axis that is not the value and
 the second-axis quantities [`_pf_2d_simd_pairs!`](@ref) reads, and padded `(n_dist, n_val + 2)` slice histograms."""
-function _bl_rows_scratch_joint(window::PairWindow, N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, second_axis,
+function _bl_rows_scratch_joint(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, second_axis,
                                 n_dist::Int, n_val::Int) where {D, FT, OT, CT}
-    L = _pair_scratch_length(window, N)
+    L = _pair_scratch_length(N)
     valbuf = Vector{OT}(undef, L)
-    bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
+    bufs = (Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
             valbuf, Vector{Int32}(undef, L), Vector{Int32}(undef, L),
             needs_axis_buffer(second_axis) ? Vector{OT}(undef, L) : valbuf)
     return BLRowsScratch(bufs, () -> (zeros(OT, n_dist, n_val + 2), zeros(CT, n_dist, n_val + 2)))
@@ -1124,14 +1120,14 @@ function _bl_rows_joint!(scratch::BLRowsScratch, xc::NTuple{D}, us::AbstractVect
                          second_axis, vD::Val{D}, blocks, weights) where {D}
     length(slices) == 1 && return _bl_rows_joint!(scratch, xc, us[first(slices)], slices, slots, sf, plan, val_be,
                                                   second_axis, vD, blocks, weights)
-    window, keybuf, idxbuf, _, _, valbuf, colbuf, _, axbuf = scratch.bufs
+    keybuf, idxbuf, _, _, valbuf, colbuf, _, axbuf = scratch.bufs
     hist = _bl_hists!(scratch, last(slots))
     vector_columns = has_vector_digitize(val_be, eltype(valbuf))
     chooses = _chooses_compaction(blocks)
     s_in, s_n = 0, 0
     @inbounds for (ir, jr) in blocks
-        _check_run_fits(window, keybuf, jr)
-        o = _slot_offset(window, jr)
+        _check_run_fits(keybuf, jr)
+        o = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
@@ -1215,7 +1211,7 @@ each slice's value pass forms its value columns with `columns`, else its scatter
 @noinline function _bl_rows_joint_run!(hist, bufs, xc, Xi, us, slices, slots, sf, plan, val_be, second_axis,
                                        vD::Val{D}, ks, o, i, wi, weights, chooses, vcompact::Val{compact},
                                        vcolumns::Val{columns}) where {D, compact, columns}
-    _, keybuf, idxbuf, sel, binbuf, valbuf, colbuf, acolbuf, axbuf = bufs
+    keybuf, idxbuf, sel, binbuf, valbuf, colbuf, acolbuf, axbuf = bufs
     nb = n_histogram_bins(plan)
     n_val = n_histogram_bins(val_be)
     n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
@@ -1237,21 +1233,21 @@ end
 
 function _bl_rows_joint!(scratch::BLRowsScratch, xc::NTuple{D}, uc::Tuple, slices, slots, sf, plan, val_be,
                          second_axis, vD::Val{D}, blocks, weights) where {D}
-    window, keybuf, idxbuf, sel, _, valbuf, colbuf, _, axbuf = scratch.bufs
+    keybuf, idxbuf, sel, _, valbuf, colbuf, _, axbuf = scratch.bufs
     s, c = _bl_hists!(scratch, first(slots))[first(slots)]
-    _pf_2d_simd_pairs!(s, c, sf, xc, uc, plan, val_be, vD, keybuf, valbuf, idxbuf, colbuf, sel, window, blocks,
+    _pf_2d_simd_pairs!(s, c, sf, xc, uc, plan, val_be, vD, keybuf, valbuf, idxbuf, colbuf, sel, blocks,
                        second_axis, axbuf, weights)
     return nothing
 end
 
-"""A task's [`BLRowsScratch`](@ref) for the single-pass 2D kernels: the pair window, the digitize keys, approximate
+"""A task's [`BLRowsScratch`](@ref) for the single-pass 2D kernels: the digitize keys, approximate
 bins, compacted slots, distance bins, `δu_L`, `‖δu‖²` and the six value-column buffers, and the interleaved slice
 histograms of [`_sp2d_histogram`](@ref)."""
-function _bl_rows_scratch_sp2d(window::PairWindow, N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, val_plan,
+function _bl_rows_scratch_sp2d(N::Int, ::Val{D}, ::Type{FT}, ::Type{OT}, ::Type{CT}, val_plan,
                                n_bins::Int, n_val::Int) where {D, FT, OT, CT}
-    L = _pair_scratch_length(window, N)
+    L = _pair_scratch_length(N)
     Lc = _sp2d_has_columns(val_plan, OT) ? L : 0
-    bufs = (window, Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
+    bufs = (Vector{FT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L),
             Vector{OT}(undef, L), Vector{OT}(undef, L), ntuple(_ -> Vector{Int32}(undef, Lc), Val(SINGLE_PASS_N)))
     return BLRowsScratch(bufs, () -> _sp2d_histogram(OT, CT, n_bins, n_val))
 end
@@ -1268,7 +1264,7 @@ function _bl_rows_sp2d!(scratch::BLRowsScratch, xc::NTuple{D}, us::AbstractVecto
                         vD::Val{D}, blocks, weights) where {D}
     length(slices) == 1 && return _bl_rows_sp2d!(scratch, xc, us[first(slices)], slices, slots, plan, value_bins, vD,
                                                  blocks, weights)
-    window, keybuf, idxbuf, _, _, duLbuf, dn2buf, C = scratch.bufs
+    keybuf, idxbuf, _, _, duLbuf, dn2buf, C = scratch.bufs
     hist = _bl_hists!(scratch, last(slots))
     OT = eltype(duLbuf)
     n_val = size(first(hist), 2) - 2
@@ -1277,8 +1273,8 @@ function _bl_rows_sp2d!(scratch::BLRowsScratch, xc::NTuple{D}, us::AbstractVecto
     chooses = _chooses_compaction(blocks)
     s_in, s_n = 0, 0
     @inbounds for (ir, jr) in blocks
-        _check_run_fits(window, keybuf, jr)
-        o = _slot_offset(window, jr)
+        _check_run_fits(keybuf, jr)
+        o = _slot_offset(jr)
         for i in ir
             jlo = max(i + 1, first(jr))
             jlo > last(jr) && continue
@@ -1380,7 +1376,7 @@ histogram.
 @noinline function _bl_rows_sp2d_run!(hist, bufs, xc, Xi, us, slices, slots, plan, value_bins, vD::Val{D}, ks, o, i, wi,
                                       weights, chooses, vcompact::Val{compact}, vfused::Val{fused},
                                       vcolumns::Val{columns}) where {D, compact, fused, columns}
-    _, keybuf, idxbuf, sel, binbuf, duLbuf, dn2buf, C = bufs
+    keybuf, idxbuf, sel, binbuf, duLbuf, dn2buf, C = bufs
     nb = n_histogram_bins(plan)
     n_val = size(hist[1], 2) - 2
     n = _bl_run_bins!(binbuf, sel, plan, keybuf, idxbuf, ks, compact, chooses)
@@ -1396,9 +1392,9 @@ end
 
 function _bl_rows_sp2d!(scratch::BLRowsScratch, xc::NTuple{D}, uc::Tuple, slices, slots, plan, value_bins, vD::Val{D},
                         blocks, weights) where {D}
-    window, keybuf, idxbuf, sel, _, duLbuf, dn2buf, C = scratch.bufs
+    keybuf, idxbuf, sel, _, duLbuf, dn2buf, C = scratch.bufs
     h = _bl_hists!(scratch, first(slots))[first(slots)]
-    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, vD, keybuf, duLbuf, dn2buf, idxbuf, C, sel, window, size(h, 2) - 2,
+    _sp2d_simd_pairs!(h, xc, uc, plan, value_bins, vD, keybuf, duLbuf, dn2buf, idxbuf, C, sel, size(h, 2) - 2,
                       blocks, weights)
     return nothing
 end
@@ -1419,8 +1415,8 @@ function _bl_run_1d!(sums, counts, sf_type, x, u, distance_bins, geom, executor,
         kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_1d!(scr, xc, us, bs, slots, sf_type, plan, vS, blocks,
                                                                       w)
         grid, xs, us, ws = _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights)
-        _bl_rows_sweep(executor, grid, xs, us, ws, _pair_window(N), kernel!,
-                       w -> _bl_rows_scratch_1d(w, N, vS, eltype(x0), OT, CT, n_bins), make_accum, N, B, accum_bytes,
+        _bl_rows_sweep(executor, grid, xs, us, ws, kernel!,
+                       () -> _bl_rows_scratch_1d(N, vS, eltype(x0), OT, CT, n_bins), make_accum, N, B, accum_bytes,
                        workspace)
     end
     lanes = () -> begin
@@ -1457,8 +1453,8 @@ function _bl_run_joint2d!(sums, counts, sf_type, x, u, distance_bins, value_bins
         kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_joint!(scr, xc, us, bs, slots, sf_type, plan, val_be,
                                                                          second_axis, vS, blocks, w)
         grid, xs, us, ws = _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights)
-        _bl_rows_sweep(executor, grid, xs, us, ws, _pair_window(N), kernel!,
-                       w -> _bl_rows_scratch_joint(w, N, vS, eltype(x0), OT, CT, second_axis, n_dist, n_val), make_accum,
+        _bl_rows_sweep(executor, grid, xs, us, ws, kernel!,
+                       () -> _bl_rows_scratch_joint(N, vS, eltype(x0), OT, CT, second_axis, n_dist, n_val), make_accum,
                        N, B, accum_bytes, workspace)
     end
     lanes = () -> begin
@@ -1491,8 +1487,8 @@ function _bl_run_sp1d!(sums, counts, x, u, distance_bins, geom, executor, worksp
         plan = squared_digitize_plan(distance_bins)
         kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_sp1d!(scr, xc, us, bs, slots, plan, vS, blocks, w)
         grid, xs, us, ws = _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights)
-        _bl_rows_sweep(executor, grid, xs, us, ws, _pair_window(N), kernel!,
-                       w -> _bl_rows_scratch_sp1d(w, N, vS, eltype(x0), OT, CT, n_bins), make_accum, N, B, accum_bytes,
+        _bl_rows_sweep(executor, grid, xs, us, ws, kernel!,
+                       () -> _bl_rows_scratch_sp1d(N, vS, eltype(x0), OT, CT, n_bins), make_accum, N, B, accum_bytes,
                        workspace)
     end
     lanes = () -> begin
@@ -1528,8 +1524,8 @@ function _bl_run_sp2d!(sums, counts, x, u, distance_bins, value_bins, geom, exec
         kernel! = (scr, xc, us, bs, slots, blocks, w) -> _bl_rows_sp2d!(scr, xc, us, bs, slots, plan, val_plan, vS,
                                                                         blocks, w)
         grid, xs, us, ws = _bl_slices(x0, u0, geom, distance_bins, culling, vFX, weights)
-        _bl_rows_sweep(executor, grid, xs, us, ws, _pair_window(N), kernel!,
-                       w -> _bl_rows_scratch_sp2d(w, N, vS, eltype(x0), OT, CT, val_plan, n_bins, n_val), make_accum,
+        _bl_rows_sweep(executor, grid, xs, us, ws, kernel!,
+                       () -> _bl_rows_scratch_sp2d(N, vS, eltype(x0), OT, CT, val_plan, n_bins, n_val), make_accum,
                        N, B, accum_bytes, workspace)
     end
     lanes = () -> begin

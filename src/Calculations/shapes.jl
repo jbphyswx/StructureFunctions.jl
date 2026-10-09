@@ -79,21 +79,24 @@ constant-folds.
 """
     _by_width(g, D)
 
-`g(Val(D))` for a velocity width `D` of at least 1: widths 1 to 3 by explicit branches, any other through
-[`_at_width`](@ref). The type of `g`'s result does not depend on the width: past the explicit branches it is asserted
-to be a type the explicit branches return.
+`g(Val(D))` for a velocity width `D` of at least 1, through one call at run time ([`_at_width`](@ref)): a call compiles
+`g` at its own width only. The result has the type [`_width_result_type`](@ref) gives, which no width changes.
 """
 @inline function _by_width(g, D::Int)
     _validate_spatial_dimension(D)
-    D == 1 && return g(Val(1))
-    D == 2 && return g(Val(2))
-    D == 3 && return g(Val(3))
-    T = Union{Base.promote_op(g, Val{1}), Base.promote_op(g, Val{2}), Base.promote_op(g, Val{3})}
-    return _at_width(g, Val(D))::T
+    return _at_width(g, Val(D))::_width_result_type(g)
 end
 
-"""`g(vD)` at a width read from array sizes past the explicit branches of [`_by_width`](@ref): the one dynamic
-dispatch on such a width."""
+"""The type `g(Val(W))` returns at the first width `W` of 2, 3 and 1 at which it returns."""
+@inline function _width_result_type(g)
+    T = Base.promote_op(g, Val{2})
+    T === Union{} || return T
+    T = Base.promote_op(g, Val{3})
+    T === Union{} || return T
+    return Base.promote_op(g, Val{1})
+end
+
+"""`g(vD)` at a width read from array sizes: the one dynamic dispatch on such a width ([`_by_width`](@ref))."""
 _at_width(g, vD::Val) = g(vD)
 
 """

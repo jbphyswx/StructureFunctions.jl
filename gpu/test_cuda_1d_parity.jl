@@ -19,7 +19,7 @@ const GEOM = SF.HelperFunctions.FlatGeometry{D}()
 moments(NMOM) = NMOM == 1 ? SFT.L2SFType() : SFT.SinglePassInvariants()
 kind(NMOM) = Val(NMOM == 1 ? :sf1d : :single_pass)
 
-plan_kind(::CE.CUDA1DPlan{W, F, M, T, R, S, H, C, Q}) where {W, F, M, T, R, S, H, C, Q} = Q == 0 ? :direct : :queued
+plan_kind(::CE.CUDA1DPlan) = :direct
 plan_kind(::CE.CUDA1DStripPlan) = :strip
 
 """`(NMOM, NB, B)` sums and counts of the portable kernels on `KA.CPU()`; `x` is `(D, N)` when `fixed`."""
@@ -32,7 +32,7 @@ function reference(x, u, bins, NMOM, fixed)
     return out, cnt
 end
 
-"""Host copies of the `(NMOM, NB, B)` sums and counts of the native launch of `plan`, a plan or a plan choice."""
+"""Host copies of the `(NMOM, NB, B)` sums and counts of the native launch of `plan`, a plan or a rule."""
 function device(plan, x, u, bins, NMOM, fixed)
     nb, b = length(bins) - 1, size(u, 3)
     out, cnt = CUDA.zeros(FT, NMOM, nb, b), CUDA.zeros(UInt32, NMOM, nb, b)
@@ -43,17 +43,16 @@ end
 
 # (plan kind, moments, shared positions, plan spec)
 const PLANS = (
-    (:direct, 1, false, (128, 2, 0)),
-    (:direct, 6, true, (256, 1, 0)),
-    (:queued, 6, true, (128, 2, CE.CU_QUEUE_THRESHOLD)),
-    (:queued, 6, false, (256, 1, CE.CU_QUEUE_THRESHOLD)),
+    (:direct, 1, false, (128, 2)),
+    (:direct, 6, true, (256, 1)),
+    (:direct, 6, false, (128, 4)),
     (:strip, 1, true, (:strip, 256, 2, 2)),
     (:strip, 6, true, (:strip, 128, 2, 1)),
 )
 
 Test.@testset "native 1-D kernels against KA.CPU()" begin
     # Every native 1-D plan kind, launched as planned.
-    Test.@testset "$k NMOM=$NMOM shared=$fixed" for (i, (k, NMOM, fixed, spec)) in enumerate(PLANS)
+    Test.@testset "$k NMOM=$NMOM shared=$fixed $spec" for (i, (k, NMOM, fixed, spec)) in enumerate(PLANS)
         Random.seed!(20260916 + i)
         x = fixed ? rand(FT, D, N) : rand(FT, D, N, B)
         u = randn(FT, D, N, B)
@@ -65,20 +64,32 @@ Test.@testset "native 1-D kernels against KA.CPU()" begin
         Test.@test isapprox(o, ro; rtol = 1e-10)
     end
 
-    # A call that samples its in-range share takes the first candidate, and its class's second call times them all.
-    Test.@testset "plan choice" begin
+    # A call over per-slice positions takes the rule's plan for its size.
+    Test.@testset "rule" begin
         Random.seed!(20260917)
+        x, u = rand(FT, D, 1000, 4), randn(FT, D, 1000, 4)
+        rule = CE._cuda_1d_plan(CAPS, FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NB, moments(6))
+        o, c = device(rule, x, u, BINS, 6, false)
+        ro, rc = reference(x, u, BINS, 6, false)
+        Test.@test c == rc
+        Test.@test isapprox(o, ro; rtol = 1e-10)
+    end
+
+    # A batch over shared positions that samples its in-range share takes the first candidate, and its class's second
+    # call times them all.
+    Test.@testset "plan choice" begin
+        Random.seed!(20260918)
         n, b = 1000, 4
         Test.@test (n * (n - 1) ÷ 2) * b >= CE.CU_1D_CHOOSE_FROM[2]
         x, u = rand(FT, D, n), randn(FT, D, n, b)
         bins = collect(FT, range(0.0, 0.15; length = NB + 1))
-        choice = CE._cuda_1d_plan(CAPS, FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NB, moments(6))
+        rule = CE._cuda_1d_plan(CAPS, FT, FT, FT, UInt32, SFC.NoWeights(), GEOM, NB, moments(6))
         ro, rc = reference(x, u, bins, 6, true)
         for _ in 1:2
-            o, c = device(choice, x, u, bins, 6, true)
+            o, c = device(rule, x, u, bins, 6, true)
             Test.@test c == rc
             Test.@test isapprox(o, ro; rtol = 1e-10)
         end
-        Test.@test !isempty(choice.chosen)
+        Test.@test !isempty(rule.fixed.chosen)
     end
 end

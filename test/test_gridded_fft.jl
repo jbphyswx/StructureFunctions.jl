@@ -107,6 +107,27 @@ Test.@testset "a transform workspace changes no answer, reused across backends, 
     Test.@test all(agree)
 end
 
+Test.@testset "the device gives the serial gridded tensor, alone and over the angle" begin
+    Random.seed!(6600)
+    fft = SB.FastFourierTransformSpectralBackend()
+    s = SFC.UniformLagSchedule((12, 10), (0.1, 0.12), (true, false))
+    u = randn(2, 120)
+    bins = collect(range(0.0, 1.2; length = 7)) .+ 0.0137
+    abins = collect(range(prevfloat(0.0), π; length = 4))
+    axis = SFC.SeparationAngleAxis([1.0, 0.0])
+    nb, na = length(bins) - 1, length(abins) - 1
+    tensor(be) = (t = zeros(2, 2, nb); c = zeros(Int, nb);
+                  SFC.gridded_tensor_sweep!(t, c, Val(2), u, s, bins, Val(2), fft; backend = be); (t, c))
+    joint(be) = (t = zeros(2, 2, nb, na); c = zeros(nb, na);
+                 SFC.gridded_tensor_sweep!(t, c, Val(2), u, s, bins, abins, Val(2), fft; backend = be,
+                                           second_axis = axis); (t, c))
+    for (name, run) in (("tensor", tensor), ("tensor over the angle", joint))
+        (rt, rc), (gt, gc) = run(CB.SerialBackend()), run(CB.GPUBackend(KA.CPU()))
+        Test.@test (name, sum(rc) > 0 && isapprox(gc, rc; rtol = 1e-12) &&
+                    isapprox(gt, rt; rtol = 1e-10, atol = 1e-12)) == (name, true)
+    end
+end
+
 Test.@testset "the threaded transform gives the lag sweep's answer under any FFTW thread count" begin
     # Per grid: each operator, backend and workspace once, a batch of fewer or more slices than threads, the tensor.
     tag = SB.FastFourierTransformSpectralBackend()

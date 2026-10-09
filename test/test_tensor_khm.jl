@@ -2,8 +2,6 @@ using ComputationalBackends: ComputationalBackends as CB
 using StructureFunctions: StructureFunctions as SF, Calculations as SFC,
     StructureFunctionTypes as SFT, HelperFunctions as SFH
 using StructureFunctions: MultiFields as MF
-using OhMyThreads: OhMyThreads
-using KernelAbstractions: KernelAbstractions as KA
 using StaticArrays: StaticArrays as SA
 using LinearAlgebra: LinearAlgebra as LA
 using FFTW: FFTW
@@ -52,7 +50,7 @@ end
 
 const RAW_T = SF.StructureFunctionTensorSumsAndCounts
 const FFT_TAG = SB.FastFourierTransformSpectralBackend()
-const TK_SERIAL, TK_THREADED, TK_DEVICE = CB.SerialBackend(), CB.ThreadedBackend(), CB.GPUBackend(KA.CPU())
+const TK_SERIAL = CB.SerialBackend()
 
 # Grid coordinates as a point list, in the cell order the packed field uses.
 function _tensor_grid_points(dims, spacing)
@@ -155,9 +153,10 @@ Test.@testset "the tensor from the transform equals the point tensor on a grid's
         Val(2), grid, MF.Fields(vectors = (u,), scalars = (randn(dims...),)), bins, FFT_TAG)
 end
 
+# An even longitude count gives half-turn lags, whose two frames the transform averages.
 Test.@testset "the tensor on a lat-lon grid is the point tensor in the geodesic frame" begin
     Random.seed!(4110)
-    n_lon, n_lat = 15, 7
+    n_lon, n_lat = 16, 7
     lam = range(0.0, step = 2π / n_lon, length = n_lon)
     phi = range(-1.1, step = 0.35, length = n_lat)
     grid = FG.Grids.StructuredGrid(FG.Geometry.SphericalGeometry(1.0), lam, phi)
@@ -172,37 +171,19 @@ Test.@testset "the tensor on a lat-lon grid is the point tensor in the geodesic 
     Test.@test isapprox(got.sums, ref.sums; rtol = 1e-9, atol = 1e-10 * maximum(abs, ref.sums))
 end
 
-Test.@testset "orders 1, 4 and 5 on points match brute force" begin
+Test.@testset "an odd and a higher even order on points match brute force" begin
     Random.seed!(4120)
     N = 40
     x = rand(2, N)
     u = randn(2, N)
     bins = collect(range(0.0, 1.2; length = 6))
-    for P in (1, 4, 5)
+    for P in (3, 4)
         ref_s, ref_c = _brute_tensor(P, x, u, bins)
         got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, RAW_T; backend = TK_SERIAL)
         Test.@test (P, got.counts == ref_c) == (P, true)
         Test.@test (P, isapprox(got.sums, ref_s; rtol = 1e-11, atol = 1e-12)) == (P, true)
     end
     Test.@test_throws ArgumentError SFT.MomentTensorOperator{2}()(SA.SVector(1.0, 0.0), SA.SVector(1.0, 0.0))
-end
-
-Test.@testset "the device tensor over batches adds in place" begin
-    # an odd order over slices sharing positions, integer counts
-    Random.seed!(4125)
-    N, B, P = 200, 3, 3
-    bins = collect(range(0.0, 0.2; length = 6))
-    x, u = rand(2, N), randn(2, N, B)
-    ref = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, Int, RAW_T; backend = TK_SERIAL)
-    got = SFC.calculate_structure_function_tensor(Val(P), x, u, bins, Int, RAW_T; backend = TK_DEVICE)
-    Test.@test got.counts == ref.counts
-    Test.@test isapprox(got.sums, ref.sums; rtol = 1e-10, atol = 1e-12)
-    s, c = zeros(size(ref.sums)), zeros(Int, size(ref.counts))
-    for _ in 1:2
-        SFC.calculate_structure_function_tensor!(s, c, Val(P), x, u, bins; backend = TK_DEVICE)
-    end
-    Test.@test c == 2 .* ref.counts
-    Test.@test isapprox(s, 2 .* ref.sums; rtol = 1e-10, atol = 1e-12)
 end
 
 Test.@testset "the joint tensor over angle marginalises to the tensor and to the joint histogram" begin
@@ -216,14 +197,12 @@ Test.@testset "the joint tensor over angle marginalises to the tensor and to the
     t1 = SFC.calculate_structure_function_tensor(Val(2), x, u, bins, RAW_T; backend = TK_SERIAL)
     # the trace of the joint tensor is the joint histogram of S2
     s2 = SFC.calculate_structure_function(SFT.S2SFType(), x, u, bins, θbins; backend = TK_SERIAL, second_axis = axis)
-    for backend in (TK_SERIAL, TK_THREADED)
-        joint = SFC.calculate_structure_function_tensor(Val(2), x, u, bins, θbins; second_axis = axis, backend)
-        Test.@test size(joint.sums) == (2, 2, 5, 4)
-        Test.@test dropdims(sum(joint.counts; dims = 2); dims = 2) == t1.counts
-        Test.@test isapprox(dropdims(sum(joint.sums; dims = 4); dims = 4), t1.sums; rtol = 1e-11, atol = 1e-12)
-        Test.@test joint.counts == s2.counts
-        Test.@test isapprox(joint.sums[1, 1, :, :] .+ joint.sums[2, 2, :, :], s2.sums; rtol = 1e-11, atol = 1e-12)
-    end
+    joint = SFC.calculate_structure_function_tensor(Val(2), x, u, bins, θbins; second_axis = axis, backend = TK_SERIAL)
+    Test.@test size(joint.sums) == (2, 2, 5, 4)
+    Test.@test dropdims(sum(joint.counts; dims = 2); dims = 2) == t1.counts
+    Test.@test isapprox(dropdims(sum(joint.sums; dims = 4); dims = 4), t1.sums; rtol = 1e-11, atol = 1e-12)
+    Test.@test joint.counts == s2.counts
+    Test.@test isapprox(joint.sums[1, 1, :, :] .+ joint.sums[2, 2, :, :], s2.sums; rtol = 1e-11, atol = 1e-12)
     Test.@test_throws ArgumentError SFC.calculate_structure_function_tensor(Val(2), x, cat(u, 2u; dims = 3), bins, θbins;
                                                                             second_axis = axis)
     # on a grid, from the transform

@@ -31,16 +31,12 @@ end
 # Absolute floor at the field scale: an odd operator on a self-reverse lag is exactly zero only in the sweep.
 _moments_close(got, ref) = isapprox(got, ref; rtol = 1e-9, atol = 1e-10 * max(1.0, maximum(abs, ref)))
 
-# Every operator once; signed-transverse ones on a 2-D grid and on a 3-D grid with lags along ẑ, the axis rule in 3-D.
+# Orders 2, 3 and 4 on every topology, a norm power, signed-transverse operators on a 2-D grid and on 3-D grids with
+# lags along ẑ (the axis rule in 3-D), and a line; test_operator_contract.jl checks each operator's contraction.
 const MOMENT_OPERATOR_CASES = (
-    (((9, 6), (0.1, 0.2), (false, false)),
-     (SFT.S2SFType(), SFT.L2SFType(), SFT.T2SFType(), SFT.L3SFType(), SFT.ProjectedStructureFunctionType{2, 2}(),
-      SFT.VectorDotSFType(1, 1))),
-    (((8, 8), (0.25, 0.25), (true, true)),
-     (SFT.L2T1SFType(), SFT.S3SFType(), SFT.L1T2ComponentSFType(), SFT.FullVectorStructureFunctionType{4}())),
-    (((10, 7), (0.15, 0.15), (true, false)),
-     (SFT.T2ComponentSFType(), SFT.L1T2SFType(), SFT.ProjectedStructureFunctionType{4, 0}(),
-      SFT.ProjectedStructureFunctionType{0, 4}())),
+    (((9, 6), (0.1, 0.2), (false, false)), (SFT.L2SFType(), SFT.L3SFType())),
+    (((8, 8), (0.25, 0.25), (true, true)), (SFT.L2T1SFType(), SFT.FullVectorStructureFunctionType{4}())),
+    (((10, 7), (0.15, 0.15), (true, false)), (SFT.T2ComponentSFType(), SFT.ProjectedStructureFunctionType{4, 0}())),
     (((12,), (0.3,), (false,)), (SFT.L3SFType(),)),
     (((6, 5, 4), (0.2, 0.2, 0.3), (false, false, false)),
      (SFT.ProjectedStructureFunctionType{0, 3}(
@@ -48,7 +44,7 @@ const MOMENT_OPERATOR_CASES = (
     (((6, 6, 4), (0.2, 0.2, 0.3), (true, false, true)), (SFT.T3SFType(),)),
 )
 
-Test.@testset "the transform equals the lag sweep for every polynomial operator" begin
+Test.@testset "the transform equals the lag sweep for each order, topology and convention" begin
     counts_ok, sums_ok = Bool[], Bool[]
     for ((dims, spacing, periodic), ops) in MOMENT_OPERATOR_CASES
         Dg = length(dims)
@@ -106,13 +102,11 @@ function _grid_points(dims, spacing)
     return x
 end
 
-# Every operator type once, each field wrapping and bounded; an odd scalar one per field against the point path.
+# Each field kind once, an odd moment of a vector with a scalar and of a scalar alone, wrapping and bounded; one per
+# field against the point path.
 const MOMENT_FIELD_CASES = (
-    (:vs, SFT.ScalarSFType{2}(), (true, false)), (:vs, SFT.MixedSFType{1, 0, 2}(), (false, false)),
-    (:vs, SFT.MixedSFType{1, 0, 1}(), (true, false)), (:vs, SFT.MixedSFType{0, 2, 1}(), (false, false)),
-    (:vs, SFT.L2SFType(), (true, false)), (:vs, SFT.S3SFType(), (false, false)),
-    (:s, SFT.ScalarSFType{3}(2), (true, false)), (:s, SFT.ScalarDotSFType(1, 2), (false, false)),
-    (:vv, SFT.VectorDotSFType(1, 2), (true, false)),
+    (:vs, SFT.MixedSFType{1, 0, 2}(), (false, false)), (:vs, SFT.MixedSFType{1, 0, 1}(), (true, false)),
+    (:s, SFT.ScalarSFType{3}(2), (true, false)), (:vv, SFT.VectorDotSFType(1, 2), (true, false)),
 )
 const MOMENT_FIELD_ORACLE_CASES =
     ((:vs, SFT.MixedSFType{1, 0, 1}()), (:s, SFT.ScalarSFType{3}(2)), (:vv, SFT.VectorDotSFType(1, 2)))

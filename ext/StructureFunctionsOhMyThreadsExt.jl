@@ -133,22 +133,20 @@ function _threaded_field_pairs!(
     return nothing
 end
 
-"""A task's scratch for the flat multi-field kernel — its pair window and buffers — or `nothing` for a geometry
-whose kernel takes none."""
+"""A task's buffers for the flat multi-field kernel, or `nothing` for a geometry whose kernel takes none."""
 function _field_scratch(::SFH.FlatGeometry, xk, ::Type{OT}) where {OT}
-    window = SFC._pair_window(size(xk, 2))
-    L = SFC._pair_scratch_length(window, size(xk, 2))
-    return (window, Vector{eltype(xk)}(undef, L), Vector{OT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L))
+    L = SFC._pair_scratch_length(size(xk, 2))
+    return (Vector{eltype(xk)}(undef, L), Vector{OT}(undef, L), Vector{Int32}(undef, L), Vector{Int32}(undef, L))
 end
 _field_scratch(geom, xk, ::Type) = nothing
 
 """Accumulate the multi-field pairs of outer indices `chunk` into `acc`, with the task's `scratch`."""
 _field_chunk!(acc, ::Nothing, sf, xk, data, geom, vF, vV, vK, plan, nb, vW, chunk, N, grid, wk) =
     SFC._field_run_blocks!(acc[1], acc[2], sf, xk, data, geom, vF, vV, vK, plan, nb, vW, chunk, N, grid, wk)
-_field_chunk!(acc, (window, keybuf, valbuf, idxbuf, sel)::Tuple, sf, xk, data, geom, vF, vV, vK, plan, nb, vW, chunk,
+_field_chunk!(acc, (keybuf, valbuf, idxbuf, sel)::Tuple, sf, xk, data, geom, vF, vV, vK, plan, nb, vW, chunk,
               N, grid, wk) =
     SFC._field_pairs!(acc[1], acc[2], sf, xk, data, geom, vF, vV, vK, plan, nb, vW, SFC.pair_blocks(N, chunk; grid), wk,
-                      window, keybuf, valbuf, idxbuf, sel)
+                      keybuf, valbuf, idxbuf, sel)
 
 
 # --- 1D Array thread-safe chunked implementation ---

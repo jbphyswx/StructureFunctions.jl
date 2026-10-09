@@ -158,6 +158,18 @@ Test.@testset "the Helmholtz fit separates gradient from curl" begin
     Test.@test fit.k == _centres(kr_edges)
     Test.@test SFC.fit_helmholtz_spectra(L2, T2, kr_edges, SFC.NonNegativeLeastSquares()).E ≈ Er rtol = 1e-6
     Test.@test_throws ArgumentError SFC.fit_helmholtz_spectra(T2, L2, kr_edges, SFC.NonNegativeLeastSquares())
+
+    # With a bin missing from each result, a variance per bin weighs the fit as its entries on the shared bins do.
+    yL, yT = y[1:80], y[81:end]
+    yL[30] = NaN
+    yT[7] = NaN
+    held = setdiff(1:80, (7, 30))
+    fit_with(W) = SFC.fit_helmholtz_spectra(SF.StructureFunction(SFT.L2SFType(), edges, yL),
+                                            SF.StructureFunction(SFT.T2SFType(), edges, yT), kr_edges,
+                                            SFC.RegularizedLeastSquares(nothing); W)
+    every = 1e-20 .* (1 .+ (1:160) ./ 160)
+    Test.@test fit_with(every).E == fit_with(vcat(every[held], every[80 .+ held])).E
+    Test.@test_throws DimensionMismatch fit_with(every[1:100])
 end
 
 # (dimension, fit): every fit once, each dimension's kernel twice.

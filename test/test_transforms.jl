@@ -5,7 +5,7 @@ using Bessels: Bessels
 using FFTW: FFTW
 using SpectralBackends: SpectralBackends as SB
 using Random: Random
-using Statistics: var
+using Statistics: Statistics
 using Test: Test
 using JLArrays: JLArrays, JLArray
 using GPUArraysCore: GPUArraysCore
@@ -73,7 +73,7 @@ Test.@testset "a result object transforms back to the wavenumber it was built fr
     kq = collect(range(0.3, 12.0; length = 500))
     raw = SFC.calculate_structure_function(
         SFT.S2SFType(), x, u, bins, SF.StructureFunctionSumsAndCounts; backend = CB.SerialBackend())
-    P = SFC.isotropic_spectrum(raw, kq, Val(2); variance = var(u[1, :]; corrected = false))
+    P = SFC.isotropic_spectrum(raw, kq, Val(2); variance = Statistics.var(u[1, :]; corrected = false))
     Test.@test kq[argmax(P)] ≈ k0 rtol = 0.05
 end
 
