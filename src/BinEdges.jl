@@ -75,6 +75,8 @@ The bin of `x` is `ceil(t) + 1` with `t = fma(x, inv_step, -first_edge * inv_ste
 last edges are `first_edge` and `last_edge`; interior edge `k` is the largest value whose `t` does not
 exceed `k - 1`. `t` is correctly rounded and increasing in `x`, so the lookup equals a binary search
 over `collect(edges)`. A `NaN` falls above the last edge.
+
+TODO :: Fix the naming here, `LinearBinEdges` is a bit misleading, it should be `UniformBinEdges` or something like that, or BinRange or BinEdgesRange and LogBinEdges or LogBinEdgesRange or something like that...
 """
 struct LinearBinEdges{T <: AbstractFloat} <: AbstractRangeBinEdges{T}
     first_edge::T
