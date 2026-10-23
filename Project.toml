@@ -4,7 +4,6 @@ version = "0.4.0"
 authors = ["Jordan Benjamin"]
 
 [workspace]
-projects = ["test", "gpu"]
 
 [deps]
 ComputationalBackends = "5c6e2104-4040-447f-8fc0-66ec2223b019"

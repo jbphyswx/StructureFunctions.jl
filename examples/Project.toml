@@ -1,7 +1,9 @@
 [deps]
 ComputationalBackends = "5c6e2104-4040-447f-8fc0-66ec2223b019"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+FlowTransformBindings = "73c6b5d6-1010-4337-8b9e-d550f02c124c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+NUFSHT = "e99b67a3-9706-455a-90e2-85b195a33206"
 OhMyThreads = "67456a42-1dca-4109-a031-0a68de7e3ad5"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 StructureFunctions = "e93fee26-4d5e-49c1-899d-490508cfd19b"
@@ -12,4 +14,6 @@ julia = "1.12"
 
 [sources]
 ComputationalBackends = { url = "https://github.com/jbphyswx/ComputationalBackends.jl" }
+NUFSHT = { url = "https://github.com/jbphyswx/NUFSHT.jl" }
+FlowTransformBindings = { url = "https://github.com/jbphyswx/FlowTransformBindings.jl" }
 StructureFunctions = { path = ".." }
